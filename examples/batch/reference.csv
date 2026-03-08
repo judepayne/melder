@@ -1,0 +1,11 @@
+entity_id,legal_name,short_name,country_code,lei
+ENT-001,Acme Corporation,Acme Corp,US,5493001KJTIIGC8Y1R12
+ENT-002,Deutsche Industriebank AG,Deutsche Industriebank,DE,7245009FKGFZ1LJJZM76
+ENT-003,Sakura Financial Group,Sakura Financial,JP,353400KVKZRTHQ1Y4W13
+ENT-004,Nordic Energy Systems AB,Nordic Energy,SE,
+ENT-005,Banco Nacional de Mexico SA,Banco Nacional,MX,5493008NKJQGM1CV6847
+ENT-006,Thames Water Utilities Ltd,Thames Water,GB,213800BTPSVP56B93X49
+ENT-007,Shanghai Pacific Trading Co,Shanghai Pacific,CN,
+ENT-008,Maple Leaf Foods Inc,Maple Leaf,CA,549300LCK1G98B2QR854
+ENT-009,Royal Dutch Petroleum NV,Royal Dutch,NL,724500OHCDR7M6JKQ092
+ENT-010,Zurich Capital Partners GmbH,Zurich Capital,CH,

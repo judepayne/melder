@@ -376,6 +376,9 @@ configured thresholds:
 
 ### Batch mode
 
+> For a hands-on walkthrough, see the
+> [batch worked example](examples/batch/README.md).
+
 Batch mode processes an entire B dataset against a pre-indexed A pool in
 a single pass. Run it with:
 
@@ -418,6 +421,9 @@ without actually running. Use `--limit N` to process only the first N
 B records (useful for quick sanity checks on large datasets).
 
 ### Live mode
+
+> For a hands-on walkthrough, see the
+> [live worked example](examples/live/README.md).
 
 Live mode starts an HTTP server that holds both datasets in memory and
 matches records on the fly as they arrive:
@@ -895,6 +901,99 @@ python bench/live_concurrent_test.py --no-serve --port 8090 --iterations 3000
 
 See [LIVE_PERFORMANCE.md](LIVE_PERFORMANCE.md) for full benchmark details
 including encoder pool size comparisons and Go baseline comparison.
+
+## How vector caching works
+
+Melder uses a sentence-transformer model (default: `all-MiniLM-L6-v2`) to
+convert the text of each record into a 384-dimensional vector — a numeric
+fingerprint that captures the meaning of the text. Two records about the
+same entity will produce vectors that point in nearly the same direction,
+even if the exact wording differs. This is how the `embedding` match
+method works: it compares vectors using cosine similarity rather than
+comparing characters.
+
+Encoding text into vectors is expensive — it requires running each record
+through an ONNX neural network. For 10,000 records this takes ~8 seconds.
+To avoid repeating this work, melder caches the encoded vectors to disk
+in a compact binary format (the `.index` files).
+
+### Config options
+
+```yaml
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_index_cache: cache/a.index       # required
+  b_index_cache: cache/b.index       # optional
+```
+
+`a_index_cache` is required — the A-side vectors are always cached. On
+first run the file is created automatically (if not present); on subsequent
+runs it is loaded in milliseconds.
+
+`b_index_cache` is optional. When set, B-side vectors are also cached to
+disk. When omitted, B vectors are encoded from scratch every run.
+
+### Batch mode lifecycle
+
+```
+First run:
+  A vectors: encode (slow) → save to a_index_cache
+  B vectors: encode (slow) → save to b_index_cache (if a path is configured)
+
+Subsequent runs (same data):
+  A vectors: load from a_index_cache (~5ms)
+  B vectors: load from b_index_cache (~5ms) OR re-encode if not configured
+
+Scoring:
+  For each B record, search the A vector index for similar records.
+  B vectors are borrowed directly from the in-memory index — no copying.
+```
+
+Setting `b_index_cache` is particularly valuable when tuning thresholds or
+weights across multiple runs on the same data. Without it, every run
+re-encodes all B records through the neural network. With it, a 14-second
+run drops to under 6 seconds.
+
+### Live mode lifecycle
+
+```
+Startup:
+  A vectors: load from a_index_cache (or encode + save if stale)
+  B vectors: load from b_index_cache (or encode; only saved if a path is configured)
+  Both indices live in memory behind RwLock for concurrent access.
+
+During operation:
+  /a/add or /b/add: encode the single new record, insert into the
+  in-memory index. The vector is available immediately for matching.
+
+Shutdown:
+  A vectors: saved to a_index_cache
+  B vectors: saved to b_index_cache (if a path is configured)
+```
+
+In live mode both sides always have an in-memory vector index (required
+for bidirectional matching). The cache files only control whether the
+index is persisted to disk between restarts.
+
+### Staleness
+
+The cache is considered fresh if the number of vectors in the file
+matches the number of records in the dataset. If the dataset changes
+size, the cache is rebuilt automatically. Note: if the dataset changes
+content but not size, the stale cache is reused — a known limitation.
+
+### Future: vector database
+
+The current vector index is a flat brute-force scan — every search
+compares the query against all vectors in the index. This is fast up
+to ~100K records (a single scan takes <1ms at 10K) but scales linearly.
+
+At larger scales, an approximate nearest neighbour (ANN) index such as
+HNSW would give logarithmic search time while preserving the single-binary
+architecture. Beyond that, an external vector database (Qdrant, Milvus)
+would offer distributed storage, native persistence, and metadata
+filtering — at the cost of a network round-trip per query and a more
+complex deployment. See [FUTURE.md](FUTURE.md) for more detail.
 
 ## Project Structure
 

@@ -1,0 +1,26 @@
+counterparty_id,counterparty_name,domicile,lei_code
+CP-001,ACME Corp.,US,5493001KJTIIGC8Y1R12
+CP-002,Acme Industries Inc,US,
+CP-003,Deutsche Industriebank,DE,7245009FKGFZ1LJJZM76
+CP-004,Sakura Financial Grp,JP,
+CP-005,Sakura Holdings,JP,
+CP-006,Nordic Energy Sys AB,SE,
+CP-007,Nordic Power Systems,SE,
+CP-008,Banco Nacional Mexico,MX,
+CP-009,Nacional de Mexico SA,MX,5493008NKJQGM1CV6847
+CP-010,Thames Water Ltd,GB,
+CP-011,Thames Utilities PLC,GB,
+CP-012,Shanghai Pacific Trdg,CN,
+CP-013,Pacific Trading Shanghai,CN,
+CP-014,Maple Leaf Inc,CA,
+CP-015,Royal Dutch Petroleum,NL,724500OHCDR7M6JKQ092
+CP-016,Zurich Capital Prtnrs,CH,
+CP-017,Osaka Electronics Co,JP,
+CP-018,Berlin Tech Solutions,DE,
+CP-019,Toronto Financial Group,CA,
+CP-020,Zurich Re AG,CH,
+CP-021,Amsterdam Holdings BV,NL,
+CP-022,Mexico City Power SA,MX,
+CP-023,London Bridge Capital,GB,
+CP-024,ACME Global LLC,US,
+CP-025,Maple Leaf Foods Canada,CA,549300LCK1G98B2QR854

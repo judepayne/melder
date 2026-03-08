@@ -14,5 +14,11 @@ bench/*.ndjson
 *.wal
 *.wal.tmp
 
+# Example output and caches (keep the directories via .gitkeep)
+examples/*/cache/*
+examples/*/output/*
+!examples/**/cache/.gitkeep
+!examples/**/output/.gitkeep
+
 # OS files
 .DS_Store

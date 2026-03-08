@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -41,9 +43,6 @@ pub struct BatchStats {
     pub skipped: usize,
     pub elapsed_secs: f64,
 }
-
-/// Batch size for ONNX encoding — amortizes session overhead.
-const ENCODE_BATCH_SIZE: usize = 64;
 
 /// Outcome for a single B record after scoring.
 enum RecordOutcome {
@@ -174,85 +173,113 @@ pub fn run_batch(
     };
     let _ = common_id_matched; // used in summary stats
 
-    // Process B records — vectors come from the pre-built index_b
+    // Partition: separate crossmapped (skip) from work items.
+    // Borrow vectors directly from index_b — no copying.
     let b_ids_slice = &b_ids[..total_b];
-    let mut processed = 0;
-
-    for chunk_ids in b_ids_slice.chunks(ENCODE_BATCH_SIZE) {
-        // 1. Partition: skip already-crossmapped, collect those needing work
-        let mut work_items: Vec<(&str, Vec<f32>)> = Vec::with_capacity(chunk_ids.len());
-        for b_id in chunk_ids {
-            if crossmap.has_b(b_id) {
-                skipped += 1;
-            } else if b_records.contains_key(b_id) {
-                if let Some(vec) = index_b.get(b_id) {
-                    work_items.push((b_id.as_str(), vec.to_vec()));
-                }
+    let mut work_items: Vec<(&str, &[f32])> = Vec::with_capacity(total_b);
+    for b_id in b_ids_slice {
+        if crossmap.has_b(b_id) {
+            skipped += 1;
+        } else if b_records.contains_key(b_id) {
+            if let Some(vec) = index_b.get(b_id) {
+                work_items.push((b_id.as_str(), vec));
             }
         }
+    }
 
-        if work_items.is_empty() {
-            processed += chunk_ids.len();
-            print_progress(processed, total_b, &start);
-            continue;
-        }
+    // Wrap crossmap in Mutex for concurrent access during parallel scoring.
+    let crossmap_mu = Mutex::new(crossmap);
 
-        // 2. Score in parallel: candidate generation + scoring is read-only
-        //    on shared state (records_a, index_a, config, blocking_index)
-        let outcomes: Vec<RecordOutcome> = work_items
-            .par_iter()
-            .filter_map(|(b_id, b_vec)| {
-                let b_record = b_records.get(*b_id)?;
+    // Score all B records in a single parallel pass — no chunk boundaries.
+    let progress = AtomicUsize::new(0);
+    let work_total = work_items.len();
 
-                let cands = candidates::generate_candidates_batch_indexed(
-                    b_id, b_record, b_vec, index_a, records_a, config, crossmap, bi_ref,
-                );
+    let outcomes: Vec<RecordOutcome> = work_items
+        .par_iter()
+        .filter_map(|(b_id, b_vec)| {
+            let b_record = b_records.get(*b_id)?;
 
-                if cands.is_empty() {
-                    return Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()));
-                }
-
-                let results = match_engine::score_candidates(
-                    b_id,
-                    b_record,
-                    Some(b_vec),
-                    Side::B,
-                    &cands,
-                    config,
-                );
-
-                if let Some(top) = results.into_iter().next() {
-                    match top.classification {
-                        Classification::Auto => Some(RecordOutcome::Auto(top)),
-                        Classification::Review => Some(RecordOutcome::Review(top)),
-                        Classification::NoMatch => {
-                            Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()))
-                        }
-                    }
+            // Progress reporting (atomic, lock-free)
+            let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+            if done % 1000 == 0 || done == work_total {
+                let elapsed = start.elapsed().as_secs_f64();
+                let rate = done as f64 / elapsed;
+                let eta = if done < work_total {
+                    (work_total - done) as f64 / rate
                 } else {
-                    Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()))
-                }
-            })
-            .collect();
+                    0.0
+                };
+                eprintln!(
+                    "  scored {}/{} B records ({:.0} rec/s, ETA {:.0}s)",
+                    done, work_total, rate, eta
+                );
+            }
 
-        // 3. Sequential: collect results and update crossmap
-        for outcome in outcomes {
-            match outcome {
-                RecordOutcome::Auto(mr) => {
-                    crossmap.add(&mr.matched_id, &mr.query_id);
-                    matched.push(mr);
-                }
-                RecordOutcome::Review(mr) => {
-                    review.push(mr);
-                }
-                RecordOutcome::NoMatch(id, rec) => {
-                    unmatched.push((id, rec));
+            // Brief lock: check if this B record was crossmapped by another
+            // thread's auto-match during this parallel pass.
+            {
+                let cm = crossmap_mu.lock().unwrap();
+                if cm.has_b(b_id) {
+                    return None;
                 }
             }
-        }
 
-        processed += chunk_ids.len();
-        print_progress(processed, total_b, &start);
+            // Candidate generation + scoring — all read-only, no lock needed.
+            // Pass an empty crossmap since we already checked above.
+            let empty_cm = CrossMap::new();
+            let cands = candidates::generate_candidates_batch_indexed(
+                b_id, b_record, b_vec, index_a, records_a, config, &empty_cm, bi_ref,
+            );
+
+            if cands.is_empty() {
+                return Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()));
+            }
+
+            let results = match_engine::score_candidates(
+                b_id,
+                b_record,
+                Some(b_vec),
+                Side::B,
+                &cands,
+                config,
+            );
+
+            if let Some(top) = results.into_iter().next() {
+                // If auto-match, update crossmap under lock immediately
+                // so other threads see it.
+                if top.classification == Classification::Auto {
+                    let mut cm = crossmap_mu.lock().unwrap();
+                    cm.add(&top.matched_id, &top.query_id);
+                }
+                match top.classification {
+                    Classification::Auto => Some(RecordOutcome::Auto(top)),
+                    Classification::Review => Some(RecordOutcome::Review(top)),
+                    Classification::NoMatch => {
+                        Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()))
+                    }
+                }
+            } else {
+                Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()))
+            }
+        })
+        .collect();
+
+    // Recover crossmap from Mutex
+    let crossmap = crossmap_mu.into_inner().unwrap();
+
+    for outcome in outcomes {
+        match outcome {
+            RecordOutcome::Auto(mr) => {
+                crossmap.add(&mr.matched_id, &mr.query_id);
+                matched.push(mr);
+            }
+            RecordOutcome::Review(mr) => {
+                review.push(mr);
+            }
+            RecordOutcome::NoMatch(id, rec) => {
+                unmatched.push((id, rec));
+            }
+        }
     }
 
     let elapsed = start.elapsed().as_secs_f64();
@@ -368,20 +395,4 @@ fn build_or_load_b_index(
     }
 
     Ok(index)
-}
-
-fn print_progress(processed: usize, total: usize, start: &Instant) {
-    if processed % 100 == 0 || processed == total {
-        let elapsed = start.elapsed().as_secs_f64();
-        let rate = processed as f64 / elapsed;
-        let eta = if processed < total {
-            (total - processed) as f64 / rate
-        } else {
-            0.0
-        };
-        eprintln!(
-            "  processed {}/{} B records ({:.0} rec/s, ETA {:.0}s)",
-            processed, total, rate, eta
-        );
-    }
 }
