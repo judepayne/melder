@@ -1,0 +1,18 @@
+# Build artifacts
+/target
+
+# Embedding model cache (auto-downloaded)
+.fastembed_cache/
+
+# Benchmark output and caches
+bench/cache/
+bench/output/
+bench/*.csv
+bench/*.ndjson
+
+# WAL files
+*.wal
+*.wal.tmp
+
+# OS files
+.DS_Store

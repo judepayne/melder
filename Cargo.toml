@@ -1,0 +1,56 @@
+[package]
+name = "melder"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "meld"
+path = "src/main.rs"
+
+[dependencies]
+# Config + serialization
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# CSV
+csv = "1"
+
+# Fuzzy matching
+rapidfuzz = "0.5"
+
+# Embedding inference
+fastembed = "5"
+
+# Async runtime + HTTP server
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace", "catch-panic"] }
+
+# Concurrent data structures
+dashmap = "6"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Parallelism
+rayon = "1"
+
+# Parquet support (feature-flagged)
+parquet = { version = "54", optional = true, default-features = false, features = ["arrow", "snap"] }
+arrow = { version = "54", optional = true, default-features = false, features = ["prettyprint"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+[features]
+default = []
+parquet-format = ["dep:parquet", "dep:arrow"]
+
+[dev-dependencies]
+tempfile = "3"

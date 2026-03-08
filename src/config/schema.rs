@@ -1,0 +1,257 @@
+//! Config schema — Rust equivalent of Go `schema.go`.
+//!
+//! Users should be able to point `meld` at an existing `match` YAML config
+//! with zero changes.
+
+use serde::Deserialize;
+
+/// Top-level configuration parsed from YAML.
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    pub job: JobConfig,
+    pub datasets: DatasetsConfig,
+    pub cross_map: CrossMapConfig,
+    pub embeddings: EmbeddingsConfig,
+    #[serde(default)]
+    pub blocking: BlockingConfig,
+    pub match_fields: Vec<MatchField>,
+    #[serde(default)]
+    pub candidates: CandidatesConfig,
+    #[serde(default)]
+    pub output_mapping: Vec<FieldMapping>,
+    pub thresholds: ThresholdsConfig,
+    pub output: OutputConfig,
+    #[serde(default)]
+    pub live: LiveConfig,
+    #[serde(default)]
+    pub performance: PerformanceConfig,
+    /// Deprecated: use `performance.workers` instead. Kept for backward compat.
+    #[serde(default)]
+    pub workers: Option<u32>,
+    /// Accept and ignore the Go sidecar section for backward compatibility.
+    #[serde(default)]
+    pub sidecar: Option<serde_yaml::Value>,
+
+    // Derived at load time (not in YAML). Populated by `compute_required_fields`.
+    #[serde(skip)]
+    pub required_fields_a: Vec<String>,
+    #[serde(skip)]
+    pub required_fields_b: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JobConfig {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DatasetsConfig {
+    pub a: DatasetConfig,
+    pub b: DatasetConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DatasetConfig {
+    pub path: String,
+    pub id_field: String,
+    /// Optional shared identifier field (e.g. LEI). If set on one side,
+    /// it must be set on both. Records sharing a common ID are
+    /// auto-matched before any scoring takes place.
+    #[serde(default)]
+    pub common_id_field: Option<String>,
+    /// "csv" | "parquet" | "jsonl"; inferred from extension if absent.
+    #[serde(default)]
+    pub format: Option<String>,
+    /// For csv/jsonl; defaults to utf-8.
+    #[serde(default)]
+    pub encoding: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CrossMapConfig {
+    /// "local" | "redis". Defaults to "local".
+    #[serde(default = "default_backend")]
+    pub backend: String,
+    /// Path for local backend.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub redis_url: Option<String>,
+    pub a_id_field: String,
+    pub b_id_field: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingsConfig {
+    /// HuggingFace model name or local ONNX path.
+    pub model: String,
+    /// A-side VecIndex binary cache path (.index file).
+    pub a_index_cache: String,
+    /// B-side VecIndex binary cache path (.index file). Optional — only
+    /// needed for live mode where both sides have a VecIndex.
+    #[serde(default)]
+    pub b_index_cache: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct BlockingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// "and" | "or". Defaults to "and".
+    #[serde(default = "default_operator")]
+    pub operator: String,
+    #[serde(default)]
+    pub fields: Vec<BlockingFieldPair>,
+    /// Legacy single-field syntax — promoted to `fields` vec at load time.
+    #[serde(default)]
+    pub field_a: Option<String>,
+    #[serde(default)]
+    pub field_b: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct BlockingFieldPair {
+    pub field_a: String,
+    pub field_b: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MatchField {
+    pub field_a: String,
+    pub field_b: String,
+    /// "exact" | "fuzzy" | "embedding" | "numeric"
+    pub method: String,
+    /// For fuzzy: "wratio" | "partial_ratio" | "token_sort_ratio" | "ratio"
+    #[serde(default)]
+    pub scorer: Option<String>,
+    pub weight: f64,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct CandidatesConfig {
+    /// nil/true = enabled.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub scorer: Option<String>,
+    /// Default 10.
+    #[serde(default)]
+    pub n: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FieldMapping {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ThresholdsConfig {
+    pub auto_match: f64,
+    pub review_floor: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OutputConfig {
+    pub results_path: String,
+    pub review_path: String,
+    pub unmatched_path: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct LiveConfig {
+    /// Default 5.
+    #[serde(default)]
+    pub top_n: Option<usize>,
+    #[serde(default)]
+    pub upsert_log: Option<String>,
+    /// Number of concurrent ONNX inference sessions. Default 1.
+    #[serde(default)]
+    pub encoder_pool_size: Option<usize>,
+    /// How often dirty CrossMap state is flushed to disk (seconds). Default 5.
+    #[serde(default)]
+    pub crossmap_flush_secs: Option<u64>,
+}
+
+/// Performance tuning — applies to both batch and live modes.
+#[derive(Debug, Deserialize, Default)]
+pub struct PerformanceConfig {
+    /// Number of concurrent ONNX inference sessions. Default 1.
+    #[serde(default)]
+    pub encoder_pool_size: Option<usize>,
+    /// Rayon parallel scoring threads. Default 4.
+    #[serde(default)]
+    pub workers: Option<u32>,
+}
+
+fn default_backend() -> String {
+    "local".into()
+}
+
+fn default_operator() -> String {
+    "and".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_bench_live_yaml() {
+        let yaml = std::fs::read_to_string("testdata/configs/bench_live.yaml")
+            .expect("failed to read bench_live.yaml");
+        let config: Config =
+            serde_yaml::from_str(&yaml).expect("failed to deserialize bench_live.yaml");
+
+        assert_eq!(config.job.name, "bench_live_10000x10000");
+        assert_eq!(config.datasets.a.path, "testdata/dataset_a_10000.csv");
+        assert_eq!(config.datasets.b.id_field, "counterparty_id");
+        assert_eq!(config.cross_map.backend, "local");
+        assert_eq!(config.embeddings.model, "all-MiniLM-L6-v2");
+        assert!(config.blocking.enabled);
+        assert_eq!(config.match_fields.len(), 4);
+        assert_eq!(config.match_fields[0].method, "embedding");
+        assert!((config.match_fields[0].weight - 0.55).abs() < f64::EPSILON);
+        assert!((config.thresholds.auto_match - 0.85).abs() < f64::EPSILON);
+        assert!((config.thresholds.review_floor - 0.60).abs() < f64::EPSILON);
+        assert_eq!(config.live.top_n, Some(5));
+        assert_eq!(config.performance.encoder_pool_size, Some(4));
+        assert_eq!(config.performance.workers, Some(4));
+        assert!(config.sidecar.is_none());
+    }
+
+    #[test]
+    fn deserialize_counterparty_recon_with_sidecar() {
+        let yaml = std::fs::read_to_string("testdata/configs/counterparty_recon.yaml")
+            .expect("failed to read counterparty_recon.yaml");
+        let config: Config =
+            serde_yaml::from_str(&yaml).expect("failed to deserialize counterparty_recon.yaml");
+
+        assert_eq!(config.job.name, "counterparty_recon");
+        assert!(
+            config.sidecar.is_some(),
+            "sidecar section should be accepted"
+        );
+        assert_eq!(config.output_mapping.len(), 4);
+        assert_eq!(config.output_mapping[0].from, "sector");
+        assert_eq!(config.output_mapping[0].to, "ref_sector");
+        assert_eq!(config.performance.workers, Some(4));
+        assert_eq!(config.performance.encoder_pool_size, Some(2));
+    }
+
+    #[test]
+    fn deserialize_bench1000x1000() {
+        let yaml = std::fs::read_to_string("testdata/configs/bench1000x1000.yaml")
+            .expect("failed to read bench1000x1000.yaml");
+        let config: Config =
+            serde_yaml::from_str(&yaml).expect("failed to deserialize bench1000x1000.yaml");
+
+        assert_eq!(config.datasets.a.path, "testdata/dataset_a_1000.csv");
+        assert_eq!(config.candidates.scorer, Some("wratio".into()));
+        assert_eq!(config.candidates.n, Some(10));
+    }
+}

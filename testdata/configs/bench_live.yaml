@@ -1,0 +1,82 @@
+# bench/bench_live.yaml
+# Live-mode config for stress testing and development.
+# Mirrors bench10000x10000.yaml but adds the `live` section and
+# b_index_cache for symmetric B-side index support.
+
+job:
+  name: bench_live_10000x10000
+  description: Live serve — 10000 x 10000 synthetic data, upsert stress test
+
+datasets:
+  a:
+    path: testdata/dataset_a_10000.csv
+    id_field: entity_id
+    format: csv
+  b:
+    path: testdata/dataset_b_10000.csv
+    id_field: counterparty_id
+    format: csv
+
+cross_map:
+  backend: local
+  path: bench/crossmap_live.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_index_cache: bench/cache/a_10000.index
+  b_index_cache: bench/cache/b_10000.index
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: embedding
+    weight: 0.55
+
+  - field_a: short_name
+    field_b: counterparty_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+
+  - field_a: country_code
+    field_b: domicile
+    method: exact
+    weight: 0.20
+
+  - field_a: lei
+    field_b: lei_code
+    method: exact
+    weight: 0.05
+
+candidates:
+  enabled: true
+  method: fuzzy
+  scorer: wratio
+  n: 10
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+performance:
+  encoder_pool_size: 4
+  workers: 4
+
+live:
+  top_n: 5
+  upsert_log: bench/live_upserts.ndjson
+
+# output paths are unused in live mode but required by the config validator
+output:
+  results_path:   bench/output/live_results.csv
+  review_path:    bench/output/live_review.csv
+  unmatched_path: bench/output/live_unmatched.csv

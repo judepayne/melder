@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""bench/live_stress_test.py — Live mode throughput and latency stress test.
+
+Starts `match serve`, waits for it to be ready, then fires --iterations
+requests with the following mix:
+
+  30%  POST /api/v1/a/add   new A record (ID not seen before)
+  30%  POST /api/v1/b/add   new B record (ID not seen before)
+  10%  POST /api/v1/a/add   update A record — embedding field changed (re-encode)
+  10%  POST /api/v1/a/add   update A record — non-embedding field only (no re-encode)
+  10%  POST /api/v1/b/add   update B record — embedding field changed (re-encode)
+  10%  POST /api/v1/b/add   update B record — non-embedding field only (no re-encode)
+
+The embedding vs non-embedding split lets you see both latency bands:
+  fast path (~1ms patch only)  vs  slow path (~10-28ms encode + patch).
+
+Measures per-request wall-clock latency and prints a summary table with
+p50 / p95 / p99 / max and total throughput per operation type.
+
+Usage:
+  python bench/live_stress_test.py [options]
+
+  --config      Path to YAML config for `match serve`
+                (default: bench/bench_live.yaml)
+  --port        TCP port to use for the server  (default: 8090)
+  --iterations  Number of API calls to make     (default: 3000)
+  --binary      Path to the `match` binary      (default: ./match)
+  --a-path      Path to dataset A CSV           (default: testdata/dataset_a_10000.csv)
+  --b-path      Path to dataset B CSV           (default: testdata/dataset_b_10000.csv)
+  --a-id        A ID field name                 (default: entity_id)
+  --b-id        B ID field name                 (default: counterparty_id)
+  --seed        Random seed for reproducibility (default: 42)
+"""
+
+import argparse
+import csv
+import json
+import os
+import random
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from collections import defaultdict
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+
+def percentile(data: list[float], p: float) -> float:
+    """Return the p-th percentile of data (0–100)."""
+    if not data:
+        return 0.0
+    s = sorted(data)
+    # Linear interpolation index
+    idx = (len(s) - 1) * p / 100.0
+    lo, hi = int(idx), min(int(idx) + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (idx - lo)
+
+
+def wait_for_health(base_url: str, timeout: float = 60.0) -> bool:
+    """Poll /api/v1/health until it returns 200 or timeout expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            r = urllib.request.urlopen(f"{base_url}/api/v1/health", timeout=2)
+            if r.status == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.25)
+    return False
+
+
+def post_json(base_url: str, path: str, payload: dict) -> tuple[float, int, dict]:
+    """POST JSON to base_url+path; return (elapsed_ms, http_status, body_dict)."""
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"{base_url}{path}",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    t0 = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = json.loads(r.read())
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            return elapsed_ms, r.status, body
+    except urllib.error.HTTPError as exc:
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        try:
+            body = json.loads(exc.read())
+        except Exception:
+            body = {}
+        return elapsed_ms, exc.code, body
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        return elapsed_ms, 0, {"error": str(exc)}
+
+
+def load_csv(path: str) -> list[dict]:
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+# ---------------------------------------------------------------------------
+# A/B record factories
+# ---------------------------------------------------------------------------
+
+COUNTRY_CODES = ["GB", "DE", "FR", "NL", "US", "CH", "ES", "IT", "SE", "NO"]
+
+
+def make_new_a(counter: int, a_id: str) -> dict:
+    """Build a synthetic new A record not present in the dataset."""
+    cc = COUNTRY_CODES[counter % len(COUNTRY_CODES)]
+    return {
+        a_id: f"ENT-STRESS-{counter:07d}",
+        "legal_name": f"Stress Corp {counter} {cc}",
+        "short_name": f"StressCorp{counter}",
+        "country_code": cc,
+        "lei": f"STRESS{counter:012d}",
+    }
+
+
+def make_new_b(counter: int, b_id: str) -> dict:
+    """Build a synthetic new B record not present in the dataset."""
+    cc = COUNTRY_CODES[counter % len(COUNTRY_CODES)]
+    return {
+        b_id: f"CP-STRESS-{counter:07d}",
+        "counterparty_name": f"Stress Party {counter} {cc}",
+        "domicile": cc,
+        "lei_code": f"STRESSB{counter:011d}",
+    }
+
+
+def mutate_a_emb(record: dict) -> dict:
+    """Mutate the A embedding field (legal_name) — triggers re-encode."""
+    r = dict(record)
+    r["legal_name"] = r.get("legal_name", "") + " (rev)"
+    return r
+
+
+def mutate_a_field(record: dict) -> dict:
+    """Mutate a non-embedding A field (lei) — no re-encode expected."""
+    r = dict(record)
+    r["lei"] = r.get("lei", "") + "-R"
+    return r
+
+
+def mutate_b_emb(record: dict) -> dict:
+    """Mutate the B embedding field (counterparty_name) — triggers re-encode."""
+    r = dict(record)
+    r["counterparty_name"] = r.get("counterparty_name", "") + " (rev)"
+    return r
+
+
+def mutate_b_field(record: dict) -> dict:
+    """Mutate a non-embedding B field (lei_code) — no re-encode expected."""
+    r = dict(record)
+    r["lei_code"] = r.get("lei_code", "") + "-R"
+    return r
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Live mode throughput and latency stress test",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--config",
+        default="bench/bench_live.yaml",
+        help="Config file for `match serve`",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8090, help="TCP port for the server"
+    )
+    parser.add_argument(
+        "--iterations", type=int, default=3000, help="Number of API calls to make"
+    )
+    parser.add_argument(
+        "--binary", default="./match", help="Path to the `match` binary"
+    )
+    parser.add_argument(
+        "--a-path", default="testdata/dataset_a_10000.csv", help="Dataset A CSV path"
+    )
+    parser.add_argument(
+        "--b-path", default="testdata/dataset_b_10000.csv", help="Dataset B CSV path"
+    )
+    parser.add_argument("--a-id", default="entity_id", help="A ID field name")
+    parser.add_argument("--b-id", default="counterparty_id", help="B ID field name")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--no-serve",
+        action="store_true",
+        help="Skip starting the server (assume it is already running)",
+    )
+    args = parser.parse_args()
+
+    random.seed(args.seed)
+    base_url = f"http://localhost:{args.port}"
+
+    # ------------------------------------------------------------------
+    # Build binary if needed
+    # ------------------------------------------------------------------
+    if not args.no_serve and not Path(args.binary).exists():
+        print(f"Binary not found at {args.binary!r} — building...")
+        env = {**os.environ, "GONOSUMDB": "*", "GOFLAGS": "-mod=mod"}
+        subprocess.run(
+            ["go", "build", "-o", args.binary, "./cmd/match"],
+            check=True,
+            env=env,
+        )
+        print("Build done.")
+
+    # ------------------------------------------------------------------
+    # Start server (unless --no-serve)
+    # ------------------------------------------------------------------
+    proc = None
+    if not args.no_serve:
+        cmd = [args.binary, "serve", "--config", args.config, "--port", str(args.port)]
+        print(f"Starting: {' '.join(cmd)}")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    try:
+        # ------------------------------------------------------------------
+        # Wait for health
+        # ------------------------------------------------------------------
+        print("Waiting for server to be ready...", end=" ", flush=True)
+        if not wait_for_health(base_url, timeout=120.0):
+            print("TIMEOUT — server did not become ready within 120 s")
+            sys.exit(1)
+        print("ready.")
+
+        # ------------------------------------------------------------------
+        # Load datasets
+        # ------------------------------------------------------------------
+        a_records = load_csv(args.a_path)
+        b_records = load_csv(args.b_path)
+        print(f"Loaded {len(a_records):,} A records and {len(b_records):,} B records.")
+
+        a_by_id = {r[args.a_id]: r for r in a_records}
+        b_by_id = {r[args.b_id]: r for r in b_records}
+        existing_a_ids = list(a_by_id.keys())
+        existing_b_ids = list(b_by_id.keys())
+
+        # ------------------------------------------------------------------
+        # Build operation sequence (30/30/20/20)
+        # ------------------------------------------------------------------
+        n = args.iterations
+        op_counts = {
+            "new_a": int(n * 0.30),
+            "new_b": int(n * 0.30),
+            "upd_a_emb": int(n * 0.10),
+            "upd_a_field": int(n * 0.10),
+            "upd_b_emb": int(n * 0.10),
+            "upd_b_field": int(n * 0.10),
+        }
+        # Top up to exactly n with random ops
+        ops = []
+        for op, count in op_counts.items():
+            ops.extend([op] * count)
+        while len(ops) < n:
+            ops.append(random.choice(list(op_counts.keys())))
+        random.shuffle(ops)
+
+        # ------------------------------------------------------------------
+        # Run
+        # ------------------------------------------------------------------
+        latencies: dict[str, list[float]] = defaultdict(list)
+        statuses: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        old_mappings: dict[str, int] = defaultdict(int)
+        errors: dict[str, int] = defaultdict(int)
+
+        new_a_ctr = 0
+        new_b_ctr = 0
+
+        print(
+            f"Running {n:,} iterations  "
+            f"(new_a={op_counts['new_a']}, new_b={op_counts['new_b']}, "
+            f"upd_a_emb={op_counts['upd_a_emb']}, upd_a_field={op_counts['upd_a_field']}, "
+            f"upd_b_emb={op_counts['upd_b_emb']}, upd_b_field={op_counts['upd_b_field']})"
+        )
+        print()
+
+        t_wall_start = time.perf_counter()
+
+        for i, op in enumerate(ops):
+            if op == "new_a":
+                new_a_ctr += 1
+                rec = make_new_a(new_a_ctr, args.a_id)
+                elapsed, code, body = post_json(
+                    base_url, "/api/v1/a/add", {"record": rec}
+                )
+
+            elif op == "new_b":
+                new_b_ctr += 1
+                rec = make_new_b(new_b_ctr, args.b_id)
+                elapsed, code, body = post_json(
+                    base_url, "/api/v1/b/add", {"record": rec}
+                )
+
+            elif op == "upd_a_emb":
+                aid = random.choice(existing_a_ids)
+                rec = mutate_a_emb(a_by_id[aid])
+                elapsed, code, body = post_json(
+                    base_url, "/api/v1/a/add", {"record": rec}
+                )
+
+            elif op == "upd_a_field":
+                aid = random.choice(existing_a_ids)
+                rec = mutate_a_field(a_by_id[aid])
+                elapsed, code, body = post_json(
+                    base_url, "/api/v1/a/add", {"record": rec}
+                )
+
+            elif op == "upd_b_emb":
+                bid = random.choice(existing_b_ids)
+                rec = mutate_b_emb(b_by_id[bid])
+                elapsed, code, body = post_json(
+                    base_url, "/api/v1/b/add", {"record": rec}
+                )
+
+            else:  # upd_b_field
+                bid = random.choice(existing_b_ids)
+                rec = mutate_b_field(b_by_id[bid])
+                elapsed, code, body = post_json(
+                    base_url, "/api/v1/b/add", {"record": rec}
+                )
+
+            latencies[op].append(elapsed)
+            status = body.get("status", f"http_{code}")
+            statuses[op][status] += 1
+            if body.get("old_mapping"):
+                old_mappings[op] += 1
+            if code not in (200, 201) or "error" in body:
+                errors[op] += 1
+
+            if (i + 1) % 500 == 0 or i == 0:
+                elapsed_so_far = time.perf_counter() - t_wall_start
+                rps = (i + 1) / elapsed_so_far if elapsed_so_far > 0 else 0
+                print(f"  {i + 1:>5}/{n}  ({rps:5.0f} req/s so far)")
+
+        t_wall_total = time.perf_counter() - t_wall_start
+        total_rps = n / t_wall_total
+
+        # ------------------------------------------------------------------
+        # Summary table
+        # ------------------------------------------------------------------
+        W = 80
+        print()
+        print("=" * W)
+        print(
+            f"{'Op':<14} {'N':>5}  {'p50':>7}  {'p95':>7}  {'p99':>7}  {'max':>7}  {'err':>4}  Statuses"
+        )
+        print("-" * W)
+
+        all_latencies: list[float] = []
+        for op in [
+            "new_a",
+            "new_b",
+            "upd_a_emb",
+            "upd_a_field",
+            "upd_b_emb",
+            "upd_b_field",
+        ]:
+            lats = latencies[op]
+            if not lats:
+                continue
+            all_latencies.extend(lats)
+            p50 = percentile(lats, 50)
+            p95 = percentile(lats, 95)
+            p99 = percentile(lats, 99)
+            mx = max(lats)
+            err = errors[op]
+            st = "  ".join(f"{k}={v}" for k, v in sorted(statuses[op].items()))
+            om = old_mappings[op]
+            om_str = f"  old_mapping={om}" if om else ""
+            print(
+                f"{op:<14} {len(lats):>5}  {p50:>7.1f}  {p95:>7.1f}  {p99:>7.1f}  {mx:>7.1f}  {err:>4}  {st}{om_str}"
+            )
+
+        print("-" * W)
+        if all_latencies:
+            print(
+                f"{'ALL':<14} {len(all_latencies):>5}  "
+                f"{percentile(all_latencies, 50):>7.1f}  "
+                f"{percentile(all_latencies, 95):>7.1f}  "
+                f"{percentile(all_latencies, 99):>7.1f}  "
+                f"{max(all_latencies):>7.1f}  "
+                f"{sum(errors.values()):>4}  (ms)"
+            )
+        print("=" * W)
+        print(
+            f"\nTotal: {n:,} requests in {t_wall_total:.2f}s  →  {total_rps:.1f} req/s\n"
+        )
+
+    finally:
+        if proc is not None:
+            print("Stopping server (SIGTERM)...")
+            proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
+
+if __name__ == "__main__":
+    main()
