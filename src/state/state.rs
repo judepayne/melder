@@ -10,9 +10,9 @@ use crate::config::Config;
 use crate::data;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
-use crate::index::cache;
-use crate::index::VecIndex;
 use crate::models::Record;
+use crate::vectordb;
+use crate::vectordb::field_vectors::FieldVectors;
 
 /// Options controlling what to load.
 #[derive(Debug, Clone)]
@@ -28,10 +28,10 @@ pub struct MatchState {
     pub config: Config,
     pub records_a: DashMap<String, Record>,
     pub ids_a: Vec<String>,
-    pub index_a: VecIndex,
+    pub field_vecs_a: FieldVectors,
     pub records_b: Option<DashMap<String, Record>>,
     pub ids_b: Option<Vec<String>>,
-    pub index_b: Option<VecIndex>,
+    pub field_vecs_b: Option<FieldVectors>,
     pub encoder_pool: EncoderPool,
 }
 
@@ -39,9 +39,12 @@ impl std::fmt::Debug for MatchState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MatchState")
             .field("records_a", &self.records_a.len())
-            .field("index_a", &self.index_a.len())
+            .field("field_vecs_a", &self.field_vecs_a.len())
             .field("records_b", &self.records_b.as_ref().map(|r| r.len()))
-            .field("index_b", &self.index_b.as_ref().map(|i| i.len()))
+            .field(
+                "field_vecs_b",
+                &self.field_vecs_b.as_ref().map(|fv| fv.len()),
+            )
             .finish()
     }
 }
@@ -105,6 +108,15 @@ pub fn primary_embedding_text(record: &Record, config: &Config, is_a_side: bool)
         .unwrap_or_default()
 }
 
+/// Derive the field vectors cache path from an index cache path.
+///
+/// Replaces the extension with `.fieldvecs`. For example:
+/// `cache/a_10000.index` → `cache/a_10000.fieldvecs`
+pub fn field_vecs_cache_path(index_cache_path: &str) -> String {
+    let p = Path::new(index_cache_path);
+    p.with_extension("fieldvecs").to_string_lossy().to_string()
+}
+
 /// Load the full match state: datasets, caches, encoder pool.
 pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, MelderError> {
     let start = Instant::now();
@@ -139,19 +151,20 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         a_start.elapsed().as_secs_f64()
     );
 
-    // 3. Build/load A-side index
-    let index_a = build_or_load_index(
-        &config.embeddings.a_index_cache,
+    // 3. Build/load A-side field vectors
+    let a_fv_cache = field_vecs_cache_path(&config.embeddings.a_index_cache);
+    let field_vecs_a = vectordb::build_or_load_field_vectors(
+        Some(&a_fv_cache),
         &records_a,
         &ids_a,
         &config,
-        true, // is_a_side
+        true,
         &encoder_pool,
         dim,
     )?;
 
     // 4. Optionally load dataset B
-    let (records_b, ids_b, index_b) = if opts.load_b {
+    let (records_b, ids_b, field_vecs_b) = if opts.load_b {
         let b_start = Instant::now();
         let (recs, ids) = data::load_dataset(
             Path::new(&config.datasets.b.path),
@@ -166,32 +179,33 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
             b_start.elapsed().as_secs_f64()
         );
 
-        // Build/load B-side index if b_index_cache is configured
-        let b_index = if let Some(ref b_cache_path) = config.embeddings.b_index_cache {
-            Some(build_or_load_index(
-                b_cache_path,
-                &recs,
-                &ids,
-                &config,
-                false, // is_b_side
-                &encoder_pool,
-                dim,
-            )?)
-        } else {
-            None
-        };
+        // Build/load B-side field vectors
+        let b_fv_cache = config
+            .embeddings
+            .b_index_cache
+            .as_deref()
+            .map(field_vecs_cache_path);
+        let fv = vectordb::build_or_load_field_vectors(
+            b_fv_cache.as_deref(),
+            &recs,
+            &ids,
+            &config,
+            false,
+            &encoder_pool,
+            dim,
+        )?;
 
-        (Some(recs), Some(ids), b_index)
+        (Some(recs), Some(ids), Some(fv))
     } else {
         (None, None, None)
     };
 
     let total = start.elapsed();
     eprintln!(
-        "State loaded in {:.1}s (A: {} records, index: {} vecs{})",
+        "State loaded in {:.1}s (A: {} records, field_vecs: {} entries{})",
         total.as_secs_f64(),
         records_a.len(),
-        index_a.len(),
+        field_vecs_a.len(),
         if let Some(ref rb) = records_b {
             format!(", B: {} records", rb.len())
         } else {
@@ -203,107 +217,10 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         config,
         records_a: into_dashmap(records_a),
         ids_a,
-        index_a,
+        field_vecs_a,
         records_b: records_b.map(into_dashmap),
         ids_b,
-        index_b,
+        field_vecs_b,
         encoder_pool,
     })
-}
-
-/// Build a VecIndex from scratch by encoding all records, or load from cache
-/// if fresh.
-fn build_or_load_index(
-    cache_path: &str,
-    records: &HashMap<String, Record>,
-    ids: &[String],
-    config: &Config,
-    is_a_side: bool,
-    encoder_pool: &EncoderPool,
-    dim: usize,
-) -> Result<VecIndex, MelderError> {
-    let path = Path::new(cache_path);
-
-    // Check cache staleness
-    if !cache::is_cache_stale(path, records.len()) {
-        let load_start = Instant::now();
-        match cache::load_index(path) {
-            Ok(index) => {
-                let side = if is_a_side { "A" } else { "B" };
-                eprintln!(
-                    "Loaded {} index from cache: {} vecs in {:.1}ms",
-                    side,
-                    index.len(),
-                    load_start.elapsed().as_secs_f64() * 1000.0
-                );
-                return Ok(index);
-            }
-            Err(e) => {
-                eprintln!("Warning: cache load failed ({}), rebuilding...", e);
-            }
-        }
-    }
-
-    // Build from scratch
-    let side = if is_a_side { "A" } else { "B" };
-    eprintln!("Building {} index ({} records)...", side, records.len());
-    let build_start = Instant::now();
-
-    let mut index = VecIndex::new(dim);
-    let batch_size = 256;
-
-    // Process in batches
-    for (batch_idx, chunk) in ids.chunks(batch_size).enumerate() {
-        let texts: Vec<String> = chunk
-            .iter()
-            .map(|id| {
-                let record = records
-                    .get(id)
-                    .expect("id from ids vec must exist in records");
-                primary_embedding_text(record, config, is_a_side)
-            })
-            .collect();
-
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let vecs = encoder_pool
-            .encode(&text_refs)
-            .map_err(MelderError::Encoder)?;
-
-        for (id, vec) in chunk.iter().zip(vecs.into_iter()) {
-            index.upsert(id, &vec);
-        }
-
-        let done = (batch_idx + 1) * batch_size;
-        if done % 1000 == 0 || done >= ids.len() {
-            eprintln!(
-                "  encoded {}/{} {} records...",
-                done.min(ids.len()),
-                ids.len(),
-                side
-            );
-        }
-    }
-
-    let build_elapsed = build_start.elapsed();
-    eprintln!(
-        "{} index built: {} vecs in {:.1}s ({:.0} records/sec)",
-        side,
-        index.len(),
-        build_elapsed.as_secs_f64(),
-        index.len() as f64 / build_elapsed.as_secs_f64()
-    );
-
-    // Save to cache
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).ok();
-        }
-    }
-    if let Err(e) = cache::save_index(path, &index) {
-        eprintln!("Warning: failed to save {} index cache: {}", side, e);
-    } else {
-        eprintln!("Saved {} index cache to {}", side, cache_path);
-    }
-
-    Ok(index)
 }

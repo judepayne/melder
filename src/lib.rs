@@ -12,3 +12,4 @@ pub mod scoring;
 pub mod session;
 pub mod state;
 pub mod api;
+pub mod vectordb;

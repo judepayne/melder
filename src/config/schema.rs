@@ -25,6 +25,10 @@ pub struct Config {
     pub live: LiveConfig,
     #[serde(default)]
     pub performance: PerformanceConfig,
+    /// Vector storage backend: "flat" (brute-force, default) or "usearch"
+    /// (per-block HNSW, requires building with `--features usearch`).
+    #[serde(default = "default_vector_backend")]
+    pub vector_backend: String,
     /// Deprecated: use `performance.workers` instead. Kept for backward compat.
     #[serde(default)]
     pub workers: Option<u32>,
@@ -87,10 +91,10 @@ pub struct CrossMapConfig {
 pub struct EmbeddingsConfig {
     /// HuggingFace model name or local ONNX path.
     pub model: String,
-    /// A-side VecIndex binary cache path (.index file).
+    /// A-side vector index binary cache path (.index file).
     pub a_index_cache: String,
-    /// B-side VecIndex binary cache path (.index file). Optional — only
-    /// needed for live mode where both sides have a VecIndex.
+    /// B-side vector index binary cache path (.index file). Optional — only
+    /// needed for live mode where both sides have a vector index.
     #[serde(default)]
     pub b_index_cache: Option<String>,
 }
@@ -111,7 +115,7 @@ pub struct BlockingConfig {
     pub field_b: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, serde::Serialize, Clone)]
 pub struct BlockingFieldPair {
     pub field_a: String,
     pub field_b: String,
@@ -198,6 +202,10 @@ pub struct PerformanceConfig {
 
 fn default_backend() -> String {
     "local".into()
+}
+
+fn default_vector_backend() -> String {
+    "flat".into()
 }
 
 fn default_operator() -> String {

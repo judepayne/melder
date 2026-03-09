@@ -44,13 +44,16 @@ rayon = "1"
 parquet = { version = "54", optional = true, default-features = false, features = ["arrow", "snap"] }
 arrow = { version = "54", optional = true, default-features = false, features = ["prettyprint"] }
 
+# HNSW vector index (feature-flagged)
+usearch = { version = "2", optional = true }
+
 # Error handling
 anyhow = "1"
 thiserror = "2"
 
 [features]
-default = []
 parquet-format = ["dep:parquet", "dep:arrow"]
+usearch = ["dep:usearch"]
 
 [dev-dependencies]
 tempfile = "3"

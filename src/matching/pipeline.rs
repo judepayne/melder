@@ -8,16 +8,14 @@
 //! Both batch and live call `score_pool()` with the same arguments; the only
 //! difference is where the data comes from (MatchState vs LiveSideState).
 
-use std::collections::HashMap;
-
 use dashmap::DashMap;
 
 use crate::config::Config;
-use crate::index::VecIndex;
 use crate::matching::blocking::BlockingIndex;
 use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::scoring;
+use crate::vectordb::field_vectors::FieldVectors;
 
 /// Score a single query record against the opposite-side pool.
 ///
@@ -26,22 +24,22 @@ use crate::scoring;
 /// output mapping applied.
 ///
 /// Parameters:
-/// - `query_id`:     ID of the query record
-/// - `query_record`: the query record itself
-/// - `query_vec`:    the query record's embedding vector
-/// - `query_side`:   which side the query belongs to (A or B)
-/// - `pool_records`: opposite-side records (DashMap — works for both batch and live)
-/// - `pool_index`:   opposite-side VecIndex
-/// - `blocking_index`: optional BlockingIndex for the opposite side
-/// - `config`:       job config
-/// - `top_n`:        max results to return (0 = unlimited)
+/// - `query_id`:          ID of the query record
+/// - `query_record`:      the query record itself
+/// - `query_side`:        which side the query belongs to (A or B)
+/// - `pool_records`:      opposite-side records (DashMap)
+/// - `query_field_vecs`:  per-field embedding vectors for the query side
+/// - `pool_field_vecs`:   per-field embedding vectors for the pool (opposite) side
+/// - `blocking_index`:    optional BlockingIndex for the opposite side
+/// - `config`:            job config
+/// - `top_n`:             max results to return (0 = unlimited)
 pub fn score_pool(
     query_id: &str,
     query_record: &Record,
-    query_vec: &[f32],
     query_side: Side,
     pool_records: &DashMap<String, Record>,
-    pool_index: &VecIndex,
+    query_field_vecs: &FieldVectors,
+    pool_field_vecs: &FieldVectors,
     blocking_index: Option<&BlockingIndex>,
     config: &Config,
     top_n: usize,
@@ -64,11 +62,12 @@ pub fn score_pool(
 
     // --- Stage 2: Candidate selection ---
     let cands = candidates::select_candidates(
+        query_id,
         query_record,
-        query_vec,
         &candidate_ids,
         pool_records,
-        pool_index,
+        query_field_vecs,
+        pool_field_vecs,
         query_side,
         config,
     );
@@ -78,38 +77,18 @@ pub fn score_pool(
     }
 
     // --- Stage 3: Full scoring ---
-    // Pre-compute embedding field keys for score_pair precomputed_emb_scores.
-    let emb_keys: Vec<String> = config
-        .match_fields
-        .iter()
-        .filter(|mf| mf.method == "embedding")
-        .map(|mf| format!("{}/{}", mf.field_a, mf.field_b))
-        .collect();
-
     let mut results: Vec<MatchResult> = cands
         .iter()
         .map(|cand| {
-            // Build precomputed embedding scores
-            let emb_scores = if !emb_keys.is_empty() {
-                if let Some(sim) = cand.embedding_score {
-                    let mut map = HashMap::with_capacity(emb_keys.len());
-                    for key in &emb_keys {
-                        map.insert(key.clone(), sim);
-                    }
-                    Some(map)
-                } else {
-                    None
-                }
+            // Use per-field embedding scores from the candidate.
+            let emb_scores = if !cand.emb_scores.is_empty() {
+                Some(&cand.emb_scores)
             } else {
                 None
             };
 
-            let score_result = scoring::score_pair(
-                query_record,
-                &cand.record,
-                &config.match_fields,
-                emb_scores.as_ref(),
-            );
+            let score_result =
+                scoring::score_pair(query_record, &cand.record, &config.match_fields, emb_scores);
 
             scoring::build_match_result(
                 query_id,

@@ -19,6 +19,9 @@ const VALID_CANDIDATE_METHODS: &[&str] = &["exact", "fuzzy", "embedding"];
 /// Valid cross-map backends.
 const VALID_BACKENDS: &[&str] = &["local", "redis"];
 
+/// Valid vector storage backends.
+const VALID_VECTOR_BACKENDS: &[&str] = &["flat", "usearch"];
+
 /// Valid data formats.
 const VALID_FORMATS: &[&str] = &["csv", "parquet", "jsonl"];
 
@@ -324,6 +327,15 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
                 message: "must be >= 1".into(),
             });
         }
+    }
+
+    // 32. vector_backend
+    require_one_of(&cfg.vector_backend, VALID_VECTOR_BACKENDS, "vector_backend")?;
+    if cfg.vector_backend == "usearch" && !cfg!(feature = "usearch") {
+        return Err(ConfigError::InvalidValue {
+            field: "vector_backend".into(),
+            message: "usearch backend requires building with --features usearch".into(),
+        });
     }
 
     Ok(())
@@ -683,6 +695,84 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
             "got: {}",
             err
         );
+    }
+
+    #[test]
+    fn validation_invalid_vector_backend() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_index_cache: i }
+vector_backend: milvus
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("vector_backend"), "got: {}", err);
+    }
+
+    #[test]
+    fn validation_vector_backend_defaults_to_flat() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_index_cache: i }
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(cfg.vector_backend, "flat");
+    }
+
+    #[test]
+    fn validation_vector_backend_usearch_without_feature() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_index_cache: i }
+vector_backend: usearch
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        // Without the usearch feature compiled in, this should fail.
+        // With the usearch feature, this should pass.
+        if cfg!(feature = "usearch") {
+            validate(&cfg).unwrap();
+        } else {
+            let err = validate(&cfg).unwrap_err();
+            assert!(
+                err.to_string().contains("--features usearch"),
+                "got: {}",
+                err
+            );
+        }
     }
 
     #[test]

@@ -3,13 +3,15 @@
 //! The pipeline is: blocking filter → candidate selection → full scoring.
 //! This module implements the candidate selection stage.
 
+use std::collections::HashMap;
+
 use dashmap::DashMap;
 
 use crate::config::Config;
-use crate::index::VecIndex;
 use crate::models::{Record, Side};
+use crate::vectordb::field_vectors::FieldVectors;
 
-/// A candidate record from the opposite pool, with optional embedding score.
+/// A candidate record from the opposite pool, with per-field embedding scores.
 ///
 /// Owns a clone of the pool record. Since we only keep N candidates
 /// (default 10), the cloning cost is negligible.
@@ -17,30 +19,37 @@ use crate::models::{Record, Side};
 pub struct Candidate {
     pub id: String,
     pub record: Record,
-    pub embedding_score: Option<f64>,
+    /// Per-field embedding cosine similarities, keyed by "field_a/field_b".
+    /// Populated for all embedding match fields where both query and candidate
+    /// vectors are available.
+    pub emb_scores: HashMap<String, f64>,
 }
 
 /// Select top-N candidates from blocked records using the configured
 /// candidate scoring method.
 ///
 /// If candidates is disabled (`enabled: false`), returns all blocked records
-/// with embedding scores looked up from the indices.
+/// with per-field embedding scores computed from the field vectors.
 ///
 /// If candidates is enabled, scores each blocked record on the configured
 /// `field_a`/`field_b` using the configured `method` (fuzzy, embedding, exact),
 /// sorts descending, and returns the top `n`.
 ///
-/// Each returned candidate carries a precomputed embedding score (if both
-/// vectors are available in the indices) for use in the full scoring stage.
+/// Each returned candidate carries precomputed per-field embedding scores
+/// for use in the full scoring stage.
 pub fn select_candidates(
+    query_id: &str,
     query_record: &Record,
-    query_vec: &[f32],
     candidate_ids: &[String],
     pool_records: &DashMap<String, Record>,
-    pool_index: &VecIndex,
+    query_field_vecs: &FieldVectors,
+    pool_field_vecs: &FieldVectors,
     query_side: Side,
     config: &Config,
 ) -> Vec<Candidate> {
+    // Collect embedding field keys for per-field scoring.
+    let emb_keys: Vec<(String, String, String)> = crate::vectordb::embedding_field_keys(config);
+
     let has_config = config.candidates.field_a.is_some()
         || config.candidates.field_b.is_some()
         || config.candidates.method.is_some();
@@ -48,18 +57,22 @@ pub fn select_candidates(
 
     if !candidates_enabled {
         // No candidate filtering — pass all blocked records through.
-        // Look up embedding scores for each if vectors are available.
+        // Compute per-field embedding scores for each.
         return candidate_ids
             .iter()
             .filter_map(|cid| {
                 pool_records.get(cid).map(|entry| {
-                    let emb_score = pool_index.get(cid).map(|a_vec| {
-                        crate::scoring::embedding::cosine_similarity(query_vec, a_vec)
-                    });
+                    let emb_scores = compute_emb_scores(
+                        query_id,
+                        cid,
+                        &emb_keys,
+                        query_field_vecs,
+                        pool_field_vecs,
+                    );
                     Candidate {
                         id: cid.clone(),
                         record: entry.value().clone(),
-                        embedding_score: emb_score,
+                        emb_scores,
                     }
                 })
             })
@@ -92,6 +105,9 @@ pub fn select_candidates(
         Side::B => field_a,
     };
 
+    // Build the field_key for embedding candidate scoring if applicable.
+    let cand_emb_field_key = format!("{}/{}", field_a, field_b);
+
     // Score each candidate on the configured field pair.
     let mut scored: Vec<(String, Record, f64)> = candidate_ids
         .iter()
@@ -100,13 +116,15 @@ pub fn select_candidates(
                 let rec = entry.value();
                 let score = match method {
                     "embedding" => {
-                        // Use precomputed vectors from the index.
-                        pool_index
-                            .get(cid)
-                            .map(|a_vec| {
-                                crate::scoring::embedding::cosine_similarity(query_vec, a_vec)
-                            })
-                            .unwrap_or(0.0)
+                        // Use per-field vectors for embedding candidate scoring.
+                        let q_vec = query_field_vecs.get(query_id, &cand_emb_field_key);
+                        let c_vec = pool_field_vecs.get(cid, &cand_emb_field_key);
+                        match (q_vec, c_vec) {
+                            (Some(qv), Some(cv)) => {
+                                crate::scoring::embedding::cosine_similarity(&qv, &cv)
+                            }
+                            _ => 0.0,
+                        }
                     }
                     "fuzzy" => {
                         let pool_val = rec.get(pool_field).map(|s| s.as_str()).unwrap_or("");
@@ -127,18 +145,37 @@ pub fn select_candidates(
     scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(n);
 
-    // Build Candidate structs with embedding scores for full scoring.
+    // Build Candidate structs with per-field embedding scores for full scoring.
     scored
         .into_iter()
         .map(|(cid, rec, _)| {
-            let emb_score = pool_index
-                .get(&cid)
-                .map(|a_vec| crate::scoring::embedding::cosine_similarity(query_vec, a_vec));
+            let emb_scores =
+                compute_emb_scores(query_id, &cid, &emb_keys, query_field_vecs, pool_field_vecs);
             Candidate {
                 id: cid,
                 record: rec,
-                embedding_score: emb_score,
+                emb_scores,
             }
         })
         .collect()
+}
+
+/// Compute per-field embedding cosine similarities between query and candidate.
+fn compute_emb_scores(
+    query_id: &str,
+    cand_id: &str,
+    emb_keys: &[(String, String, String)],
+    query_fv: &FieldVectors,
+    pool_fv: &FieldVectors,
+) -> HashMap<String, f64> {
+    let mut scores = HashMap::with_capacity(emb_keys.len());
+    for (field_key, _field_a, _field_b) in emb_keys {
+        let q_vec = query_fv.get(query_id, field_key);
+        let c_vec = pool_fv.get(cand_id, field_key);
+        if let (Some(qv), Some(cv)) = (q_vec, c_vec) {
+            let sim = crate::scoring::embedding::cosine_similarity(&qv, &cv);
+            scores.insert(field_key.clone(), sim);
+        }
+    }
+    scores
 }

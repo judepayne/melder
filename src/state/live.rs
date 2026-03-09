@@ -1,7 +1,7 @@
 //! Live match state: concurrent data structures for the live HTTP server.
 //!
 //! Both A and B sides are fully symmetrical: each has a DashMap of records,
-//! a VecIndex, a BlockingIndex, and an unmatched set.
+//! per-field embedding vectors, a BlockingIndex, and an unmatched set.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,17 +15,17 @@ use crate::crossmap::CrossMap;
 use crate::data;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
-use crate::index::cache;
-use crate::index::VecIndex;
 use crate::matching::blocking::BlockingIndex;
 use crate::models::{Record, Side};
-use crate::state::state::primary_embedding_text;
+use crate::state::state::field_vecs_cache_path;
 use crate::state::upsert_log::{UpsertLog, WalEvent};
+use crate::vectordb;
+use crate::vectordb::field_vectors::FieldVectors;
 
-/// Per-side live state: records, index, blocking, unmatched set.
+/// Per-side live state: records, field vectors, blocking, unmatched set.
 pub struct LiveSideState {
     pub records: DashMap<String, Record>,
-    pub index: RwLock<VecIndex>,
+    pub field_vecs: FieldVectors,
     pub blocking_index: RwLock<BlockingIndex>,
     pub unmatched: DashSet<String>,
     /// Reverse index: common_id_value -> record_id. Only populated when
@@ -35,10 +35,9 @@ pub struct LiveSideState {
 
 impl std::fmt::Debug for LiveSideState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let idx_len = self.index.read().map(|i| i.len()).unwrap_or(0);
         f.debug_struct("LiveSideState")
             .field("records", &self.records.len())
-            .field("index_len", &idx_len)
+            .field("field_vecs_len", &self.field_vecs.len())
             .field("unmatched", &self.unmatched.len())
             .finish()
     }
@@ -74,8 +73,8 @@ impl LiveMatchState {
     /// 1. Init encoder pool
     /// 2. Load A dataset
     /// 3. Load B dataset
-    /// 4. Build/load A-side VecIndex + cache
-    /// 5. Build/load B-side VecIndex + cache
+    /// 4. Build/load A-side field vectors
+    /// 5. Build/load B-side field vectors
     /// 6. Build BlockingIndex for A
     /// 7. Build BlockingIndex for B
     /// 8. Load CrossMap
@@ -131,9 +130,10 @@ impl LiveMatchState {
             b_start.elapsed().as_secs_f64()
         );
 
-        // 4. Build/load A-side VecIndex
-        let index_a = build_or_load_index(
-            &config.embeddings.a_index_cache,
+        // 4. Build/load A-side field vectors
+        let a_fv_cache = field_vecs_cache_path(&config.embeddings.a_index_cache);
+        let field_vecs_a = vectordb::build_or_load_field_vectors(
+            Some(&a_fv_cache),
             &records_a_map,
             &ids_a,
             &config,
@@ -142,22 +142,21 @@ impl LiveMatchState {
             dim,
         )?;
 
-        // 5. Build/load B-side VecIndex
-        // If b_index_cache is configured, try to load from cache; otherwise
-        // build from scratch (always needed in memory for bidirectional search).
-        let index_b = if let Some(ref b_cache_path) = config.embeddings.b_index_cache {
-            build_or_load_index(
-                b_cache_path,
-                &records_b_map,
-                &ids_b,
-                &config,
-                false,
-                &encoder_pool,
-                dim,
-            )?
-        } else {
-            build_or_load_index_no_cache(&records_b_map, &ids_b, &config, &encoder_pool, dim)?
-        };
+        // 5. Build/load B-side field vectors
+        let b_fv_cache = config
+            .embeddings
+            .b_index_cache
+            .as_deref()
+            .map(field_vecs_cache_path);
+        let field_vecs_b = vectordb::build_or_load_field_vectors(
+            b_fv_cache.as_deref(),
+            &records_b_map,
+            &ids_b,
+            &config,
+            false,
+            &encoder_pool,
+            dim,
+        )?;
 
         // 6 & 7. Build BlockingIndex for A and B
         let bi_start = Instant::now();
@@ -229,48 +228,32 @@ impl LiveMatchState {
         let wal_events = UpsertLog::replay(Path::new(wal_path))
             .map_err(|e| MelderError::Other(anyhow::anyhow!("WAL replay failed: {}", e)))?;
 
+        let emb_fields = vectordb::embedding_field_keys(&config);
+
         let mut crossmap = crossmap;
         if !wal_events.is_empty() {
             eprintln!("Replaying {} WAL events...", wal_events.len());
             for event in &wal_events {
                 match event {
                     WalEvent::UpsertRecord { side, record } => {
-                        let (id_field, side_records, _side_blocking, _side_index) = match side {
-                            Side::A => (
-                                &config.datasets.a.id_field,
-                                &records_a,
-                                &blocking_a,
-                                &index_a,
-                            ),
-                            Side::B => (
-                                &config.datasets.b.id_field,
-                                &records_b,
-                                &blocking_b,
-                                &index_b,
-                            ),
+                        let (id_field, side_records, side_fv) = match side {
+                            Side::A => (&config.datasets.a.id_field, &records_a, &field_vecs_a),
+                            Side::B => (&config.datasets.b.id_field, &records_b, &field_vecs_b),
                         };
                         if let Some(id) = record.get(id_field) {
-                            // Remove old blocking entry if replacing
-                            if let Some(old_rec) = side_records.get(id) {
-                                // BlockingIndex::remove needs &mut but we can't
-                                // get it here since it's not behind RwLock yet.
-                                // We'll rebuild unmatched sets after replay.
-                                let _ = &old_rec;
-                            }
                             side_records.insert(id.clone(), record.clone());
 
-                            // Re-encode and update index
-                            let emb_text =
-                                primary_embedding_text(record, &config, *side == Side::A);
-                            if let Ok(vec) = encoder_pool.encode_one(&emb_text) {
-                                // VecIndex is not behind RwLock yet, but we own it
-                                // mutably during construction. We need to use
-                                // interior mutability... Actually during load we
-                                // still own these exclusively, so we can't call
-                                // upsert on a non-mut VecIndex. Let's defer this
-                                // and rebuild after WAL replay by noting we need to.
-                                // For now, just track that the record was updated.
-                                let _ = vec;
+                            // Re-encode per-field vectors
+                            let is_a = *side == Side::A;
+                            for (field_key, field_a_name, field_b_name) in &emb_fields {
+                                let field_name = if is_a { field_a_name } else { field_b_name };
+                                let text = record
+                                    .get(field_name)
+                                    .map(|v| v.trim().to_string())
+                                    .unwrap_or_default();
+                                if let Ok(vec) = encoder_pool.encode_one(&text) {
+                                    side_fv.insert(id, field_key, vec);
+                                }
                             }
                         }
                     }
@@ -286,6 +269,11 @@ impl LiveMatchState {
                             Side::B => &records_b,
                         };
                         side_records.remove(id);
+                        // Remove field vectors
+                        match side {
+                            Side::A => field_vecs_a.remove_record(id),
+                            Side::B => field_vecs_b.remove_record(id),
+                        }
                         // Break any crossmap pair involving this ID
                         match side {
                             Side::A => {
@@ -345,7 +333,7 @@ impl LiveMatchState {
 
         let a_side = LiveSideState {
             records: records_a,
-            index: RwLock::new(index_a),
+            field_vecs: field_vecs_a,
             blocking_index: RwLock::new(blocking_a),
             unmatched: unmatched_a,
             common_id_index: common_id_a,
@@ -353,7 +341,7 @@ impl LiveMatchState {
 
         let b_side = LiveSideState {
             records: records_b,
-            index: RwLock::new(index_b),
+            field_vecs: field_vecs_b,
             blocking_index: RwLock::new(blocking_b),
             unmatched: unmatched_b,
             common_id_index: common_id_b,
@@ -431,182 +419,22 @@ impl LiveMatchState {
         Ok(())
     }
 
-    /// Save index caches to disk (only for sides with a configured cache path).
-    pub fn save_index_caches(&self) -> Result<(), MelderError> {
-        // Always save A index cache
-        let idx_a = self
-            .a
-            .index
-            .read()
-            .map_err(|e| MelderError::Other(anyhow::anyhow!("index_a lock: {}", e)))?;
-        if let Err(e) = cache::save_index(Path::new(&self.config.embeddings.a_index_cache), &idx_a)
-        {
-            eprintln!("Warning: failed to save A index cache: {}", e);
+    /// Save field vector caches to disk (only for sides with a configured cache path).
+    pub fn save_field_vecs_caches(&self) -> Result<(), MelderError> {
+        // Always save A field vectors cache
+        let a_fv_cache = field_vecs_cache_path(&self.config.embeddings.a_index_cache);
+        if let Err(e) = self.a.field_vecs.save(Path::new(&a_fv_cache)) {
+            eprintln!("Warning: failed to save A field vectors cache: {}", e);
         }
 
-        // Only save B index cache if explicitly configured
+        // Only save B field vectors cache if explicitly configured
         if let Some(ref b_cache_path) = self.config.embeddings.b_index_cache {
-            let idx_b = self
-                .b
-                .index
-                .read()
-                .map_err(|e| MelderError::Other(anyhow::anyhow!("index_b lock: {}", e)))?;
-            if let Err(e) = cache::save_index(Path::new(b_cache_path), &idx_b) {
-                eprintln!("Warning: failed to save B index cache: {}", e);
+            let b_fv_cache = field_vecs_cache_path(b_cache_path);
+            if let Err(e) = self.b.field_vecs.save(Path::new(&b_fv_cache)) {
+                eprintln!("Warning: failed to save B field vectors cache: {}", e);
             }
         }
 
         Ok(())
     }
-}
-
-/// Build or load a VecIndex from cache. Same logic as state::build_or_load_index
-/// but returns owned VecIndex.
-fn build_or_load_index(
-    cache_path: &str,
-    records: &std::collections::HashMap<String, Record>,
-    ids: &[String],
-    config: &Config,
-    is_a_side: bool,
-    encoder_pool: &EncoderPool,
-    dim: usize,
-) -> Result<VecIndex, MelderError> {
-    let path = Path::new(cache_path);
-    let side = if is_a_side { "A" } else { "B" };
-
-    // Check cache
-    if !cache::is_cache_stale(path, records.len()) {
-        let load_start = Instant::now();
-        match cache::load_index(path) {
-            Ok(index) => {
-                eprintln!(
-                    "Loaded {} index from cache: {} vecs in {:.1}ms",
-                    side,
-                    index.len(),
-                    load_start.elapsed().as_secs_f64() * 1000.0
-                );
-                return Ok(index);
-            }
-            Err(e) => {
-                eprintln!("Warning: cache load failed ({}), rebuilding...", e);
-            }
-        }
-    }
-
-    // Build from scratch
-    eprintln!("Building {} index ({} records)...", side, records.len());
-    let build_start = Instant::now();
-
-    let mut index = VecIndex::new(dim);
-    let batch_size = 256;
-
-    for (batch_idx, chunk) in ids.chunks(batch_size).enumerate() {
-        let texts: Vec<String> = chunk
-            .iter()
-            .map(|id| {
-                let record = records
-                    .get(id)
-                    .expect("id from ids vec must exist in records");
-                primary_embedding_text(record, config, is_a_side)
-            })
-            .collect();
-
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let vecs = encoder_pool
-            .encode(&text_refs)
-            .map_err(MelderError::Encoder)?;
-
-        for (id, vec) in chunk.iter().zip(vecs.into_iter()) {
-            index.upsert(id, &vec);
-        }
-
-        let done = (batch_idx + 1) * batch_size;
-        if done % 1000 == 0 || done >= ids.len() {
-            eprintln!(
-                "  encoded {}/{} {} records...",
-                done.min(ids.len()),
-                ids.len(),
-                side
-            );
-        }
-    }
-
-    let build_elapsed = build_start.elapsed();
-    eprintln!(
-        "{} index built: {} vecs in {:.1}s ({:.0} records/sec)",
-        side,
-        index.len(),
-        build_elapsed.as_secs_f64(),
-        index.len() as f64 / build_elapsed.as_secs_f64()
-    );
-
-    // Save cache
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).ok();
-        }
-    }
-    if let Err(e) = cache::save_index(path, &index) {
-        eprintln!("Warning: failed to save {} index cache: {}", side, e);
-    } else {
-        eprintln!("Saved {} index cache to {}", side, cache_path);
-    }
-
-    Ok(index)
-}
-
-/// Build a VecIndex from scratch without any cache interaction.
-/// Used when no cache path is configured.
-fn build_or_load_index_no_cache(
-    records: &std::collections::HashMap<String, Record>,
-    ids: &[String],
-    config: &Config,
-    encoder_pool: &EncoderPool,
-    dim: usize,
-) -> Result<VecIndex, MelderError> {
-    eprintln!("Building B index ({} records)...", records.len());
-    let build_start = Instant::now();
-
-    let mut index = VecIndex::new(dim);
-    let batch_size = 256;
-
-    for (batch_idx, chunk) in ids.chunks(batch_size).enumerate() {
-        let texts: Vec<String> = chunk
-            .iter()
-            .map(|id| {
-                let record = records
-                    .get(id)
-                    .expect("id from ids vec must exist in records");
-                primary_embedding_text(record, config, false)
-            })
-            .collect();
-
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let vecs = encoder_pool
-            .encode(&text_refs)
-            .map_err(MelderError::Encoder)?;
-
-        for (id, vec) in chunk.iter().zip(vecs.into_iter()) {
-            index.upsert(id, &vec);
-        }
-
-        let done = (batch_idx + 1) * batch_size;
-        if done % 1000 == 0 || done >= ids.len() {
-            eprintln!(
-                "  encoded {}/{} B records...",
-                done.min(ids.len()),
-                ids.len()
-            );
-        }
-    }
-
-    let build_elapsed = build_start.elapsed();
-    eprintln!(
-        "B index built: {} vecs in {:.1}s ({:.0} records/sec)",
-        index.len(),
-        build_elapsed.as_secs_f64(),
-        index.len() as f64 / build_elapsed.as_secs_f64()
-    );
-
-    Ok(index)
 }

@@ -20,11 +20,12 @@ use crate::crossmap::CrossMap;
 use crate::data;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
-use crate::index::VecIndex;
 use crate::matching::blocking::BlockingIndex;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
-use crate::state::state::primary_embedding_text;
+use crate::state::state::field_vecs_cache_path;
+use crate::vectordb;
+use crate::vectordb::field_vectors::FieldVectors;
 
 /// Result of a batch matching run.
 pub struct BatchResult {
@@ -53,13 +54,13 @@ enum RecordOutcome {
 
 /// Run the batch matching engine.
 ///
-/// Loads B records from csv, processes each against the pre-built A index.
-/// If `b_index_cache` is configured, B embeddings are cached to disk so
+/// Loads B records from csv, processes each against the pre-built A-side data.
+/// If `b_index_cache` is configured, B field vectors are cached to disk so
 /// subsequent runs (e.g. with different thresholds) skip ONNX encoding.
 pub fn run_batch(
     config: &Config,
     records_a: &DashMap<String, Record>,
-    index_a: &VecIndex,
+    field_vecs_a: &FieldVectors,
     encoder_pool: &EncoderPool,
     crossmap: &mut CrossMap,
     limit: Option<usize>,
@@ -104,14 +105,20 @@ pub fn run_batch(
         b_ids.len()
     };
 
-    // Build or load B-side VecIndex (for embedding cache).
-    let b_index_cache_path = config.embeddings.b_index_cache.as_deref();
-    let index_b = build_or_load_b_index(
-        b_index_cache_path,
+    // Build or load B-side field vectors.
+    let b_fv_cache = config
+        .embeddings
+        .b_index_cache
+        .as_deref()
+        .map(field_vecs_cache_path);
+    let field_vecs_b = vectordb::build_or_load_field_vectors(
+        b_fv_cache.as_deref(),
         &b_records_map,
         &b_ids,
         config,
+        false,
         encoder_pool,
+        encoder_pool.dim(),
     )?;
 
     // Convert B records to DashMap for shared pipeline use
@@ -187,16 +194,13 @@ pub fn run_batch(
     let _ = common_id_matched; // used in summary stats
 
     // Partition: separate crossmapped (skip) from work items.
-    // Borrow vectors directly from index_b — no copying.
     let b_ids_slice = &b_ids[..total_b];
-    let mut work_items: Vec<(&str, &[f32])> = Vec::with_capacity(total_b);
+    let mut work_ids: Vec<&str> = Vec::with_capacity(total_b);
     for b_id in b_ids_slice {
         if crossmap.has_b(b_id) {
             skipped += 1;
         } else if b_records.contains_key(b_id) {
-            if let Some(vec) = index_b.get(b_id) {
-                work_items.push((b_id.as_str(), vec));
-            }
+            work_ids.push(b_id.as_str());
         }
     }
 
@@ -205,11 +209,11 @@ pub fn run_batch(
 
     // Score all B records in a single parallel pass.
     let progress = AtomicUsize::new(0);
-    let work_total = work_items.len();
+    let work_total = work_ids.len();
 
-    let outcomes: Vec<RecordOutcome> = work_items
+    let outcomes: Vec<RecordOutcome> = work_ids
         .par_iter()
-        .filter_map(|(b_id, b_vec)| {
+        .filter_map(|b_id| {
             let b_record = b_records.get(*b_id)?;
 
             // Progress reporting (atomic, lock-free)
@@ -241,10 +245,10 @@ pub fn run_batch(
             let results = pipeline::score_pool(
                 b_id,
                 b_record.value(),
-                b_vec,
                 Side::B,
                 records_a,
-                index_a,
+                &field_vecs_b,
+                field_vecs_a,
                 bi_ref,
                 config,
                 0, // no top_n limit in batch — we want the best result
@@ -315,101 +319,4 @@ pub fn run_batch(
         unmatched,
         stats,
     })
-}
-
-/// Build the B-side VecIndex: load from cache if fresh, otherwise encode
-/// all B records and optionally save the cache.
-fn build_or_load_b_index(
-    cache_path: Option<&str>,
-    b_records: &HashMap<String, Record>,
-    b_ids: &[String],
-    config: &Config,
-    encoder_pool: &EncoderPool,
-) -> Result<VecIndex, MelderError> {
-    use crate::index::cache;
-
-    let dim = encoder_pool.dim();
-
-    // Try loading from cache
-    if let Some(path_str) = cache_path {
-        let path = Path::new(path_str);
-        if !cache::is_cache_stale(path, b_records.len()) {
-            let load_start = Instant::now();
-            match cache::load_index(path) {
-                Ok(index) => {
-                    eprintln!(
-                        "Loaded B index from cache: {} vecs in {:.1}ms",
-                        index.len(),
-                        load_start.elapsed().as_secs_f64() * 1000.0
-                    );
-                    return Ok(index);
-                }
-                Err(e) => {
-                    eprintln!("Warning: B cache load failed ({}), rebuilding...", e);
-                }
-            }
-        }
-    }
-
-    // Build from scratch
-    eprintln!("Building B index ({} records)...", b_records.len());
-    let build_start = Instant::now();
-
-    let mut index = VecIndex::new(dim);
-    let batch_size = 256;
-
-    for (batch_idx, chunk) in b_ids.chunks(batch_size).enumerate() {
-        let texts: Vec<String> = chunk
-            .iter()
-            .map(|id| {
-                let record = b_records
-                    .get(id)
-                    .expect("id from b_ids must exist in b_records");
-                primary_embedding_text(record, config, false)
-            })
-            .collect();
-
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let vecs = encoder_pool
-            .encode(&text_refs)
-            .map_err(MelderError::Encoder)?;
-
-        for (id, vec) in chunk.iter().zip(vecs.into_iter()) {
-            index.upsert(id, &vec);
-        }
-
-        let done = (batch_idx + 1) * batch_size;
-        if done % 1000 == 0 || done >= b_ids.len() {
-            eprintln!(
-                "  encoded {}/{} B records...",
-                done.min(b_ids.len()),
-                b_ids.len()
-            );
-        }
-    }
-
-    let build_elapsed = build_start.elapsed();
-    eprintln!(
-        "B index built: {} vecs in {:.1}s ({:.0} records/sec)",
-        index.len(),
-        build_elapsed.as_secs_f64(),
-        index.len() as f64 / build_elapsed.as_secs_f64()
-    );
-
-    // Save cache if path configured
-    if let Some(path_str) = cache_path {
-        let path = Path::new(path_str);
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent).ok();
-            }
-        }
-        if let Err(e) = cache::save_index(path, &index) {
-            eprintln!("Warning: failed to save B index cache: {}", e);
-        } else {
-            eprintln!("Saved B index cache to {}", path_str);
-        }
-    }
-
-    Ok(index)
 }
