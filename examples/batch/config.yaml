@@ -18,8 +18,8 @@ cross_map:
 
 embeddings:
   model: all-MiniLM-L6-v2
-  a_index_cache: examples/batch/cache/a.index
-  b_index_cache: examples/batch/cache/b.index
+  a_cache_dir: examples/batch/cache
+  b_cache_dir: examples/batch/cache
 
 blocking:
   enabled: true

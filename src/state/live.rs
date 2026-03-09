@@ -17,7 +17,6 @@ use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::matching::blocking::BlockingIndex;
 use crate::models::{Record, Side};
-use crate::state::state::field_index_cache_base;
 use crate::state::upsert_log::{UpsertLog, WalEvent};
 use crate::vectordb;
 use crate::vectordb::field_indexes::FieldIndexes;
@@ -131,10 +130,9 @@ impl LiveMatchState {
         );
 
         // 4. Build/load A-side field indexes
-        let a_cache_base = field_index_cache_base(&config.embeddings.a_index_cache);
         let field_indexes_a = vectordb::build_or_load_field_indexes(
             &config.vector_backend,
-            Some(&a_cache_base),
+            Some(&config.embeddings.a_cache_dir),
             &records_a_map,
             &ids_a,
             &config,
@@ -144,14 +142,9 @@ impl LiveMatchState {
         )?;
 
         // 5. Build/load B-side field indexes
-        let b_cache_base = config
-            .embeddings
-            .b_index_cache
-            .as_deref()
-            .map(field_index_cache_base);
         let field_indexes_b = vectordb::build_or_load_field_indexes(
             &config.vector_backend,
-            b_cache_base.as_deref(),
+            config.embeddings.b_cache_dir.as_deref(),
             &records_b_map,
             &ids_b,
             &config,
@@ -421,18 +414,20 @@ impl LiveMatchState {
         Ok(())
     }
 
-    /// Save field index caches to disk (only for sides with a configured cache path).
+    /// Save field index caches to disk (only for sides with a configured cache dir).
     pub fn save_field_index_caches(&self) -> Result<(), MelderError> {
         // Always save A field index caches
-        let a_cache_base = field_index_cache_base(&self.config.embeddings.a_index_cache);
-        if let Err(e) = self.a.field_indexes.save_all(&a_cache_base) {
+        if let Err(e) = self
+            .a
+            .field_indexes
+            .save_all(&self.config.embeddings.a_cache_dir, "a")
+        {
             eprintln!("Warning: failed to save A field index caches: {}", e);
         }
 
         // Only save B field index caches if explicitly configured
-        if let Some(ref b_cache_path) = self.config.embeddings.b_index_cache {
-            let b_cache_base = field_index_cache_base(b_cache_path);
-            if let Err(e) = self.b.field_indexes.save_all(&b_cache_base) {
+        if let Some(ref b_dir) = self.config.embeddings.b_cache_dir {
+            if let Err(e) = self.b.field_indexes.save_all(b_dir, "b") {
                 eprintln!("Warning: failed to save B field index caches: {}", e);
             }
         }

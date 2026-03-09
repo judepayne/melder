@@ -762,7 +762,7 @@ fn cmd_cache_build(config_path: &Path) {
         }
     };
 
-    let load_b = cfg.embeddings.b_index_cache.is_some();
+    let load_b = cfg.embeddings.b_cache_dir.is_some();
     let opts = melder::state::LoadOptions {
         load_b,
         batch_mode: false,
@@ -785,9 +785,9 @@ fn cmd_cache_build(config_path: &Path) {
                     state.field_indexes_b.as_ref().map(|fi| fi.len()).unwrap_or(0)
                 );
             }
-            println!("  A cache: {}", state.config.embeddings.a_index_cache);
-            if let Some(ref b_cache) = state.config.embeddings.b_index_cache {
-                println!("  B index cache: {}", b_cache);
+            println!("  A cache dir: {}", state.config.embeddings.a_cache_dir);
+            if let Some(ref b_dir) = state.config.embeddings.b_cache_dir {
+                println!("  B cache dir: {}", b_dir);
             }
             println!("  Total time: {:.1}s", elapsed.as_secs_f64());
         }
@@ -807,52 +807,57 @@ fn cmd_cache_status(config_path: &Path) {
         }
     };
 
-    // Check A-side cache
-    print_cache_status("A index", &cfg.embeddings.a_index_cache);
+    // Check A-side cache dir
+    print_cache_dir_status("A cache", &cfg.embeddings.a_cache_dir);
 
-    // Check B-side cache
-    if let Some(ref b_cache) = cfg.embeddings.b_index_cache {
-        print_cache_status("B index", b_cache);
+    // Check B-side cache dir
+    if let Some(ref b_dir) = cfg.embeddings.b_cache_dir {
+        print_cache_dir_status("B cache", b_dir);
+    } else {
+        println!("  {:<16} {}", "B cache", "not configured");
     }
 }
 
-fn print_cache_status(label: &str, path: &str) {
-    let p = Path::new(path);
-    if p.exists() {
-        let meta = std::fs::metadata(p);
-        let size = meta.map(|m| m.len()).unwrap_or(0);
-        let size_str = if size > 1_048_576 {
-            format!("{:.1} MB", size as f64 / 1_048_576.0)
-        } else if size > 1024 {
-            format!("{:.1} KB", size as f64 / 1024.0)
-        } else {
-            format!("{} bytes", size)
-        };
-
-        // Try to read header for record count
-        let count = if path.ends_with(".index") {
-            match std::fs::File::open(p) {
-                Ok(mut f) => {
-                    let mut buf = [0u8; 4];
-                    if std::io::Read::read_exact(&mut f, &mut buf).is_ok() {
-                        Some(u32::from_le_bytes(buf) as usize)
-                    } else {
-                        None
+fn print_cache_dir_status(label: &str, dir: &str) {
+    let p = Path::new(dir);
+    if p.exists() && p.is_dir() {
+        // Count .index files and .usearchdb directories
+        let mut file_count = 0usize;
+        let mut total_size = 0u64;
+        if let Ok(entries) = std::fs::read_dir(p) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "index").unwrap_or(false)
+                    || path.extension().map(|e| e == "usearchdb").unwrap_or(false)
+                {
+                    file_count += 1;
+                    if path.is_file() {
+                        total_size += std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    } else if path.is_dir() {
+                        // Sum up directory contents
+                        if let Ok(sub) = std::fs::read_dir(&path) {
+                            for se in sub.flatten() {
+                                total_size +=
+                                    std::fs::metadata(se.path()).map(|m| m.len()).unwrap_or(0);
+                            }
+                        }
                     }
                 }
-                Err(_) => None,
             }
-        } else {
-            None
-        };
-
-        if let Some(n) = count {
-            println!("  {:<16} {} ({}, {} records)", label, "fresh", size_str, n);
-        } else {
-            println!("  {:<16} {} ({})", label, "exists", size_str);
         }
+        let size_str = if total_size > 1_048_576 {
+            format!("{:.1} MB", total_size as f64 / 1_048_576.0)
+        } else if total_size > 1024 {
+            format!("{:.1} KB", total_size as f64 / 1024.0)
+        } else {
+            format!("{} bytes", total_size)
+        };
+        println!(
+            "  {:<16} {} ({} index files, {})",
+            label, dir, file_count, size_str
+        );
     } else {
-        println!("  {:<16} {}", label, "missing");
+        println!("  {:<16} {} (empty)", label, dir);
     }
 }
 
@@ -868,10 +873,10 @@ fn cmd_cache_clear(config_path: &Path, index_only: bool) {
     let _ = index_only; // no longer meaningful — kept for CLI compat
     let mut deleted = Vec::new();
 
-    // Delete index cache files
-    delete_if_exists(&cfg.embeddings.a_index_cache, &mut deleted);
-    if let Some(ref b_cache) = cfg.embeddings.b_index_cache {
-        delete_if_exists(b_cache, &mut deleted);
+    // Clear cache directories
+    clear_cache_dir(&cfg.embeddings.a_cache_dir, &mut deleted);
+    if let Some(ref b_dir) = cfg.embeddings.b_cache_dir {
+        clear_cache_dir(b_dir, &mut deleted);
     }
 
     if deleted.is_empty() {
@@ -1362,13 +1367,33 @@ fn cmd_crossmap_import(config_path: &Path, import_path: &Path) {
     );
 }
 
-fn delete_if_exists(path: &str, deleted: &mut Vec<String>) {
-    let p = Path::new(path);
-    if p.exists() {
-        if let Err(e) = std::fs::remove_file(p) {
-            eprintln!("  warning: failed to delete {}: {}", path, e);
-        } else {
-            deleted.push(path.to_string());
+fn clear_cache_dir(dir: &str, deleted: &mut Vec<String>) {
+    let p = Path::new(dir);
+    if !p.exists() || !p.is_dir() {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(p) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_cache = path.extension().map(|e| e == "index").unwrap_or(false)
+                || path.extension().map(|e| e == "usearchdb").unwrap_or(false);
+            if !is_cache {
+                continue;
+            }
+            let path_str = path.to_string_lossy().to_string();
+            if path.is_dir() {
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    eprintln!("  warning: failed to delete {}: {}", path_str, e);
+                } else {
+                    deleted.push(path_str);
+                }
+            } else {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    eprintln!("  warning: failed to delete {}: {}", path_str, e);
+                } else {
+                    deleted.push(path_str);
+                }
+            }
         }
     }
 }

@@ -58,16 +58,6 @@ fn into_dashmap(map: HashMap<String, Record>) -> DashMap<String, Record> {
     dm
 }
 
-/// Derive a field index cache base path from an index cache path.
-///
-/// Strips the extension to produce a base path that `FieldIndexes::save_all()`
-/// will append field-specific suffixes to. For example:
-/// `cache/a_10000.index` → `cache/a_10000`
-pub fn field_index_cache_base(index_cache_path: &str) -> String {
-    let p = Path::new(index_cache_path);
-    p.with_extension("").to_string_lossy().to_string()
-}
-
 /// Load the full match state: datasets, caches, encoder pool.
 pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, MelderError> {
     let start = Instant::now();
@@ -103,10 +93,9 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
     );
 
     // 3. Build/load A-side field indexes
-    let a_cache_base = field_index_cache_base(&config.embeddings.a_index_cache);
     let field_indexes_a = vectordb::build_or_load_field_indexes(
         &config.vector_backend,
-        Some(&a_cache_base),
+        Some(&config.embeddings.a_cache_dir),
         &records_a,
         &ids_a,
         &config,
@@ -132,14 +121,9 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         );
 
         // Build/load B-side field indexes
-        let b_cache_base = config
-            .embeddings
-            .b_index_cache
-            .as_deref()
-            .map(field_index_cache_base);
         let fi = vectordb::build_or_load_field_indexes(
             &config.vector_backend,
-            b_cache_base.as_deref(),
+            config.embeddings.b_cache_dir.as_deref(),
             &recs,
             &ids,
             &config,

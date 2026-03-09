@@ -1,7 +1,7 @@
 # bench/bench_live.yaml
 # Live-mode config for stress testing and development.
 # Mirrors bench10000x10000.yaml but adds the `live` section and
-# b_index_cache for symmetric B-side index support.
+# b_cache_dir for symmetric B-side index support.
 
 job:
   name: bench_live_10000x10000
@@ -25,8 +25,8 @@ cross_map:
 
 embeddings:
   model: all-MiniLM-L6-v2
-  a_index_cache: bench/cache/a_10000.index
-  b_index_cache: bench/cache/b_10000.index
+  a_cache_dir: bench/cache
+  b_cache_dir: bench/cache
 
 blocking:
   enabled: true

@@ -568,10 +568,6 @@ impl VectorDB for UsearchVectorDB {
             .map_err(|e| VectorDBError::Serialization(e.to_string()))?;
         std::fs::write(&manifest_path, json)?;
 
-        // Write a small marker at the original path so callers can check
-        // existence without knowing the backend's directory layout.
-        std::fs::write(path, b"usearchdb")?;
-
         Ok(())
     }
 

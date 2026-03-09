@@ -23,7 +23,8 @@ cross_map:
 
 embeddings:
   model: all-MiniLM-L6-v2
-  a_index_cache: bench/cache/a.index
+  a_cache_dir: bench/cache
+  b_cache_dir: bench/cache
 
 blocking:
   enabled: true
@@ -48,8 +49,7 @@ match_fields:
 
   - field_a: short_name
     field_b: counterparty_name
-    method: fuzzy
-    scorer: partial_ratio
+    method: embedding
     weight: 0.20
 
   - field_a: country_code

@@ -113,31 +113,29 @@ impl FieldIndexes {
 
     /// Save all field indexes to disk.
     ///
-    /// Each field index is saved to a path derived from `base_path` with
-    /// the field_key appended (slash replaced with `__` for filesystem
-    /// safety). For example, base_path `cache/a_10000` and field_key
-    /// `name_a/name_b` saves to `cache/a_10000.name_a__name_b.index`.
-    pub fn save_all(&self, base_path: &str) -> Result<(), VectorDBError> {
+    /// `cache_dir` is the directory, `side_prefix` is `"a"` or `"b"`.
+    /// Each field index is saved to a path like
+    /// `cache_dir/a.legal_name__counterparty_name.index`.
+    pub fn save_all(&self, cache_dir: &str, side_prefix: &str) -> Result<(), VectorDBError> {
+        let dir = Path::new(cache_dir);
+        if !dir.exists() {
+            std::fs::create_dir_all(dir).ok();
+        }
         for (field_key, index) in &self.indexes {
-            let path = field_cache_path(base_path, field_key);
-            if let Some(parent) = Path::new(&path).parent() {
-                if !parent.exists() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-            }
+            let path = field_cache_path(cache_dir, side_prefix, field_key);
             index.save(Path::new(&path))?;
         }
         Ok(())
     }
 }
 
-/// Derive a per-field cache path from a base path and field key.
+/// Derive a per-field cache path from a directory, side prefix, and field key.
 ///
 /// Replaces `/` in field_key with `__` for filesystem safety.
-/// Example: `("cache/a_10000", "name_a/name_b")` → `"cache/a_10000.name_a__name_b.index"`
-pub fn field_cache_path(base_path: &str, field_key: &str) -> String {
+/// Example: `("bench/cache", "a", "name_a/name_b")` → `"bench/cache/a.name_a__name_b.index"`
+pub fn field_cache_path(cache_dir: &str, side_prefix: &str, field_key: &str) -> String {
     let safe_key = field_key.replace('/', "__");
-    format!("{}.{}.index", base_path, safe_key)
+    format!("{}/{}.{}.index", cache_dir, side_prefix, safe_key)
 }
 
 #[cfg(test)]
@@ -210,16 +208,15 @@ mod tests {
     #[test]
     fn field_cache_path_replaces_slash() {
         assert_eq!(
-            field_cache_path("cache/a_10000", "name_a/name_b"),
-            "cache/a_10000.name_a__name_b.index"
+            field_cache_path("bench/cache", "a", "name_a/name_b"),
+            "bench/cache/a.name_a__name_b.index"
         );
     }
 
     #[test]
     fn save_and_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().join("test_base");
-        let base_str = base.to_str().unwrap();
+        let dir_str = dir.path().to_str().unwrap();
 
         let dim = 4;
         let mut fi = FieldIndexes::new(dim);
@@ -231,10 +228,10 @@ mod tests {
         fi.upsert("r2", "f_a/f_b", &[0.0, 1.0, 0.0, 0.0], &record, Side::A)
             .unwrap();
 
-        fi.save_all(base_str).unwrap();
+        fi.save_all(dir_str, "a").unwrap();
 
         // Load back
-        let path = field_cache_path(base_str, "f_a/f_b");
+        let path = field_cache_path(dir_str, "a", "f_a/f_b");
         let loaded = FlatVectorDB::load(std::path::Path::new(&path)).unwrap();
         assert_eq!(loaded.len(), 2);
 

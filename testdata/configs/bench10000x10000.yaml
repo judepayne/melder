@@ -23,8 +23,8 @@ cross_map:
 
 embeddings:
   model: all-MiniLM-L6-v2
-  a_index_cache: bench/cache/a_10000.index
-  b_index_cache: bench/cache/b_10000.index
+  a_cache_dir: bench/cache
+  b_cache_dir: bench/cache
 
 blocking:
   enabled: true

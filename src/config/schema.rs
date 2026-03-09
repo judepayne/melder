@@ -91,12 +91,13 @@ pub struct CrossMapConfig {
 pub struct EmbeddingsConfig {
     /// HuggingFace model name or local ONNX path.
     pub model: String,
-    /// A-side vector index binary cache path (.index file).
-    pub a_index_cache: String,
-    /// B-side vector index binary cache path (.index file). Optional — only
-    /// needed for live mode where both sides have a vector index.
+    /// Directory for A-side per-field vector index caches. Created
+    /// automatically on first run; loaded on subsequent runs to skip encoding.
+    pub a_cache_dir: String,
+    /// Directory for B-side per-field vector index caches. Optional — omit
+    /// to skip B-side caching (vectors rebuilt from scratch each run).
     #[serde(default)]
-    pub b_index_cache: Option<String>,
+    pub b_cache_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

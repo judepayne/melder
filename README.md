@@ -89,19 +89,15 @@ datasets:
 # Used by any match field with method: embedding. The model is downloaded
 # automatically on first run.
 #
-# a_index_cache (required): path for the A-side vector index cache. Created
-# automatically on first run; loaded on subsequent runs to skip encoding.
+# a_cache_dir (required): directory for A-side per-field vector index caches.
+# Created automatically on first run; loaded on subsequent runs to skip encoding.
 #
-# b_index_cache (optional): path for the B-side vector index cache. When set,
-# B-side embeddings are cached to disk after the first encoding. This makes
-# subsequent batch runs much faster (e.g. when tuning thresholds or weights
-# on the same data). In live mode, the B index is also saved on shutdown
-# and loaded on startup. If omitted, B vectors are encoded from scratch
-# every time.
+# b_cache_dir (optional): directory for B-side caches. Omit to skip B-side
+# caching (vectors rebuilt from scratch each run).
 embeddings:
   model: all-MiniLM-L6-v2
-  a_index_cache: cache/a.index
-  b_index_cache: cache/b.index
+  a_cache_dir: cache
+  b_cache_dir: cache              # optional — omit to skip B-side caching
 
 # For each record being matched, the Melder matching pipeline has three
 # phases in both batch and live modes:
@@ -1080,27 +1076,27 @@ in a compact binary format (the `.index` files).
 ```yaml
 embeddings:
   model: all-MiniLM-L6-v2
-  a_index_cache: cache/a.index       # required
-  b_index_cache: cache/b.index       # optional
+  a_cache_dir: cache                 # required
+  b_cache_dir: cache                 # optional — omit to skip B-side caching
 ```
 
-`a_index_cache` is required — the A-side vectors are always cached. On
-first run the file is created automatically (if not present); on subsequent
-runs it is loaded in milliseconds.
+`a_cache_dir` is required — the A-side per-field vector indexes are always
+cached. On first run the directory is populated automatically; on subsequent
+runs indexes are loaded in milliseconds.
 
-`b_index_cache` is optional. When set, B-side vectors are also cached to
+`b_cache_dir` is optional. When set, B-side indexes are also cached to
 disk. When omitted, B vectors are encoded from scratch every run.
 
 ### Batch mode lifecycle
 
 ```
 First run:
-  A vectors: encode (slow) → save to a_index_cache
-  B vectors: encode (slow) → save to b_index_cache (if a path is configured)
+  A vectors: encode (slow) → save to a_cache_dir
+  B vectors: encode (slow) → save to b_cache_dir (if configured)
 
 Subsequent runs (same data):
-  A vectors: load from a_index_cache (~5ms)
-  B vectors: load from b_index_cache (~5ms) OR re-encode if not configured
+  A vectors: load from a_cache_dir (~5ms)
+  B vectors: load from b_cache_dir (~5ms) OR re-encode if not configured
 
 Scoring:
   For each B record, run the 3-stage pipeline (blocking → candidates → full
@@ -1108,7 +1104,7 @@ Scoring:
   match fields — no re-encoding needed.
 ```
 
-Setting `b_index_cache` is particularly valuable when tuning thresholds or
+Setting `b_cache_dir` is particularly valuable when tuning thresholds or
 weights across multiple runs on the same data. Without it, every run
 re-encodes all B records through the neural network. With it, a 14-second
 run drops to under 6 seconds.
@@ -1117,8 +1113,8 @@ run drops to under 6 seconds.
 
 ```
 Startup:
-  A vectors: load from a_index_cache (or encode + save if stale)
-  B vectors: load from b_index_cache (or encode; only saved if a path is configured)
+  A vectors: load from a_cache_dir (or encode + save if stale)
+  B vectors: load from b_cache_dir (or encode; only saved if configured)
   Both indices live in memory behind RwLock for concurrent access.
 
 During operation:
@@ -1126,13 +1122,13 @@ During operation:
   in-memory index. The vector is available immediately for matching.
 
 Shutdown:
-  A vectors: saved to a_index_cache
-  B vectors: saved to b_index_cache (if a path is configured)
+  A vectors: saved to a_cache_dir
+  B vectors: saved to b_cache_dir (if configured)
 ```
 
 In live mode both sides always have an in-memory vector index (required
-for bidirectional matching). The cache files only control whether the
-index is persisted to disk between restarts.
+for bidirectional matching). The cache directories only control whether
+indexes are persisted to disk between restarts.
 
 ### Staleness
 

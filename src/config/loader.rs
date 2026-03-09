@@ -157,7 +157,7 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
 
     // 11-12. embeddings
     require_non_empty(&cfg.embeddings.model, "embeddings.model")?;
-    require_non_empty(&cfg.embeddings.a_index_cache, "embeddings.a_index_cache")?;
+    require_non_empty(&cfg.embeddings.a_cache_dir, "embeddings.a_cache_dir")?;
 
     // 14a. common_id_field: if set on one side, must be set on both
     let a_common = cfg.datasets.a.common_id_field.as_deref().unwrap_or("");
@@ -556,7 +556,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
@@ -578,7 +578,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: magic, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
@@ -604,7 +604,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: s3, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
@@ -630,7 +630,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 0.5 }
   - { field_a: g, field_b: g, method: fuzzy, weight: 0.45 }
@@ -653,7 +653,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.50, review_floor: 0.80 }
@@ -675,7 +675,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 blocking:
   enabled: true
   operator: xor
@@ -706,7 +706,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 vector_backend: milvus
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
@@ -729,7 +729,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
@@ -751,7 +751,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 vector_backend: usearch
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
@@ -784,7 +784,7 @@ datasets:
   a: { path: "a.csv", id_field: id }
   b: { path: "b.csv", id_field: id }
 cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
-embeddings: { model: m, a_index_cache: i }
+embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: fuzzy, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }

@@ -203,9 +203,12 @@ pub fn is_index_stale(
 /// Collect the embedding field keys from config.
 ///
 /// Returns a vec of `(field_key, field_a_name, field_b_name)` for each
-/// match field with `method: "embedding"`. Field key is `"field_a/field_b"`.
+/// embedding field pair. Includes both match fields with `method: "embedding"`
+/// and the candidates field pair when `candidates.method == "embedding"`.
+/// Field key is `"field_a/field_b"`. Duplicates are suppressed (if candidates
+/// uses the same pair as a match field, it appears only once).
 pub fn embedding_field_keys(config: &Config) -> Vec<(String, String, String)> {
-    config
+    let mut result: Vec<(String, String, String)> = config
         .match_fields
         .iter()
         .filter(|mf| mf.method == "embedding")
@@ -213,7 +216,29 @@ pub fn embedding_field_keys(config: &Config) -> Vec<(String, String, String)> {
             let key = format!("{}/{}", mf.field_a, mf.field_b);
             (key, mf.field_a.clone(), mf.field_b.clone())
         })
-        .collect()
+        .collect();
+
+    // Include candidates field pair if method is embedding.
+    let cand = &config.candidates;
+    let cand_enabled = cand
+        .enabled
+        .unwrap_or(cand.field_a.is_some() || cand.field_b.is_some() || cand.method.is_some());
+    if cand_enabled {
+        if let (Some(method), Some(fa), Some(fb)) = (
+            cand.method.as_deref(),
+            cand.field_a.as_deref(),
+            cand.field_b.as_deref(),
+        ) {
+            if method == "embedding" {
+                let key = format!("{}/{}", fa, fb);
+                if !result.iter().any(|(k, _, _)| k == &key) {
+                    result.push((key, fa.to_string(), fb.to_string()));
+                }
+            }
+        }
+    }
+
+    result
 }
 
 /// Build or load per-field vector indexes for one side.
@@ -223,11 +248,11 @@ pub fn embedding_field_keys(config: &Config) -> Vec<(String, String, String)> {
 /// vectors into it. Each per-field index handles its own block routing
 /// (usearch) or stores all vectors flat.
 ///
-/// `cache_base`: if `Some`, attempts to load from / save to per-field
-/// cache paths derived from this base. If `None`, builds without caching.
+/// `cache_dir`: if `Some`, attempts to load from / save to per-field
+/// cache paths in this directory. If `None`, builds without caching.
 pub fn build_or_load_field_indexes(
     backend: &str,
-    cache_base: Option<&str>,
+    cache_dir: Option<&str>,
     records: &HashMap<String, Record>,
     ids: &[String],
     config: &Config,
@@ -241,6 +266,7 @@ pub fn build_or_load_field_indexes(
     }
 
     let side = if is_a_side { "A" } else { "B" };
+    let side_prefix = if is_a_side { "a" } else { "b" };
     let side_enum = if is_a_side { Side::A } else { Side::B };
     let blocking_config = if config.blocking.enabled {
         Some(&config.blocking)
@@ -258,8 +284,8 @@ pub fn build_or_load_field_indexes(
         };
 
         // Try loading from cache
-        if let Some(base) = cache_base {
-            let cache_path = field_indexes::field_cache_path(base, field_key);
+        if let Some(dir) = cache_dir {
+            let cache_path = field_indexes::field_cache_path(dir, side_prefix, field_key);
             let path = Path::new(&cache_path);
             if !is_index_stale(backend, path, ids.len()).unwrap_or(true) {
                 let load_start = Instant::now();
@@ -346,8 +372,8 @@ pub fn build_or_load_field_indexes(
         );
 
         // Save to cache
-        if let Some(base) = cache_base {
-            let cache_path = field_indexes::field_cache_path(base, field_key);
+        if let Some(dir) = cache_dir {
+            let cache_path = field_indexes::field_cache_path(dir, side_prefix, field_key);
             let path = Path::new(&cache_path);
             if let Some(parent) = path.parent() {
                 if !parent.exists() {

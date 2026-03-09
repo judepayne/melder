@@ -23,7 +23,6 @@ use crate::error::MelderError;
 use crate::matching::blocking::BlockingIndex;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
-use crate::state::state::field_index_cache_base;
 use crate::vectordb;
 use crate::vectordb::field_indexes::FieldIndexes;
 
@@ -55,7 +54,7 @@ enum RecordOutcome {
 /// Run the batch matching engine.
 ///
 /// Loads B records from csv, processes each against the pre-built A-side data.
-/// If `b_index_cache` is configured, B field vectors are cached to disk so
+/// If `b_cache_dir` is configured, B field vectors are cached to disk so
 /// subsequent runs (e.g. with different thresholds) skip ONNX encoding.
 pub fn run_batch(
     config: &Config,
@@ -106,14 +105,9 @@ pub fn run_batch(
     };
 
     // Build or load B-side field indexes.
-    let b_cache_base = config
-        .embeddings
-        .b_index_cache
-        .as_deref()
-        .map(field_index_cache_base);
     let field_indexes_b = vectordb::build_or_load_field_indexes(
         &config.vector_backend,
-        b_cache_base.as_deref(),
+        config.embeddings.b_cache_dir.as_deref(),
         &b_records_map,
         &b_ids,
         config,
