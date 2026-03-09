@@ -17,7 +17,7 @@ const VALID_SCORERS: &[&str] = &["wratio", "partial_ratio", "token_sort", "ratio
 const VALID_CANDIDATE_METHODS: &[&str] = &["exact", "fuzzy", "embedding"];
 
 /// Valid cross-map backends.
-const VALID_BACKENDS: &[&str] = &["local", "redis"];
+const VALID_BACKENDS: &[&str] = &["local"];
 
 /// Valid vector storage backends.
 const VALID_VECTOR_BACKENDS: &[&str] = &["flat", "usearch"];
@@ -138,15 +138,6 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         if cfg.cross_map.path.as_deref().unwrap_or("").is_empty() {
             return Err(ConfigError::MissingField {
                 field: "cross_map.path".into(),
-            });
-        }
-    }
-
-    // 8. cross_map.redis_url required if redis
-    if cfg.cross_map.backend == "redis" {
-        if cfg.cross_map.redis_url.as_deref().unwrap_or("").is_empty() {
-            return Err(ConfigError::MissingField {
-                field: "cross_map.redis_url".into(),
             });
         }
     }
@@ -494,8 +485,8 @@ mod tests {
 
     #[test]
     fn load_counterparty_recon_with_sidecar() {
+        // sidecar section in YAML is silently ignored
         let cfg = load_config(Path::new("testdata/configs/counterparty_recon.yaml")).unwrap();
-        assert!(cfg.sidecar.is_some());
         assert_eq!(cfg.output_mapping.len(), 4);
         assert_eq!(cfg.performance.workers, Some(4));
         assert_eq!(cfg.performance.encoder_pool_size, Some(2));

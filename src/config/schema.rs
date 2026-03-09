@@ -32,9 +32,6 @@ pub struct Config {
     /// Deprecated: use `performance.workers` instead. Kept for backward compat.
     #[serde(default)]
     pub workers: Option<u32>,
-    /// Accept and ignore the Go sidecar section for backward compatibility.
-    #[serde(default)]
-    pub sidecar: Option<serde_yaml::Value>,
 
     // Derived at load time (not in YAML). Populated by `compute_required_fields`.
     #[serde(skip)]
@@ -75,14 +72,12 @@ pub struct DatasetConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct CrossMapConfig {
-    /// "local" | "redis". Defaults to "local".
+    /// "local" (only supported backend). Defaults to "local".
     #[serde(default = "default_backend")]
     pub backend: String,
     /// Path for local backend.
     #[serde(default)]
     pub path: Option<String>,
-    #[serde(default)]
-    pub redis_url: Option<String>,
     pub a_id_field: String,
     pub b_id_field: String,
 }
@@ -238,21 +233,17 @@ mod tests {
         assert_eq!(config.live.top_n, Some(5));
         assert_eq!(config.performance.encoder_pool_size, Some(4));
         assert_eq!(config.performance.workers, Some(4));
-        assert!(config.sidecar.is_none());
     }
 
     #[test]
     fn deserialize_counterparty_recon_with_sidecar() {
+        // sidecar section in YAML is silently ignored by serde (no deny_unknown_fields)
         let yaml = std::fs::read_to_string("testdata/configs/counterparty_recon.yaml")
             .expect("failed to read counterparty_recon.yaml");
         let config: Config =
             serde_yaml::from_str(&yaml).expect("failed to deserialize counterparty_recon.yaml");
 
         assert_eq!(config.job.name, "counterparty_recon");
-        assert!(
-            config.sidecar.is_some(),
-            "sidecar section should be accepted"
-        );
         assert_eq!(config.output_mapping.len(), 4);
         assert_eq!(config.output_mapping[0].from, "sector");
         assert_eq!(config.output_mapping[0].to, "ref_sector");
