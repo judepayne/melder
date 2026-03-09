@@ -321,9 +321,9 @@ fn cmd_serve(config_path: &Path, port: u16) {
             eprintln!("Warning: final crossmap flush failed: {}", e);
         }
 
-        // Save field vector caches
-        if let Err(e) = state.save_field_vecs_caches() {
-            eprintln!("Warning: field vector cache save failed: {}", e);
+        // Save field index caches
+        if let Err(e) = state.save_field_index_caches() {
+            eprintln!("Warning: field index cache save failed: {}", e);
         }
 
         let sess = session.as_ref();
@@ -420,7 +420,7 @@ fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<usize
 
         println!("Dry run:");
         println!("  A records:       {}", state.records_a.len());
-        println!("  A field vectors: {}", state.field_vecs_a.len());
+        println!("  A field indexes: {}", state.field_indexes_a.len());
         println!("  B records:       {}", b_count);
         println!(
             "  Limit:           {}",
@@ -439,7 +439,7 @@ fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<usize
     let result = match melder::batch::run_batch(
         &state.config,
         &state.records_a,
-        &state.field_vecs_a,
+        &state.field_indexes_a,
         &state.encoder_pool,
         &mut crossmap,
         limit,
@@ -572,7 +572,7 @@ fn cmd_tune(config_path: &Path, verbose: bool) {
     let result = match melder::batch::run_batch(
         &state.config,
         &state.records_a,
-        &state.field_vecs_a,
+        &state.field_indexes_a,
         &state.encoder_pool,
         &mut crossmap,
         None,
@@ -774,15 +774,15 @@ fn cmd_cache_build(config_path: &Path) {
             let elapsed = start.elapsed();
             println!("Cache build complete:");
             println!(
-                "  A-side: {} records, {} field vectors",
+                "  A-side: {} records, {} field index vecs",
                 state.records_a.len(),
-                state.field_vecs_a.len()
+                state.field_indexes_a.len()
             );
             if let Some(ref rb) = state.records_b {
                 println!(
-                    "  B-side: {} records, {} field vectors",
+                    "  B-side: {} records, {} field index vecs",
                     rb.len(),
-                    state.field_vecs_b.as_ref().map(|fv| fv.len()).unwrap_or(0)
+                    state.field_indexes_b.as_ref().map(|fi| fi.len()).unwrap_or(0)
                 );
             }
             println!("  A cache: {}", state.config.embeddings.a_index_cache);

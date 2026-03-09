@@ -23,9 +23,9 @@ use crate::error::MelderError;
 use crate::matching::blocking::BlockingIndex;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
-use crate::state::state::field_vecs_cache_path;
+use crate::state::state::field_index_cache_base;
 use crate::vectordb;
-use crate::vectordb::field_vectors::FieldVectors;
+use crate::vectordb::field_indexes::FieldIndexes;
 
 /// Result of a batch matching run.
 pub struct BatchResult {
@@ -60,7 +60,7 @@ enum RecordOutcome {
 pub fn run_batch(
     config: &Config,
     records_a: &DashMap<String, Record>,
-    field_vecs_a: &FieldVectors,
+    field_indexes_a: &FieldIndexes,
     encoder_pool: &EncoderPool,
     crossmap: &mut CrossMap,
     limit: Option<usize>,
@@ -105,14 +105,15 @@ pub fn run_batch(
         b_ids.len()
     };
 
-    // Build or load B-side field vectors.
-    let b_fv_cache = config
+    // Build or load B-side field indexes.
+    let b_cache_base = config
         .embeddings
         .b_index_cache
         .as_deref()
-        .map(field_vecs_cache_path);
-    let field_vecs_b = vectordb::build_or_load_field_vectors(
-        b_fv_cache.as_deref(),
+        .map(field_index_cache_base);
+    let field_indexes_b = vectordb::build_or_load_field_indexes(
+        &config.vector_backend,
+        b_cache_base.as_deref(),
         &b_records_map,
         &b_ids,
         config,
@@ -247,8 +248,8 @@ pub fn run_batch(
                 b_record.value(),
                 Side::B,
                 records_a,
-                &field_vecs_b,
-                field_vecs_a,
+                &field_indexes_b,
+                field_indexes_a,
                 bi_ref,
                 config,
                 0, // no top_n limit in batch — we want the best result

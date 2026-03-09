@@ -1,4 +1,4 @@
-//! MatchState: composite struct holding datasets, indices, and encoder pool.
+//! MatchState: composite struct holding datasets, field indexes, and encoder pool.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -12,7 +12,7 @@ use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::models::Record;
 use crate::vectordb;
-use crate::vectordb::field_vectors::FieldVectors;
+use crate::vectordb::field_indexes::FieldIndexes;
 
 /// Options controlling what to load.
 #[derive(Debug, Clone)]
@@ -28,10 +28,10 @@ pub struct MatchState {
     pub config: Config,
     pub records_a: DashMap<String, Record>,
     pub ids_a: Vec<String>,
-    pub field_vecs_a: FieldVectors,
+    pub field_indexes_a: FieldIndexes,
     pub records_b: Option<DashMap<String, Record>>,
     pub ids_b: Option<Vec<String>>,
-    pub field_vecs_b: Option<FieldVectors>,
+    pub field_indexes_b: Option<FieldIndexes>,
     pub encoder_pool: EncoderPool,
 }
 
@@ -39,11 +39,11 @@ impl std::fmt::Debug for MatchState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MatchState")
             .field("records_a", &self.records_a.len())
-            .field("field_vecs_a", &self.field_vecs_a.len())
+            .field("field_indexes_a", &self.field_indexes_a.len())
             .field("records_b", &self.records_b.as_ref().map(|r| r.len()))
             .field(
-                "field_vecs_b",
-                &self.field_vecs_b.as_ref().map(|fv| fv.len()),
+                "field_indexes_b",
+                &self.field_indexes_b.as_ref().map(|fi| fi.len()),
             )
             .finish()
     }
@@ -58,63 +58,14 @@ fn into_dashmap(map: HashMap<String, Record>) -> DashMap<String, Record> {
     dm
 }
 
-/// Build the embedding text for a record by concatenating values of all
-/// embedding-method match fields.
+/// Derive a field index cache base path from an index cache path.
 ///
-/// For A-side records, uses `field_a` names; for B-side, uses `field_b` names.
-/// Falls back to the first fuzzy field, then the ID field.
-pub fn primary_embedding_text(record: &Record, config: &Config, is_a_side: bool) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-
-    // Collect values from embedding fields
-    for mf in &config.match_fields {
-        if mf.method == "embedding" {
-            let field_name = if is_a_side { &mf.field_a } else { &mf.field_b };
-            if let Some(val) = record.get(field_name) {
-                let trimmed = val.trim();
-                if !trimmed.is_empty() {
-                    parts.push(trimmed);
-                }
-            }
-        }
-    }
-
-    if !parts.is_empty() {
-        return parts.join(" ");
-    }
-
-    // Fallback: first fuzzy field
-    for mf in &config.match_fields {
-        if mf.method == "fuzzy" {
-            let field_name = if is_a_side { &mf.field_a } else { &mf.field_b };
-            if let Some(val) = record.get(field_name) {
-                let trimmed = val.trim();
-                if !trimmed.is_empty() {
-                    return trimmed.to_string();
-                }
-            }
-        }
-    }
-
-    // Fallback: ID field value
-    let id_field = if is_a_side {
-        &config.datasets.a.id_field
-    } else {
-        &config.datasets.b.id_field
-    };
-    record
-        .get(id_field)
-        .map(|v| v.trim().to_string())
-        .unwrap_or_default()
-}
-
-/// Derive the field vectors cache path from an index cache path.
-///
-/// Replaces the extension with `.fieldvecs`. For example:
-/// `cache/a_10000.index` → `cache/a_10000.fieldvecs`
-pub fn field_vecs_cache_path(index_cache_path: &str) -> String {
+/// Strips the extension to produce a base path that `FieldIndexes::save_all()`
+/// will append field-specific suffixes to. For example:
+/// `cache/a_10000.index` → `cache/a_10000`
+pub fn field_index_cache_base(index_cache_path: &str) -> String {
     let p = Path::new(index_cache_path);
-    p.with_extension("fieldvecs").to_string_lossy().to_string()
+    p.with_extension("").to_string_lossy().to_string()
 }
 
 /// Load the full match state: datasets, caches, encoder pool.
@@ -151,10 +102,11 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         a_start.elapsed().as_secs_f64()
     );
 
-    // 3. Build/load A-side field vectors
-    let a_fv_cache = field_vecs_cache_path(&config.embeddings.a_index_cache);
-    let field_vecs_a = vectordb::build_or_load_field_vectors(
-        Some(&a_fv_cache),
+    // 3. Build/load A-side field indexes
+    let a_cache_base = field_index_cache_base(&config.embeddings.a_index_cache);
+    let field_indexes_a = vectordb::build_or_load_field_indexes(
+        &config.vector_backend,
+        Some(&a_cache_base),
         &records_a,
         &ids_a,
         &config,
@@ -164,7 +116,7 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
     )?;
 
     // 4. Optionally load dataset B
-    let (records_b, ids_b, field_vecs_b) = if opts.load_b {
+    let (records_b, ids_b, field_indexes_b) = if opts.load_b {
         let b_start = Instant::now();
         let (recs, ids) = data::load_dataset(
             Path::new(&config.datasets.b.path),
@@ -179,14 +131,15 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
             b_start.elapsed().as_secs_f64()
         );
 
-        // Build/load B-side field vectors
-        let b_fv_cache = config
+        // Build/load B-side field indexes
+        let b_cache_base = config
             .embeddings
             .b_index_cache
             .as_deref()
-            .map(field_vecs_cache_path);
-        let fv = vectordb::build_or_load_field_vectors(
-            b_fv_cache.as_deref(),
+            .map(field_index_cache_base);
+        let fi = vectordb::build_or_load_field_indexes(
+            &config.vector_backend,
+            b_cache_base.as_deref(),
             &recs,
             &ids,
             &config,
@@ -195,17 +148,17 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
             dim,
         )?;
 
-        (Some(recs), Some(ids), Some(fv))
+        (Some(recs), Some(ids), Some(fi))
     } else {
         (None, None, None)
     };
 
     let total = start.elapsed();
     eprintln!(
-        "State loaded in {:.1}s (A: {} records, field_vecs: {} entries{})",
+        "State loaded in {:.1}s (A: {} records, field indexes: {} vecs{})",
         total.as_secs_f64(),
         records_a.len(),
-        field_vecs_a.len(),
+        field_indexes_a.len(),
         if let Some(ref rb) = records_b {
             format!(", B: {} records", rb.len())
         } else {
@@ -217,10 +170,10 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         config,
         records_a: into_dashmap(records_a),
         ids_a,
-        field_vecs_a,
+        field_indexes_a,
         records_b: records_b.map(into_dashmap),
         ids_b,
-        field_vecs_b,
+        field_indexes_b,
         encoder_pool,
     })
 }

@@ -15,7 +15,7 @@ use crate::matching::blocking::BlockingIndex;
 use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::scoring;
-use crate::vectordb::field_vectors::FieldVectors;
+use crate::vectordb::field_indexes::FieldIndexes;
 
 /// Score a single query record against the opposite-side pool.
 ///
@@ -28,8 +28,8 @@ use crate::vectordb::field_vectors::FieldVectors;
 /// - `query_record`:      the query record itself
 /// - `query_side`:        which side the query belongs to (A or B)
 /// - `pool_records`:      opposite-side records (DashMap)
-/// - `query_field_vecs`:  per-field embedding vectors for the query side
-/// - `pool_field_vecs`:   per-field embedding vectors for the pool (opposite) side
+/// - `query_field_indexes`: per-field vector indexes for the query side
+/// - `pool_field_indexes`:  per-field vector indexes for the pool (opposite) side
 /// - `blocking_index`:    optional BlockingIndex for the opposite side
 /// - `config`:            job config
 /// - `top_n`:             max results to return (0 = unlimited)
@@ -38,8 +38,8 @@ pub fn score_pool(
     query_record: &Record,
     query_side: Side,
     pool_records: &DashMap<String, Record>,
-    query_field_vecs: &FieldVectors,
-    pool_field_vecs: &FieldVectors,
+    query_field_indexes: &FieldIndexes,
+    pool_field_indexes: &FieldIndexes,
     blocking_index: Option<&BlockingIndex>,
     config: &Config,
     top_n: usize,
@@ -66,8 +66,8 @@ pub fn score_pool(
         query_record,
         &candidate_ids,
         pool_records,
-        query_field_vecs,
-        pool_field_vecs,
+        query_field_indexes,
+        pool_field_indexes,
         query_side,
         config,
     );

@@ -208,14 +208,16 @@ impl Session {
                 .map(|v| v.trim().to_string())
                 .unwrap_or_default();
             let vec = self.state.encoder_pool.encode_one(&text)?;
-            this_side.field_vecs.insert(&id, field_key, vec);
+            let _ = this_side
+                .field_indexes
+                .upsert(&id, field_key, &vec, &record, side);
         }
 
         self.upsert_record_inner(side, record)
     }
 
     /// Upsert a record whose per-field vectors have already been stored in
-    /// FieldVectors. Handles insertion, crossmap management, and scoring.
+    /// field indexes. Handles insertion, crossmap management, and scoring.
     fn upsert_record_inner(
         &self,
         side: Side,
@@ -436,8 +438,8 @@ impl Session {
             &record,
             side,
             &opp_side.records,
-            &this_side.field_vecs,
-            &opp_side.field_vecs,
+            &this_side.field_indexes,
+            &opp_side.field_indexes,
             Some(&opp_bi),
             config,
             top_n,
@@ -552,8 +554,8 @@ impl Session {
             bi.remove(id, &record, side);
         }
 
-        // Remove field vectors
-        this_side.field_vecs.remove_record(id);
+        // Remove from field indexes
+        this_side.field_indexes.remove_record(id);
 
         // Remove from unmatched set
         this_side.unmatched.remove(id);
@@ -591,8 +593,9 @@ impl Session {
 
     /// Try matching a record without persisting it (read-only).
     ///
-    /// Encodes per-field embedding vectors into a temporary FieldVectors
-    /// store, then scores against the opposite side.
+    /// Encodes per-field embedding vectors into the query side's field
+    /// indexes (enriching the VectorDB), then scores against the
+    /// opposite side via the normal pipeline.
     pub fn try_match(&self, side: Side, record: Record) -> Result<MatchResponse, SessionError> {
         let config = &self.state.config;
         let is_a_side = side == Side::A;
@@ -602,10 +605,9 @@ impl Session {
         };
         let id = record.get(id_field).cloned().unwrap_or_default();
 
-        // Build temporary per-field vectors for this query record
+        // Encode per-field vectors into the real field indexes
         let emb_fields = crate::vectordb::embedding_field_keys(config);
-        let dim = self.state.encoder_pool.dim();
-        let query_fv = crate::vectordb::field_vectors::FieldVectors::new(dim);
+        let this_side = self.state.side(side);
         for (field_key, field_a_name, field_b_name) in &emb_fields {
             let field_name = if is_a_side {
                 field_a_name
@@ -617,13 +619,16 @@ impl Session {
                 .map(|v| v.trim().to_string())
                 .unwrap_or_default();
             let vec = self.state.encoder_pool.encode_one(&text)?;
-            query_fv.insert(&id, field_key, vec);
+            let _ = this_side
+                .field_indexes
+                .upsert(&id, field_key, &vec, &record, side);
         }
 
-        self.try_match_inner(side, record, &id, &query_fv)
+        self.try_match_inner(side, record, &id)
     }
 
-    /// Try matching a record with pre-computed per-field vectors (read-only).
+    /// Try matching a record whose per-field vectors are already in the
+    /// field indexes (read-only scoring).
     ///
     /// Used by both the single-record path and the batch path.
     fn try_match_inner(
@@ -631,7 +636,6 @@ impl Session {
         side: Side,
         record: Record,
         id: &str,
-        query_field_vecs: &crate::vectordb::field_vectors::FieldVectors,
     ) -> Result<MatchResponse, SessionError> {
         let config = &self.state.config;
 
@@ -680,13 +684,14 @@ impl Session {
             .blocking_index
             .read()
             .unwrap_or_else(|e| e.into_inner());
+        let this_side = self.state.side(side);
         let results = pipeline::score_pool(
             id,
             &record,
             side,
             &opp_side.records,
-            query_field_vecs,
-            &opp_side.field_vecs,
+            &this_side.field_indexes,
+            &opp_side.field_indexes,
             Some(&opp_bi),
             config,
             top_n,
@@ -913,7 +918,7 @@ impl Session {
     ///
     /// For each embedding field, all record texts are gathered and encoded
     /// in a single ONNX batch call. The resulting per-field vectors are
-    /// stored in FieldVectors, then records are inserted and scored
+    /// stored in the field indexes, then records are inserted and scored
     /// sequentially so each record sees the crossmap state left by the
     /// previous one.
     pub fn upsert_batch(
@@ -968,8 +973,12 @@ impl Session {
                 .collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
             let vecs = self.state.encoder_pool.encode(&text_refs)?;
-            for (rec_id, vec) in ids.iter().zip(vecs.into_iter()) {
-                this_side.field_vecs.insert(rec_id, field_key, vec);
+            for (i, vec) in vecs.into_iter().enumerate() {
+                let rec_id = &ids[i];
+                let record = &records[i];
+                let _ = this_side
+                    .field_indexes
+                    .upsert(rec_id, field_key, &vec, record, side);
             }
         }
 
@@ -1003,8 +1012,8 @@ impl Session {
     ///
     /// For each embedding field, all record texts are gathered and encoded
     /// in a single ONNX batch call. The resulting per-field vectors are
-    /// stored in a temporary FieldVectors, then each record is scored
-    /// sequentially.
+    /// stored in the query side's field indexes, then each record is
+    /// scored sequentially via the normal pipeline.
     pub fn match_batch(
         &self,
         side: Side,
@@ -1032,6 +1041,7 @@ impl Session {
             Side::A => &config.datasets.a.id_field,
             Side::B => &config.datasets.b.id_field,
         };
+        let this_side = self.state.side(side);
 
         // 1. Extract record IDs
         let ids: Vec<String> = records
@@ -1039,9 +1049,7 @@ impl Session {
             .map(|r| r.get(id_field).cloned().unwrap_or_default())
             .collect();
 
-        // 2. Build temporary FieldVectors with batch-encoded per-field vectors
-        let dim = self.state.encoder_pool.dim();
-        let query_fv = crate::vectordb::field_vectors::FieldVectors::new(dim);
+        // 2. Batch encode per embedding field — store in real field indexes
         for (field_key, field_a_name, field_b_name) in &emb_fields {
             let field_name = if is_a_side {
                 field_a_name
@@ -1058,15 +1066,19 @@ impl Session {
                 .collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
             let vecs = self.state.encoder_pool.encode(&text_refs)?;
-            for (rec_id, vec) in ids.iter().zip(vecs.into_iter()) {
-                query_fv.insert(rec_id, field_key, vec);
+            for (i, vec) in vecs.into_iter().enumerate() {
+                let rec_id = &ids[i];
+                let record = &records[i];
+                let _ = this_side
+                    .field_indexes
+                    .upsert(rec_id, field_key, &vec, record, side);
             }
         }
 
         // 3. Score each record sequentially
         let mut results = Vec::with_capacity(records.len());
         for (record, rec_id) in records.into_iter().zip(ids.iter()) {
-            let resp = self.try_match_inner(side, record, rec_id, &query_fv);
+            let resp = self.try_match_inner(side, record, rec_id);
             match resp {
                 Ok(r) => results.push(r),
                 Err(e) => {

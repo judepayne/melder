@@ -1,7 +1,7 @@
 //! Live match state: concurrent data structures for the live HTTP server.
 //!
 //! Both A and B sides are fully symmetrical: each has a DashMap of records,
-//! per-field embedding vectors, a BlockingIndex, and an unmatched set.
+//! per-field vector indexes, a BlockingIndex, and an unmatched set.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,15 +17,15 @@ use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::matching::blocking::BlockingIndex;
 use crate::models::{Record, Side};
-use crate::state::state::field_vecs_cache_path;
+use crate::state::state::field_index_cache_base;
 use crate::state::upsert_log::{UpsertLog, WalEvent};
 use crate::vectordb;
-use crate::vectordb::field_vectors::FieldVectors;
+use crate::vectordb::field_indexes::FieldIndexes;
 
-/// Per-side live state: records, field vectors, blocking, unmatched set.
+/// Per-side live state: records, field indexes, blocking, unmatched set.
 pub struct LiveSideState {
     pub records: DashMap<String, Record>,
-    pub field_vecs: FieldVectors,
+    pub field_indexes: FieldIndexes,
     pub blocking_index: RwLock<BlockingIndex>,
     pub unmatched: DashSet<String>,
     /// Reverse index: common_id_value -> record_id. Only populated when
@@ -37,7 +37,7 @@ impl std::fmt::Debug for LiveSideState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveSideState")
             .field("records", &self.records.len())
-            .field("field_vecs_len", &self.field_vecs.len())
+            .field("field_indexes_len", &self.field_indexes.len())
             .field("unmatched", &self.unmatched.len())
             .finish()
     }
@@ -73,8 +73,8 @@ impl LiveMatchState {
     /// 1. Init encoder pool
     /// 2. Load A dataset
     /// 3. Load B dataset
-    /// 4. Build/load A-side field vectors
-    /// 5. Build/load B-side field vectors
+    /// 4. Build/load A-side field indexes
+    /// 5. Build/load B-side field indexes
     /// 6. Build BlockingIndex for A
     /// 7. Build BlockingIndex for B
     /// 8. Load CrossMap
@@ -130,10 +130,11 @@ impl LiveMatchState {
             b_start.elapsed().as_secs_f64()
         );
 
-        // 4. Build/load A-side field vectors
-        let a_fv_cache = field_vecs_cache_path(&config.embeddings.a_index_cache);
-        let field_vecs_a = vectordb::build_or_load_field_vectors(
-            Some(&a_fv_cache),
+        // 4. Build/load A-side field indexes
+        let a_cache_base = field_index_cache_base(&config.embeddings.a_index_cache);
+        let field_indexes_a = vectordb::build_or_load_field_indexes(
+            &config.vector_backend,
+            Some(&a_cache_base),
             &records_a_map,
             &ids_a,
             &config,
@@ -142,14 +143,15 @@ impl LiveMatchState {
             dim,
         )?;
 
-        // 5. Build/load B-side field vectors
-        let b_fv_cache = config
+        // 5. Build/load B-side field indexes
+        let b_cache_base = config
             .embeddings
             .b_index_cache
             .as_deref()
-            .map(field_vecs_cache_path);
-        let field_vecs_b = vectordb::build_or_load_field_vectors(
-            b_fv_cache.as_deref(),
+            .map(field_index_cache_base);
+        let field_indexes_b = vectordb::build_or_load_field_indexes(
+            &config.vector_backend,
+            b_cache_base.as_deref(),
             &records_b_map,
             &ids_b,
             &config,
@@ -193,11 +195,11 @@ impl LiveMatchState {
         };
 
         // Move records into DashMaps
-        let records_a = DashMap::with_capacity(records_a_map.len());
+        let records_a: DashMap<String, Record> = DashMap::with_capacity(records_a_map.len());
         for (id, rec) in records_a_map {
             records_a.insert(id, rec);
         }
-        let records_b = DashMap::with_capacity(records_b_map.len());
+        let records_b: DashMap<String, Record> = DashMap::with_capacity(records_b_map.len());
         for (id, rec) in records_b_map {
             records_b.insert(id, rec);
         }
@@ -236,14 +238,14 @@ impl LiveMatchState {
             for event in &wal_events {
                 match event {
                     WalEvent::UpsertRecord { side, record } => {
-                        let (id_field, side_records, side_fv) = match side {
-                            Side::A => (&config.datasets.a.id_field, &records_a, &field_vecs_a),
-                            Side::B => (&config.datasets.b.id_field, &records_b, &field_vecs_b),
+                        let (id_field, side_records, side_fi) = match side {
+                            Side::A => (&config.datasets.a.id_field, &records_a, &field_indexes_a),
+                            Side::B => (&config.datasets.b.id_field, &records_b, &field_indexes_b),
                         };
                         if let Some(id) = record.get(id_field) {
                             side_records.insert(id.clone(), record.clone());
 
-                            // Re-encode per-field vectors
+                            // Re-encode per-field vectors into field indexes
                             let is_a = *side == Side::A;
                             for (field_key, field_a_name, field_b_name) in &emb_fields {
                                 let field_name = if is_a { field_a_name } else { field_b_name };
@@ -252,7 +254,7 @@ impl LiveMatchState {
                                     .map(|v| v.trim().to_string())
                                     .unwrap_or_default();
                                 if let Ok(vec) = encoder_pool.encode_one(&text) {
-                                    side_fv.insert(id, field_key, vec);
+                                    let _ = side_fi.upsert(id, field_key, &vec, record, *side);
                                 }
                             }
                         }
@@ -269,10 +271,10 @@ impl LiveMatchState {
                             Side::B => &records_b,
                         };
                         side_records.remove(id);
-                        // Remove field vectors
+                        // Remove from field indexes
                         match side {
-                            Side::A => field_vecs_a.remove_record(id),
-                            Side::B => field_vecs_b.remove_record(id),
+                            Side::A => field_indexes_a.remove_record(id),
+                            Side::B => field_indexes_b.remove_record(id),
                         }
                         // Break any crossmap pair involving this ID
                         match side {
@@ -333,7 +335,7 @@ impl LiveMatchState {
 
         let a_side = LiveSideState {
             records: records_a,
-            field_vecs: field_vecs_a,
+            field_indexes: field_indexes_a,
             blocking_index: RwLock::new(blocking_a),
             unmatched: unmatched_a,
             common_id_index: common_id_a,
@@ -341,7 +343,7 @@ impl LiveMatchState {
 
         let b_side = LiveSideState {
             records: records_b,
-            field_vecs: field_vecs_b,
+            field_indexes: field_indexes_b,
             blocking_index: RwLock::new(blocking_b),
             unmatched: unmatched_b,
             common_id_index: common_id_b,
@@ -419,19 +421,19 @@ impl LiveMatchState {
         Ok(())
     }
 
-    /// Save field vector caches to disk (only for sides with a configured cache path).
-    pub fn save_field_vecs_caches(&self) -> Result<(), MelderError> {
-        // Always save A field vectors cache
-        let a_fv_cache = field_vecs_cache_path(&self.config.embeddings.a_index_cache);
-        if let Err(e) = self.a.field_vecs.save(Path::new(&a_fv_cache)) {
-            eprintln!("Warning: failed to save A field vectors cache: {}", e);
+    /// Save field index caches to disk (only for sides with a configured cache path).
+    pub fn save_field_index_caches(&self) -> Result<(), MelderError> {
+        // Always save A field index caches
+        let a_cache_base = field_index_cache_base(&self.config.embeddings.a_index_cache);
+        if let Err(e) = self.a.field_indexes.save_all(&a_cache_base) {
+            eprintln!("Warning: failed to save A field index caches: {}", e);
         }
 
-        // Only save B field vectors cache if explicitly configured
+        // Only save B field index caches if explicitly configured
         if let Some(ref b_cache_path) = self.config.embeddings.b_index_cache {
-            let b_fv_cache = field_vecs_cache_path(b_cache_path);
-            if let Err(e) = self.b.field_vecs.save(Path::new(&b_fv_cache)) {
-                eprintln!("Warning: failed to save B field vectors cache: {}", e);
+            let b_cache_base = field_index_cache_base(b_cache_path);
+            if let Err(e) = self.b.field_indexes.save_all(&b_cache_base) {
+                eprintln!("Warning: failed to save B field index caches: {}", e);
             }
         }
 

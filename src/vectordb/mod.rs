@@ -9,7 +9,7 @@
 //! Implementations handle their own persistence format, key mapping,
 //! block routing, and concurrency internally.
 
-pub mod field_vectors;
+pub mod field_indexes;
 pub mod flat;
 #[cfg(feature = "usearch")]
 pub mod usearch_backend;
@@ -28,7 +28,6 @@ use crate::config::Config;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::models::{Record, Side};
-use crate::state::state::primary_embedding_text;
 
 /// Errors from vector database operations.
 #[derive(Debug, thiserror::Error)]
@@ -198,191 +197,6 @@ pub fn is_index_stale(
 }
 
 // ---------------------------------------------------------------------------
-// Consolidated index builders
-// ---------------------------------------------------------------------------
-
-/// Build a vector index from scratch by encoding all records, or load from
-/// cache if the cache is fresh.
-///
-/// This is the single entry point used by batch state, live state, and the
-/// batch engine. It replaces the three near-identical copies that previously
-/// existed in `state::state`, `state::live`, and `batch::engine`.
-pub fn build_or_load_index(
-    backend: &str,
-    cache_path: &str,
-    records: &HashMap<String, Record>,
-    ids: &[String],
-    config: &Config,
-    is_a_side: bool,
-    encoder_pool: &EncoderPool,
-    dim: usize,
-) -> Result<Box<dyn VectorDB>, MelderError> {
-    let path = Path::new(cache_path);
-    let side = if is_a_side { "A" } else { "B" };
-    let side_enum = if is_a_side { Side::A } else { Side::B };
-
-    // Check cache staleness
-    if !is_index_stale(backend, path, records.len()).unwrap_or(true) {
-        let load_start = Instant::now();
-        match load_index(backend, path) {
-            Ok(index) => {
-                eprintln!(
-                    "Loaded {} index from cache: {} vecs in {:.1}ms",
-                    side,
-                    index.len(),
-                    load_start.elapsed().as_secs_f64() * 1000.0
-                );
-                return Ok(index);
-            }
-            Err(e) => {
-                eprintln!("Warning: cache load failed ({}), rebuilding...", e);
-            }
-        }
-    }
-
-    // Build from scratch
-    eprintln!("Building {} index ({} records)...", side, records.len());
-    let build_start = Instant::now();
-
-    let blocking_config = if config.blocking.enabled {
-        Some(&config.blocking)
-    } else {
-        None
-    };
-    let index = new_index(backend, dim, blocking_config);
-    let batch_size = 256;
-
-    for (batch_idx, chunk) in ids.chunks(batch_size).enumerate() {
-        let texts: Vec<String> = chunk
-            .iter()
-            .map(|id| {
-                let record = records
-                    .get(id)
-                    .expect("id from ids vec must exist in records");
-                primary_embedding_text(record, config, is_a_side)
-            })
-            .collect();
-
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let vecs = encoder_pool
-            .encode(&text_refs)
-            .map_err(MelderError::Encoder)?;
-
-        for (i, vec) in vecs.into_iter().enumerate() {
-            let id = &chunk[i];
-            let record = records.get(id).unwrap();
-            index
-                .upsert(id, &vec, record, side_enum)
-                .map_err(|e| MelderError::Other(anyhow::anyhow!("{}", e)))?;
-        }
-
-        let done = (batch_idx + 1) * batch_size;
-        if done % 1000 == 0 || done >= ids.len() {
-            eprintln!(
-                "  encoded {}/{} {} records...",
-                done.min(ids.len()),
-                ids.len(),
-                side
-            );
-        }
-    }
-
-    let build_elapsed = build_start.elapsed();
-    eprintln!(
-        "{} index built: {} vecs in {:.1}s ({:.0} records/sec)",
-        side,
-        index.len(),
-        build_elapsed.as_secs_f64(),
-        index.len() as f64 / build_elapsed.as_secs_f64()
-    );
-
-    // Save to cache
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).ok();
-        }
-    }
-    if let Err(e) = index.save(path) {
-        eprintln!("Warning: failed to save {} index cache: {}", side, e);
-    } else {
-        eprintln!("Saved {} index cache to {}", side, cache_path);
-    }
-
-    Ok(index)
-}
-
-/// Build a vector index from scratch without any cache interaction.
-///
-/// Used when no cache path is configured (e.g. B-side in live mode without
-/// `b_index_cache` set).
-pub fn build_index_no_cache(
-    backend: &str,
-    records: &HashMap<String, Record>,
-    ids: &[String],
-    config: &Config,
-    encoder_pool: &EncoderPool,
-    dim: usize,
-) -> Result<Box<dyn VectorDB>, MelderError> {
-    let side = "B";
-    eprintln!("Building {} index ({} records)...", side, records.len());
-    let build_start = Instant::now();
-
-    let blocking_config = if config.blocking.enabled {
-        Some(&config.blocking)
-    } else {
-        None
-    };
-    let index = new_index(backend, dim, blocking_config);
-    let batch_size = 256;
-
-    for (batch_idx, chunk) in ids.chunks(batch_size).enumerate() {
-        let texts: Vec<String> = chunk
-            .iter()
-            .map(|id| {
-                let record = records
-                    .get(id)
-                    .expect("id from ids vec must exist in records");
-                primary_embedding_text(record, config, false)
-            })
-            .collect();
-
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let vecs = encoder_pool
-            .encode(&text_refs)
-            .map_err(MelderError::Encoder)?;
-
-        for (i, vec) in vecs.into_iter().enumerate() {
-            let id = &chunk[i];
-            let record = records.get(id).unwrap();
-            index
-                .upsert(id, &vec, record, Side::B)
-                .map_err(|e| MelderError::Other(anyhow::anyhow!("{}", e)))?;
-        }
-
-        let done = (batch_idx + 1) * batch_size;
-        if done % 1000 == 0 || done >= ids.len() {
-            eprintln!(
-                "  encoded {}/{} {} records...",
-                done.min(ids.len()),
-                ids.len(),
-                side
-            );
-        }
-    }
-
-    let build_elapsed = build_start.elapsed();
-    eprintln!(
-        "{} index built: {} vecs in {:.1}s ({:.0} records/sec)",
-        side,
-        index.len(),
-        build_elapsed.as_secs_f64(),
-        index.len() as f64 / build_elapsed.as_secs_f64()
-    );
-
-    Ok(index)
-}
-
-// ---------------------------------------------------------------------------
 // Per-field embedding vectors
 // ---------------------------------------------------------------------------
 
@@ -402,74 +216,85 @@ pub fn embedding_field_keys(config: &Config) -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// Build or load per-field embedding vectors for one side.
+/// Build or load per-field vector indexes for one side.
 ///
-/// For each embedding match field, encodes the field value separately and
-/// stores in a `FieldVectors` map keyed by `(record_id, field_key)`.
+/// For each embedding match field, creates a VectorDB instance (flat or
+/// usearch, depending on `backend`), encodes field values, and upserts
+/// vectors into it. Each per-field index handles its own block routing
+/// (usearch) or stores all vectors flat.
 ///
-/// `cache_path`: if `Some`, attempts to load from / save to this path.
-/// If `None`, builds from scratch without caching.
-pub fn build_or_load_field_vectors(
-    cache_path: Option<&str>,
+/// `cache_base`: if `Some`, attempts to load from / save to per-field
+/// cache paths derived from this base. If `None`, builds without caching.
+pub fn build_or_load_field_indexes(
+    backend: &str,
+    cache_base: Option<&str>,
     records: &HashMap<String, Record>,
     ids: &[String],
     config: &Config,
     is_a_side: bool,
     encoder_pool: &EncoderPool,
     dim: usize,
-) -> Result<field_vectors::FieldVectors, MelderError> {
+) -> Result<field_indexes::FieldIndexes, MelderError> {
     let emb_fields = embedding_field_keys(config);
     if emb_fields.is_empty() {
-        // No embedding fields — return empty store
-        return Ok(field_vectors::FieldVectors::new(dim));
+        return Ok(field_indexes::FieldIndexes::new(dim));
     }
 
     let side = if is_a_side { "A" } else { "B" };
-    let expected_count = ids.len() * emb_fields.len();
+    let side_enum = if is_a_side { Side::A } else { Side::B };
+    let blocking_config = if config.blocking.enabled {
+        Some(&config.blocking)
+    } else {
+        None
+    };
 
-    // Try loading from cache
-    if let Some(path_str) = cache_path {
-        let path = Path::new(path_str);
-        if !field_vectors::FieldVectors::is_stale(path, expected_count) {
-            let load_start = Instant::now();
-            match field_vectors::FieldVectors::load(path) {
-                Ok(fv) => {
-                    eprintln!(
-                        "Loaded {} field vectors from cache: {} entries in {:.1}ms",
-                        side,
-                        fv.len(),
-                        load_start.elapsed().as_secs_f64() * 1000.0
-                    );
-                    return Ok(fv);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Warning: field vectors cache load failed ({}), rebuilding...",
-                        e
-                    );
-                }
-            }
-        }
-    }
+    let mut fi = field_indexes::FieldIndexes::new(dim);
 
-    // Build from scratch
-    eprintln!(
-        "Building {} field vectors ({} records x {} embedding fields)...",
-        side,
-        ids.len(),
-        emb_fields.len()
-    );
-    let build_start = Instant::now();
-    let fv = field_vectors::FieldVectors::new(dim);
-    let batch_size = 256;
-
-    // For each embedding field, encode all records' field values in batches
     for (field_key, field_a_name, field_b_name) in &emb_fields {
         let field_name = if is_a_side {
             field_a_name
         } else {
             field_b_name
         };
+
+        // Try loading from cache
+        if let Some(base) = cache_base {
+            let cache_path = field_indexes::field_cache_path(base, field_key);
+            let path = Path::new(&cache_path);
+            if !is_index_stale(backend, path, ids.len()).unwrap_or(true) {
+                let load_start = Instant::now();
+                match load_index(backend, path) {
+                    Ok(index) => {
+                        eprintln!(
+                            "Loaded {} field index [{}] from cache: {} vecs in {:.1}ms",
+                            side,
+                            field_key,
+                            index.len(),
+                            load_start.elapsed().as_secs_f64() * 1000.0
+                        );
+                        fi.insert_index(field_key.clone(), index);
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: {} field index [{}] cache load failed ({}), rebuilding...",
+                            side, field_key, e
+                        );
+                    }
+                }
+            }
+        }
+
+        // Build from scratch
+        eprintln!(
+            "Building {} field index [{}] ({} records)...",
+            side,
+            field_key,
+            ids.len()
+        );
+        let build_start = Instant::now();
+        let index = new_index(backend, dim, blocking_config);
+        let batch_size = 256;
 
         for (batch_idx, chunk) in ids.chunks(batch_size).enumerate() {
             let texts: Vec<String> = chunk
@@ -491,13 +316,17 @@ pub fn build_or_load_field_vectors(
                 .map_err(MelderError::Encoder)?;
 
             for (i, vec) in vecs.into_iter().enumerate() {
-                fv.insert(&chunk[i], field_key, vec);
+                let id = &chunk[i];
+                let record = records.get(id).unwrap();
+                index
+                    .upsert(id, &vec, record, side_enum)
+                    .map_err(|e| MelderError::Other(anyhow::anyhow!("{}", e)))?;
             }
 
             let done = (batch_idx + 1) * batch_size;
             if done % 2000 == 0 || done >= ids.len() {
                 eprintln!(
-                    "  {} field {}: encoded {}/{}",
+                    "  {} field [{}]: encoded {}/{}",
                     side,
                     field_key,
                     done.min(ids.len()),
@@ -505,34 +334,48 @@ pub fn build_or_load_field_vectors(
                 );
             }
         }
-    }
 
-    let build_elapsed = build_start.elapsed();
-    eprintln!(
-        "{} field vectors built: {} entries in {:.1}s ({:.0} records/sec)",
-        side,
-        fv.len(),
-        build_elapsed.as_secs_f64(),
-        ids.len() as f64 / build_elapsed.as_secs_f64()
-    );
+        let build_elapsed = build_start.elapsed();
+        eprintln!(
+            "{} field index [{}] built: {} vecs in {:.1}s ({:.0} records/sec)",
+            side,
+            field_key,
+            index.len(),
+            build_elapsed.as_secs_f64(),
+            ids.len() as f64 / build_elapsed.as_secs_f64()
+        );
 
-    // Save to cache
-    if let Some(path_str) = cache_path {
-        let path = Path::new(path_str);
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent).ok();
+        // Save to cache
+        if let Some(base) = cache_base {
+            let cache_path = field_indexes::field_cache_path(base, field_key);
+            let path = Path::new(&cache_path);
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+            }
+            if let Err(e) = index.save(path) {
+                eprintln!(
+                    "Warning: failed to save {} field index [{}] cache: {}",
+                    side, field_key, e
+                );
+            } else {
+                eprintln!(
+                    "Saved {} field index [{}] cache to {}",
+                    side, field_key, cache_path
+                );
             }
         }
-        if let Err(e) = fv.save(path) {
-            eprintln!(
-                "Warning: failed to save {} field vectors cache: {}",
-                side, e
-            );
-        } else {
-            eprintln!("Saved {} field vectors cache to {}", side, path_str);
-        }
+
+        fi.insert_index(field_key.clone(), index);
     }
 
-    Ok(fv)
+    eprintln!(
+        "{} field indexes ready: {} total vecs across {} fields",
+        side,
+        fi.len(),
+        emb_fields.len()
+    );
+
+    Ok(fi)
 }
