@@ -19,11 +19,19 @@ pub fn build_router(session: Arc<Session>) -> Router {
         .route("/api/v1/a/remove", post(handlers::remove_a))
         .route("/api/v1/a/match", post(handlers::match_a))
         .route("/api/v1/a/query", get(handlers::query_a))
+        // A-side batch endpoints
+        .route("/api/v1/a/add-batch", post(handlers::add_batch_a))
+        .route("/api/v1/a/match-batch", post(handlers::match_batch_a))
+        .route("/api/v1/a/remove-batch", post(handlers::remove_batch_a))
         // B-side endpoints
         .route("/api/v1/b/add", post(handlers::add_b))
         .route("/api/v1/b/remove", post(handlers::remove_b))
         .route("/api/v1/b/match", post(handlers::match_b))
         .route("/api/v1/b/query", get(handlers::query_b))
+        // B-side batch endpoints
+        .route("/api/v1/b/add-batch", post(handlers::add_batch_b))
+        .route("/api/v1/b/match-batch", post(handlers::match_batch_b))
+        .route("/api/v1/b/remove-batch", post(handlers::remove_batch_b))
         // Backward-compat alias
         .route("/api/v1/match/b", post(handlers::match_b))
         // CrossMap endpoints

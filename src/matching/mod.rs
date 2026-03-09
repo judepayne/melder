@@ -1,5 +1,5 @@
-//! Matching: blocking, candidate generation, and match engine.
+//! Matching: blocking, candidate generation, scoring pipeline.
 
 pub mod blocking;
 pub mod candidates;
-pub mod engine;
+pub mod pipeline;

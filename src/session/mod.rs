@@ -4,13 +4,12 @@
 //! All operations are synchronous internally; the HTTP layer wraps them
 //! in `spawn_blocking` as needed.
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::SessionError;
-use crate::matching::{candidates, engine as match_engine};
+use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::live::LiveMatchState;
 use crate::state::state::primary_embedding_text;
@@ -134,6 +133,23 @@ pub mod response {
         pub upserts: u64,
         pub matches: u64,
     }
+
+    // Batch response wrappers
+
+    #[derive(Debug, Serialize)]
+    pub struct BatchUpsertResponse {
+        pub results: Vec<UpsertResponse>,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct BatchMatchResponse {
+        pub results: Vec<MatchResponse>,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct BatchRemoveResponse {
+        pub results: Vec<RemoveResponse>,
+    }
 }
 
 use response::*;
@@ -157,10 +173,29 @@ impl Session {
     }
 
     /// Upsert a record into the live state and attempt matching.
+    ///
+    /// Encodes the record's embedding text, then delegates to
+    /// `upsert_record_with_vec` for insertion and scoring.
     pub fn upsert_record(
         &self,
         side: Side,
         record: Record,
+    ) -> Result<UpsertResponse, SessionError> {
+        let is_a_side = side == Side::A;
+        let emb_text = primary_embedding_text(&record, &self.state.config, is_a_side);
+        let vec = self.state.encoder_pool.encode_one(&emb_text)?;
+        self.upsert_record_with_vec(side, record, vec)
+    }
+
+    /// Upsert a record with a pre-computed embedding vector.
+    ///
+    /// Used by both the single-record path (after encode_one) and the
+    /// batch path (after a single batched encode call).
+    fn upsert_record_with_vec(
+        &self,
+        side: Side,
+        record: Record,
+        vec: Vec<f32>,
     ) -> Result<UpsertResponse, SessionError> {
         let config = &self.state.config;
         let id_field = match side {
@@ -181,7 +216,6 @@ impl Session {
 
         let this_side = self.state.side(side);
         let opp_side = self.state.opposite_side(side);
-        let is_a_side = side == Side::A;
 
         // 2. Check if existing record
         let mut old_mapping: Option<OldMapping> = None;
@@ -256,23 +290,19 @@ impl Session {
             bi.insert(&id, &record, side);
         }
 
-        // 6-7. Encode embedding text and update index
-        let emb_text = primary_embedding_text(&record, config, is_a_side);
-        let vec = self.state.encoder_pool.encode_one(&emb_text)?;
-
-        // 8. Update VecIndex
+        // 6. Update VecIndex with pre-computed vector
         {
             let mut idx = this_side.index.write().unwrap_or_else(|e| e.into_inner());
             idx.upsert(&id, &vec);
         }
 
-        // 9. WAL append
+        // 7. WAL append
         let _ = self.state.wal.append(&WalEvent::UpsertRecord {
             side,
             record: record.clone(),
         });
 
-        // 9a. Update common_id_index and check for common ID match
+        // 8. Update common_id_index and check for common ID match
         let this_cid_field = match side {
             Side::A => config.datasets.a.common_id_field.as_deref(),
             Side::B => config.datasets.b.common_id_field.as_deref(),
@@ -375,60 +405,28 @@ impl Session {
             }
         }
 
-        // 10. Generate candidates from opposite side
-        let opp_blocking = opp_side
+        // 9. Pipeline: blocking → candidate selection → full scoring
+        let top_n = config.live.top_n.unwrap_or(5);
+        let opp_bi = opp_side
             .blocking_index
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        let blocking_ids = if config.blocking.enabled {
-            opp_blocking.query(&record, side)
-        } else {
-            // Collect all unmatched from opposite side
-            opp_side.unmatched.iter().map(|r| r.key().clone()).collect()
-        };
+        let opp_idx = opp_side.index.read().unwrap_or_else(|e| e.into_inner());
+        let results = pipeline::score_pool(
+            &id,
+            &record,
+            &vec,
+            side,
+            &opp_side.records,
+            &opp_idx,
+            Some(&opp_bi),
+            config,
+            top_n,
+        );
+        drop(opp_idx);
+        drop(opp_bi);
 
-        // Intersect with unmatched
-        let allowed: HashSet<String> = blocking_ids
-            .into_iter()
-            .filter(|id| opp_side.unmatched.contains(id))
-            .collect();
-        drop(opp_blocking);
-
-        let top_n = config.live.top_n.unwrap_or(5);
-
-        let search_results = {
-            let idx = opp_side.index.read().unwrap_or_else(|e| e.into_inner());
-            idx.search_filtered(&vec, top_n, &allowed)
-        };
-
-        // Build candidates with borrowed records
-        let opp_records_snapshot: Vec<(String, Record)> = search_results
-            .iter()
-            .filter_map(|(cid, _)| opp_side.records.get(cid).map(|r| (cid.clone(), r.clone())))
-            .collect();
-
-        let cands: Vec<candidates::Candidate<'_>> = search_results
-            .into_iter()
-            .filter_map(|(cid, score)| {
-                opp_records_snapshot
-                    .iter()
-                    .find(|(id, _)| *id == cid)
-                    .map(|(_, rec)| candidates::Candidate {
-                        id: cid,
-                        record: rec,
-                        embedding_score: Some(score as f64),
-                    })
-            })
-            .collect();
-
-        // 11. Score candidates
-        let results = if !cands.is_empty() {
-            match_engine::score_candidates(&id, &record, Some(&vec), side, &cands, config)
-        } else {
-            vec![]
-        };
-
-        // 12. Classify top result
+        // 10. Classify top result
         let classification;
         let matches = build_match_entries(&results);
 
@@ -577,7 +575,25 @@ impl Session {
     }
 
     /// Try matching a record without persisting it (read-only).
+    ///
+    /// Encodes the record's embedding text, then delegates to
+    /// `try_match_with_vec` for scoring.
     pub fn try_match(&self, side: Side, record: Record) -> Result<MatchResponse, SessionError> {
+        let is_a_side = side == Side::A;
+        let emb_text = primary_embedding_text(&record, &self.state.config, is_a_side);
+        let vec = self.state.encoder_pool.encode_one(&emb_text)?;
+        self.try_match_with_vec(side, record, &vec)
+    }
+
+    /// Try matching a record with a pre-computed embedding vector (read-only).
+    ///
+    /// Used by both the single-record path and the batch path.
+    fn try_match_with_vec(
+        &self,
+        side: Side,
+        record: Record,
+        vec: &[f32],
+    ) -> Result<MatchResponse, SessionError> {
         let config = &self.state.config;
         let id_field = match side {
             Side::A => &config.datasets.a.id_field,
@@ -586,7 +602,6 @@ impl Session {
 
         let id = record.get(id_field).cloned().unwrap_or_default();
 
-        let is_a_side = side == Side::A;
         let opp_side = self.state.opposite_side(side);
 
         // Check crossmap for existing match
@@ -626,58 +641,26 @@ impl Session {
             });
         }
 
-        // Encode
-        let emb_text = primary_embedding_text(&record, config, is_a_side);
-        let vec = self.state.encoder_pool.encode_one(&emb_text)?;
-
-        // Generate candidates from opposite side
-        let opp_blocking = opp_side
+        // Pipeline: blocking → candidate selection → full scoring
+        let top_n = config.live.top_n.unwrap_or(5);
+        let opp_bi = opp_side
             .blocking_index
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        let blocking_ids = if config.blocking.enabled {
-            opp_blocking.query(&record, side)
-        } else {
-            opp_side.unmatched.iter().map(|r| r.key().clone()).collect()
-        };
-
-        let allowed: HashSet<String> = blocking_ids
-            .into_iter()
-            .filter(|id| opp_side.unmatched.contains(id))
-            .collect();
-        drop(opp_blocking);
-
-        let top_n = config.live.top_n.unwrap_or(5);
-
-        let search_results = {
-            let idx = opp_side.index.read().unwrap_or_else(|e| e.into_inner());
-            idx.search_filtered(&vec, top_n, &allowed)
-        };
-
-        let opp_records_snapshot: Vec<(String, Record)> = search_results
-            .iter()
-            .filter_map(|(cid, _)| opp_side.records.get(cid).map(|r| (cid.clone(), r.clone())))
-            .collect();
-
-        let cands: Vec<candidates::Candidate<'_>> = search_results
-            .into_iter()
-            .filter_map(|(cid, score)| {
-                opp_records_snapshot
-                    .iter()
-                    .find(|(id, _)| *id == cid)
-                    .map(|(_, rec)| candidates::Candidate {
-                        id: cid,
-                        record: rec,
-                        embedding_score: Some(score as f64),
-                    })
-            })
-            .collect();
-
-        let results = if !cands.is_empty() {
-            match_engine::score_candidates(&id, &record, Some(&vec), side, &cands, config)
-        } else {
-            vec![]
-        };
+        let opp_idx = opp_side.index.read().unwrap_or_else(|e| e.into_inner());
+        let results = pipeline::score_pool(
+            &id,
+            &record,
+            vec,
+            side,
+            &opp_side.records,
+            &opp_idx,
+            Some(&opp_bi),
+            config,
+            top_n,
+        );
+        drop(opp_idx);
+        drop(opp_bi);
 
         let classification = results
             .first()
@@ -886,6 +869,178 @@ impl Session {
             record,
             crossmap,
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Batch operations
+    // -----------------------------------------------------------------------
+
+    /// Maximum batch size accepted by batch endpoints.
+    const MAX_BATCH_SIZE: usize = 1000;
+
+    /// Add/update multiple records in a single call.
+    ///
+    /// All records are encoded in a single ONNX batch call for efficiency,
+    /// then inserted and scored sequentially so each record sees the
+    /// crossmap state left by the previous one.
+    pub fn upsert_batch(
+        &self,
+        side: Side,
+        records: Vec<Record>,
+    ) -> Result<BatchUpsertResponse, SessionError> {
+        if records.is_empty() {
+            return Err(SessionError::MissingField {
+                field: "records (empty array)".into(),
+            });
+        }
+        if records.len() > Self::MAX_BATCH_SIZE {
+            return Err(SessionError::MissingField {
+                field: format!(
+                    "batch size {} exceeds maximum of {}",
+                    records.len(),
+                    Self::MAX_BATCH_SIZE
+                ),
+            });
+        }
+
+        let is_a_side = side == Side::A;
+        let config = &self.state.config;
+
+        // 1. Compute embedding texts for all records
+        let texts: Vec<String> = records
+            .iter()
+            .map(|r| primary_embedding_text(r, config, is_a_side))
+            .collect();
+
+        // 2. Batch encode — single ONNX call
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let vecs = self.state.encoder_pool.encode(&text_refs)?;
+
+        // 3. Insert + score each record sequentially
+        let mut results = Vec::with_capacity(records.len());
+        for (record, vec) in records.into_iter().zip(vecs.into_iter()) {
+            let resp = self.upsert_record_with_vec(side, record, vec);
+            match resp {
+                Ok(r) => results.push(r),
+                Err(e) => {
+                    // Per-record error: produce an error entry rather
+                    // than failing the whole batch.
+                    results.push(UpsertResponse {
+                        status: format!("error: {}", e),
+                        id: String::new(),
+                        side,
+                        classification: "error".to_string(),
+                        from_crossmap: false,
+                        matches: vec![],
+                        old_mapping: None,
+                    });
+                }
+            }
+        }
+
+        Ok(BatchUpsertResponse { results })
+    }
+
+    /// Score multiple records against the opposite side without storing
+    /// them (read-only batch).
+    ///
+    /// All records are encoded in a single ONNX batch call, then scored
+    /// sequentially.
+    pub fn match_batch(
+        &self,
+        side: Side,
+        records: Vec<Record>,
+    ) -> Result<BatchMatchResponse, SessionError> {
+        if records.is_empty() {
+            return Err(SessionError::MissingField {
+                field: "records (empty array)".into(),
+            });
+        }
+        if records.len() > Self::MAX_BATCH_SIZE {
+            return Err(SessionError::MissingField {
+                field: format!(
+                    "batch size {} exceeds maximum of {}",
+                    records.len(),
+                    Self::MAX_BATCH_SIZE
+                ),
+            });
+        }
+
+        let is_a_side = side == Side::A;
+        let config = &self.state.config;
+
+        // 1. Compute embedding texts for all records
+        let texts: Vec<String> = records
+            .iter()
+            .map(|r| primary_embedding_text(r, config, is_a_side))
+            .collect();
+
+        // 2. Batch encode — single ONNX call
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let vecs = self.state.encoder_pool.encode(&text_refs)?;
+
+        // 3. Score each record sequentially
+        let mut results = Vec::with_capacity(records.len());
+        for (record, vec) in records.into_iter().zip(vecs.into_iter()) {
+            let resp = self.try_match_with_vec(side, record, &vec);
+            match resp {
+                Ok(r) => results.push(r),
+                Err(e) => {
+                    results.push(MatchResponse {
+                        status: format!("error: {}", e),
+                        id: String::new(),
+                        side,
+                        classification: "error".to_string(),
+                        from_crossmap: false,
+                        matches: vec![],
+                    });
+                }
+            }
+        }
+
+        Ok(BatchMatchResponse { results })
+    }
+
+    /// Remove multiple records by ID.
+    ///
+    /// Each removal is processed sequentially. Records not found produce
+    /// a "not_found" entry rather than failing the whole batch.
+    pub fn remove_batch(
+        &self,
+        side: Side,
+        ids: Vec<String>,
+    ) -> Result<BatchRemoveResponse, SessionError> {
+        if ids.is_empty() {
+            return Err(SessionError::MissingField {
+                field: "ids (empty array)".into(),
+            });
+        }
+        if ids.len() > Self::MAX_BATCH_SIZE {
+            return Err(SessionError::MissingField {
+                field: format!(
+                    "batch size {} exceeds maximum of {}",
+                    ids.len(),
+                    Self::MAX_BATCH_SIZE
+                ),
+            });
+        }
+
+        let mut results = Vec::with_capacity(ids.len());
+        for id in &ids {
+            match self.remove_record(side, id) {
+                Ok(r) => results.push(r),
+                Err(_) => {
+                    results.push(RemoveResponse {
+                        status: "not_found".to_string(),
+                        id: id.clone(),
+                        side,
+                        crossmap_broken: vec![],
+                    });
+                }
+            }
+        }
+
+        Ok(BatchRemoveResponse { results })
     }
 
     /// Health check response.

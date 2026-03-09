@@ -1,11 +1,5 @@
 # Live Mode Worked Example
 
-This example starts a melder server with 10 records on each side
-(`set_1.csv` and `set_2.csv`), then walks you through the full
-lifecycle: querying, adding records, confirming and breaking matches,
-removing records, monitoring the WAL, and restarting with state
-recovery.
-
 In live mode, both sides are **fully symmetric** -- adding a record to
 A searches B for matches, and adding a record to B searches A. Both
 sides support the same operations (add, remove, query, match). The file
@@ -13,6 +7,11 @@ names `set_1.csv` and `set_2.csv` reflect this: neither side is
 privileged. This is different from batch mode, where A is the
 pre-indexed reference set and B records are scored against it one by
 one.
+
+This example starts a melder server with 10 records on each side,
+then walks you through the full lifecycle: querying, adding records,
+confirming and breaking matches, removing records, monitoring the WAL,
+and restarting with state recovery.
 
 ## Prerequisites
 
@@ -42,13 +41,17 @@ You will see startup output like:
 Initializing encoder pool (model=all-MiniLM-L6-v2, pool_size=2)...
 Encoder ready (dim=384), took 0.2s
 Loaded dataset A: 10 records in 0.0s
-Building A index (10 records)...
-...
 Loaded dataset B: 10 records in 0.0s
-Building B index (10 records)...
+Building A index (10 records)...
+  encoded 10/10 A records...
+A index built: 10 vecs in 0.0s (...)
 ...
-Live state loaded in 1.2s (A: 10 records/10 unmatched, B: 10 records/10 unmatched, crossmap: 0 pairs)
-Listening on 0.0.0.0:9090
+Building B index (10 records)...
+  encoded 10/10 B records...
+B index built: 10 vecs in 0.0s (...)
+...
+Live state loaded in 0.2s (A: 10 records/10 unmatched, B: 10 records/10 unmatched, crossmap: 0 pairs)
+meld serve listening on port 9090
 ```
 
 Let's break that down:
@@ -77,11 +80,19 @@ curl -s http://localhost:9090/api/v1/health | jq .
 
 ```json
 {
-  "status": "ok"
+  "status": "ready",
+  "model": "all-MiniLM-L6-v2",
+  "records_a": 10,
+  "records_b": 10,
+  "crossmap_entries": 0
 }
 ```
 
-Get detailed status:
+The health endpoint gives you record counts and the crossmap size at a
+glance. This is the endpoint you will use most often to see how many
+records are loaded and how many are matched.
+
+Get operational metrics:
 
 ```bash
 curl -s http://localhost:9090/api/v1/status | jq .
@@ -89,18 +100,16 @@ curl -s http://localhost:9090/api/v1/status | jq .
 
 ```json
 {
-  "a_records": 10,
-  "b_records": 10,
-  "a_unmatched": 10,
-  "b_unmatched": 10,
-  "crossmap_pairs": 0,
-  "uptime_secs": 5
+  "job": "live_example",
+  "uptime_seconds": 5.0,
+  "upserts": 0,
+  "matches": 0
 }
 ```
 
 > **Everything is unmatched.** The server loaded the data but has not
 > performed any matching yet. In live mode, matching happens when you
-> add or update a record -- not at startup.
+> add a record -- not at startup.
 
 ---
 
@@ -140,22 +149,24 @@ curl -s 'http://localhost:9090/api/v1/b/query?id=CP-001' | jq .
 
 ---
 
-## Step 4: Add (upsert) a B record to trigger matching
+## Step 4: Add a B record to trigger matching
 
 When you "add" a record that already exists, melder updates it and
 re-runs the scoring pipeline. This is how matching happens in live
 mode.
 
-Let's upsert CP-001 to trigger matching against the A side:
+Let's add CP-001 to trigger matching against the A side:
 
 ```bash
 curl -s -X POST http://localhost:9090/api/v1/b/add \
   -H 'Content-Type: application/json' \
   -d '{
-    "counterparty_id": "CP-001",
-    "counterparty_name": "ACME Corp.",
-    "domicile": "US",
-    "lei_code": "5493001KJTIIGC8Y1R12"
+    "record": {
+      "counterparty_id": "CP-001",
+      "counterparty_name": "ACME Corp.",
+      "domicile": "US",
+      "lei_code": "5493001KJTIIGC8Y1R12"
+    }
   }' | jq .
 ```
 
@@ -166,40 +177,89 @@ The response shows the top matches from the A side:
   "status": "updated",
   "id": "CP-001",
   "side": "b",
+  "classification": "auto",
+  "from_crossmap": false,
   "matches": [
     {
-      "matched_id": "ENT-001",
-      "score": 0.95,
+      "id": "ENT-001",
+      "score": 0.98,
       "classification": "auto",
-      "field_scores": [...]
+      "field_scores": [
+        {
+          "field_a": "legal_name",
+          "field_b": "counterparty_name",
+          "method": "embedding",
+          "score": 0.97,
+          "weight": 0.55
+        },
+        {
+          "field_a": "short_name",
+          "field_b": "counterparty_name",
+          "method": "fuzzy",
+          "score": 1.0,
+          "weight": 0.2
+        },
+        {
+          "field_a": "country_code",
+          "field_b": "domicile",
+          "method": "exact",
+          "score": 1.0,
+          "weight": 0.2
+        },
+        {
+          "field_a": "lei",
+          "field_b": "lei_code",
+          "method": "exact",
+          "score": 1.0,
+          "weight": 0.05
+        }
+      ],
+      "matched_record": {
+        "entity_id": "ENT-001",
+        "legal_name": "Acme Corporation",
+        "short_name": "Acme Corp",
+        "country_code": "US",
+        "lei": "5493001KJTIIGC8Y1R12"
+      }
     }
   ]
 }
 ```
 
 > **What just happened?** Melder encoded "ACME Corp." into a vector,
-> searched the A-side index for similar vectors (filtered to US records
-> by blocking), scored each candidate using all four match fields, and
-> returned the results. Because the top score exceeded 0.85 (the
-> `auto_match` threshold), the pair was **automatically confirmed** and
-> added to the crossmap.
+> applied the 3-stage pipeline (blocking filter to US records only,
+> candidate selection on short_name/counterparty_name, then full scoring
+> across all four match fields), and returned the results. Because the
+> top score exceeded 0.85 (the `auto_match` threshold), the pair was
+> **automatically confirmed** and added to the crossmap.
 
-Check the status to confirm:
+Check health to confirm:
 
 ```bash
-curl -s http://localhost:9090/api/v1/status | jq .
+curl -s http://localhost:9090/api/v1/health | jq .
 ```
 
-You should see `crossmap_pairs: 1` and one fewer unmatched on each side.
+You should see `crossmap_entries: 1` -- the pair CP-001/ENT-001 has
+been confirmed.
 
-Query CP-001 again to see its crossmap status:
+Query CP-001 to see its crossmap status:
 
 ```bash
 curl -s 'http://localhost:9090/api/v1/b/query?id=CP-001' | jq .
 ```
 
 The `crossmap` section now shows `"status": "matched"` with the paired
-A record.
+A record and its full data:
+
+```json
+{
+  "crossmap": {
+    "status": "matched",
+    "paired_id": "ENT-001",
+    "paired_record": { "...": "..." }
+  }
+}
+```
 
 ---
 
@@ -212,15 +272,18 @@ Use the `/match` endpoint instead of `/add`:
 curl -s -X POST http://localhost:9090/api/v1/b/match \
   -H 'Content-Type: application/json' \
   -d '{
-    "counterparty_id": "CP-NEW",
-    "counterparty_name": "Sakura Holdings Ltd",
-    "domicile": "JP",
-    "lei_code": ""
+    "record": {
+      "counterparty_id": "CP-NEW",
+      "counterparty_name": "Sakura Holdings Ltd",
+      "domicile": "JP",
+      "lei_code": ""
+    }
   }' | jq .
 ```
 
 This returns candidate matches but does not store CP-NEW or update the
-crossmap. The record is discarded after scoring.
+crossmap. The response format is the same as `/add`. The record is
+discarded after scoring.
 
 > **Use `/match` for what-if queries.** It's useful for testing how a
 > record would score before committing it to the system.
@@ -229,22 +292,25 @@ crossmap. The record is discarded after scoring.
 
 ## Step 6: Confirm a match manually
 
-Let's manually confirm a match. First, upsert CP-004 (Sakura Financial
+Let's manually confirm a match. First, add CP-004 (Sakura Financial
 Grp) to trigger scoring:
 
 ```bash
 curl -s -X POST http://localhost:9090/api/v1/b/add \
   -H 'Content-Type: application/json' \
   -d '{
-    "counterparty_id": "CP-004",
-    "counterparty_name": "Sakura Financial Grp",
-    "domicile": "JP",
-    "lei_code": ""
+    "record": {
+      "counterparty_id": "CP-004",
+      "counterparty_name": "Sakura Financial Grp",
+      "domicile": "JP",
+      "lei_code": ""
+    }
   }' | jq .
 ```
 
-If the score falls below 0.85, it won't be auto-confirmed. You can
-confirm it manually:
+The top match is ENT-003 (Sakura Financial Group) with a score around
+0.84 -- just below the 0.85 auto-match threshold, so it lands in the
+"review" band. You can confirm it manually:
 
 ```bash
 curl -s -X POST http://localhost:9090/api/v1/crossmap/confirm \
@@ -257,13 +323,11 @@ curl -s -X POST http://localhost:9090/api/v1/crossmap/confirm \
 
 ```json
 {
-  "status": "confirmed",
-  "a_id": "ENT-003",
-  "b_id": "CP-004"
+  "status": "confirmed"
 }
 ```
 
-Check status -- `crossmap_pairs` should have increased.
+Check health -- `crossmap_entries` should now be 2.
 
 > **Confirming a match removes both records from the unmatched pool.**
 > They will not appear as candidates in future scoring. This is how
@@ -293,7 +357,8 @@ curl -s -X POST http://localhost:9090/api/v1/crossmap/break \
 ```
 
 Both records are returned to the unmatched pool and become eligible
-for future matching.
+for future matching. Check health to confirm `crossmap_entries` has
+dropped back to 1.
 
 > **Breaking a match does not delete the records.** It only removes
 > the crossmap pairing. Both records remain in the system.
@@ -308,16 +373,19 @@ Matching works symmetrically. Adding an A record searches the B side:
 curl -s -X POST http://localhost:9090/api/v1/a/add \
   -H 'Content-Type: application/json' \
   -d '{
-    "entity_id": "ENT-011",
-    "legal_name": "Osaka Electronics Corporation",
-    "short_name": "Osaka Electronics",
-    "country_code": "JP",
-    "lei": ""
+    "record": {
+      "entity_id": "ENT-011",
+      "legal_name": "Osaka Electronics Corporation",
+      "short_name": "Osaka Electronics",
+      "country_code": "JP",
+      "lei": ""
+    }
   }' | jq .
 ```
 
-This searches for matching counterparties in Japan. If you earlier
-upserted CP-004 and it is unmatched, it may appear as a candidate.
+This searches for matching counterparties in Japan. The response has
+the same structure as a B-side add, but with `"side": "a"` and matches
+drawn from the B pool.
 
 > **Symmetry.** Everything that works for B (`/b/add`, `/b/query`,
 > `/b/remove`, `/b/match`) works identically for A. Both sides are
@@ -343,14 +411,14 @@ curl -s -X POST http://localhost:9090/api/v1/a/remove \
 }
 ```
 
-If ENT-011 was matched, the pairing is broken and the opposite-side
-record returns to the unmatched pool. The record is removed from the
-vector index, blocking index, and records store.
+If ENT-011 was matched, the pairing would be broken and the
+opposite-side record returned to the unmatched pool. The record is
+removed from the vector index, blocking index, and records store.
 
 > **Removal is permanent for the current session.** The record is
 > gone from all in-memory structures. However, if the record exists
 > in the original csv file, it will be reloaded on the next server
-> restart (unless a `RemoveRecord` WAL event overrides it during
+> restart (unless a `remove_record` WAL event overrides it during
 > replay).
 
 ---
@@ -362,6 +430,25 @@ Check whether a specific record is matched:
 ```bash
 curl -s 'http://localhost:9090/api/v1/crossmap/lookup?id=CP-001&side=b' | jq .
 ```
+
+```json
+{
+  "id": "CP-001",
+  "side": "b",
+  "status": "matched",
+  "paired_id": "ENT-001",
+  "matched_record": {
+    "entity_id": "ENT-001",
+    "legal_name": "Acme Corporation",
+    "short_name": "Acme Corp",
+    "country_code": "US",
+    "lei": "5493001KJTIIGC8Y1R12"
+  }
+}
+```
+
+For an unmatched record, the response only has `"status": "unmatched"`
+-- the `paired_id` and `matched_record` fields are omitted.
 
 ---
 
@@ -383,21 +470,24 @@ Now go back to Terminal 2 and add another record:
 curl -s -X POST http://localhost:9090/api/v1/b/add \
   -H 'Content-Type: application/json' \
   -d '{
-    "counterparty_id": "CP-006",
-    "counterparty_name": "Nordic Energy Sys AB",
-    "domicile": "SE",
-    "lei_code": ""
+    "record": {
+      "counterparty_id": "CP-006",
+      "counterparty_name": "Nordic Energy Sys AB",
+      "domicile": "SE",
+      "lei_code": ""
+    }
   }' | jq .
 ```
 
-Within a second, you should see a new line appear in the WAL tail:
+Within a second, you should see new lines appear in the WAL tail:
 
 ```json
-{"UpsertRecord":{"side":"b","record":{"counterparty_id":"CP-006","counterparty_name":"Nordic Energy Sys AB","domicile":"SE","lei_code":""}}}
+{"type":"upsert_record","side":"b","record":{"counterparty_id":"CP-006","counterparty_name":"Nordic Energy Sys AB","domicile":"SE","lei_code":""}}
+{"type":"crossmap_confirm","a_id":"ENT-004","b_id":"CP-006"}
 ```
 
-If the record auto-matched, you will also see a `CrossMapConfirm`
-event.
+The second line appears because CP-006 auto-matched with ENT-004
+(Nordic Energy Systems AB).
 
 > **The WAL is the crash-recovery mechanism.** If the server crashes,
 > these events are replayed on restart to reconstruct any changes
@@ -409,22 +499,12 @@ event.
 
 ## Step 12: Shutdown and restart
 
-Go to Terminal 1 and press **Ctrl-C** to stop the server. You will
-see shutdown output:
-
-```
-Shutting down...
-Flushing WAL...
-Compacting WAL...
-Saving crossmap (N pairs)...
-Saving index caches...
-Done.
-```
+Go to Terminal 1 and press **Ctrl-C** to stop the server.
 
 What happens on shutdown:
 
 1. **WAL flush** -- any buffered events are written to disk.
-2. **WAL compaction** -- the WAL is deduplicated (if you upserted the
+2. **WAL compaction** -- the WAL is deduplicated (if you added the
    same record 5 times, only the last version is kept).
 3. **Crossmap save** -- the current crossmap is written to
    `examples/live/output/crossmap.csv`.
@@ -440,8 +520,8 @@ Now restart:
 Watch the startup log. You should see:
 
 ```
-Loaded A index from cache: 10 vecs in 0.1ms
-Loaded B index from cache: 10 vecs in 0.1ms
+Loaded A index from cache: 10 vecs in 0.0ms
+Loaded B index from cache: 10 vecs in 0.0ms
 ...
 Loaded crossmap: N pairs
 Replaying M WAL events...
@@ -457,14 +537,14 @@ What happens on restart:
    are replayed. Records added via the API are re-inserted, crossmap
    changes are re-applied.
 
-Check status to confirm everything is restored:
+Check health to confirm everything is restored:
 
 ```bash
-curl -s http://localhost:9090/api/v1/status | jq .
+curl -s http://localhost:9090/api/v1/health | jq .
 ```
 
-The record counts, unmatched counts, and crossmap pairs should match
-what you had before shutdown.
+The record counts and crossmap entries should match what you had before
+shutdown.
 
 > **Persistence model.** The csv files are the baseline. The crossmap
 > csv and WAL capture everything that changed on top of that baseline.
@@ -484,22 +564,86 @@ rm -f examples/live/output/*.ndjson
 
 ---
 
+## Step 14: Batch operations
+
+When you need to add, match, or remove many records at once, use the
+batch endpoints. These are faster than sending individual requests
+because the ONNX model encodes all texts in a single call.
+
+Add 3 B-side records in one request:
+
+```bash
+curl -s -X POST http://localhost:9090/api/v1/b/add-batch \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "records": [
+      {"counterparty_id": "CP-BATCH-1", "counterparty_name": "Batch Corp One GB", "domicile": "GB", "lei_code": ""},
+      {"counterparty_id": "CP-BATCH-2", "counterparty_name": "Batch Corp Two DE", "domicile": "DE", "lei_code": ""},
+      {"counterparty_id": "CP-BATCH-3", "counterparty_name": "Batch Corp Three US", "domicile": "US", "lei_code": ""}
+    ]
+  }' | jq .
+```
+
+The response contains a `results` array with one entry per record, each
+having the same shape as a single `/add` response (id, status, matches,
+field_scores).
+
+Score records without storing them:
+
+```bash
+curl -s -X POST http://localhost:9090/api/v1/a/match-batch \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "records": [
+      {"entity_id": "TEST-1", "legal_name": "Test Corp", "short_name": "Test", "country_code": "US", "lei": ""}
+    ]
+  }' | jq .
+```
+
+Remove multiple records by ID:
+
+```bash
+curl -s -X POST http://localhost:9090/api/v1/b/remove-batch \
+  -H 'Content-Type: application/json' \
+  -d '{"ids": ["CP-BATCH-1", "CP-BATCH-2", "CP-BATCH-3"]}' | jq .
+```
+
+Missing IDs produce `"status": "not_found"` per entry rather than
+failing the whole request. Maximum 1000 records per batch.
+
+> **When to use batch endpoints.** Use them when you have multiple
+> records to process (e.g. bulk imports, periodic syncs). Batch size
+> 50 is the sweet spot -- ~1.8x faster than individual requests.
+
+---
+
 ## Summary of endpoints used
 
 | Method | Path | What it does |
 |--------|------|-------------|
-| GET | `/api/v1/health` | Health check |
-| GET | `/api/v1/status` | Record counts, unmatched counts, crossmap size, uptime |
+| GET | `/api/v1/health` | Record counts, crossmap size, model info |
+| GET | `/api/v1/status` | Uptime, operation counters |
 | GET | `/api/v1/a/query?id=X` | Look up an A record and its crossmap status |
 | GET | `/api/v1/b/query?id=X` | Look up a B record and its crossmap status |
 | POST | `/api/v1/a/add` | Add/update an A record, return matches from B |
 | POST | `/api/v1/b/add` | Add/update a B record, return matches from A |
+| POST | `/api/v1/a/add-batch` | Add/update multiple A records in one request |
+| POST | `/api/v1/b/add-batch` | Add/update multiple B records in one request |
 | POST | `/api/v1/a/match` | Score an A record against B (read-only, not stored) |
 | POST | `/api/v1/b/match` | Score a B record against A (read-only, not stored) |
+| POST | `/api/v1/a/match-batch` | Score multiple A records against B (read-only) |
+| POST | `/api/v1/b/match-batch` | Score multiple B records against A (read-only) |
 | POST | `/api/v1/a/remove` | Remove an A record from all indices |
 | POST | `/api/v1/b/remove` | Remove a B record from all indices |
+| POST | `/api/v1/a/remove-batch` | Remove multiple A records by ID |
+| POST | `/api/v1/b/remove-batch` | Remove multiple B records by ID |
 | POST | `/api/v1/crossmap/confirm` | Confirm a match (add to crossmap) |
 | POST | `/api/v1/crossmap/break` | Break a confirmed match |
 | GET | `/api/v1/crossmap/lookup?id=X&side=a` | Check if a record is matched |
+
+All POST endpoints that add or match records expect the body format
+`{"record": {...}}` (single) or `{"records": [...]}` (batch). Remove
+batch uses `{"ids": [...]}`. Confirm, break, and single remove use flat
+JSON bodies (`{"a_id": ..., "b_id": ...}` or `{"id": ...}`).
 
 For full API documentation, see the main [README](../../README.md).

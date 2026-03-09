@@ -49,6 +49,16 @@ pub struct RemoveRequest {
 }
 
 #[derive(Deserialize)]
+pub struct AddBatchRequest {
+    pub records: Vec<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+pub struct RemoveBatchRequest {
+    pub ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
 pub struct QueryParams {
     pub id: String,
 }
@@ -301,4 +311,128 @@ pub async fn health(State(session): State<AppState>) -> impl IntoResponse {
 pub async fn status(State(session): State<AppState>) -> impl IntoResponse {
     let resp = session.status();
     json_ok(resp)
+}
+
+// ---------------------------------------------------------------------------
+// Batch handlers
+// ---------------------------------------------------------------------------
+
+/// POST /api/v1/a/add-batch
+pub async fn add_batch_a(
+    State(session): State<AppState>,
+    Json(body): Json<AddBatchRequest>,
+) -> impl IntoResponse {
+    let count = body.records.len();
+    let t0 = std::time::Instant::now();
+    match tokio::task::spawn_blocking(move || session.upsert_batch(Side::A, body.records)).await {
+        Ok(Ok(resp)) => {
+            info!(side = "A", count = count, latency_ms = %t0.elapsed().as_millis(), "add-batch");
+            json_ok(resp)
+        }
+        Ok(Err(e)) => {
+            warn!(side = "A", error = %e, "add-batch failed");
+            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/v1/b/add-batch
+pub async fn add_batch_b(
+    State(session): State<AppState>,
+    Json(body): Json<AddBatchRequest>,
+) -> impl IntoResponse {
+    let count = body.records.len();
+    let t0 = std::time::Instant::now();
+    match tokio::task::spawn_blocking(move || session.upsert_batch(Side::B, body.records)).await {
+        Ok(Ok(resp)) => {
+            info!(side = "B", count = count, latency_ms = %t0.elapsed().as_millis(), "add-batch");
+            json_ok(resp)
+        }
+        Ok(Err(e)) => {
+            warn!(side = "B", error = %e, "add-batch failed");
+            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/v1/a/match-batch
+pub async fn match_batch_a(
+    State(session): State<AppState>,
+    Json(body): Json<AddBatchRequest>,
+) -> impl IntoResponse {
+    let count = body.records.len();
+    let t0 = std::time::Instant::now();
+    match tokio::task::spawn_blocking(move || session.match_batch(Side::A, body.records)).await {
+        Ok(Ok(resp)) => {
+            info!(side = "A", count = count, latency_ms = %t0.elapsed().as_millis(), "match-batch");
+            json_ok(resp)
+        }
+        Ok(Err(e)) => {
+            warn!(side = "A", error = %e, "match-batch failed");
+            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/v1/b/match-batch
+pub async fn match_batch_b(
+    State(session): State<AppState>,
+    Json(body): Json<AddBatchRequest>,
+) -> impl IntoResponse {
+    let count = body.records.len();
+    let t0 = std::time::Instant::now();
+    match tokio::task::spawn_blocking(move || session.match_batch(Side::B, body.records)).await {
+        Ok(Ok(resp)) => {
+            info!(side = "B", count = count, latency_ms = %t0.elapsed().as_millis(), "match-batch");
+            json_ok(resp)
+        }
+        Ok(Err(e)) => {
+            warn!(side = "B", error = %e, "match-batch failed");
+            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/v1/a/remove-batch
+pub async fn remove_batch_a(
+    State(session): State<AppState>,
+    Json(body): Json<RemoveBatchRequest>,
+) -> impl IntoResponse {
+    let count = body.ids.len();
+    let t0 = std::time::Instant::now();
+    match tokio::task::spawn_blocking(move || session.remove_batch(Side::A, body.ids)).await {
+        Ok(Ok(resp)) => {
+            info!(side = "A", count = count, latency_ms = %t0.elapsed().as_millis(), "remove-batch");
+            json_ok(resp)
+        }
+        Ok(Err(e)) => {
+            warn!(side = "A", error = %e, "remove-batch failed");
+            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/v1/b/remove-batch
+pub async fn remove_batch_b(
+    State(session): State<AppState>,
+    Json(body): Json<RemoveBatchRequest>,
+) -> impl IntoResponse {
+    let count = body.ids.len();
+    let t0 = std::time::Instant::now();
+    match tokio::task::spawn_blocking(move || session.remove_batch(Side::B, body.ids)).await {
+        Ok(Ok(resp)) => {
+            info!(side = "B", count = count, latency_ms = %t0.elapsed().as_millis(), "remove-batch");
+            json_ok(resp)
+        }
+        Ok(Err(e)) => {
+            warn!(side = "B", error = %e, "remove-batch failed");
+            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
 }

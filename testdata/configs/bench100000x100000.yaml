@@ -1,0 +1,73 @@
+# Benchmark job: 100,000 A vs 100,000 B, no cross-map pre-seeded.
+
+job:
+  name: bench_100000x100000
+  description: Benchmark — 100,000 x 100,000 synthetic data, empty cross-map
+
+datasets:
+  a:
+    path: testdata/dataset_a_100000.csv
+    id_field: entity_id
+  b:
+    path: testdata/dataset_b_100000.csv
+    id_field: counterparty_id
+
+cross_map:
+  backend: local
+  path: bench/crossmap100k.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_index_cache: bench/cache/a_100000.index
+  b_index_cache: bench/cache/b_100000.index
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+
+candidates:
+  field_a: short_name
+  field_b: counterparty_name
+  method: fuzzy
+  scorer: wratio
+  n: 10
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: embedding
+    weight: 0.55
+
+  - field_a: short_name
+    field_b: counterparty_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+
+  - field_a: country_code
+    field_b: domicile
+    method: exact
+    weight: 0.20
+
+  - field_a: lei
+    field_b: lei_code
+    method: exact
+    weight: 0.05
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+output:
+  results_path:   bench/output/results_100000.csv
+  review_path:    bench/output/review_100000.csv
+  unmatched_path: bench/output/unmatched_100000.csv
+
+performance:
+  encoder_pool_size: 4
+  workers: 8

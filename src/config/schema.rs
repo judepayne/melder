@@ -134,11 +134,19 @@ pub struct CandidatesConfig {
     /// nil/true = enabled.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// A-side field to score for candidate selection.
+    #[serde(default)]
+    pub field_a: Option<String>,
+    /// B-side field to score for candidate selection.
+    #[serde(default)]
+    pub field_b: Option<String>,
+    /// Scoring method: "fuzzy", "embedding", or "exact".
     #[serde(default)]
     pub method: Option<String>,
+    /// Fuzzy scorer (only used when method is "fuzzy"). Default "wratio".
     #[serde(default)]
     pub scorer: Option<String>,
-    /// Default 10.
+    /// Number of top candidates to pass to full scoring. Default 10.
     #[serde(default)]
     pub n: Option<usize>,
 }

@@ -13,6 +13,9 @@ const VALID_METHODS: &[&str] = &["exact", "fuzzy", "embedding", "numeric"];
 /// Valid fuzzy scorers.
 const VALID_SCORERS: &[&str] = &["wratio", "partial_ratio", "token_sort", "ratio"];
 
+/// Valid candidate selection methods.
+const VALID_CANDIDATE_METHODS: &[&str] = &["exact", "fuzzy", "embedding"];
+
 /// Valid cross-map backends.
 const VALID_BACKENDS: &[&str] = &["local", "redis"];
 
@@ -37,13 +40,18 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
 // ---------------------------------------------------------------------------
 
 fn apply_defaults(cfg: &mut Config) {
-    // candidates
-    let candidates_enabled = cfg.candidates.enabled.unwrap_or(true);
+    // candidates — infer enabled from presence of config fields
+    let candidates_has_config = cfg.candidates.field_a.is_some()
+        || cfg.candidates.field_b.is_some()
+        || cfg.candidates.method.is_some();
+    let candidates_enabled = cfg.candidates.enabled.unwrap_or(candidates_has_config);
     if candidates_enabled {
         if cfg.candidates.n.is_none() || cfg.candidates.n == Some(0) {
             cfg.candidates.n = Some(10);
         }
-        if cfg.candidates.scorer.as_deref().unwrap_or("").is_empty() {
+        if cfg.candidates.method.as_deref() == Some("fuzzy")
+            && cfg.candidates.scorer.as_deref().unwrap_or("").is_empty()
+        {
             cfg.candidates.scorer = Some("wratio".into());
         }
     }
@@ -256,7 +264,43 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         }
     }
 
-    // 28-30. performance + live constraints
+    // 28. candidates
+    // If the candidates section is entirely omitted (enabled=None, no fields/method),
+    // treat as disabled. If the section is present with fields, treat as enabled.
+    let candidates_has_config = cfg.candidates.field_a.is_some()
+        || cfg.candidates.field_b.is_some()
+        || cfg.candidates.method.is_some();
+    let candidates_enabled = cfg.candidates.enabled.unwrap_or(candidates_has_config);
+    if candidates_enabled {
+        let fa = cfg.candidates.field_a.as_deref().unwrap_or("");
+        let fb = cfg.candidates.field_b.as_deref().unwrap_or("");
+        if fa.is_empty() {
+            return Err(ConfigError::MissingField {
+                field: "candidates.field_a".into(),
+            });
+        }
+        if fb.is_empty() {
+            return Err(ConfigError::MissingField {
+                field: "candidates.field_b".into(),
+            });
+        }
+        let method = cfg.candidates.method.as_deref().unwrap_or("");
+        if method.is_empty() {
+            return Err(ConfigError::MissingField {
+                field: "candidates.method".into(),
+            });
+        }
+        require_one_of(method, VALID_CANDIDATE_METHODS, "candidates.method")?;
+        if method == "fuzzy" {
+            if let Some(ref scorer) = cfg.candidates.scorer {
+                if !scorer.is_empty() {
+                    require_one_of(scorer, VALID_SCORERS, "candidates.scorer")?;
+                }
+            }
+        }
+    }
+
+    // 29-31. performance + live constraints
     if let Some(pool) = cfg.performance.encoder_pool_size {
         if pool < 1 {
             return Err(ConfigError::InvalidValue {

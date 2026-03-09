@@ -103,8 +103,13 @@ embeddings:
   a_index_cache: cache/a.index
   b_index_cache: cache/b.index
 
+# For each record being matched, the Melder matching pipeline has three
+# phases in both batch and live modes:
+
+# Blocking -> Candidates selection -> Full scoring
+
 # --- Blocking (pre-filter) -----------------------------------------------
-# Before scoring, blocking eliminates obviously wrong candidates by
+# Before candidate selection, blocking eliminates obviously wrong candidates by
 # requiring cheap field equality. Here we require the country to match --
 # a record in France will never be compared against one in Japan.
 # This dramatically reduces the number of pairs that need expensive
@@ -119,7 +124,29 @@ blocking:
     - field_a: country_code
       field_b: domicile
 
-# --- Match fields ---------------------------------------------------------
+# --- Candidates (narrowing) -----------------------------------------------
+# After blocking, there may still be hundreds of records to score. The
+# candidates stage narrows this down to the top N by scoring on a single
+# field pair using a fast method, before the full multi-field scoring
+# runs. This is much cheaper than full scoring every blocked record.
+#
+# field_a / field_b: the field pair to score for candidate selection.
+# method: "fuzzy", "embedding", or "exact".
+# scorer: fuzzy scorer (only when method is fuzzy). Default "wratio".
+# n: how many top candidates to pass to full scoring. Default 10.
+#
+# Omit the candidates section entirely to disable it -- all blocked
+# records will go straight to full scoring (thorough but slower).
+candidates:
+  enabled: true
+  field_a: short_name
+  field_b: counterparty_name
+  method: fuzzy
+  scorer: wratio
+  n: 10
+
+# --- Match fields (full scoring) -------------------------------------------
+# After candidate selection, the final phase of the matching pipeline.
 # Each entry pairs a field from A with a field from B, specifies how to
 # compare them, and assigns a weight. The weights control how much each
 # field contributes to the overall score. Weights must sum to exactly
@@ -287,9 +314,9 @@ How it works:
    into a dense numeric vector (e.g. 384 numbers) capturing its semantic
    meaning. Texts with similar meanings end up with similar vectors,
    regardless of exact wording.
-2. Vectors are stored in an index. To find matches for a new record,
-   its vector is compared against all stored vectors using dot-product
-   similarity. The top-K most similar records are returned as candidates.
+2. Vectors are stored in an index. When a match field uses method
+   `embedding`, the precomputed vectors for both records are compared
+   using cosine similarity to produce the field score.
 3. Cosine similarity is clamped to [0.0, 1.0]. A score of 1.0 means
    the texts have identical meaning (or are identical); a score near 0.0
    means they are unrelated.
@@ -324,14 +351,15 @@ above where we are matching entities against counterparties.
 When melder processes a B-side record -- say counterparty "JPMorgan
 Chase & Co" from the US -- the pipeline works as follows:
 
-**Step 0: Common ID pre-match (optional).** If `common_id_field` is
-configured on both datasets, melder first checks whether the incoming
-record shares a common identifier value with any record on the opposite
-side. If a match is found, the pair is immediately confirmed with a
-score of 1.0 and no further scoring is performed. This is useful when
-both sides share a stable key (e.g. ISIN, LEI) for a subset of records
--- those records are resolved instantly, and the scoring pipeline only
-runs for the remainder.
+**Step 0: Matching Common ID filter**
+If `common_id_field` is configured on both datasets, melder first
+checks whether the incoming record shares a common identifier value with
+any record on the opposite side. If a match is found, the pair is
+immediately confirmed with a score of 1.0 and no further scoring is
+performed. This is useful when both sides share a stable key (e.g. ISIN,
+LEI) for a subset of records.
+Those records with a matchable Common ID are resolved instantly and
+the scoring pipeline is not pursued further.
 
 **Step 1: Blocking.** Before any scoring happens, melder eliminates
 candidates that cannot possibly match. In our config, blocking requires
@@ -339,17 +367,20 @@ candidates that cannot possibly match. In our config, blocking requires
 only A-side entities with `country_code: US` are considered. This is a
 cheap filter that avoids wasting time scoring thousands of irrelevant
 pairs. If blocking is disabled (`enabled: false` or the section omitted),
-this step is skipped and all records proceed to candidate generation.
+this step is skipped and all records proceed to candidate selection.
 
-**Step 2: Candidate generation.** Among the records that passed blocking,
-melder uses the embedding index to find the top-K most semantically
-similar records. In our config, this means searching for A-side
-`legal_name` values whose vector is closest to the counterparty name's
-vector. If the embedding search returns fewer candidates than expected
-(e.g. because the name is unusual), melder falls back to fuzzy string
-matching to fill in additional candidates.
+**Step 2: Candidate selection.** Among the records that passed blocking,
+there may still be hundreds of candidates. The candidates stage
+narrows them to the top N by scoring on a single configured field pair.
+In our config, this means comparing `short_name` (A) against
+`counterparty_name` (B) using fuzzy matching (`wratio`), then keeping
+the 10 highest-scoring candidates for full scoring. This is much
+cheaper than running all four match fields on every blocked record.
 
-**Step 3: Scoring.** Each candidate pair is then scored across all four
+If the candidates section is omitted, all blocked records go straight
+to full scoring -- thorough but slower on large datasets.
+
+**Step 3: Full scoring.** Each candidate pair is scored across all four
 match fields defined in the config:
 
 | Field pair | Method | Score example | Weight |
@@ -371,6 +402,11 @@ configured thresholds:
   and `auto_match` (0.85), so it would be classified as `review` and
   written to the review file for a human to decide.
 - Below 0.60 it would be discarded as a non-match.
+
+The same pipeline code (`matching::pipeline::score_pool`) is used by
+both batch and live modes. In batch mode, Rayon parallelises it across
+all B records. In live mode, each incoming request runs the pipeline
+inside a `spawn_blocking` task to avoid blocking the async runtime.
 
 ## Operation
 
@@ -679,10 +715,16 @@ All endpoints are under `/api/v1/`.
 |--------|------|-------------|
 | POST | `/a/add` | Add or update an A-side record, return top matches from B |
 | POST | `/b/add` | Add or update a B-side record, return top matches from A |
+| POST | `/a/add-batch` | Add or update multiple A-side records in one request |
+| POST | `/b/add-batch` | Add or update multiple B-side records in one request |
 | POST | `/a/match` | Score an A-side record against B without storing it (read-only) |
 | POST | `/b/match` | Score a B-side record against A without storing it (read-only) |
+| POST | `/a/match-batch` | Score multiple A-side records against B without storing (read-only) |
+| POST | `/b/match-batch` | Score multiple B-side records against A without storing (read-only) |
 | POST | `/a/remove` | Remove an A-side record from all indices and break any crossmap pair |
 | POST | `/b/remove` | Remove a B-side record from all indices and break any crossmap pair |
+| POST | `/a/remove-batch` | Remove multiple A-side records in one request |
+| POST | `/b/remove-batch` | Remove multiple B-side records in one request |
 | GET | `/a/query?id=X` | Look up an A-side record and its crossmap status |
 | GET | `/b/query?id=X` | Look up a B-side record and its crossmap status |
 | POST | `/crossmap/confirm` | Confirm a match (add to cross-map) |
@@ -761,6 +803,95 @@ Response:
 The `crossmap_broken` array lists any opposite-side IDs whose pairing
 was broken by the removal. It is omitted when empty.
 
+### Batch operations
+
+The batch endpoints accept multiple records in a single request. This
+amortises the ONNX encoding cost across the batch -- all texts are
+encoded in a single model call, then scored sequentially. Maximum 1000
+records per request. Empty arrays return 400.
+
+**Add batch** -- add or update multiple records at once:
+
+```json
+POST /api/v1/a/add-batch
+
+{
+  "records": [
+    {"entity_id": "ENT-001", "legal_name": "Acme Corp", "country_code": "US"},
+    {"entity_id": "ENT-002", "legal_name": "Globex Inc", "country_code": "GB"}
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "results": [
+    {"id": "ENT-001", "status": "added", "matches": [...], ...},
+    {"id": "ENT-002", "status": "added", "matches": [...], ...}
+  ]
+}
+```
+
+Each entry in `results` has the same shape as a single `/add` response.
+If a record fails (e.g. missing ID field), its entry has
+`"status": "error"` with a message -- the rest of the batch still
+succeeds.
+
+**Match batch** -- score multiple records without storing them:
+
+```json
+POST /api/v1/b/match-batch
+
+{
+  "records": [
+    {"counterparty_id": "CP-X", "counterparty_name": "Test Corp", "domicile": "US"},
+    {"counterparty_id": "CP-Y", "counterparty_name": "Another Inc", "domicile": "GB"}
+  ]
+}
+```
+
+**Remove batch** -- remove multiple records by ID:
+
+```json
+POST /api/v1/a/remove-batch
+
+{
+  "ids": ["ENT-001", "ENT-002", "NONEXISTENT"]
+}
+```
+
+Response:
+
+```json
+{
+  "results": [
+    {"id": "ENT-001", "side": "a", "status": "removed"},
+    {"id": "ENT-002", "side": "a", "status": "removed"},
+    {"id": "NONEXISTENT", "side": "a", "status": "not_found"}
+  ]
+}
+```
+
+Missing IDs produce `"status": "not_found"` entries rather than failing
+the request.
+
+**Throughput.** Batch endpoints are faster than sending single requests
+in a loop because they amortise ONNX encoding overhead. On the 10K x
+10K benchmark dataset:
+
+| Batch size | Throughput (rec/s) | Speedup vs single |
+|:----------:|-------------------:|:-----------------:|
+| 1          | 221                | 0.9x              |
+| 10         | 331                | 1.4x              |
+| 50         | 445                | 1.8x              |
+| 100        | 319                | 1.3x              |
+| 500        | 325                | 1.3x              |
+
+Batch size 50 is the sweet spot -- large enough to amortise encoding,
+small enough that per-batch latency stays under 200ms.
+
 ### Querying a record
 
 Look up a record by ID to see its full contents and crossmap status
@@ -834,17 +965,32 @@ Benchmarked on Apple Silicon with the 10Kx10K synthetic dataset,
 
 | Metric | Sequential (c=1) | Concurrent (c=10) |
 |--------|-----------------|-------------------|
-| Throughput | 375 req/s | 914 req/s |
-| p50 latency | 2.6ms | 6.1ms |
-| p95 latency | 3.3ms | 29.2ms |
-| p99 latency | 4.6ms | 41.2ms |
+| Throughput | 255 req/s | 760 req/s |
+| p50 latency | 3.8ms | 11.6ms |
+| p95 latency | 4.8ms | 24.6ms |
+| p99 latency | 6.0ms | 33.8ms |
 
-### Batch mode (10K x 10K)
+### Batch mode (warm caches)
 
-| Metric | Value |
-|--------|-------|
-| Throughput | 704 records/sec |
-| Total time | 14.2s |
+| Metric | 1K x 1K | 10K x 10K | 100K x 100K |
+|--------|--------:|----------:|------------:|
+| Throughput | 30,000 records/sec | 4,200 records/sec | 306 records/sec |
+| Total time | <0.1s | 2.4s | 5m 27s |
+
+At small scale (1K) the scoring pipeline is trivially fast -- blocking
+produces small candidate pools, candidate selection and full scoring
+finish in microseconds, and Rayon parallelism has almost no contention.
+As dataset size grows, the number of records passing through each
+pipeline stage increases and the cost of the user-configured filters in
+the first two stages -- blocking and candidate selection -- becomes the
+dominant factor. At 100K, blocking on a single field like `country_code`
+still leaves thousands of records per block, and candidate selection
+must run `wratio` on each of them before the top 10 reach full scoring.
+Tighter blocking keys (more fields, or more selective fields) and
+switching candidate selection from fuzzy to embedding-based scoring can
+significantly improve throughput at large scale. The pipeline is
+designed so that these tuning decisions stay in the user's hands via
+the config file.
 
 ### Benchmarking
 
@@ -887,7 +1033,19 @@ python bench/live_concurrent_test.py --binary ./target/release/meld \
     --iterations 3000 --concurrency 10
 ```
 
-All three scripts accept `--no-serve` to skip starting the server, which
+**`bench/live_batch_test.py`** -- Batch endpoint benchmark. Runs the
+same workload through single-record endpoints and then through batch
+endpoints, printing a side-by-side comparison. Also tests `match-batch`
+and `remove-batch`. Use `--batch-only` to skip the single-record
+baseline.
+
+```bash
+python bench/live_batch_test.py --binary ./target/release/meld \
+    --config testdata/configs/bench_live.yaml \
+    --records 3000 --batch-size 50
+```
+
+All four scripts accept `--no-serve` to skip starting the server, which
 is useful when you want to start it yourself (e.g. with debug logging or
 a different config):
 
@@ -945,8 +1103,9 @@ Subsequent runs (same data):
   B vectors: load from b_index_cache (~5ms) OR re-encode if not configured
 
 Scoring:
-  For each B record, search the A vector index for similar records.
-  B vectors are borrowed directly from the in-memory index — no copying.
+  For each B record, run the 3-stage pipeline (blocking → candidates → full
+  scoring). Precomputed vectors from both indices are used for any embedding
+  match fields — no re-encoding needed.
 ```
 
 Setting `b_index_cache` is particularly valuable when tuning thresholds or
@@ -1009,7 +1168,7 @@ src/
   index/               Flat vector index with binary cache
   fuzzy/               Fuzzy string matchers (ratio, partial_ratio, token_sort, wratio)
   scoring/             Scoring dispatch (exact, fuzzy, embedding, numeric)
-  matching/            Blocking filter, candidate generation, scoring engine
+  matching/            Blocking filter, candidate selection, scoring pipeline
   crossmap/            Bidirectional ID mapping with csv persistence
   batch/               Batch matching engine and output writers
   state/               State management (batch + live), WAL

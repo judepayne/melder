@@ -1,11 +1,10 @@
 //! Batch matching engine.
 //!
-//! For each B record:
-//! 1. Skip if already in CrossMap
-//! 2. Encode B record's embedding text (batched for throughput)
-//! 3. Generate candidates from A pool (parallelized with Rayon)
-//! 4. Score candidates
-//! 5. Classify top result; if auto_match → add to CrossMap
+//! Pipeline per B record (parallelized with Rayon):
+//! 1. Common ID pre-match (optional, runs first for all records)
+//! 2. Skip if already in CrossMap
+//! 3. Blocking filter → candidate selection → full scoring (via shared pipeline)
+//! 4. Classify top result; if auto_match → add to CrossMap
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -13,6 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
+use dashmap::DashMap;
 use rayon::prelude::*;
 
 use crate::config::Config;
@@ -22,7 +22,7 @@ use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::index::VecIndex;
 use crate::matching::blocking::BlockingIndex;
-use crate::matching::{candidates, engine as match_engine};
+use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::state::primary_embedding_text;
 
@@ -53,12 +53,12 @@ enum RecordOutcome {
 
 /// Run the batch matching engine.
 ///
-/// Loads B records from CSV, processes each against the pre-built A index.
+/// Loads B records from csv, processes each against the pre-built A index.
 /// If `b_index_cache` is configured, B embeddings are cached to disk so
 /// subsequent runs (e.g. with different thresholds) skip ONNX encoding.
 pub fn run_batch(
     config: &Config,
-    records_a: &HashMap<String, Record>,
+    records_a: &DashMap<String, Record>,
     index_a: &VecIndex,
     encoder_pool: &EncoderPool,
     crossmap: &mut CrossMap,
@@ -70,8 +70,8 @@ pub fn run_batch(
     let bi: Option<BlockingIndex> = if config.blocking.enabled {
         let bi_start = Instant::now();
         let mut bi = BlockingIndex::from_config(&config.blocking);
-        for (id, record) in records_a {
-            bi.insert(id, record, Side::A);
+        for entry in records_a.iter() {
+            bi.insert(entry.key(), entry.value(), Side::A);
         }
         eprintln!(
             "Built blocking index for {} A records in {:.1}ms",
@@ -84,8 +84,8 @@ pub fn run_batch(
     };
     let bi_ref = bi.as_ref();
 
-    // Load B records
-    let (b_records, b_ids) = data::load_dataset(
+    // Load B records (into HashMap from data loaders, then convert to DashMap)
+    let (b_records_map, b_ids) = data::load_dataset(
         Path::new(&config.datasets.b.path),
         &config.datasets.b.id_field,
         &config.required_fields_b,
@@ -93,7 +93,10 @@ pub fn run_batch(
     )
     .map_err(MelderError::Data)?;
 
-    eprintln!("Loaded {} B records for batch matching", b_records.len());
+    eprintln!(
+        "Loaded {} B records for batch matching",
+        b_records_map.len()
+    );
 
     let total_b = if let Some(lim) = limit {
         lim.min(b_ids.len())
@@ -102,11 +105,20 @@ pub fn run_batch(
     };
 
     // Build or load B-side VecIndex (for embedding cache).
-    // If b_index_cache is configured and fresh, load from cache (fast).
-    // Otherwise encode all B records and build the index from scratch.
     let b_index_cache_path = config.embeddings.b_index_cache.as_deref();
-    let index_b =
-        build_or_load_b_index(b_index_cache_path, &b_records, &b_ids, config, encoder_pool)?;
+    let index_b = build_or_load_b_index(
+        b_index_cache_path,
+        &b_records_map,
+        &b_ids,
+        config,
+        encoder_pool,
+    )?;
+
+    // Convert B records to DashMap for shared pipeline use
+    let b_records: DashMap<String, Record> = DashMap::with_capacity(b_records_map.len());
+    for (id, rec) in b_records_map {
+        b_records.insert(id, rec);
+    }
 
     let mut matched = Vec::new();
     let mut review = Vec::new();
@@ -122,11 +134,11 @@ pub fn run_batch(
         let cid_start = Instant::now();
         // Build reverse index: common_id_value -> a_id
         let mut a_common_index: HashMap<String, String> = HashMap::new();
-        for (a_id, a_rec) in records_a {
-            if let Some(val) = a_rec.get(a_cid_field) {
+        for entry in records_a.iter() {
+            if let Some(val) = entry.value().get(a_cid_field) {
                 let val = val.trim();
                 if !val.is_empty() {
-                    a_common_index.insert(val.to_string(), a_id.clone());
+                    a_common_index.insert(val.to_string(), entry.key().clone());
                 }
             }
         }
@@ -136,13 +148,14 @@ pub fn run_batch(
             if crossmap.has_b(b_id) {
                 continue;
             }
-            if let Some(b_rec) = b_records.get(b_id) {
-                if let Some(b_val) = b_rec.get(b_cid_field) {
+            if let Some(b_entry) = b_records.get(b_id) {
+                if let Some(b_val) = b_entry.value().get(b_cid_field) {
                     let b_val = b_val.trim();
                     if !b_val.is_empty() {
                         if let Some(a_id) = a_common_index.get(b_val) {
                             // Immediate match
                             crossmap.add(a_id, b_id);
+                            let a_rec = records_a.get(a_id).map(|e| e.value().clone());
                             let mr = MatchResult {
                                 query_id: b_id.clone(),
                                 matched_id: a_id.clone(),
@@ -150,7 +163,7 @@ pub fn run_batch(
                                 score: 1.0,
                                 field_scores: vec![],
                                 classification: Classification::Auto,
-                                matched_record: records_a.get(a_id).cloned(),
+                                matched_record: a_rec,
                                 from_crossmap: false,
                             };
                             matched.push(mr);
@@ -190,7 +203,7 @@ pub fn run_batch(
     // Wrap crossmap in Mutex for concurrent access during parallel scoring.
     let crossmap_mu = Mutex::new(crossmap);
 
-    // Score all B records in a single parallel pass — no chunk boundaries.
+    // Score all B records in a single parallel pass.
     let progress = AtomicUsize::new(0);
     let work_total = work_items.len();
 
@@ -224,27 +237,27 @@ pub fn run_batch(
                 }
             }
 
-            // Candidate generation + scoring — all read-only, no lock needed.
-            // Pass an empty crossmap since we already checked above.
-            let empty_cm = CrossMap::new();
-            let cands = candidates::generate_candidates_batch_indexed(
-                b_id, b_record, b_vec, index_a, records_a, config, &empty_cm, bi_ref,
-            );
-
-            if cands.is_empty() {
-                return Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()));
-            }
-
-            let results = match_engine::score_candidates(
+            // Shared pipeline: blocking → candidates → full scoring
+            let results = pipeline::score_pool(
                 b_id,
-                b_record,
-                Some(b_vec),
+                b_record.value(),
+                b_vec,
                 Side::B,
-                &cands,
+                records_a,
+                index_a,
+                bi_ref,
                 config,
+                0, // no top_n limit in batch — we want the best result
             );
 
-            if let Some(top) = results.into_iter().next() {
+            if let Some(mut top) = results.into_iter().next() {
+                // Attach matched record to the top result
+                if top.matched_record.is_none() {
+                    if let Some(a_entry) = records_a.get(&top.matched_id) {
+                        top.matched_record = Some(a_entry.value().clone());
+                    }
+                }
+
                 // If auto-match, update crossmap under lock immediately
                 // so other threads see it.
                 if top.classification == Classification::Auto {
@@ -254,12 +267,16 @@ pub fn run_batch(
                 match top.classification {
                     Classification::Auto => Some(RecordOutcome::Auto(top)),
                     Classification::Review => Some(RecordOutcome::Review(top)),
-                    Classification::NoMatch => {
-                        Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()))
-                    }
+                    Classification::NoMatch => Some(RecordOutcome::NoMatch(
+                        b_id.to_string(),
+                        b_record.value().clone(),
+                    )),
                 }
             } else {
-                Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()))
+                Some(RecordOutcome::NoMatch(
+                    b_id.to_string(),
+                    b_record.value().clone(),
+                ))
             }
         })
         .collect();

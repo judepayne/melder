@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
+use dashmap::DashMap;
+
 use crate::config::Config;
 use crate::data;
 use crate::encoder::EncoderPool;
@@ -24,10 +26,10 @@ pub struct LoadOptions {
 /// Composite state holding everything needed for matching.
 pub struct MatchState {
     pub config: Config,
-    pub records_a: HashMap<String, Record>,
+    pub records_a: DashMap<String, Record>,
     pub ids_a: Vec<String>,
     pub index_a: VecIndex,
-    pub records_b: Option<HashMap<String, Record>>,
+    pub records_b: Option<DashMap<String, Record>>,
     pub ids_b: Option<Vec<String>>,
     pub index_b: Option<VecIndex>,
     pub encoder_pool: EncoderPool,
@@ -42,6 +44,15 @@ impl std::fmt::Debug for MatchState {
             .field("index_b", &self.index_b.as_ref().map(|i| i.len()))
             .finish()
     }
+}
+
+/// Convert a HashMap into a DashMap (one-time move during state loading).
+fn into_dashmap(map: HashMap<String, Record>) -> DashMap<String, Record> {
+    let dm = DashMap::with_capacity(map.len());
+    for (k, v) in map {
+        dm.insert(k, v);
+    }
+    dm
 }
 
 /// Build the embedding text for a record by concatenating values of all
@@ -190,10 +201,10 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
 
     Ok(MatchState {
         config,
-        records_a,
+        records_a: into_dashmap(records_a),
         ids_a,
         index_a,
-        records_b,
+        records_b: records_b.map(into_dashmap),
         ids_b,
         index_b,
         encoder_pool,

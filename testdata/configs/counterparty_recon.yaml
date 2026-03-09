@@ -33,6 +33,13 @@ blocking:
   field_a: country_code
   field_b: domicile
 
+candidates:
+  field_a: short_name
+  field_b: counterparty_name
+  method: fuzzy
+  scorer: wratio
+  n: 10
+
 match_fields:
   - field_a: legal_name
     field_b: counterparty_name
@@ -54,11 +61,6 @@ match_fields:
     field_b: lei_code
     method: exact
     weight: 0.05
-
-candidates:
-  method: fuzzy
-  scorer: wratio
-  n: 10
 
 output_mapping:
   - from: sector

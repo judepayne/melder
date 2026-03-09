@@ -53,7 +53,7 @@ The config file has a deliberate mistake. Try validating it:
 You should see an error like:
 
 ```
-Error: match_fields weights sum to 1.050, must equal 1.0 (tolerance 0.001)
+Config error: weights sum to 1.05, expected 1.0
 ```
 
 Melder requires that all match field weights sum to exactly 1.0. Open
@@ -86,7 +86,11 @@ Save the file and validate again:
 You should see:
 
 ```
-Config OK (batch_example)
+Config valid: job="batch_example"
+  datasets: A=examples/batch/reference.csv, B=examples/batch/incoming.csv
+  match_fields: 4 fields
+  thresholds: auto_match=0.85, review_floor=0.6
+  ...
 ```
 
 > **What just happened?** `meld validate` parses the YAML, checks that
@@ -107,7 +111,7 @@ You will see output like this (timings will vary):
 
 ```
 Job: batch_example (Worked example — 10 entities vs 25 counterparties)
-Datasets: A=examples/batch/entities.csv B=examples/batch/counterparties.csv
+Datasets: A=examples/batch/reference.csv B=examples/batch/incoming.csv
 Thresholds: auto_match=0.85, review_floor=0.6
 Initializing encoder pool (model=all-MiniLM-L6-v2, pool_size=2)...
 Encoder ready (dim=384), took 0.2s
@@ -135,9 +139,10 @@ Let's break down what happens:
 4. **Blocking** -- melder builds an index on `country_code` / `domicile`.
    Only records in the same country are compared, avoiding wasted work.
 
-5. **Scoring** -- for each B record, melder finds candidate A records
-   (via vector similarity + blocking filter), then scores each pair
-   using all four match fields.
+5. **Scoring** -- for each B record, melder applies the 3-stage
+    pipeline: blocking filter (same country), candidate selection
+    (top 10 by fuzzy score on short_name/counterparty_name), then
+    full scoring across all four match fields.
 
 6. **Classification** -- each B record's best score is classified:
    - score >= 0.85 --> **auto-match** (written to results.csv, added
@@ -158,8 +163,8 @@ ls -lh examples/batch/cache/
 You should see two binary files:
 
 ```
-a.index    ~20K   (10 vectors x 384 dimensions x 4 bytes + IDs)
-b.index    ~45K   (25 vectors x 384 dimensions x 4 bytes + IDs)
+a.index    ~15K   (10 vectors x 384 dimensions x 4 bytes + IDs)
+b.index    ~40K   (25 vectors x 384 dimensions x 4 bytes + IDs)
 ```
 
 These cache files mean the next run will skip the expensive ONNX
@@ -194,11 +199,11 @@ Each row is a confirmed match. Key columns:
 
 | Column | Meaning |
 |--------|---------|
-| `query_id` | The B-side record ID (e.g. `CP-001`) |
-| `matched_id` | The A-side record it matched (e.g. `ENT-001`) |
+| `a_id` | The A-side record ID (e.g. `ENT-001`) |
+| `b_id` | The B-side record ID (e.g. `CP-001`) |
 | `score` | Composite score (0.0 to 1.0) |
 | `classification` | Always `auto` in this file |
-| `field_scores` | Per-field breakdown showing each method's contribution |
+| `<fieldA>_<fieldB>_score` | One column per match field showing that field's score (e.g. `legal_name_counterparty_name_score`) |
 
 ### review.csv -- uncertain matches
 
@@ -310,7 +315,7 @@ Here is what each section of `config.yaml` does:
 | `embeddings` | Model name and cache file paths |
 | `blocking` | Pre-filter: only compare records sharing the same country |
 | `match_fields` | The scoring rules: which fields to compare, how, and how much weight each carries |
-| `candidates` | How many A-side candidates to consider per B record |
+| `candidates` | Narrowing: score blocked records on one field pair, keep top N for full scoring |
 | `thresholds` | Score boundaries for auto-match vs review vs no-match |
 | `output` | Where to write the three output csv files |
 | `performance` | Parallelism settings (encoder pool size, worker threads) |

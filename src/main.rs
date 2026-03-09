@@ -180,6 +180,21 @@ fn main() {
                     cfg.thresholds.auto_match, cfg.thresholds.review_floor
                 );
                 println!("  blocking: enabled={}", cfg.blocking.enabled);
+                let cand_has_config = cfg.candidates.field_a.is_some()
+                    || cfg.candidates.field_b.is_some()
+                    || cfg.candidates.method.is_some();
+                let cand_enabled = cfg.candidates.enabled.unwrap_or(cand_has_config);
+                if cand_enabled {
+                    println!(
+                        "  candidates: {}/{}  method={}  n={}",
+                        cfg.candidates.field_a.as_deref().unwrap_or("?"),
+                        cfg.candidates.field_b.as_deref().unwrap_or("?"),
+                        cfg.candidates.method.as_deref().unwrap_or("?"),
+                        cfg.candidates.n.unwrap_or(10),
+                    );
+                } else {
+                    println!("  candidates: disabled");
+                }
                 if let Some(pool) = cfg.performance.encoder_pool_size {
                     println!("  encoder_pool_size: {}", pool);
                 }
