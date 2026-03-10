@@ -219,17 +219,16 @@ live:
 
 ### Performance config
 
-The `performance` section controls parallelism. Both settings are
-optional and have sensible defaults.
+The `performance` section controls parallelism. The setting is optional
+and has a sensible default.
 
 ```yaml
 performance:
   encoder_pool_size: 4    # parallel ONNX sessions (default: 1)
-  workers: 8              # batch-mode scoring threads (default: num CPUs)
 ```
 
-For backward compatibility, `live.encoder_pool_size` and top-level
-`workers` are still accepted but the `performance` section is preferred.
+Batch scoring thread count is controlled by the `RAYON_NUM_THREADS`
+environment variable (defaults to logical CPU count if unset).
 
 ## Matching Algorithms
 
@@ -954,8 +953,7 @@ supported.
 
 ## Performance
 
-Benchmarked on Apple Silicon with the 10Kx10K synthetic dataset,
-`all-MiniLM-L6-v2` model, `encoder_pool_size: 4`.
+Benchmarked on Apple Silicon, `all-MiniLM-L6-v2` model, flat vector backend.
 
 ### Live mode (3,000 mixed requests, 80% requiring encoding)
 
@@ -966,27 +964,56 @@ Benchmarked on Apple Silicon with the 10Kx10K synthetic dataset,
 | p95 latency | 4.8ms | 24.6ms |
 | p99 latency | 6.0ms | 33.8ms |
 
-### Batch mode (warm caches)
+### Batch mode
 
-| Metric | 1K x 1K | 10K x 10K | 100K x 100K |
-|--------|--------:|----------:|------------:|
-| Throughput | 30,000 records/sec | 4,200 records/sec | 306 records/sec |
-| Total time | <0.1s | 2.4s | 5m 27s |
+Apple Silicon, `all-MiniLM-L6-v2`, `encoder_pool_size: 4`, flat vector backend,
+`candidates: enabled: false` (every B record scored against every A record — no
+blocking pre-filter).
 
-At small scale (1K) the scoring pipeline is trivially fast -- blocking
-produces small candidate pools, candidate selection and full scoring
-finish in microseconds, and Rayon parallelism has almost no contention.
-As dataset size grows, the number of records passing through each
-pipeline stage increases and the cost of the user-configured filters in
-the first two stages -- blocking and candidate selection -- becomes the
-dominant factor. At 100K, blocking on a single field like `country_code`
-still leaves thousands of records per block, and candidate selection
-must run `wratio` on each of them before the top 10 reach full scoring.
-Tighter blocking keys (more fields, or more selective fields) and
-switching candidate selection from fuzzy to embedding-based scoring can
-significantly improve throughput at large scale. The pipeline is
-designed so that these tuning decisions stay in the user's hands via
-the config file.
+**Warm (cache hit — vectors loaded from disk):**
+
+| | 1k × 1k | 10k × 10k | 100k × 100k |
+|---|---:|---:|---:|
+| Scoring throughput | 26,918 rec/s | 2,733 rec/s | 179 rec/s |
+| Wall time | 0.3s | 4.0s | 9m 20s |
+
+**Cold (first run — all vectors encoded from scratch):**
+
+| | 1k × 1k | 10k × 10k | 100k × 100k |
+|---|---:|---:|---:|
+| Encoding time | ~1.7s | ~16s | ~2m 49s |
+| Scoring throughput | 544 rec/s | 820 rec/s | 163 rec/s |
+| Wall time | 3.6s | 19.7s | 11m 28s |
+
+Cold runs encode once and cache to disk; every subsequent run is warm.
+
+With candidates disabled, every B record is scored against all A records in
+its block. Blocking is still active — the 100k × 100k run above uses
+`country_code` blocking, which produces 20 blocks of ~5k A records each, so
+each B record is scored against ~5k A records, not 100k.
+
+**flat vs usearch at 100k (candidates disabled):**
+
+| | cold scoring | warm scoring |
+|---|---:|---:|
+| flat | 163 rec/s | 179 rec/s |
+| usearch | 146 rec/s | 186 rec/s |
+
+With candidates disabled the usearch backend is no faster than flat, and
+slightly slower cold. The reason: when candidates are disabled,
+`select_candidates` calls `get_vec(id)` individually for every blocked
+candidate rather than calling `search()`. Flat's `get()` is a single lock
+acquisition plus a HashMap lookup and slice copy. Usearch's `get()` requires
+three nested lock acquisitions, two HashMap lookups, and an HNSW data-structure
+key retrieval. Both paths are O(N) in the block size; usearch just has a
+higher constant per call. With ~5k `get()` calls per B record, the overhead
+accumulates.
+
+Usearch's O(log N) advantage only materialises when `candidates: enabled:
+true` triggers `search()` with a small K — that is the HNSW ANN path.
+Enabling candidates pre-filters each block to the top-N nearest neighbours
+before full scoring, which is where HNSW earns its keep at large scale.
+These tuning decisions stay in the user's hands via the config file.
 
 ### Benchmarking
 

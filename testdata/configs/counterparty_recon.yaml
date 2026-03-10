@@ -83,7 +83,6 @@ output:
 
 performance:
   encoder_pool_size: 2
-  workers: 4
 
 sidecar:
   address: localhost:50051

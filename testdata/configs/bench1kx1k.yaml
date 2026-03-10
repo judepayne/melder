@@ -1,17 +1,17 @@
-# bench/bench1000x1000.yaml
-# Benchmark job: 1000 A vs 1000 B, no cross-map pre-seeded.
+# bench/bench1kx1k.yaml
+# Benchmark job: 1k A vs 1k B, no cross-map pre-seeded.
 
 job:
-  name: bench_1000x1000
-  description: Benchmark — 1000 x 1000 synthetic data, empty cross-map
+  name: bench_1kx1k
+  description: Benchmark — 1k x 1k synthetic data, empty cross-map
 
 datasets:
   a:
-    path: testdata/dataset_a_1000.csv
+    path: testdata/dataset_a_1k.csv
     id_field: entity_id
     format: csv
   b:
-    path: testdata/dataset_b_1000.csv
+    path: testdata/dataset_b_1k.csv
     id_field: counterparty_id
     format: csv
 
@@ -34,7 +34,7 @@ blocking:
       field_b: domicile
 
 candidates:
-  enabled: true
+  enabled: false
   field_a: short_name
   field_b: counterparty_name
   method: fuzzy
@@ -73,4 +73,3 @@ output:
 
 performance:
   encoder_pool_size: 4
-  workers: 8

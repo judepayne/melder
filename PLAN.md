@@ -1,397 +1,397 @@
-# melder — Build Plan
+# Plan: Unified Embedding Index + O(log N) Pipeline Redesign
 
-Detailed implementation plan for the melder Rust rewrite. Each task is scoped
-to 1-3 hours. Tasks within a phase are sequential unless marked `[parallel]`.
-Every task has a verification step — do not move on until it passes.
+## Background and Motivation
 
-**Reference paths:**
-- Go project: `/Users/jude/Library/CloudStorage/Dropbox/Projects/match/`
-- Rust project: `/Users/jude/Library/CloudStorage/Dropbox/Projects/melder/`
+Two problems exist in the current pipeline:
 
-**Key design doc:** `DESIGN.md` in this directory (1614 lines, 21 sections).
+**1. The usearch HNSW index is never actually used for search.**
+`VectorDB::search()` is implemented, tested, and correct, but nothing in the
+production code path calls it. Every embedding comparison at runtime goes
+through `VectorDB::get()` (individual point-lookup by ID) inside a brute-force
+loop over all blocked candidates. The O(log N) property of HNSW is never
+realised. Flat and usearch perform equivalently because both execute the same
+loop.
 
----
-
-## Key Invariants (check at every phase boundary)
-
-1. **Symmetry (live mode only):** Every feature for A exists identically for B.
-   Batch mode is asymmetrical — A is the reference pool, B records are queries.
-2. **Config compatibility:** Go YAML configs work unchanged (ignoring `sidecar`).
-3. **API compatibility:** Same endpoints, same request/response JSON shapes.
-4. **Scoring compatibility:** Same classification logic, same weight handling.
-   Small float differences in embedding scores are acceptable.
-5. **No `Ref` across `.await`:** DashMap guards are never held across async
-   boundaries.
-6. **Tests pass:** `cargo test` passes at every commit.
+**2. The `candidates:` config section forces users to reason about two phases
+that are in conceptual conflict.**
+The candidates phase and the full scoring phase both attempt to rank records,
+potentially using overlapping signals (embedding similarity appears in both).
+Users must configure weights in two places and understand how the two rankings
+interact. This is unnecessary complexity.
 
 ---
 
-## Phases 0–5: Complete (48/48 tasks)
+## Design
 
-All foundational work is done. The Rust rewrite is feature-complete and
-passes all stress tests.
+### Core idea
 
-| Phase | Description | Tasks | Status |
-|---|---|---|---|
-| 0 | Scaffold + test data | 2 | Done |
-| 1 | Config + models + scoring | 11 | Done |
-| 2 | Encoder + index + cache | 6 | Done |
-| 3 | Matching engine + batch | 10 | Done |
-| 4 | Live server | 11 | Done |
-| 5 | Polish + CLI + benchmark | 8 | Done |
+All `method: embedding` match fields are combined into a single vector per
+record at encoding time. A single HNSW index (one per side, one per block)
+stores these combined vectors. At query time, one `search(k=top_n)` call
+retrieves the top-N semantically similar candidates in O(log N). Full scoring
+then runs only on those N candidates.
 
-**Phase 0** — Cargo project initialised, test data and configs copied from Go project.
+The user sees one scoring config with methods and weights per field. Melder
+handles the rest internally.
 
-**Phase 1** — Error types, core models, config schema/loader/validation, CSV
-data loader, exact + fuzzy scorers (with golden test data from Python
-rapidfuzz), CLI skeleton with `validate` command. 11 tasks.
+### Mathematical basis
 
-**Phase 2** — Encoder pool (fastembed/ONNX), embedding scorer (cosine
-similarity), flat vector index (`VecIndex` with upsert/remove/search/
-search_filtered), index cache serialization, state loader, `cache` CLI
-commands. 6 tasks.
-
-**Phase 3** — Composite scorer, blocking filter (linear scan + BlockingIndex),
-CrossMap (local CSV backend), candidate generation, match engine,
-batch engine with Rayon parallelism, batch output writer, `run` and `tune`
-CLI commands. 10 tasks.
-
-**Phase 4** — Async dependencies (tokio/axum/dashmap), WAL (upsert log),
-live MatchState with DashMap + RwLock, session (upsert/try-match/CrossMap
-management), CrossMap background flusher, HTTP handlers + server, `serve`
-CLI command, stress test validation. 11 tasks.
-
-**Phase 5** — `review` and `crossmap` CLI commands, JSONL + Parquet data
-loaders, tracing + structured logging, graceful shutdown hardening, error
-handling audit, final benchmarks. 8 tasks.
-
----
-
-## Phase 6: Scaling to 1M+ Records
-
-Three pillars: usearch integration, encoding improvements, and candidate
-selection improvements.
-
-### Pillar 1: usearch Integration (Vector Search)
-
-Replace the flat brute-force VecIndex with a usearch-backed HNSW index.
-This is the foundation — everything else builds on it.
-
-#### 6.1 — Add usearch dependency
-
-- [ ] Add `usearch` crate to Cargo.toml. Verify it compiles on macOS
-  (Apple Silicon). Run a minimal smoke test: create index, add 100 vectors,
-  search, remove, save, load.
-
-**Verify:** `cargo build` succeeds. Smoke test passes.
-
-#### 6.2 — Design UsearchIndex adapter
-
-- [ ] Create `src/index/usearch.rs` implementing the same interface as the
-  current `VecIndex`:
-  - `new(dim, capacity)` — create index with inner product metric, f32 dtype
-  - `upsert(id, vec)` — add or replace a vector. Maintains bidirectional
-    `String <-> u64` key mapping (`HashMap<String, u64>` + `Vec<String>`)
-  - `remove(id)` — soft-remove: delete from key mapping but leave vector in
-    usearch (cheap). Optionally call usearch `remove()` to mark as tombstone.
-  - `search(query, k)` — search, map u64 keys back to String IDs
-  - `search_filtered(query, k, allowed_ids)` — use usearch's
-    `filtered_search()` with a closure predicate:
-    `|key| allowed_u64s.contains(&key)`
-  - `get(id)` — retrieve vector by string ID (via key mapping + usearch get)
-  - `contains(id)` — check key mapping
-  - `len()` — key mapping length (not usearch size, to avoid #697)
-
-**Verify:** Unit tests for all interface methods. Parity with VecIndex
-behaviour.
-
-#### 6.3 — Implement persistence
-
-- [ ] Replace the current `.index` binary cache format:
-  - `save(path)` — save usearch index to file + save key mapping as sidecar
-    (e.g. `path.keys` as bincode or msgpack)
-  - `load(path)` — load usearch index + key mapping sidecar
-  - `view(path)` — memory-mapped mode for large indexes (usearch native
-    feature)
-  - Staleness check: store a record count + hash in the sidecar header
-
-**Verify:** Save index with 1K vectors, load back, all vectors and IDs
-identical. Staleness check reports stale after adding a record.
-
-#### 6.4 — Keep vectors on remove
-
-- [ ] Change the remove semantics:
-  - `remove_record()` deletes from record store, blocking index, and
-    crossmap — but NOT from the vector index
-  - The vector stays in usearch as an orphan
-  - Re-adding a record checks if the embedding text matches an existing
-    orphan — if so, reuse the vector (skip encoding)
-  - Add periodic compaction: save/reload cycle that cleans up orphans
-    (can run on a timer or on explicit API call)
-
-**Verify:** Remove a record, re-add with same text — encoding is skipped.
-Compaction removes orphans. Vector count before/after compaction differs.
-
-#### 6.5 — Wire into MatchState
-
-- [ ] Replace `VecIndex` with `UsearchIndex` in `LiveSideState` and
-  `MatchState`. Update `src/state/state.rs` and `src/state/live.rs`. The
-  DashMap records + UsearchIndex vectors should be the only storage.
-
-**Verify:** All existing tests pass with the new index backend. Live mode
-startup loads usearch index from cache.
-
-#### 6.6 — Wire into batch engine
-
-- [ ] Update `src/batch/engine.rs` to use the new index. The batch engine's
-  Rayon parallel scoring should work without changes since usearch is
-  concurrent-read safe.
-
-**Verify:** `meld run` produces same output as before (within float
-tolerance). Batch throughput is not regressed.
-
-#### 6.7 — Wire into pipeline
-
-- [ ] Update `src/matching/pipeline.rs`. The `score_pool()` function calls
-  `index.get(id)` to retrieve vectors for cosine similarity — this must
-  work with UsearchIndex.
-
-**Verify:** Pipeline scoring produces same results as with flat index.
-
-#### 6.8 — Update candidates for embedding method
-
-- [ ] When `candidates.method: embedding`, use
-  `UsearchIndex.search_filtered()` instead of the current flat scan. This
-  should be a near drop-in replacement since the interface is the same.
-
-**Verify:** Embedding-based candidate selection returns same top-K results
-(order may differ for tied scores).
-
-#### 6.9 — Tests
-
-- [ ] Unit tests for UsearchIndex (create, upsert, search, filtered_search,
-  remove, save/load, orphan reuse). Integration tests: run the full pipeline
-  with usearch at 1K and 10K. All existing 116 tests must still pass.
-
-**Verify:** `cargo test` passes. Integration tests at 1K and 10K pass.
-
-#### 6.10 — Benchmark at 1M
-
-- [ ] Generate 1M x 1M synthetic datasets. Run batch mode, measure
-  throughput. Target: >1000 rec/s in batch mode with warm caches (vs
-  306 rec/s at 100K with flat index). Run live mode, measure latency.
-  Target: <5ms p50 at 1M.
-
-**Verify:** Benchmark results recorded. Targets met or root cause of
-shortfall identified.
-
----
-
-### Pillar 2: Encoding Improvements
-
-Reduce the cost of the ONNX forward pass, which is 65% of live-mode
-wall time.
-
-#### 6.11 — Request coalescing for live mode
-
-- [ ] Add an encoding coordinator that collects live-mode requests arriving
-  within a configurable window (default 2ms) and submits them as a single
-  ONNX batch:
-  - Requests enqueue their text + a oneshot channel into a bounded queue
-  - A background task drains the queue every N ms (or when batch reaches
-    size M)
-  - Single ONNX encode call for the batch
-  - Results fanned out via the oneshot channels
-  - The `_with_vec` refactor already exists — the coordinator produces
-    vectors, hands them to the existing scoring path
-  - Config: `performance.coalesce_window_ms` (default: 2),
-    `performance.coalesce_max_batch` (default: 32)
-
-**Verify:** Under concurrent load, batch sizes > 1 observed in logs.
-Throughput improves vs non-coalesced baseline.
-
-#### 6.12 — Vector LRU cache
-
-- [ ] Add a shared LRU cache keyed on embedding text hash (SHA-256 or
-  xxhash of the concatenated embedding string):
-  - Before calling ONNX, check the cache
-  - On cache hit, return the cached vector (skip encoding entirely)
-  - On cache miss, encode and insert into cache
-  - Config: `performance.vector_cache_size` (default: 10000 entries)
-  - The session already checks if the embedding text changed for a single
-    record — this extends it across all records
-
-**Verify:** Repeated upserts with same text hit the cache (log message).
-Cache hit rate reported in metrics.
-
-#### 6.13 — GPU / CoreML execution provider
-
-- [ ] Add a config option `performance.encoder_backend`:
-  - `cpu` (default) — current behaviour
-  - `coreml` — Apple Silicon Neural Engine via CoreML execution provider
-  - `cuda` — NVIDIA GPU via CUDA execution provider
-  - At init time, pass the selected provider to fastembed/ort
-  - When using GPU, pool_size should default to 1 (GPU sessions parallelise
-    internally)
-
-**Verify:** `coreml` backend initialises on Apple Silicon. Encoding
-produces same vectors (within float tolerance). Throughput improves.
-
-#### 6.14 — INT8 quantised model support
-
-- [ ] Add config option `embeddings.quantized: true`:
-  - When enabled, load the quantised ONNX graph variant of the model
-  - fastembed supports this natively for some models
-  - Expected: ~2x faster encoding on CPU with negligible quality loss for
-    entity matching
-
-**Verify:** Quantised model loads and produces vectors. Quality check:
-cosine similarity between quantised and full-precision vectors > 0.95
-for test pairs.
-
----
-
-### Pillar 3: Candidate Selection Improvements
-
-Make the candidate stage fast enough to handle 100K+ blocked records.
-
-#### 6.15 — Parallel candidate scoring
-
-- [ ] When `candidates.method: fuzzy`, use Rayon `par_iter` inside
-  `select_candidates()` for the wratio scoring loop:
-  - Each candidate score is independent — trivially parallelisable
-  - At 100K candidates on 8 cores: ~200ms -> ~25ms
-  - Small code change: `.iter()` -> `.par_iter()` + collect
-
-**Verify:** Candidate scoring is parallelised (observable via CPU
-utilisation). Latency reduced proportionally to core count.
-
-#### 6.16 — Embedding-based candidates with HNSW
-
-- [ ] When `candidates.method: embedding` and usearch is the backend,
-  candidate selection becomes a single `search_filtered()` call:
-  - Generate embedding for the candidate field text
-  - Search the opposite side's usearch index with the blocking filter as
-    predicate
-  - Return top N by embedding similarity
-  - This replaces N wratio comparisons with a single O(log N) HNSW search
-  - Expected: <0.1ms for candidate selection at any scale
-
-**Verify:** Candidate selection completes in <1ms at 100K scale. Results
-are valid candidates.
-
-#### 6.17 — Hybrid candidates
-
-- [ ] New `candidates.method: hybrid`:
-  - First pass: embedding search to grab top 100 candidates (sub-millisecond
-    with HNSW)
-  - Second pass: wratio on those 100 to re-rank
-  - Return top N after re-ranking
-  - Gets the recall of embedding search with the precision of
-    character-level scoring
-
-**Verify:** Hybrid method produces better precision than embedding-only
-at similar latency. Recall matches or exceeds fuzzy-only.
-
-#### 6.18 — Adaptive candidate method
-
-- [ ] When `candidates.method: auto` (or as an internal optimisation):
-  - If the blocked candidate pool is <= 1000 records, use fuzzy (wratio is
-    fast enough)
-  - If the blocked pool is > 1000, switch to embedding candidates
-  - Log the switch so the user can see it in tracing output
-
-**Verify:** Auto method selects fuzzy for small pools and embedding for
-large pools. Tracing output shows the selected method.
-
----
-
-### Supporting Work
-
-#### 6.19 — Generate 1M synthetic datasets
-
-- [ ] Create `testdata/generate_dataset.py` (or extend existing) to produce
-  `dataset_a_1000000.csv` and `dataset_b_1000000.csv`. Same schema as
-  existing synthetic data. Add a bench config
-  `testdata/configs/bench1000000x1000000.yaml`.
-
-**Verify:** Datasets generated with correct row counts and schema.
-Config validates.
-
-#### 6.20 — Update bench scripts for 1M
-
-- [ ] Update `live_stress_test.py`, `live_batch_test.py` to support
-  1M-scale testing. May need to increase timeouts and adjust progress
-  reporting.
-
-**Verify:** Bench scripts run against 1M data without timeout errors.
-
-#### 6.21 — Update documentation
-
-- [ ] Update DESIGN.md, README.md, FUTURE.md with usearch architecture,
-  new config options, and 1M benchmark results.
-
-**Verify:** Documentation reflects the current architecture and config
-options.
-
-#### 6.22 — Update FUTURE.md
-
-- [ ] Move completed items from the scaling roadmap into a "completed"
-  section. Update the performance roadmap table with actual 1M results.
-
-**Verify:** FUTURE.md is current and accurate.
-
----
-
-### Sequencing
-
-The work should be done in this order:
-
-1. Tasks 6.1–6.3 (usearch basic integration + persistence) — foundation
-2. Tasks 6.4–6.8 (wire into pipeline, keep-vectors-on-remove) — full
-   integration
-3. Task 6.9 (tests) — validate correctness
-4. Task 6.15 (parallel candidates) — quick win, independent of usearch
-5. Tasks 6.16–6.18 (embedding/hybrid/adaptive candidates) — requires
-   usearch
-6. Task 6.19 (1M datasets) — needed for benchmarking
-7. Task 6.10 (1M benchmark) — validate the whole stack
-8. Tasks 6.11–6.14 (encoding improvements) — optimisation layer, can be
-   done incrementally
-9. Tasks 6.20–6.22 (docs + bench updates) — final polish
-
----
-
-## Task Summary
-
-| Phase | Description | Tasks | Status |
-|---|---|---|---|
-| 0 | Scaffold + test data | 2 | Done |
-| 1 | Config + models + scoring | 11 | Done |
-| 2 | Encoder + index + cache | 6 | Done |
-| 3 | Matching engine + batch | 10 | Done |
-| 4 | Live server | 11 | Done |
-| 5 | Polish + CLI + benchmark | 8 | Done |
-| 6 | Scaling to 1M+ records | 22 | Pending |
-| **Total** | | **70** | |
-
----
-
-## Critical Path
+For embedding fields with unit-normalised per-field vectors and weights w₁, w₂:
 
 ```
-Phase 0–5 (done) → Phase 6
-                      ├─ Pillar 1: usearch (6.1–6.10)
-                      ├─ Pillar 3: candidates (6.15–6.18, after 6.5)
-                      ├─ Pillar 2: encoding (6.11–6.14, independent)
-                      └─ Supporting (6.19–6.22)
+combined_a = [√w₁·a₁, √w₂·a₂]
+combined_b = [√w₁·b₁, √w₂·b₂]
+
+‖combined_a‖ = √(w₁ + w₂)   (since a₁, a₂ are unit-normalised)
+
+cos_sim(combined_a, combined_b)
+  = (w₁·cos_sim(a₁,b₁) + w₂·cos_sim(a₂,b₂)) / (w₁ + w₂)
 ```
 
-The single riskiest task is **6.1–6.2 (usearch integration)** — it's the
-first time we integrate the `usearch` crate and verify HNSW search works
-correctly as a drop-in replacement for the flat index. If the crate has
-API or build issues on Apple Silicon, we need to find alternatives early.
+Therefore:
 
-The second riskiest is **6.5 (wire into MatchState)** — swapping the index
-backend in the live path touches concurrency-sensitive code. Budget extra
-time for debugging.
+```
+combined_similarity × (w₁ + w₂)
+  = w₁·cos_sim(a₁,b₁) + w₂·cos_sim(a₂,b₂)
+```
+
+This **exactly** recovers the weighted sum of individual field similarities —
+identical to what the current per-field full scoring computes for the embedding
+component. No approximation. Generalises to any number of embedding fields.
+
+### New pipeline (two stages)
+
+**Stage 1 — ANN search, O(log N) with usearch**
+
+- Encode B record's embedding fields → scale each by √weight → concatenate
+  → combined query vector
+- `combined_index_a.search(k=top_n, query_vec, b_record, Side::B)`
+- Returns: `Vec<(a_id, combined_similarity)>`, sorted descending
+
+**Stage 2 — Full scoring, O(top_n) ≈ constant**
+
+For each `(a_id, combined_similarity)` from Stage 1:
+- `embedding_contribution = combined_similarity × Σ(embedding_field_weights)`
+- For each fuzzy field: compute `fuzzy_score × weight`
+- For each exact field: compute `exact_score × weight`
+- `total = embedding_contribution + Σ(other contributions)`
+- Apply existing normalisation (divide by total_weight if it does not sum to 1.0)
+
+Return sorted list. Batch takes top-1. Live returns all top_n.
+
+### flat backend behaviour
+
+The flat backend's `search()` is not block-aware — it searches all stored
+vectors regardless of the query record's blocking key. To preserve correct
+blocking semantics for flat, the Stage 1 path for flat falls back to: iterate
+the blocked candidate ID list (from the BlockingIndex, as today) → `get_vec(id)`
+on the combined index → manual cosine similarity of the combined vectors →
+sort → truncate to top_n. This produces `combined_similarity` values and the
+rest of the pipeline is identical. O(N) behaviour is preserved, unchanged from
+today, but simplified to one vector lookup per candidate instead of one per
+embedding field.
+
+---
+
+## Config changes
+
+### Removed entirely
+- `candidates:` section (all fields: `enabled`, `field_a`, `field_b`, `method`,
+  `scorer`, `n`)
+- `CandidatesConfig` struct
+- `live.top_n` field from `LiveConfig`
+
+### Added
+- `top_n: <usize>` at the **top level** of `Config`
+  - Optional, defaults to **5** if absent or zero
+  - Governs: (a) how many candidates HNSW retrieves, (b) how many get
+    full-scored, (c) how many results live mode returns to the caller
+  - Batch mode always returns 1 result (top scorer) regardless of this value
+
+### Unchanged
+- `live.upsert_log`
+- `live.crossmap_flush_secs`
+- All other config sections (`blocking`, `match_fields`, `thresholds`,
+  `embeddings`, `output`, `performance`, `vector_backend`, etc.)
+
+### Before / after example
+
+```yaml
+# BEFORE
+candidates:
+  enabled: true
+  field_a: short_name
+  field_b: counterparty_name
+  method: fuzzy
+  scorer: wratio
+  n: 10
+
+live:
+  top_n: 5
+  upsert_log: bench/wal.jsonl
+  crossmap_flush_secs: 10
+
+# AFTER
+top_n: 10          # optional — defaults to 5
+
+live:
+  upsert_log: bench/wal.jsonl
+  crossmap_flush_secs: 10
+```
+
+---
+
+## Vector index changes
+
+### Before
+- `FieldIndexes` holds one `Box<dyn VectorDB>` per embedding field per side,
+  keyed by `"field_a/field_b"`
+- Cache files: `a.legal_name__counterparty_name.index`,
+  `a.short_name__counterparty_name.index` (one per field)
+- Each index dimension: 384
+- `search()` never called; `get()` called per candidate per field
+
+### After
+- One `Box<dyn VectorDB>` per side — the **combined embedding index**
+- Cache file: `a.combined_embedding.index` (flat) or
+  `a.combined_embedding.usearchdb/` (usearch)
+- Index dimension: 384 × N_embedding_fields (e.g. 768 for two fields)
+- `search(k=top_n)` called once per B record (usearch path)
+
+### `FieldIndexes` role
+`FieldIndexes` currently serves embedding fields only. With a single combined
+index it is no longer needed for that purpose. It should be removed or
+repurposed. The combined index is held directly on the engine/session state
+as `combined_index_a: Box<dyn VectorDB>` and `combined_index_b: Box<dyn
+VectorDB>`.
+
+Non-embedding fields (fuzzy, exact) never touch the vector index; they work
+from the record structs directly, unchanged.
+
+---
+
+## Per-field embedding score decomposition
+
+Currently the output includes per-field scores, e.g. `legal_name: 0.87,
+short_name: 0.71`. With a combined index only `combined_similarity` is
+directly available from `search()`.
+
+**Recommended approach — recover per-field scores at full-scoring time:**
+
+For each of the top_n candidates, fetch the A record's combined vector via
+`get(a_id)` on the combined index. Split it into per-field sub-vectors using
+known field dimensions and √weight scaling. Compute individual cosine
+similarities against the B record's corresponding sub-vectors (which are
+already in memory from Stage 1 encoding). This adds one `get()` call per
+candidate (top_n ≈ 10 calls total) — negligible cost, full interpretability
+preserved.
+
+Field offsets into the combined vector are deterministic from config order:
+- Field 0: bytes 0 … 383
+- Field 1: bytes 384 … 767
+- etc.
+
+Store this metadata (field order, dimensions, weights) alongside the index so
+the decomposition can be performed correctly on load.
+
+---
+
+## Cache invalidation
+
+Existing `.index` / `.usearchdb` cache files are **incompatible** with the new
+design:
+- Dimension changes (384 → 384×N)
+- Structure changes (per-field → combined)
+
+On startup, if the cache file exists but has the wrong dimension or wrong
+structure, melder must detect this and force a full rebuild with a clear log
+message. This makes TODO item 2 (config hash in manifest) urgent — the
+combined vector structure is config-dependent, and any change to embedding
+fields or weights invalidates all caches.
+
+---
+
+## Files to change
+
+### `src/config/schema.rs`
+- Delete `CandidatesConfig` struct and the `candidates` field on `Config`
+- Delete `top_n` from `LiveConfig`
+- Add `pub top_n: Option<usize>` to `Config` with `#[serde(default)]`
+
+### `src/config/loader.rs`
+- Delete all candidates validation logic (`VALID_CANDIDATE_METHODS`, field
+  presence checks, method/scorer validation)
+- Add `top_n` defaulting: if `None` or `Some(0)`, set `Some(5)`
+- Remove candidate field references from `required_fields_*` computation
+- Update any `cfg.live.top_n` references to `cfg.top_n`
+
+### `src/vectordb/` — new function: `encode_combined_vector`
+```
+fn encode_combined_vector(
+    record: &Record,
+    embedding_fields: &[(MatchField, Side)],   // fields with method: embedding
+    encoder_pool: &EncoderPool,
+) -> Vec<f32>
+```
+For each embedding field in config order:
+1. Get the field value from the record (empty string if missing)
+2. Encode → unit-normalised vec (dim 384)
+3. Scale by √weight: each component × √weight
+4. Append to output buffer
+
+Returns combined vector of dimension 384 × N_embedding_fields.
+
+### `src/vectordb/` — replace `build_or_load_field_indexes`
+Replace with `build_or_load_combined_index` that:
+- Determines embedding fields from config
+- Computes combined dimension
+- Checks cache for existing combined index (validates dimension)
+- If stale or absent: iterates all records, calls `encode_combined_vector`,
+  upserts into a single `VectorDB` instance, saves to cache
+- Returns `Box<dyn VectorDB>` (the combined index)
+
+### `src/matching/candidates.rs`
+Rewrite. New signature:
+```
+fn select_candidates(
+    query_combined_vec: &[f32],
+    top_n: usize,
+    combined_index_a: &dyn VectorDB,
+    blocked_ids: Option<&[String]>,   // None if blocking disabled
+    pool_records: &DashMap<String, Record>,
+    b_record: &Record,
+    config: &Config,
+) -> Vec<Candidate>
+```
+- **usearch path**: call `combined_index_a.search(query_combined_vec, top_n,
+  b_record, Side::B)` → map results to `Candidate` structs carrying
+  `combined_similarity`
+- **flat path**: iterate `blocked_ids`, call `get(id)` on combined index,
+  compute cosine similarity manually, sort, truncate to top_n
+
+`Candidate` struct gains `combined_similarity: f64`; `emb_scores` HashMap is
+replaced or supplemented by the decomposed per-field scores (computed
+immediately from the combined vector split as described above).
+
+### `src/matching/pipeline.rs`
+- `score_pool` receives `combined_index_a` and `query_combined_vec` instead of
+  `query_field_indexes` and `pool_field_indexes`
+- Stage 1: call `select_candidates` (new version above)
+- Stage 2: for each candidate, build `precomputed_emb_scores` from decomposed
+  per-field scores; call `scoring::score_pair` unchanged
+- `top_n` comes from `config.top_n`
+
+### `src/scoring/mod.rs`
+No change required. `score_pair` already accepts
+`precomputed_emb_scores: Option<&HashMap<String, f64>>` and uses it as-is.
+Per-field scores (decomposed from the combined vector) slot straight in.
+
+### `src/batch/engine.rs`
+- Replace `field_indexes_a` / `field_indexes_b` with
+  `combined_index_a` / `combined_index_b`
+- Pre-compute `query_combined_vec` for each B record before calling
+  `score_pool`
+- Remove all `candidates`-related setup code
+- `top_n` sourced from `config.top_n` (not hardcoded 0 + `.next()`)
+- Batch still takes `.into_iter().next()` on the scored list for the final
+  classification decision
+
+### `src/session/mod.rs`
+- Replace `field_indexes_a` / `field_indexes_b` with combined indexes
+- `top_n` sourced from `config.top_n` (not `config.live.top_n`)
+- WAL replay: re-encode combined vector on record change, upsert to combined
+  index
+
+### `src/state/` (live and batch state)
+- `MatchState` / `LiveSideState`: replace `FieldIndexes` embedding component
+  with `combined_index: Box<dyn VectorDB>`
+- Save/load: update cache paths and dimension metadata
+
+### `testdata/configs/*.yaml`
+Remove `candidates:` section from every config that has one. Add `top_n: N`
+where the desired value differs from the default of 5.
+
+Configs to update:
+- `bench1kx1k.yaml`
+- `bench10kx10k.yaml`
+- `bench100kx100k.yaml`
+- `bench_live.yaml`
+- Any others with `candidates:` or `live.top_n`
+
+### `README.md`
+- Update pipeline description (remove candidates phase explanation)
+- Update config reference (remove `candidates:`, document `top_n`)
+- Update performance section (numbers will change — re-benchmark after
+  implementation)
+
+### `TODO.md`
+- Mark item 2 (config hash in manifest) as now **urgent** — combined vector
+  structure is config-dependent; cache invalidation on field/weight change is
+  critical for correctness
+
+---
+
+## Implementation sequence
+
+Each step is independently compilable and testable before moving to the next.
+
+1. **Config schema and loader** — delete `CandidatesConfig`, move `top_n` to
+   top level, update defaults and validation. Update all YAML configs. All
+   existing tests should still pass (candidates code still compiles, just
+   config struct changes).
+
+2. **`encode_combined_vector`** — new standalone function with unit tests
+   verifying the √weight scaling and concatenation. Test that
+   `combined_similarity × Σ(weights)` equals the weighted sum of individual
+   cosine similarities for known vectors.
+
+3. **`build_or_load_combined_index`** — replaces field index building. Test
+   cold build and warm load roundtrip. Test stale-cache detection.
+
+4. **`candidates.rs` rewrite** — new `select_candidates` using combined index
+   + `search()` for usearch, blocked-ID loop for flat. Unit test both paths.
+
+5. **`pipeline.rs` update** — wire new `select_candidates` into `score_pool`.
+   Integration test: full pipeline on small dataset, verify scores match
+   current output for the same config.
+
+6. **`batch/engine.rs` and `session/mod.rs`** — update call sites to use
+   combined indexes and new `top_n`. Remove FieldIndexes embedding component.
+
+7. **Per-field score decomposition** — implement vector split + recompute in
+   the candidates → full-scoring handoff. Verify per-field scores in output
+   match the current values.
+
+8. **Remove `FieldIndexes`** — or repurpose as a thin wrapper if still useful
+   for non-embedding bookkeeping. Delete dead code.
+
+9. **Tests** — update all unit and integration tests. Add benchmarks for the
+   O(log N) path to verify the improvement is real and measurable.
+
+10. **Docs and README** — update config reference, pipeline description, and
+    performance tables (re-run benchmarks).
+
+---
+
+## Open questions (to resolve during implementation)
+
+1. **Cache file naming**: `combined_embedding` is proposed. Confirm this does
+   not conflict with any existing cache file naming convention.
+
+2. **Missing field values**: if a record has no value for one of the embedding
+   fields, encode as empty string (consistent with current behaviour) or zero
+   vector? Empty string encoding is safer — it produces a real vector, and
+   similarity against another empty-string vector is ~1.0 (both "empty"), which
+   is arguably correct.
+
+3. **`FieldIndexes` fate**: fully delete or retain as a type alias / thin
+   wrapper for the single combined index? Lean toward deletion to remove dead
+   concepts.
+
+4. **usearch + blocking disabled**: when `blocking.enabled: false`, usearch
+   uses a single `__default__` block. `search()` then searches all records.
+   This is correct behaviour — verify in tests.
+
+5. **Re-benchmarking**: after implementation, re-run 100k benchmarks with
+   usearch + `top_n: 20` to confirm O(log N) is realised and document the
+   numbers in README.

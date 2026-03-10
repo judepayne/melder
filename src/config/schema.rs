@@ -29,10 +29,6 @@ pub struct Config {
     /// (per-block HNSW, requires building with `--features usearch`).
     #[serde(default = "default_vector_backend")]
     pub vector_backend: String,
-    /// Deprecated: use `performance.workers` instead. Kept for backward compat.
-    #[serde(default)]
-    pub workers: Option<u32>,
-
     // Derived at load time (not in YAML). Populated by `compute_required_fields`.
     #[serde(skip)]
     pub required_fields_a: Vec<String>,
@@ -177,9 +173,6 @@ pub struct LiveConfig {
     pub top_n: Option<usize>,
     #[serde(default)]
     pub upsert_log: Option<String>,
-    /// Number of concurrent ONNX inference sessions. Default 1.
-    #[serde(default)]
-    pub encoder_pool_size: Option<usize>,
     /// How often dirty CrossMap state is flushed to disk (seconds). Default 5.
     #[serde(default)]
     pub crossmap_flush_secs: Option<u64>,
@@ -191,9 +184,6 @@ pub struct PerformanceConfig {
     /// Number of concurrent ONNX inference sessions. Default 1.
     #[serde(default)]
     pub encoder_pool_size: Option<usize>,
-    /// Rayon parallel scoring threads. Default 4.
-    #[serde(default)]
-    pub workers: Option<u32>,
 }
 
 fn default_backend() -> String {
@@ -219,8 +209,8 @@ mod tests {
         let config: Config =
             serde_yaml::from_str(&yaml).expect("failed to deserialize bench_live.yaml");
 
-        assert_eq!(config.job.name, "bench_live_10000x10000");
-        assert_eq!(config.datasets.a.path, "testdata/dataset_a_10000.csv");
+        assert_eq!(config.job.name, "bench_live_10kx10k");
+        assert_eq!(config.datasets.a.path, "testdata/dataset_a_10k.csv");
         assert_eq!(config.datasets.b.id_field, "counterparty_id");
         assert_eq!(config.cross_map.backend, "local");
         assert_eq!(config.embeddings.model, "all-MiniLM-L6-v2");
@@ -232,7 +222,6 @@ mod tests {
         assert!((config.thresholds.review_floor - 0.60).abs() < f64::EPSILON);
         assert_eq!(config.live.top_n, Some(5));
         assert_eq!(config.performance.encoder_pool_size, Some(4));
-        assert_eq!(config.performance.workers, Some(4));
     }
 
     #[test]
@@ -247,18 +236,17 @@ mod tests {
         assert_eq!(config.output_mapping.len(), 4);
         assert_eq!(config.output_mapping[0].from, "sector");
         assert_eq!(config.output_mapping[0].to, "ref_sector");
-        assert_eq!(config.performance.workers, Some(4));
         assert_eq!(config.performance.encoder_pool_size, Some(2));
     }
 
     #[test]
-    fn deserialize_bench1000x1000() {
-        let yaml = std::fs::read_to_string("testdata/configs/bench1000x1000.yaml")
-            .expect("failed to read bench1000x1000.yaml");
+    fn deserialize_bench1kx1k() {
+        let yaml = std::fs::read_to_string("testdata/configs/bench1kx1k.yaml")
+            .expect("failed to read bench1kx1k.yaml");
         let config: Config =
-            serde_yaml::from_str(&yaml).expect("failed to deserialize bench1000x1000.yaml");
+            serde_yaml::from_str(&yaml).expect("failed to deserialize bench1kx1k.yaml");
 
-        assert_eq!(config.datasets.a.path, "testdata/dataset_a_1000.csv");
+        assert_eq!(config.datasets.a.path, "testdata/dataset_a_1k.csv");
         assert_eq!(config.candidates.scorer, Some("wratio".into()));
         assert_eq!(config.candidates.n, Some(10));
     }

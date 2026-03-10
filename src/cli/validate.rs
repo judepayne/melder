@@ -36,9 +36,7 @@ pub fn cmd_validate(config_path: &Path) {
             if let Some(pool) = cfg.performance.encoder_pool_size {
                 println!("  encoder_pool_size: {}", pool);
             }
-            if let Some(w) = cfg.performance.workers {
-                println!("  workers: {}", w);
-            }
+
             println!("  required_fields_a: {:?}", cfg.required_fields_a);
             println!("  required_fields_b: {:?}", cfg.required_fields_b);
         }

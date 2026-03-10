@@ -67,24 +67,10 @@ fn apply_defaults(cfg: &mut Config) {
         cfg.live.crossmap_flush_secs = Some(5);
     }
 
-    // performance — merge from old locations for backward compat, then default.
-    // Priority: performance.encoder_pool_size > live.encoder_pool_size > default(1)
+    // Default encoder_pool_size to 1 if not set.
     if cfg.performance.encoder_pool_size.is_none() || cfg.performance.encoder_pool_size == Some(0) {
-        cfg.performance.encoder_pool_size = match cfg.live.encoder_pool_size {
-            Some(v) if v > 0 => Some(v),
-            _ => Some(1),
-        };
+        cfg.performance.encoder_pool_size = Some(1);
     }
-    // Priority: performance.workers > top-level workers > default(4)
-    if cfg.performance.workers.is_none() || cfg.performance.workers == Some(0) {
-        cfg.performance.workers = match cfg.workers {
-            Some(v) if v > 0 => Some(v),
-            _ => Some(4),
-        };
-    }
-    // Sync old fields so any code still reading them gets consistent values
-    cfg.live.encoder_pool_size = cfg.performance.encoder_pool_size;
-    cfg.workers = cfg.performance.workers;
 
     // cross_map backend already has serde default, but belt-and-suspenders
     if cfg.cross_map.backend.is_empty() {
@@ -303,14 +289,6 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
             });
         }
     }
-    if let Some(w) = cfg.performance.workers {
-        if w < 1 {
-            return Err(ConfigError::InvalidValue {
-                field: "performance.workers".into(),
-                message: "must be >= 1".into(),
-            });
-        }
-    }
     if let Some(secs) = cfg.live.crossmap_flush_secs {
         if secs < 1 {
             return Err(ConfigError::InvalidValue {
@@ -467,20 +445,18 @@ mod tests {
     #[test]
     fn load_bench_live() {
         let cfg = load_config(Path::new("testdata/configs/bench_live.yaml")).unwrap();
-        assert_eq!(cfg.job.name, "bench_live_10000x10000");
+        assert_eq!(cfg.job.name, "bench_live_10kx10k");
         assert_eq!(cfg.performance.encoder_pool_size, Some(4));
-        assert_eq!(cfg.performance.workers, Some(4));
         assert_eq!(cfg.live.top_n, Some(5));
         assert_eq!(cfg.live.crossmap_flush_secs, Some(5)); // default applied
     }
 
     #[test]
-    fn load_bench1000x1000() {
-        let cfg = load_config(Path::new("testdata/configs/bench1000x1000.yaml")).unwrap();
+    fn load_bench1kx1k() {
+        let cfg = load_config(Path::new("testdata/configs/bench1kx1k.yaml")).unwrap();
         assert_eq!(cfg.candidates.n, Some(10));
         assert_eq!(cfg.candidates.scorer, Some("wratio".into()));
         assert_eq!(cfg.performance.encoder_pool_size, Some(4));
-        assert_eq!(cfg.performance.workers, Some(8));
     }
 
     #[test]
@@ -488,7 +464,6 @@ mod tests {
         // sidecar section in YAML is silently ignored
         let cfg = load_config(Path::new("testdata/configs/counterparty_recon.yaml")).unwrap();
         assert_eq!(cfg.output_mapping.len(), 4);
-        assert_eq!(cfg.performance.workers, Some(4));
         assert_eq!(cfg.performance.encoder_pool_size, Some(2));
     }
 

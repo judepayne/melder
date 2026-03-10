@@ -86,7 +86,7 @@ tradeoff — higher parallelism improves throughput and median latency at the
 cost of wider tail variance.
 
 **Each ONNX session uses ~50-100MB RAM.** pool_size=4 adds ~150-300MB over
-pool_size=1. The default is 1; set `live.encoder_pool_size` in the config
+pool_size=1. The default is 1; set `performance.encoder_pool_size` in the config
 to increase.
 
 **Non-embedding upserts are very fast.** The 20% of requests that only
@@ -98,8 +98,10 @@ complete in ~1-2ms regardless of pool size or concurrency.
 Set the encoder pool size in your config YAML:
 
 ```yaml
-live:
+performance:
   encoder_pool_size: 4   # default: 1
+
+live:
   top_n: 5
 ```
 

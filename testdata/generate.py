@@ -424,7 +424,7 @@ def main() -> None:
         N_MATCHED = int(N_A * 0.70)
         N_AMBIGUOUS = int(N_A * 0.20)
         N_UNMATCHED = N_A - N_MATCHED - N_AMBIGUOUS
-        suffix = f"_{N_A}"
+        suffix = f"_{N_A // 1000}k" if N_A % 1000 == 0 else f"_{N_A}"
         print(f"Generating datasets ({N_A:,} records each) ...")
     elif args.small:
         N_A = 1_000
@@ -432,7 +432,7 @@ def main() -> None:
         N_MATCHED = 700
         N_AMBIGUOUS = 200
         N_UNMATCHED = 100
-        suffix = "_1000"
+        suffix = "_1k"
         print("Generating SMALL datasets (1,000 records each) ...")
     else:
         suffix = ""

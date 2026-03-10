@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn load_dataset_a_parquet() {
         let (records, ids) = load_parquet(
-            Path::new("testdata/dataset_a_10000.parquet"),
+            Path::new("testdata/dataset_a_10k.parquet"),
             "entity_id",
             &[
                 "entity_id".into(),
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn load_dataset_b_parquet() {
         let (records, ids) = load_parquet(
-            Path::new("testdata/dataset_b_10000.parquet"),
+            Path::new("testdata/dataset_b_10k.parquet"),
             "counterparty_id",
             &[
                 "counterparty_id".into(),
@@ -252,11 +252,11 @@ mod tests {
     fn parquet_csv_parity() {
         // Load both formats and verify they produce the same records
         let (csv_records, csv_ids) =
-            crate::data::load_csv(Path::new("testdata/dataset_a_10000.csv"), "entity_id", &[])
+            crate::data::load_csv(Path::new("testdata/dataset_a_10k.csv"), "entity_id", &[])
                 .unwrap();
 
         let (pq_records, pq_ids) = load_parquet(
-            Path::new("testdata/dataset_a_10000.parquet"),
+            Path::new("testdata/dataset_a_10k.parquet"),
             "entity_id",
             &[],
         )
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn missing_id_field_parquet() {
         let err = load_parquet(
-            Path::new("testdata/dataset_a_10000.parquet"),
+            Path::new("testdata/dataset_a_10k.parquet"),
             "nonexistent_field",
             &[],
         )

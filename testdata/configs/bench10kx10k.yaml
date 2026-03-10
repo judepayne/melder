@@ -1,20 +1,23 @@
-# Benchmark job: 100,000 A vs 100,000 B, no cross-map pre-seeded.
+# bench/bench10kx10k.yaml
+# Benchmark job: 10k A vs 10k B, no cross-map pre-seeded.
 
 job:
-  name: bench_100000x100000
-  description: Benchmark — 100,000 x 100,000 synthetic data, empty cross-map
+  name: bench_10kx10k
+  description: Benchmark — 10k x 10k synthetic data, empty cross-map
 
 datasets:
   a:
-    path: testdata/dataset_a_100000.csv
+    path: testdata/dataset_a_10k.csv
     id_field: entity_id
+    format: csv
   b:
-    path: testdata/dataset_b_100000.csv
+    path: testdata/dataset_b_10k.csv
     id_field: counterparty_id
+    format: csv
 
 cross_map:
   backend: local
-  path: bench/crossmap100k.csv
+  path: bench/crossmap10k.csv
   a_id_field: entity_id
   b_id_field: counterparty_id
 
@@ -31,6 +34,7 @@ blocking:
       field_b: domicile
 
 candidates:
+  enabled: false
   field_a: short_name
   field_b: counterparty_name
   method: fuzzy
@@ -64,10 +68,9 @@ thresholds:
   review_floor: 0.60
 
 output:
-  results_path:   bench/output/results_100000.csv
-  review_path:    bench/output/review_100000.csv
-  unmatched_path: bench/output/unmatched_100000.csv
+  results_path:   bench/output/results_10k.csv
+  review_path:    bench/output/review_10k.csv
+  unmatched_path: bench/output/unmatched_10k.csv
 
 performance:
   encoder_pool_size: 4
-  workers: 8

@@ -25,8 +25,8 @@ Usage:
   --port        TCP port to use for the server  (default: 8090)
   --iterations  Number of API calls to make     (default: 3000)
   --binary      Path to the `match` binary      (default: ./match)
-  --a-path      Path to dataset A CSV           (default: testdata/dataset_a_10000.csv)
-  --b-path      Path to dataset B CSV           (default: testdata/dataset_b_10000.csv)
+  --a-path      Path to dataset A CSV           (default: testdata/dataset_a_10k.csv)
+  --b-path      Path to dataset B CSV           (default: testdata/dataset_b_10k.csv)
   --a-id        A ID field name                 (default: entity_id)
   --b-id        B ID field name                 (default: counterparty_id)
   --seed        Random seed for reproducibility (default: 42)
@@ -192,10 +192,10 @@ def main() -> None:
         "--binary", default="./match", help="Path to the `match` binary"
     )
     parser.add_argument(
-        "--a-path", default="testdata/dataset_a_10000.csv", help="Dataset A CSV path"
+        "--a-path", default="testdata/dataset_a_10k.csv", help="Dataset A CSV path"
     )
     parser.add_argument(
-        "--b-path", default="testdata/dataset_b_10000.csv", help="Dataset B CSV path"
+        "--b-path", default="testdata/dataset_b_10k.csv", help="Dataset B CSV path"
     )
     parser.add_argument("--a-id", default="entity_id", help="A ID field name")
     parser.add_argument("--b-id", default="counterparty_id", help="B ID field name")

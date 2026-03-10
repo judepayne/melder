@@ -1,19 +1,19 @@
 # bench/bench_live.yaml
 # Live-mode config for stress testing and development.
-# Mirrors bench10000x10000.yaml but adds the `live` section and
+# Mirrors bench10kx10k.yaml but adds the `live` section and
 # b_cache_dir for symmetric B-side index support.
 
 job:
-  name: bench_live_10000x10000
-  description: Live serve — 10000 x 10000 synthetic data, upsert stress test
+  name: bench_live_10kx10k
+  description: Live serve — 10k x 10k synthetic data, upsert stress test
 
 datasets:
   a:
-    path: testdata/dataset_a_10000.csv
+    path: testdata/dataset_a_10k.csv
     id_field: entity_id
     format: csv
   b:
-    path: testdata/dataset_b_10000.csv
+    path: testdata/dataset_b_10k.csv
     id_field: counterparty_id
     format: csv
 
@@ -69,9 +69,10 @@ thresholds:
   auto_match: 0.85
   review_floor: 0.60
 
+vector_backend: flat
+
 performance:
   encoder_pool_size: 4
-  workers: 4
 
 live:
   top_n: 5

@@ -1,73 +1,143 @@
-# TODO
+# Maybe
 
-Items to discuss and design before implementing.
-
----
-
-## 1. Hooks
-
-User-defined logic that runs at specific points in the pipeline. Open
-questions:
-
-- Which hook points? Candidates include: pre-score (after blocking,
-  before scoring), post-score (after composite score, before
-  classification), post-match (after classification, before output/
-  response), on-confirm (when a cross-map entry is created).
-- What form do hooks take? Options: external process (subprocess with
-  JSON on stdin/stdout), WASM plugin, Lua script, HTTP callout to a
-  user-provided endpoint.
-- What can a hook do? Read-only inspection (logging, metrics, side
-  effects) vs mutation (adjust scores, override classification, enrich
-  records, veto a match).
-- Should hooks be sync (blocking the pipeline) or async (fire-and-forget)?
-- Config syntax -- something like:
-  ```yaml
-  hooks:
-    post_score:
-      - command: ./scripts/override_lei_matches.sh
-        timeout: 5s
-    on_confirm:
-      - url: https://internal.example.com/webhooks/match-confirmed
-  ```
+Ideas that remain genuinely undone, filtered from FUTURE.md, notes.md, and TODO.md.
+The usearch HNSW backend, batch endpoints, embedding-based candidates,
+multi-field blocking, skip-re-encode, CLI extraction, and WAL-based live output
+are all already shipped. Items are ranked by assessed usefulness.
 
 ---
 
-## 2. Data output in live mode
+**1. Incremental encoding (text-hash dedup).** *(Encoding)*
+Currently a stale cache triggers a full re-encode of all records. For recurring
+batch jobs where ~95% of records are unchanged day-over-day, this is wasteful.
+Keying each cached vector by a hash of the input text would let a re-run skip
+all unchanged records and only encode the diff. Also fixes a correctness gap:
+records deleted and replaced with the same count pass the size-based staleness
+check today, producing wrong cached vectors silently.
 
-Currently live mode returns match results in the HTTP response but does
-not persist them to disk the way batch mode writes results/review/
-unmatched csvs. Questions:
+**2. Config hash in manifest.** *(Operational)*
+Blocking config changes between runs (e.g. adding a blocking field) silently
+invalidate the index without any warning. Storing a hash of the blocking config
+in the cache manifest and comparing on load would catch this and trigger a
+rebuild or at least a loud warning. Tiny effort, prevents real wrong-results bugs.
 
-- Should the server write a running log of match results (append-only
-  csv or JSONL)? If so, what triggers a write -- every `/add` response,
-  only confirmed matches, or both?
-- Should there be an endpoint to dump current results/review/unmatched
-  state on demand (e.g. `GET /api/v1/export`)?
-- Should the server periodically snapshot its state to the same output
-  paths that batch mode uses, so the files are always up to date?
-- How does this interact with the WAL? The WAL captures record additions
-  and cross-map changes for crash recovery, but it does not capture
-  match scores or classifications.
+**3. Quantised ONNX models.** *(Encoding)*
+ONNX Runtime supports INT8 quantisation. A quantised MiniLM-L6 runs ~2x faster
+on CPU with negligible quality loss for entity matching. `fastembed` supports
+quantised graphs natively — just point it at a different model directory.
+Immediate win for every live-mode user.
+
+**4. Live mode review queue.** *(Live mode)*
+`crossmap/confirm` already lets callers confirm any of the top-N matches, but
+there is no explicit review workflow for borderline scores. Two gaps: the `/add`
+response doesn't signal when a match landed in the review band — a
+`"classification": "review"` field would let callers handle this without
+re-interpreting raw scores against thresholds. Beyond that, borderline matches
+could be held in a server-side queue accessible via a `/review` endpoint family
+(list, accept, reject), mirroring the batch-mode CLI review commands.
+
+**5. Parallel candidate scoring (live mode).** *(Candidates)*
+`select_candidates` scores sequentially. Each candidate is independent —
+`par_iter` in that function would immediately parallelise across the worker pool.
+At 100K blocked candidates this drops from ~200ms to ~25ms on 8 cores. The batch
+engine already does this; live mode doesn't. Near one-liner change.
+
+**6. GC / TTL for stale live-mode blocks.** *(Live mode)*
+The blocking index accumulates entries for records that are added then removed in
+live mode. No eviction mechanism exists. A `meld gc` command (or background task)
+that evicts blocks older than `gc_ttl_days` would prevent unbounded growth over
+long server uptimes.
+
+**7. Single-artifact deployment.** *(Operational)*
+Embedding model weights are downloaded and cached at runtime. `include_bytes!()`
+on the ONNX weights at build time would produce a fully self-contained binary —
+no network access, no cache directory, no first-run latency. Increases binary
+size significantly but simplifies deployment in air-gapped or containerised
+environments.
+
+**8. Pipeline hooks.** *(Pipeline)*
+User-defined logic at specific pipeline points. The interesting hook sites are:
+pre-score (after blocking, before scoring), post-score (after composite score,
+before classification), and on-confirm (when a cross-map entry is created).
+Form options range in complexity: HTTP callout to a user-provided endpoint
+(simplest, async-friendly), external subprocess with JSON on stdin/stdout
+(portable, no dependency), or WASM plugin (sandboxed, in-process). A
+callout-style approach covers most real use cases (audit logging, downstream
+notifications, LEI enrichment) without the complexity of an in-process plugin
+system. Design-heavy but high real-world value for production deployments.
+
+**9. Request coalescing.** *(Encoding)*
+Requests arriving within a short window (~1ms) are batched into a single ONNX
+call before fan-out. ONNX Runtime throughput improves substantially at batch
+sizes of 8–32; the SIMD paths get properly amortised. Architecture:
+HTTP → queue → coordinator → batch encode → fan-out. The batch endpoints already
+demonstrate the principle; coalescing automates it for single-record traffic.
+High ceiling gain but architecturally non-trivial.
+
+**10. `workers` field — wire up or remove.** *(Operational)* ✓ DONE
+Removed entirely: from all YAML configs, both schema fields (`Config.workers`
+and `PerformanceConfig.workers`), the loader defaulting/sync/validation logic,
+and the validate.rs print. Rayon thread count is controlled via the
+`RAYON_NUM_THREADS` env var if needed.
+
+**11. API handler boilerplate.** *(Code quality)* ✓ DONE
+Extracted 7 private helpers (`upsert_handler`, `match_handler`, `remove_handler`,
+`query_handler`, `add_batch_handler`, `match_batch_handler`, `remove_batch_handler`),
+each parameterised by `Side`. The 14 public A/B handlers are now one-liners.
+439 → 290 lines.
+
+**12. Quantised vector storage.** *(Vector index)*
+Store vectors as `[u8; 384]` instead of `[f32; 384]`. 4x less memory, 4x faster
+scan with integer dot products. At 1M records this takes vectors from 1.5GB to
+~375MB. Simple scalar quantisation (map f32 → uint8 in [0, 255]) captures most
+of the benefit in ~50 lines. Only starts to matter above 500K records.
+
+**13. Memory-mapped index.** *(Vector index)*
+`mmap` the `.index` cache file via `memmap2` instead of loading into a heap
+`Vec<f32>`. Eliminates the startup memory spike; the OS pages in only what's
+touched. `VecIndex::from_parts` would take a `&[f32]` backed by the mmap region
+rather than an owned vec. Mainly useful at large scale.
+
+**14. SIMD-explicit dot product.** *(Vector index)*
+The flat scan auto-vectorises today, but explicit NEON intrinsics (`vfmaq_f32`)
+or the `simsimd` crate would give ~2x throughput on the inner loop. At 100K
+records this halves search time from ~1ms to ~0.5ms. Marginal in practice since
+the flat scan only appears in full-scoring (10 candidates) with default config.
+
+**15. LSH blocking.** *(Blocking)*
+Hash-based blocking on the embedding vector instead of exact field equality. Two
+records with similar embeddings hash to the same bucket. No need to know which
+fields to block on; tuning the hash parameters (tables, bits) controls recall vs.
+selectivity. Useful when exact-field blocks are too coarse, but complex to
+implement and tune correctly.
+
+**16. Lock-free / RCU vector index.** *(Concurrency)*
+At high concurrency (c=100+), the `RwLock<VecIndex>` write path serialises all
+adds. Two options: (A) append-only lock-free structure with atomic length —
+searches read up to the current length, updates overwrite in place; (B)
+read-copy-update — writes go to a staging area, merged and atomically swapped in
+every ~10ms. The current architecture handles c=10–20 fine; this only matters if
+concurrency targets go significantly higher.
+
+**17. External vector database.** *(Vector index)*
+Qdrant / Milvus / Weaviate over gRPC. The `VectorDB` trait surface is already
+the right abstraction — a client implementation would be a drop-in replacement.
+Buys: no staleness problem, durable persistence, multiple melder instances sharing
+one index. Costs: network round-trip (~1–5ms) per search, external service
+dependency. Only worth it at 1M+ records or when horizontal scaling is needed.
+
+**18. Windows compatibility — tidy up `--socket` flag.** *(Operational)*
+The codebase is broadly Windows-compatible: all paths use `PathBuf`, signal
+handling is already correctly gated (`#[cfg(unix)]` / `#[cfg(not(unix))]]`),
+and all dependencies (`fastembed`/ONNX Runtime, `usearch`, `tokio`, `rayon`)
+have Windows builds. One loose end: the `--socket <path>` CLI flag is parsed on
+all platforms but silently ignored (bound to `_socket`, never passed to
+`cmd_serve`). Before release either remove it entirely or gate it with
+`#[cfg(unix)]` so it doesn't appear in `--help` on Windows. Build requirement
+on Windows: MSVC C++ toolchain (needed by `usearch` and ONNX Runtime).
 
 ---
 
-## 3. Review and N-matches in live mode
-
-In batch mode, each B record gets exactly one best match (or lands in
-review/unmatched). Live mode returns `top_n` matches per request but
-has no review queue or multi-match workflow. Questions:
-
-- Should live mode maintain a review queue analogous to batch mode?
-  Borderline matches (between `review_floor` and `auto_match`) could
-  be held in a queue accessible via API rather than auto-returned.
-- How should N-matches work? Currently `/add` returns up to `top_n`
-  scored candidates. Should the caller be able to confirm any of the N
-  (not just the top one)? That already works via `/crossmap/confirm`,
-  but there is no UI or workflow around it.
-- Should there be a `/review` endpoint family (list, accept, reject)
-  mirroring the CLI review commands but operating on the live review
-  queue?
-- If a record is added and its best match scores in the review band,
-  should the response indicate that explicitly (e.g.
-  `"needs_review": true`) rather than just returning the scores and
-  leaving classification interpretation to the caller?
+*10M+ regime: stateless scoring workers + stateful coordination layer (crossmap,
+WAL, shard routing). Batch mode becomes a Spark-style shuffle job. Not worth
+designing until the need is real. See `splink` for prior art.*

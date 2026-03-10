@@ -259,7 +259,7 @@ scan (integer dot products with NEON `vdotq_u32`). Quality loss is
 negligible for top-10 candidate retrieval. This is what FAISS
 `IndexIVFPQ` does -- you could implement a simple scalar quantisation
 (map each f32 to uint8 in [0, 255]) and get most of the benefit with
-~50 lines of code.
+o~50 lines of code.
 
 ---
 

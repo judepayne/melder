@@ -93,9 +93,9 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn load_dataset_a_1000() {
+    fn load_dataset_a_1k() {
         let (records, ids) = load_csv(
-            Path::new("testdata/dataset_a_1000.csv"),
+            Path::new("testdata/dataset_a_1k.csv"),
             "entity_id",
             &[
                 "entity_id".into(),
