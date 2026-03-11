@@ -166,6 +166,18 @@ pub struct PerformanceConfig {
     /// negligible quality loss. Default false.
     #[serde(default)]
     pub quantized: bool,
+    /// How long (ms) the encoding coordinator waits to collect concurrent
+    /// requests before dispatching them as a single ONNX batch call.
+    ///
+    /// - `None` or `0`: coordinator disabled, each request encodes
+    ///   independently (current behaviour, zero overhead).
+    /// - `1–10`: recommended for concurrent workloads (c >= 4). Requests
+    ///   arriving within this window are batched, amortising ONNX overhead.
+    ///
+    /// Only affects live mode (`meld serve`). Batch mode always encodes
+    /// in large batches regardless of this setting.
+    #[serde(default)]
+    pub encoder_batch_wait_ms: Option<u64>,
 }
 
 fn default_backend() -> String {

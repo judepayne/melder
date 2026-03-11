@@ -160,3 +160,102 @@ concurrent) but is within 6-9%. Further optimization opportunities:
 - Increase `encoder_pool_size` beyond 4 on machines with more cores
 - Batch multiple concurrent encoding requests into a single ONNX call
 - Use SIMD-optimized cosine similarity for the vector search
+
+---
+
+## 100K x 100K Benchmarks
+
+Benchmark results at 100k scale using `testdata/configs/bench_live_100k.yaml`
+with usearch HNSW indices, `encoder_pool_size: 4`, `top_n: 5`.
+
+### Baseline (pre-coordinator, crossmap redesign complete)
+
+**Config:** 100k A + 100k B preloaded, usearch backend, blocking on
+country_code/domicile, 3000 requests, concurrency=10.
+
+```
+================================================================================
+Concurrency: 10 workers
+================================================================================
+Op                 N      p50      p95      p99      max   err  Statuses
+--------------------------------------------------------------------------------
+new_a            601      6.8     31.1     44.3     63.6     0  added=601
+new_b            600      7.1     31.8     49.2     81.3     0  added=600
+upd_a_emb        600      8.0     34.6     56.7     83.8     0  updated=600
+upd_a_field      299      6.9     31.5     47.8     51.5     0  updated=299
+upd_b_emb        600      8.2     33.2     49.4     76.2     0  updated=600
+upd_b_field      300      7.4     32.2     46.7     66.9     0  updated=300
+--------------------------------------------------------------------------------
+ALL             3000      7.5     32.2     49.4     83.8     0  (ms)
+================================================================================
+
+Total: 3,000 requests in 3.71s  →  809 req/s
+```
+
+**Target:** >1000 req/s at this scale and concurrency level.
+
+### After text-hash skip + encoding coordinator (batch_wait=0)
+
+**Optimizations applied:**
+
+1. **Text-hash skip** — `upsert_record` and `try_match` compute an FNV hash of
+   the embedding fields and compare against the stored hash in the vector index.
+   If unchanged, encoding is skipped entirely. This avoids re-encoding when only
+   non-embedding fields (e.g. `lei`, `lei_code`) are mutated.
+
+2. **Encoding coordinator** — Optional batching coordinator
+   (`performance.encoder_batch_wait_ms`) that collects concurrent encoding
+   requests and dispatches them as a single ONNX batch. Currently disabled
+   (batch_wait=0) because with `encoder_pool_size: 4` and a small model
+   (MiniLM-L6), parallel independent sessions outperform batched single-session
+   encoding. The coordinator may benefit larger models or higher concurrency.
+
+3. **Zero-clone WAL append** — `append_upsert()` serializes the record by
+   reference instead of cloning it into a `WalEvent::UpsertRecord`.
+
+4. **Pre-computed embedding specs** — `embedding_field_specs()` is computed once
+   at session creation instead of per-request.
+
+```
+================================================================================
+Concurrency: 10 workers
+================================================================================
+Op                 N      p50      p95      p99      max   err  Statuses
+--------------------------------------------------------------------------------
+new_a            601      6.8     30.1     42.0     81.0     0  added=601
+new_b            600      6.8     30.8     42.3    109.1     0  added=600
+upd_a_emb        600      8.0     31.4     51.2     70.0     0  updated=600  old_mapping=3
+upd_a_field      299      2.8     12.6     17.1     24.1     0  updated=299  old_mapping=1
+upd_b_emb        600      7.9     30.4     43.5     74.1     0  updated=600  old_mapping=3
+upd_b_field      300      3.0     14.1     19.0     39.4     0  updated=300
+--------------------------------------------------------------------------------
+ALL             3000      6.8     28.7     42.3    109.1     0  (ms)
+================================================================================
+
+Total: 3,000 requests in 3.10s  →  968 req/s
+```
+
+### Comparison (Baseline vs Optimized, 100K)
+
+| Metric | Baseline | Optimized | Change |
+|--------|----------|-----------|--------|
+| Throughput | 809 req/s | 968 req/s | **+20%** |
+| ALL p50 | 7.5ms | 6.8ms | -9% |
+| ALL p95 | 32.2ms | 28.7ms | -11% |
+| upd_field p50 | 7.0ms | 2.9ms | **-59%** |
+
+The throughput gain comes primarily from the text-hash skip: 20% of requests
+(non-embedding field updates) now complete in ~3ms instead of ~7ms because
+they skip the ~2ms ONNX encoding call entirely. The encoding-path requests
+(80%) are unchanged — ONNX inference remains the bottleneck.
+
+### Configuration
+
+```yaml
+performance:
+  encoder_pool_size: 4        # default: 1
+  encoder_batch_wait_ms: 0    # default: 0 (disabled)
+```
+
+Set `encoder_batch_wait_ms` to 1-10 to enable the batching coordinator.
+Recommended only for large models or very high concurrency (c >= 20).

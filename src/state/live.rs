@@ -13,6 +13,7 @@ use dashmap::{DashMap, DashSet};
 use crate::config::Config;
 use crate::crossmap::CrossMap;
 use crate::data;
+use crate::encoder::coordinator::EncoderCoordinator;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::matching::blocking::BlockingIndex;
@@ -51,8 +52,11 @@ pub struct LiveMatchState {
     pub config: Config,
     pub a: LiveSideState,
     pub b: LiveSideState,
-    pub crossmap: RwLock<CrossMap>,
-    pub encoder_pool: EncoderPool,
+    pub crossmap: CrossMap,
+    pub encoder_pool: Arc<EncoderPool>,
+    /// Optional batching coordinator for concurrent encoding.
+    /// Created when `performance.encoder_batch_wait_ms > 0`.
+    pub coordinator: Option<EncoderCoordinator>,
     pub wal: UpsertLog,
     pub crossmap_dirty: AtomicBool,
 }
@@ -62,10 +66,7 @@ impl std::fmt::Debug for LiveMatchState {
         f.debug_struct("LiveMatchState")
             .field("a", &self.a)
             .field("b", &self.b)
-            .field(
-                "crossmap_len",
-                &self.crossmap.read().map(|c| c.len()).unwrap_or(0),
-            )
+            .field("crossmap_len", &self.crossmap.len())
             .finish()
     }
 }
@@ -95,12 +96,14 @@ impl LiveMatchState {
             "Initializing encoder pool (model={}, pool_size={})...",
             config.embeddings.model, pool_size
         );
-        let encoder_pool = EncoderPool::new(
-            &config.embeddings.model,
-            pool_size,
-            config.performance.quantized,
-        )
-        .map_err(MelderError::Encoder)?;
+        let encoder_pool = Arc::new(
+            EncoderPool::new(
+                &config.embeddings.model,
+                pool_size,
+                config.performance.quantized,
+            )
+            .map_err(MelderError::Encoder)?,
+        );
         let dim = encoder_pool.dim();
         eprintln!(
             "Encoder ready (dim={}), took {:.1}s",
@@ -232,7 +235,7 @@ impl LiveMatchState {
 
         let emb_specs = vectordb::embedding_field_specs(&config);
 
-        let mut crossmap = crossmap;
+        let crossmap = crossmap;
         if !wal_events.is_empty() {
             eprintln!("Replaying {} WAL events...", wal_events.len());
             for event in &wal_events {
@@ -377,11 +380,31 @@ impl LiveMatchState {
             config,
             a: a_side,
             b: b_side,
-            crossmap: RwLock::new(crossmap),
+            crossmap,
             encoder_pool,
+            coordinator: None,
             wal,
             crossmap_dirty: AtomicBool::new(false),
         }))
+    }
+
+    /// Initialise the encoding coordinator if `encoder_batch_wait_ms > 0`.
+    ///
+    /// **Must be called from within a tokio runtime** (the coordinator
+    /// spawns a background task). Call this via `Arc::get_mut` before
+    /// the `Arc<LiveMatchState>` is shared with the session / handlers.
+    pub fn init_coordinator(&mut self) {
+        let batch_wait_ms = self.config.performance.encoder_batch_wait_ms.unwrap_or(0);
+        if batch_wait_ms > 0 {
+            eprintln!(
+                "Encoding coordinator enabled (batch_wait={}ms)",
+                batch_wait_ms
+            );
+            self.coordinator = Some(EncoderCoordinator::new(
+                Arc::clone(&self.encoder_pool),
+                std::time::Duration::from_millis(batch_wait_ms),
+            ));
+        }
     }
 
     /// Get the side state for a given side.
@@ -421,16 +444,13 @@ impl LiveMatchState {
         if !self.take_crossmap_dirty() {
             return Ok(());
         }
-        let cm = self
-            .crossmap
-            .read()
-            .map_err(|e| MelderError::Other(anyhow::anyhow!("crossmap lock: {}", e)))?;
-        cm.save(
-            Path::new(self.crossmap_path()),
-            &self.config.cross_map.a_id_field,
-            &self.config.cross_map.b_id_field,
-        )
-        .map_err(MelderError::CrossMap)?;
+        self.crossmap
+            .save(
+                Path::new(self.crossmap_path()),
+                &self.config.cross_map.a_id_field,
+                &self.config.cross_map.b_id_field,
+            )
+            .map_err(MelderError::CrossMap)?;
         Ok(())
     }
 

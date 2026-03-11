@@ -15,7 +15,7 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
     };
 
     // 2. Load live match state
-    let state = match crate::state::LiveMatchState::load(cfg) {
+    let mut state = match crate::state::LiveMatchState::load(cfg) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to load live state: {}", e);
@@ -23,12 +23,19 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
         }
     };
 
-    // 3. Create session
-    let session = std::sync::Arc::new(crate::session::Session::new(state.clone()));
-
-    // 4. Start tokio runtime and run server
+    // 3. Start tokio runtime and run server
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
+        // Initialise the encoding coordinator inside the runtime so that
+        // tokio::spawn is available.
+        if let Some(s) = std::sync::Arc::get_mut(&mut state) {
+            s.init_coordinator();
+        }
+
+        // Create session (must happen after init_coordinator so Arc is shared
+        // only after the coordinator is set up).
+        let session = std::sync::Arc::new(crate::session::Session::new(state.clone()));
+
         // Start background crossmap flusher
         let flush_state = state.clone();
         let flush_secs = state.config.live.crossmap_flush_secs.unwrap_or(5);

@@ -163,6 +163,14 @@ pub trait VectorDB: Send + Sync + Debug {
     /// and determine which ones need re-encoding. Returns an empty map if the
     /// backend was created without emb_specs (e.g. in tests).
     fn stored_text_hashes(&self) -> HashMap<String, u64>;
+
+    /// Look up the stored text hash for a single record.
+    ///
+    /// Returns `None` if the ID has no stored hash (new record or backend
+    /// created without emb_specs). Used by the live-mode encoding-skip
+    /// optimisation to avoid re-encoding records whose embedding fields
+    /// have not changed.
+    fn text_hash_for(&self, id: &str) -> Option<u64>;
 }
 
 // ---------------------------------------------------------------------------

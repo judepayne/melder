@@ -552,6 +552,10 @@ impl VectorDB for FlatVectorDB {
         self.text_hashes.read().unwrap().all().clone()
     }
 
+    fn text_hash_for(&self, id: &str) -> Option<u64> {
+        self.text_hashes.read().unwrap().get(id)
+    }
+
     fn is_stale(path: &Path, expected_count: usize) -> Result<bool, VectorDBError> {
         Ok(is_cache_stale(path, expected_count))
     }

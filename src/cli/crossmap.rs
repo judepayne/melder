@@ -135,7 +135,7 @@ pub fn cmd_crossmap_import(config_path: &Path, import_path: &Path) {
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");
 
     // Load existing crossmap
-    let mut crossmap = match crate::crossmap::CrossMap::load(
+    let crossmap = match crate::crossmap::CrossMap::load(
         Path::new(crossmap_path),
         &cfg.cross_map.a_id_field,
         &cfg.cross_map.b_id_field,
@@ -162,8 +162,8 @@ pub fn cmd_crossmap_import(config_path: &Path, import_path: &Path) {
     };
 
     let import_count = import_cm.len();
-    for (a_id, b_id) in import_cm.iter() {
-        crossmap.add(a_id, b_id);
+    for (a_id, b_id) in import_cm.pairs() {
+        crossmap.add(&a_id, &b_id);
     }
 
     // Save

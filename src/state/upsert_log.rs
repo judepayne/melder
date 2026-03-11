@@ -69,6 +69,34 @@ impl UpsertLog {
         Ok(())
     }
 
+    /// Append an upsert event without cloning the record.
+    ///
+    /// Uses a borrowing struct for serialization to avoid the clone that
+    /// `WalEvent::UpsertRecord { record: record.clone() }` would require.
+    pub fn append_upsert(&self, side: Side, record: &Record) -> io::Result<()> {
+        #[derive(serde::Serialize)]
+        struct UpsertRef<'a> {
+            #[serde(rename = "type")]
+            ty: &'static str,
+            side: Side,
+            record: &'a Record,
+        }
+        let event = UpsertRef {
+            ty: "upsert_record",
+            side,
+            record,
+        };
+        let line = serde_json::to_string(&event)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let mut w = self
+            .writer
+            .lock()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        w.write_all(line.as_bytes())?;
+        w.write_all(b"\n")?;
+        Ok(())
+    }
+
     /// Flush the buffered writer to the OS.
     pub fn flush(&self) -> io::Result<()> {
         let mut w = self

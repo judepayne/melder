@@ -160,15 +160,19 @@ pub struct Session {
     pub start_time: Instant,
     pub upsert_count: AtomicU64,
     pub match_count: AtomicU64,
+    /// Pre-computed embedding field specs (avoids per-request allocation).
+    emb_specs: Vec<(String, String, f64)>,
 }
 
 impl Session {
     pub fn new(state: Arc<LiveMatchState>) -> Self {
+        let emb_specs = crate::vectordb::embedding_field_specs(&state.config);
         Self {
             state,
             start_time: Instant::now(),
             upsert_count: AtomicU64::new(0),
             match_count: AtomicU64::new(0),
+            emb_specs,
         }
     }
 
@@ -176,6 +180,11 @@ impl Session {
     ///
     /// Encodes the combined embedding vector, stores it in the combined index,
     /// then performs insertion and scoring.
+    ///
+    /// When an `EncoderCoordinator` is configured, encoding is batched with
+    /// other concurrent requests via the coordinator (requires a tokio runtime
+    /// context — this is always the case since handlers call via
+    /// `spawn_blocking`). Otherwise falls back to direct `EncoderPool` encoding.
     pub fn upsert_record(
         &self,
         side: Side,
@@ -194,25 +203,83 @@ impl Session {
                 field: id_field.clone(),
             })?;
 
-        // Encode and store the combined embedding vector
-        let emb_specs = crate::vectordb::embedding_field_specs(config);
+        // Encode and store the combined embedding vector, unless the
+        // embedding fields haven't changed (text-hash skip).
+        let emb_specs = &self.emb_specs;
         if !emb_specs.is_empty() {
-            let combined_vec = crate::vectordb::encode_combined_vector(
-                &record,
-                &emb_specs,
-                &self.state.encoder_pool,
-                is_a_side,
-            )
-            .map_err(melder_to_session_err)?;
-            if !combined_vec.is_empty() {
-                let this_side = self.state.side(side);
-                if let Some(ref idx) = this_side.combined_index {
-                    let _ = idx.upsert(&id, &combined_vec, &record, side);
+            let this_side = self.state.side(side);
+            let needs_encoding = match this_side.combined_index {
+                Some(ref idx) => {
+                    let current_hash =
+                        crate::vectordb::texthash::compute_text_hash(&record, &emb_specs, side);
+                    idx.text_hash_for(&id) != Some(current_hash)
+                }
+                None => true,
+            };
+
+            if needs_encoding {
+                let combined_vec = self.encode_combined(&record, &emb_specs, is_a_side)?;
+                if !combined_vec.is_empty() {
+                    if let Some(ref idx) = this_side.combined_index {
+                        let _ = idx.upsert(&id, &combined_vec, &record, side);
+                    }
                 }
             }
         }
 
         self.upsert_record_inner(side, record)
+    }
+
+    /// Encode a record's embedding fields into a combined vector.
+    ///
+    /// If a coordinator is available, routes encoding through it (batching
+    /// with concurrent requests). Otherwise, calls `encode_combined_vector`
+    /// directly on the encoder pool.
+    fn encode_combined(
+        &self,
+        record: &Record,
+        emb_specs: &[(String, String, f64)],
+        is_a_side: bool,
+    ) -> Result<Vec<f32>, SessionError> {
+        if let Some(ref coordinator) = self.state.coordinator {
+            // Coordinator path: encode each embedding field via the
+            // coordinator and assemble the combined vector.
+            let handle = tokio::runtime::Handle::current();
+            let field_dim = self.state.encoder_pool.dim();
+            let mut combined = Vec::with_capacity(field_dim * emb_specs.len());
+
+            // Gather all field texts and submit them in one encode_many call.
+            let texts: Vec<String> = emb_specs
+                .iter()
+                .map(|(field_a, field_b, _weight)| {
+                    let field_name = if is_a_side { field_a } else { field_b };
+                    record
+                        .get(field_name)
+                        .map(|v| v.trim().to_string())
+                        .unwrap_or_default()
+                })
+                .collect();
+
+            let vecs = handle
+                .block_on(coordinator.encode_many(texts))
+                .map_err(|e| melder_to_session_err(crate::error::MelderError::Encoder(e)))?;
+
+            for (vec, (_fa, _fb, weight)) in vecs.into_iter().zip(emb_specs.iter()) {
+                let sqrt_w = weight.sqrt() as f32;
+                let scaled: Vec<f32> = vec.into_iter().map(|v| v * sqrt_w).collect();
+                combined.extend_from_slice(&scaled);
+            }
+            Ok(combined)
+        } else {
+            // Direct path: no coordinator, encode synchronously.
+            crate::vectordb::encode_combined_vector(
+                record,
+                emb_specs,
+                &self.state.encoder_pool,
+                is_a_side,
+            )
+            .map_err(melder_to_session_err)
+        }
     }
 
     /// Upsert a record whose per-field vectors have already been stored in
@@ -249,33 +316,19 @@ impl Session {
         if this_side.records.contains_key(&id) {
             status = "updated";
 
-            // Check crossmap — if matched, break the pair
-            let paired = {
-                let cm = self
-                    .state
-                    .crossmap
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner());
-                match side {
-                    Side::A => cm.get_b(&id).map(|s| s.to_string()),
-                    Side::B => cm.get_a(&id).map(|s| s.to_string()),
-                }
+            // Check crossmap — if matched, atomically read-and-remove the pair.
+            // take_a / take_b are used instead of get_b + remove to eliminate
+            // the TOCTOU window between the read and the write.
+            let paired_id = match side {
+                Side::A => self.state.crossmap.take_a(&id),
+                Side::B => self.state.crossmap.take_b(&id),
             };
 
-            if let Some(paired_id) = paired {
-                // Break the pair
+            if let Some(paired_id) = paired_id {
                 let (a_id, b_id) = match side {
                     Side::A => (id.clone(), paired_id.clone()),
                     Side::B => (paired_id.clone(), id.clone()),
                 };
-                {
-                    let mut cm = self
-                        .state
-                        .crossmap
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner());
-                    cm.remove(&a_id, &b_id);
-                }
                 // Add both back to unmatched
                 self.state.a.unmatched.insert(a_id.clone());
                 self.state.b.unmatched.insert(b_id.clone());
@@ -300,13 +353,16 @@ impl Session {
             }
         }
 
-        // 3. Insert/replace record
+        // 3. WAL append (zero-clone borrowing serialization).
+        let _ = self.state.wal.append_upsert(side, &record);
+
+        // 4. Insert/replace record
         this_side.records.insert(id.clone(), record.clone());
 
-        // 4. Add to unmatched
+        // 5. Add to unmatched
         this_side.unmatched.insert(id.clone());
 
-        // 5. Update blocking index
+        // 6. Update blocking index
         {
             let mut bi = this_side
                 .blocking_index
@@ -314,14 +370,6 @@ impl Session {
                 .unwrap_or_else(|e| e.into_inner());
             bi.insert(&id, &record, side);
         }
-
-        // 6. (Per-field vectors already stored by caller)
-
-        // 7. WAL append
-        let _ = self.state.wal.append(&WalEvent::UpsertRecord {
-            side,
-            record: record.clone(),
-        });
 
         // 8. Update common_id_index and check for common ID match
         let this_cid_field = match side {
@@ -342,41 +390,19 @@ impl Session {
                         let opp_id = opp_entry.value().clone();
                         drop(opp_entry);
 
-                        // Break any existing crossmap for either record
-                        {
-                            let cm = self
-                                .state
-                                .crossmap
-                                .read()
-                                .unwrap_or_else(|e| e.into_inner());
-                            let existing_this = match side {
-                                Side::A => cm.get_b(&id).map(|s| s.to_string()),
-                                Side::B => cm.get_a(&id).map(|s| s.to_string()),
-                            };
-                            let existing_opp = match side {
-                                Side::A => cm.get_a(&opp_id).map(|s| s.to_string()),
-                                Side::B => cm.get_b(&opp_id).map(|s| s.to_string()),
-                            };
-                            drop(cm);
-                            let mut cm = self
-                                .state
-                                .crossmap
-                                .write()
-                                .unwrap_or_else(|e| e.into_inner());
-                            if let Some(old_paired) = existing_this {
-                                match side {
-                                    Side::A => cm.remove(&id, &old_paired),
-                                    Side::B => cm.remove(&old_paired, &id),
-                                }
-                                opp_side.unmatched.insert(old_paired);
-                            }
-                            if let Some(old_paired) = existing_opp {
-                                match side {
-                                    Side::A => cm.remove(&old_paired, &opp_id),
-                                    Side::B => cm.remove(&opp_id, &old_paired),
-                                }
-                                this_side.unmatched.insert(old_paired);
-                            }
+                        // Break any existing crossmap for either record.
+                        // take_a / take_b atomically read-and-remove each pair.
+                        if let Some(old_opp) = match side {
+                            Side::A => self.state.crossmap.take_a(&id),
+                            Side::B => self.state.crossmap.take_b(&id),
+                        } {
+                            opp_side.unmatched.insert(old_opp);
+                        }
+                        if let Some(old_this) = match side {
+                            Side::A => self.state.crossmap.take_b(&opp_id),
+                            Side::B => self.state.crossmap.take_a(&opp_id),
+                        } {
+                            this_side.unmatched.insert(old_this);
                         }
 
                         // Create the common ID match
@@ -384,14 +410,7 @@ impl Session {
                             Side::A => (id.clone(), opp_id.clone()),
                             Side::B => (opp_id.clone(), id.clone()),
                         };
-                        {
-                            let mut cm = self
-                                .state
-                                .crossmap
-                                .write()
-                                .unwrap_or_else(|e| e.into_inner());
-                            cm.add(&a_id, &b_id);
-                        }
+                        self.state.crossmap.add(&a_id, &b_id);
                         self.state.a.unmatched.remove(&a_id);
                         self.state.b.unmatched.remove(&b_id);
 
@@ -427,11 +446,23 @@ impl Session {
         }
 
         // 9. Pipeline: blocking → candidate selection → full scoring
+        //
+        // The blocking_index read lock is held only for the bi.query() call
+        // (~1µs), then dropped before scoring begins. This prevents the
+        // previously-wide lock window from starving opposite-side writes.
         let top_n = config.top_n.unwrap_or(5);
-        let opp_bi = opp_side
-            .blocking_index
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
+        let blocked_ids: Vec<String> = {
+            let opp_bi = opp_side
+                .blocking_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            if config.blocking.enabled {
+                opp_bi.query(&record, side).into_iter().collect()
+            } else {
+                opp_side.records.iter().map(|e| e.key().clone()).collect()
+            }
+        }; // lock dropped here
+
         // Fetch the query combined vec from this side's index.
         let query_combined_vec: Vec<f32> = this_side
             .combined_index
@@ -445,43 +476,51 @@ impl Session {
             &query_combined_vec,
             &opp_side.records,
             opp_side.combined_index.as_deref(),
-            Some(&opp_bi),
+            &blocked_ids,
             config,
             top_n,
         );
-        drop(opp_bi);
 
-        // 10. Classify top result
-        let classification;
-        let matches = build_match_entries(&results);
+        // 10. Claim loop: try candidates in ranked order.
+        //
+        // For each auto-match candidate, attempt to atomically claim the
+        // B-side record via crossmap.claim(). If that B is already taken by
+        // a concurrent request, try the next-best candidate. This replaces
+        // the previous unconditional crossmap.add() which could create
+        // duplicate pairings under concurrency.
+        let mut classification = "no_match".to_string();
+        let mut _claimed_idx: Option<usize> = None;
 
-        if let Some(top) = results.first() {
-            classification = top.classification.as_str().to_string();
-            if top.classification == Classification::Auto {
-                let (a_id, b_id) = match side {
-                    Side::A => (id.clone(), top.matched_id.clone()),
-                    Side::B => (top.matched_id.clone(), id.clone()),
-                };
-                {
-                    let mut cm = self
-                        .state
-                        .crossmap
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner());
-                    cm.add(&a_id, &b_id);
-                }
-                self.state.a.unmatched.remove(&a_id);
-                self.state.b.unmatched.remove(&b_id);
-
-                let _ = self
-                    .state
-                    .wal
-                    .append(&WalEvent::CrossMapConfirm { a_id, b_id });
-                self.state.mark_crossmap_dirty();
+        for (i, result) in results.iter().enumerate() {
+            if result.score < config.thresholds.review_floor {
+                break; // nothing left worth matching
             }
-        } else {
-            classification = "no_match".to_string();
+            if result.score >= config.thresholds.auto_match {
+                let (a_id, b_id) = match side {
+                    Side::A => (id.clone(), result.matched_id.clone()),
+                    Side::B => (result.matched_id.clone(), id.clone()),
+                };
+                if self.state.crossmap.claim(&a_id, &b_id) {
+                    self.state.a.unmatched.remove(&a_id);
+                    self.state.b.unmatched.remove(&b_id);
+                    let _ = self
+                        .state
+                        .wal
+                        .append(&WalEvent::CrossMapConfirm { a_id, b_id });
+                    self.state.mark_crossmap_dirty();
+                    classification = "auto".to_string();
+                    _claimed_idx = Some(i);
+                    break;
+                }
+                // B was taken — try next candidate
+                continue;
+            }
+            // Score is in review band
+            classification = "review".to_string();
+            break;
         }
+
+        let matches = build_match_entries(&results);
 
         self.upsert_count.fetch_add(1, Ordering::Relaxed);
 
@@ -513,42 +552,21 @@ impl Session {
             })?;
 
         // Break any crossmap pair
-        let mut broken = Vec::new();
-        {
-            let cm = self
-                .state
-                .crossmap
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
+        let paired = match side {
+            Side::A => self.state.crossmap.get_b(id),
+            Side::B => self.state.crossmap.get_a(id),
+        };
+        let broken: Vec<String> = if let Some(paired_id) = paired {
             match side {
-                Side::A => {
-                    if let Some(b_id) = cm.get_b(id) {
-                        broken.push(b_id.to_string());
-                    }
-                }
-                Side::B => {
-                    if let Some(a_id) = cm.get_a(id) {
-                        broken.push(a_id.to_string());
-                    }
-                }
+                Side::A => self.state.crossmap.remove(id, &paired_id),
+                Side::B => self.state.crossmap.remove(&paired_id, id),
             }
-        }
-        if !broken.is_empty() {
-            let mut cm = self
-                .state
-                .crossmap
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            for paired_id in &broken {
-                match side {
-                    Side::A => cm.remove(id, paired_id),
-                    Side::B => cm.remove(paired_id, id),
-                }
-                // Re-add the opposite-side ID to its unmatched set
-                _other_side.unmatched.insert(paired_id.clone());
-            }
+            _other_side.unmatched.insert(paired_id.clone());
             self.state.mark_crossmap_dirty();
-        }
+            vec![paired_id]
+        } else {
+            vec![]
+        };
 
         // Remove from blocking index
         {
@@ -612,20 +630,26 @@ impl Session {
         };
         let id = record.get(id_field).cloned().unwrap_or_default();
 
-        // Encode and store combined embedding vector
-        let emb_specs = crate::vectordb::embedding_field_specs(config);
+        // Encode and store combined embedding vector, with text-hash skip.
+        let emb_specs = &self.emb_specs;
         if !emb_specs.is_empty() {
-            let combined_vec = crate::vectordb::encode_combined_vector(
-                &record,
-                &emb_specs,
-                &self.state.encoder_pool,
-                is_a_side,
-            )
-            .map_err(melder_to_session_err)?;
-            if !combined_vec.is_empty() {
-                let this_side = self.state.side(side);
-                if let Some(ref idx) = this_side.combined_index {
-                    let _ = idx.upsert(&id, &combined_vec, &record, side);
+            let this_side = self.state.side(side);
+            let needs_encoding = match this_side.combined_index {
+                Some(ref idx) => {
+                    let current_hash =
+                        crate::vectordb::texthash::compute_text_hash(&record, &emb_specs, side);
+                    idx.text_hash_for(&id) != Some(current_hash)
+                }
+                None => true,
+            };
+
+            if needs_encoding {
+                let combined_vec = self.encode_combined(&record, &emb_specs, is_a_side)?;
+                if !combined_vec.is_empty() {
+                    let this_side = self.state.side(side);
+                    if let Some(ref idx) = this_side.combined_index {
+                        let _ = idx.upsert(&id, &combined_vec, &record, side);
+                    }
                 }
             }
         }
@@ -648,16 +672,9 @@ impl Session {
         let opp_side = self.state.opposite_side(side);
 
         // Check crossmap for existing match
-        let existing = {
-            let cm = self
-                .state
-                .crossmap
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            match side {
-                Side::A => cm.get_b(&id).map(|s| s.to_string()),
-                Side::B => cm.get_a(&id).map(|s| s.to_string()),
-            }
+        let existing = match side {
+            Side::A => self.state.crossmap.get_b(&id),
+            Side::B => self.state.crossmap.get_a(&id),
         };
 
         if let Some(paired_id) = existing {
@@ -686,10 +703,18 @@ impl Session {
 
         // Pipeline: blocking → candidate selection → full scoring
         let top_n = config.top_n.unwrap_or(5);
-        let opp_bi = opp_side
-            .blocking_index
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
+        let blocked_ids: Vec<String> = {
+            let opp_bi = opp_side
+                .blocking_index
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            if config.blocking.enabled {
+                opp_bi.query(&record, side).into_iter().collect()
+            } else {
+                opp_side.records.iter().map(|e| e.key().clone()).collect()
+            }
+        }; // lock dropped here
+
         let this_side = self.state.side(side);
         // Fetch the query combined vec from this side's index.
         let query_combined_vec: Vec<f32> = this_side
@@ -704,11 +729,10 @@ impl Session {
             &query_combined_vec,
             &opp_side.records,
             opp_side.combined_index.as_deref(),
-            Some(&opp_bi),
+            &blocked_ids,
             config,
             top_n,
         );
-        drop(opp_bi);
 
         let classification = results
             .first()
@@ -753,15 +777,7 @@ impl Session {
             });
         }
 
-        {
-            let mut cm = self
-                .state
-                .crossmap
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            cm.add(a_id, b_id);
-        }
-
+        self.state.crossmap.add(a_id, b_id);
         self.state.a.unmatched.remove(a_id);
         self.state.b.unmatched.remove(b_id);
 
@@ -778,15 +794,9 @@ impl Session {
 
     /// Lookup a crossmap entry.
     pub fn lookup_crossmap(&self, id: &str, side: Side) -> Result<LookupResponse, SessionError> {
-        let cm = self
-            .state
-            .crossmap
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-
         let paired_id = match side {
-            Side::A => cm.get_b(id).map(|s| s.to_string()),
-            Side::B => cm.get_a(id).map(|s| s.to_string()),
+            Side::A => self.state.crossmap.get_b(id),
+            Side::B => self.state.crossmap.get_a(id),
         };
 
         if let Some(ref pid) = paired_id {
@@ -814,28 +824,14 @@ impl Session {
     /// Break a crossmap pair.
     pub fn break_crossmap(&self, a_id: &str, b_id: &str) -> Result<BreakResponse, SessionError> {
         // Validate the pair exists
-        {
-            let cm = self
-                .state
-                .crossmap
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            let existing = cm.get_b(a_id);
-            if existing.map(|b| b != b_id).unwrap_or(true) {
-                return Err(SessionError::MissingField {
-                    field: format!("crossmap pair ({}, {}) not found", a_id, b_id),
-                });
-            }
+        let existing = self.state.crossmap.get_b(a_id);
+        if existing.as_deref() != Some(b_id) {
+            return Err(SessionError::MissingField {
+                field: format!("crossmap pair ({}, {}) not found", a_id, b_id),
+            });
         }
 
-        {
-            let mut cm = self
-                .state
-                .crossmap
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            cm.remove(a_id, b_id);
-        }
+        self.state.crossmap.remove(a_id, b_id);
 
         self.state.a.unmatched.insert(a_id.to_string());
         self.state.b.unmatched.insert(b_id.to_string());
@@ -870,19 +866,13 @@ impl Session {
             })?;
 
         // Check crossmap
-        let cm = self
-            .state
-            .crossmap
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-
         let crossmap = match side {
             Side::A => {
-                if let Some(b_id) = cm.get_b(id) {
-                    let paired_record = _other_side.records.get(b_id).map(|r| r.value().clone());
+                if let Some(b_id) = self.state.crossmap.get_b(id) {
+                    let paired_record = _other_side.records.get(&b_id).map(|r| r.value().clone());
                     QueryCrossmap {
                         status: "matched".to_string(),
-                        paired_id: Some(b_id.to_string()),
+                        paired_id: Some(b_id),
                         paired_record,
                     }
                 } else {
@@ -894,11 +884,11 @@ impl Session {
                 }
             }
             Side::B => {
-                if let Some(a_id) = cm.get_a(id) {
-                    let paired_record = _other_side.records.get(a_id).map(|r| r.value().clone());
+                if let Some(a_id) = self.state.crossmap.get_a(id) {
+                    let paired_record = _other_side.records.get(&a_id).map(|r| r.value().clone());
                     QueryCrossmap {
                         status: "matched".to_string(),
-                        paired_id: Some(a_id.to_string()),
+                        paired_id: Some(a_id),
                         paired_record,
                     }
                 } else {
@@ -955,7 +945,7 @@ impl Session {
 
         let is_a_side = side == Side::A;
         let config = &self.state.config;
-        let emb_specs = crate::vectordb::embedding_field_specs(config);
+        let emb_specs = &self.emb_specs;
         let id_field = match side {
             Side::A => &config.datasets.a.id_field,
             Side::B => &config.datasets.b.id_field,
@@ -977,7 +967,7 @@ impl Session {
             let mut combined_vecs: Vec<Vec<f32>> =
                 vec![Vec::with_capacity(combined_dim); records.len()];
 
-            for (field_a, field_b, weight) in &emb_specs {
+            for (field_a, field_b, weight) in emb_specs.iter() {
                 let field_name = if is_a_side { field_a } else { field_b };
                 let texts: Vec<String> = records
                     .iter()
@@ -1060,7 +1050,7 @@ impl Session {
 
         let is_a_side = side == Side::A;
         let config = &self.state.config;
-        let emb_specs = crate::vectordb::embedding_field_specs(config);
+        let emb_specs = &self.emb_specs;
         let id_field = match side {
             Side::A => &config.datasets.a.id_field,
             Side::B => &config.datasets.b.id_field,
@@ -1080,7 +1070,7 @@ impl Session {
             let mut combined_vecs: Vec<Vec<f32>> =
                 vec![Vec::with_capacity(combined_dim); records.len()];
 
-            for (field_a, field_b, weight) in &emb_specs {
+            for (field_a, field_b, weight) in emb_specs.iter() {
                 let field_name = if is_a_side { field_a } else { field_b };
                 let texts: Vec<String> = records
                     .iter()
@@ -1174,7 +1164,7 @@ impl Session {
 
     /// Health check response.
     pub fn health(&self) -> HealthResponse {
-        let cm_len = self.state.crossmap.read().map(|c| c.len()).unwrap_or(0);
+        let cm_len = self.state.crossmap.len();
         HealthResponse {
             status: "ready".to_string(),
             model: self.state.config.embeddings.model.clone(),

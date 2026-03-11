@@ -61,10 +61,11 @@ thresholds:
   auto_match: 0.85
   review_floor: 0.60
 
-vector_backend: flat
+vector_backend: usearch
 
 performance:
   encoder_pool_size: 4
+  encoder_batch_wait_ms: 0
 
 live:
   upsert_log: bench/live_upserts_100k.ndjson

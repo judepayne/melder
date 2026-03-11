@@ -1058,7 +1058,8 @@ Apple Silicon M3 Macbook Air
 | p95 latency | 3.4ms | 3.5ms | 30.8ms | 30.3ms |
 | p99 latency | 5.8ms | 5.9ms | 41.2ms | 42.7ms |
 
-Halving the encoding load has little impact; search indices dominates both backends.
+Halving the encoding load has little impact; we're already encoding as fast as we can (at 40%).
+
 
 ### Live mode: 3,000 add requests, 80% requiring encoding
 

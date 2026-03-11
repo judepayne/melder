@@ -112,7 +112,7 @@ pub fn cmd_review_import(config_path: &Path, decisions_path: &Path) {
 
     // Load crossmap
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");
-    let mut crossmap = match crate::crossmap::CrossMap::load(
+    let crossmap = match crate::crossmap::CrossMap::load(
         Path::new(crossmap_path),
         &cfg.cross_map.a_id_field,
         &cfg.cross_map.b_id_field,

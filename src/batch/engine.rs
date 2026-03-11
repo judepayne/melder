@@ -4,12 +4,11 @@
 //! 1. Common ID pre-match (optional, runs first for all records)
 //! 2. Skip if already in CrossMap
 //! 3. Blocking filter → candidate selection → full scoring (via shared pipeline)
-//! 4. Classify top result; if auto_match → add to CrossMap
+//! 4. Classify top result; if auto_match → try to claim in CrossMap
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 use std::time::Instant;
 
 use dashmap::DashMap;
@@ -60,7 +59,7 @@ pub fn run_batch(
     records_a: &DashMap<String, Record>,
     combined_index_a: Option<&dyn VectorDB>,
     encoder_pool: &EncoderPool,
-    crossmap: &mut CrossMap,
+    crossmap: &CrossMap,
     limit: Option<usize>,
 ) -> Result<BatchResult, MelderError> {
     let start = Instant::now();
@@ -133,7 +132,6 @@ pub fn run_batch(
         &config.datasets.b.common_id_field,
     ) {
         let cid_start = Instant::now();
-        // Build reverse index: common_id_value -> a_id
         let mut a_common_index: HashMap<String, String> = HashMap::new();
         for entry in records_a.iter() {
             if let Some(val) = entry.value().get(a_cid_field) {
@@ -154,7 +152,6 @@ pub fn run_batch(
                     let b_val = b_val.trim();
                     if !b_val.is_empty() {
                         if let Some(a_id) = a_common_index.get(b_val) {
-                            // Immediate match
                             crossmap.add(a_id, b_id);
                             let a_rec = records_a.get(a_id).map(|e| e.value().clone());
                             let mr = MatchResult {
@@ -185,7 +182,7 @@ pub fn run_batch(
     } else {
         0
     };
-    let _ = common_id_matched; // used in summary stats
+    let _ = common_id_matched;
 
     // Partition: separate crossmapped (skip) from work items.
     let b_ids_slice = &b_ids[..total_b];
@@ -197,9 +194,6 @@ pub fn run_batch(
             work_ids.push(b_id.as_str());
         }
     }
-
-    // Wrap crossmap in Mutex for concurrent access during parallel scoring.
-    let crossmap_mu = Mutex::new(crossmap);
 
     // Pre-compute top_n from config (0 = no limit in batch → best result only).
     let top_n = config.top_n.unwrap_or(5);
@@ -232,21 +226,28 @@ pub fn run_batch(
                 );
             }
 
-            // Brief lock: check if this B record was crossmapped by another
-            // thread's auto-match during this parallel pass.
-            {
-                let cm = crossmap_mu.lock().unwrap();
-                if cm.has_b(b_id) {
-                    return None;
-                }
+            // Check if this B record was already claimed by another thread.
+            if crossmap.has_b(b_id) {
+                return None;
             }
+
+            // Pre-query the blocking index (lock-free for the rest of scoring).
+            let blocked_ids: Vec<String> = if config.blocking.enabled {
+                if let Some(bi) = bi_ref {
+                    bi.query(b_record.value(), Side::B).into_iter().collect()
+                } else {
+                    records_a.iter().map(|e| e.key().clone()).collect()
+                }
+            } else {
+                records_a.iter().map(|e| e.key().clone()).collect()
+            };
 
             // Fetch the query combined vec from the B-side index.
             let query_combined_vec: Vec<f32> = combined_index_b
                 .and_then(|idx| idx.get(b_id).ok().flatten())
                 .unwrap_or_default();
 
-            // Shared pipeline: blocking → candidates → full scoring
+            // Shared pipeline: candidate selection → full scoring
             let results = pipeline::score_pool(
                 b_id,
                 b_record.value(),
@@ -254,57 +255,56 @@ pub fn run_batch(
                 &query_combined_vec,
                 records_a,
                 combined_index_a,
-                bi_ref,
+                &blocked_ids,
                 config,
                 top_n,
             );
 
-            if let Some(mut top) = results.into_iter().next() {
-                // Attach matched record to the top result
-                if top.matched_record.is_none() {
-                    if let Some(a_entry) = records_a.get(&top.matched_id) {
-                        top.matched_record = Some(a_entry.value().clone());
-                    }
-                }
-
-                // If auto-match, update crossmap under lock immediately
-                // so other threads see it.
-                if top.classification == Classification::Auto {
-                    let mut cm = crossmap_mu.lock().unwrap();
-                    cm.add(&top.matched_id, &top.query_id);
-                }
-                match top.classification {
-                    Classification::Auto => Some(RecordOutcome::Auto(top)),
-                    Classification::Review => Some(RecordOutcome::Review(top)),
-                    Classification::NoMatch => Some(RecordOutcome::NoMatch(
+            // Claim loop: try each auto-match candidate in ranked order.
+            // Uses crossmap.claim() so concurrent threads can't double-match.
+            let mut outcome = None;
+            for mut result in results {
+                if result.score < config.thresholds.review_floor {
+                    outcome = Some(RecordOutcome::NoMatch(
                         b_id.to_string(),
                         b_record.value().clone(),
-                    )),
+                    ));
+                    break;
                 }
-            } else {
+                if result.score >= config.thresholds.auto_match {
+                    let a_id = &result.matched_id;
+                    if crossmap.claim(a_id, b_id) {
+                        // Attach matched record
+                        if result.matched_record.is_none() {
+                            if let Some(a_entry) = records_a.get(a_id) {
+                                result.matched_record = Some(a_entry.value().clone());
+                            }
+                        }
+                        outcome = Some(RecordOutcome::Auto(result));
+                        break;
+                    }
+                    // B already claimed — try next candidate
+                    continue;
+                }
+                // Review band
+                outcome = Some(RecordOutcome::Review(result));
+                break;
+            }
+
+            outcome.or_else(|| {
                 Some(RecordOutcome::NoMatch(
                     b_id.to_string(),
                     b_record.value().clone(),
                 ))
-            }
+            })
         })
         .collect();
 
-    // Recover crossmap from Mutex
-    let crossmap = crossmap_mu.into_inner().unwrap();
-
     for outcome in outcomes {
         match outcome {
-            RecordOutcome::Auto(mr) => {
-                crossmap.add(&mr.matched_id, &mr.query_id);
-                matched.push(mr);
-            }
-            RecordOutcome::Review(mr) => {
-                review.push(mr);
-            }
-            RecordOutcome::NoMatch(id, rec) => {
-                unmatched.push((id, rec));
-            }
+            RecordOutcome::Auto(mr) => matched.push(mr),
+            RecordOutcome::Review(mr) => review.push(mr),
+            RecordOutcome::NoMatch(id, rec) => unmatched.push((id, rec)),
         }
     }
 
@@ -318,8 +318,6 @@ pub fn run_batch(
         elapsed_secs: elapsed,
     };
 
-    // Suppress unused variable warning for emb_specs (used implicitly via
-    // vectordb::embedding_field_specs above but not captured in closure).
     let _ = emb_specs;
 
     Ok(BatchResult {

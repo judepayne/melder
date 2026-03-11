@@ -5,6 +5,8 @@
 //! state. Model weights are memory-mapped by the OS, so multiple instances
 //! share the same physical pages.
 
+pub mod coordinator;
+
 use std::sync::Mutex;
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};

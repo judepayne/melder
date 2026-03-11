@@ -77,7 +77,7 @@ output:
 performance:
   encoder_pool_size: 2
 
-vector_backend: usearch
+vector_backend: flat
 top_n: 20
 
 sidecar:

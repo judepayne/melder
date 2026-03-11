@@ -1,19 +1,27 @@
 //! Unified scoring pipeline shared by batch and live modes.
 //!
 //! Three stages:
-//!   1. Blocking filter  — narrow the pool to records sharing a blocking key
+//!   1. Blocking filter  — now done by the *caller* before invoking score_pool;
+//!                         `blocked_ids` is passed in as a pre-queried slice.
 //!   2. Candidate selection — ANN search (usearch) or flat scan to get top_n
 //!   3. Full scoring — score candidates on all match_fields, classify, sort
 //!
 //! Both batch and live call `score_pool()` with the same arguments; the only
 //! difference is where the data comes from (MatchState vs LiveSideState).
+//!
+//! ## Why blocked_ids is passed in rather than BlockingIndex
+//!
+//! In live mode the blocking index is a `RwLock<BlockingIndex>`. Previously
+//! `score_pool` held the read lock for its entire duration (~5-15ms at 100k
+//! scale), starving opposite-side writes. The caller now takes the lock only
+//! for the `.query()` call (~1µs) and passes the resulting owned `Vec<String>`
+//! here. The pipeline is therefore lock-free for its entire execution.
 
 use std::collections::HashMap;
 
 use dashmap::DashMap;
 
 use crate::config::Config;
-use crate::matching::blocking::BlockingIndex;
 use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::scoring;
@@ -34,7 +42,8 @@ use crate::vectordb::VectorDB;
 /// - `pool_records`:         opposite-side records (DashMap)
 /// - `pool_combined_index`:  combined embedding index for the pool side
 ///                           (`None` if no embedding fields configured)
-/// - `blocking_index`:       optional BlockingIndex for the opposite side
+/// - `blocked_ids`:          IDs pre-selected by the caller's blocking query;
+///                           pass all pool IDs if blocking is disabled
 /// - `config`:               job config
 /// - `top_n`:                max candidates from ANN search and max results to
 ///                           return (0 = no limit, flat path only)
@@ -45,21 +54,10 @@ pub fn score_pool(
     query_combined_vec: &[f32],
     pool_records: &DashMap<String, Record>,
     pool_combined_index: Option<&dyn VectorDB>,
-    blocking_index: Option<&BlockingIndex>,
+    blocked_ids: &[String],
     config: &Config,
     top_n: usize,
 ) -> Vec<MatchResult> {
-    // --- Stage 1: Blocking filter ---
-    let blocked_ids: Vec<String> = if config.blocking.enabled {
-        if let Some(bi) = blocking_index {
-            bi.query(query_record, query_side).into_iter().collect()
-        } else {
-            pool_records.iter().map(|e| e.key().clone()).collect()
-        }
-    } else {
-        pool_records.iter().map(|e| e.key().clone()).collect()
-    };
-
     if blocked_ids.is_empty() {
         return Vec::new();
     }
@@ -69,7 +67,7 @@ pub fn score_pool(
         query_combined_vec,
         top_n,
         pool_combined_index,
-        &blocked_ids,
+        blocked_ids,
         pool_records,
         query_record,
         query_side,
@@ -152,8 +150,6 @@ fn decompose_emb_scores(
     pool_combined: &[f32],
     emb_specs: &[(String, String, f64)],
 ) -> HashMap<String, f64> {
-    // All per-field sub-vectors have the same dimension.
-    // We infer it from the total combined dim and the number of fields.
     if emb_specs.is_empty() || query_combined.is_empty() || pool_combined.is_empty() {
         return HashMap::new();
     }
@@ -172,10 +168,9 @@ fn decompose_emb_scores(
             break;
         }
 
-        let q_sub = &query_combined[start..end]; // √wᵢ · bᵢ  (query side)
-        let p_sub = &pool_combined[start..end]; //  √wᵢ · aᵢ  (pool side)
+        let q_sub = &query_combined[start..end];
+        let p_sub = &pool_combined[start..end];
 
-        // dot(√wᵢ·aᵢ, √wᵢ·bᵢ) = wᵢ · cosᵢ
         let dot: f32 = q_sub.iter().zip(p_sub.iter()).map(|(a, b)| a * b).sum();
 
         let cos = if *weight > 0.0 {
@@ -220,16 +215,12 @@ mod tests {
 
     #[test]
     fn decompose_emb_scores_single_field() {
-        // w=1.0 → scaled sub-vec = original unit vec
-        // dot(a, b) / 1.0 = cosine_sim(a, b)
         let w = 1.0_f64;
         let dim = 4usize;
 
-        // Two orthogonal unit vecs
         let a = vec![1.0_f32, 0.0, 0.0, 0.0];
         let b = vec![0.0_f32, 1.0, 0.0, 0.0];
 
-        // combined = √w · vec = 1.0 · vec (w=1)
         let q = a.clone();
         let p = b.clone();
 
@@ -237,7 +228,6 @@ mod tests {
         let scores = decompose_emb_scores(&q, &p, &specs);
 
         let cos = *scores.get("f_a/f_b").unwrap();
-        // orthogonal → cosine ≈ 0, clamped to 0.0
         assert!(cos.abs() < 0.001, "expected ~0.0, got {}", cos);
         let _ = dim;
     }
@@ -247,13 +237,11 @@ mod tests {
         let w = 0.55_f64;
         let sqrt_w = w.sqrt() as f32;
 
-        // unit vec along first axis, scaled by √w
         let scaled = vec![sqrt_w, 0.0, 0.0, 0.0];
         let specs = vec![("f_a".to_string(), "f_b".to_string(), w)];
         let scores = decompose_emb_scores(&scaled, &scaled, &specs);
 
         let cos = *scores.get("f_a/f_b").unwrap();
-        // Self match → cos should be 1.0 (dot = w, /w = 1.0)
         assert!((cos - 1.0).abs() < 0.001, "expected ~1.0, got {}", cos);
     }
 
@@ -264,11 +252,9 @@ mod tests {
         let sqrt_w1 = w1.sqrt() as f32;
         let sqrt_w2 = w2.sqrt() as f32;
 
-        // field 1: identical → cos1 = 1.0
         let f1_a = vec![sqrt_w1, 0.0];
         let f1_b = vec![sqrt_w1, 0.0];
 
-        // field 2: orthogonal → cos2 = 0.0
         let f2_a = vec![0.0, sqrt_w2];
         let f2_b = vec![sqrt_w2, 0.0];
 
