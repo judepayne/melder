@@ -64,7 +64,7 @@ thresholds:
 vector_backend: usearch
 
 performance:
-  encoder_pool_size: 4
+  encoder_pool_size: 6
   encoder_batch_wait_ms: 0
 
 live:

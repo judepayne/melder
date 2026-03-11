@@ -1,0 +1,157 @@
+direction: right
+
+title: {
+  label: "Live Upsert Pipeline (POST /api/v1/a/add)"
+  near: top-center
+  shape: text
+  style.font-size: 24
+  style.bold: true
+}
+
+# ===========================================================================
+# STARTUP (runs once before serving)
+# ===========================================================================
+
+startup: Startup (1 thread) {
+  style.fill: "#fef7e0"
+  style.border-radius: 8
+
+  init_encoder: Init Encoder Pool {
+    label: "Init Encoder Pool\n(N ONNX sessions)"
+  }
+  load_a: Load Dataset A
+  load_b: Load Dataset B
+  load_crossmap: Load CrossMap CSV
+  load_wal: Replay WAL
+
+  init_encoder -> load_a -> load_b -> load_crossmap -> load_wal
+}
+
+cache_check: Cache Valid? {
+  shape: diamond
+  style.fill: "#ffdddd"
+}
+
+build_index: Build Indices {
+  style.fill: "#f3e8ff"
+  style.border-radius: 6
+  label: "Encode all records\n(ONNX batch x 256)\nBuild HNSW / flat index\n\n1 thread"
+}
+
+load_cache: Load from Cache {
+  style.fill: "#e8f8e8"
+  style.border-radius: 6
+  label: "Load cached index\n(.usearchdb / .index)\n\n1 thread"
+}
+
+build_blocking: Build Blocking Indices {
+  style.fill: "#e0f0ff"
+  style.border-radius: 6
+  label: "Build BlockingIndex A + B\n\n1 thread"
+}
+
+startup -> cache_check
+cache_check -> load_cache: "valid cache"
+cache_check -> build_index: "missing / stale"
+load_cache -> build_blocking
+build_index -> build_blocking
+
+serve: Start Serving {
+  shape: diamond
+  style.fill: "#d4edda"
+  label: "ready"
+}
+
+build_blocking -> serve
+
+# ===========================================================================
+# PER-REQUEST (concurrent, one flow per HTTP request)
+# ===========================================================================
+
+http: HTTP Request {
+  style.fill: "#e8f0fe"
+  style.border-radius: 6
+  label: "HTTP Request\n(axum / tokio)\n\nunlimited concurrent"
+}
+
+spawn: spawn_blocking {
+  shape: diamond
+  style.fill: "#ffdddd"
+  label: "spawn_blocking\n\ntokio pool\n(~512 threads)"
+}
+
+hash_check: Hash Changed? {
+  shape: diamond
+  style.fill: "#fef7e0"
+  label: "text-hash\nchanged?"
+}
+
+encode: ONNX Encode {
+  style.fill: "#f3e8ff"
+  style.border-radius: 6
+  style.stroke: "#7c3aed"
+  style.stroke-width: 2
+  label: "ONNX Encode\n(EncoderPool)\n\n1 of N sessions\n(mutex per slot)"
+}
+
+upsert_vec: Upsert Vector {
+  style.fill: "#fff0e0"
+  style.border-radius: 6
+  label: "Upsert into\nVector Index\n\nlock-free (usearch)"
+}
+
+record_mgmt: Record Management {
+  style.fill: "#e8f8e8"
+  style.border-radius: 6
+  label: "1. Break old crossmap (atomic)\n2. WAL append (mutex)\n3. Insert record (lock-free)\n4. Update BlockingIndex (brief)"
+}
+
+score: Score Candidates {
+  style.fill: "#e0f0ff"
+  style.border-radius: 6
+  style.stroke: "#1a73e8"
+  style.stroke-width: 2
+  label: "1. Blocking query (~1us)\n2. ANN search (lock-free)\n3. Score candidates (lock-free)"
+}
+
+classify: Classification? {
+  shape: diamond
+  style.fill: "#ffdddd"
+}
+
+auto: Auto Match {
+  style.fill: "#d4edda"
+  style.border-radius: 6
+  label: "CrossMap.claim()\n(atomic)\nremove from unmatched\nWAL confirm"
+}
+
+review_result: Review {
+  style.fill: "#fff3cd"
+  style.border-radius: 6
+  label: "Score in review band\nno crossmap change"
+}
+
+no_match: No Match {
+  style.fill: "#f8d7da"
+  style.border-radius: 6
+  label: "Below review floor\nrecord stays unmatched"
+}
+
+response: JSON Response {
+  style.fill: "#e8f0fe"
+  style.border-radius: 6
+  label: "JSON Response\nmatches + classification"
+}
+
+serve -> http
+http -> spawn -> hash_check
+hash_check -> encode: "yes (~80%)"
+hash_check -> record_mgmt: "no (~20%)"
+encode -> upsert_vec -> record_mgmt
+record_mgmt -> score -> classify
+classify -> auto: "score >= auto_match"
+classify -> review_result: "score >= review_floor"
+classify -> no_match: "score < review_floor"
+auto -> response
+review_result -> response
+no_match -> response

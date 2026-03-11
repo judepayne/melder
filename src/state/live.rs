@@ -272,8 +272,11 @@ impl LiveMatchState {
                             }
                         }
                     }
-                    WalEvent::CrossMapConfirm { a_id, b_id } => {
+                    WalEvent::CrossMapConfirm { a_id, b_id, .. } => {
                         crossmap.add(a_id, b_id);
+                    }
+                    WalEvent::ReviewMatch { .. } => {
+                        // Informational — no state change on replay.
                     }
                     WalEvent::CrossMapBreak { a_id, b_id } => {
                         crossmap.remove(a_id, b_id);

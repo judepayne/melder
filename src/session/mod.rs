@@ -417,6 +417,7 @@ impl Session {
                         let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
                             a_id: a_id.clone(),
                             b_id: b_id.clone(),
+                            score: Some(1.0),
                         });
                         self.state.mark_crossmap_dirty();
 
@@ -503,10 +504,11 @@ impl Session {
                 if self.state.crossmap.claim(&a_id, &b_id) {
                     self.state.a.unmatched.remove(&a_id);
                     self.state.b.unmatched.remove(&b_id);
-                    let _ = self
-                        .state
-                        .wal
-                        .append(&WalEvent::CrossMapConfirm { a_id, b_id });
+                    let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
+                        a_id,
+                        b_id,
+                        score: Some(result.score),
+                    });
                     self.state.mark_crossmap_dirty();
                     classification = "auto".to_string();
                     _claimed_idx = Some(i);
@@ -515,7 +517,13 @@ impl Session {
                 // B was taken — try next candidate
                 continue;
             }
-            // Score is in review band
+            // Score is in review band — emit ReviewMatch WAL event
+            let _ = self.state.wal.append(&WalEvent::ReviewMatch {
+                id: id.clone(),
+                side,
+                candidate_id: result.matched_id.clone(),
+                score: result.score,
+            });
             classification = "review".to_string();
             break;
         }
@@ -784,6 +792,7 @@ impl Session {
         let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
+            score: None,
         });
         self.state.mark_crossmap_dirty();
 

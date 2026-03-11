@@ -1,0 +1,302 @@
+title: {
+  label: "Melder Pipeline (Batch + Live)"
+  near: top-center
+  shape: text
+  style.font-size: 24
+  style.bold: true
+}
+
+# ===========================================================================
+# Shared startup
+# ===========================================================================
+
+start: Start {
+  shape: oval
+  style.fill: "#d4edda"
+  style.double-border: true
+}
+
+load_config: Load YAML Config {
+  style.fill: "#fef7e0"
+  style.border-radius: 6
+  label: "Load Config\nparse + validate\n\n1 thread"
+}
+
+init_encoder: Init Encoder Pool {
+  style.fill: "#f3e8ff"
+  style.border-radius: 6
+  label: "Init Encoder Pool\n(N ONNX sessions)\n\n1 thread"
+}
+
+load_a: Load Dataset A {
+  style.fill: "#e8f8e8"
+  style.border-radius: 6
+  label: "Load Dataset A\n(CSV / JSONL / Parquet)\n\n1 thread"
+}
+
+load_b: Load Dataset B {
+  style.fill: "#e8f8e8"
+  style.border-radius: 6
+  label: "Load Dataset B\n(CSV / JSONL / Parquet)\n\n1 thread"
+}
+
+cache_check_a: A Index Cached? {
+  shape: diamond
+  style.fill: "#ffdddd"
+}
+
+build_a: Build A Index {
+  style.fill: "#f3e8ff"
+  style.border-radius: 6
+  label: "Encode all A records\n(ONNX batch x 256)\nBuild HNSW / flat\n\n1 thread"
+}
+
+load_a_cache: Load A Index {
+  style.fill: "#e8f8e8"
+  style.border-radius: 6
+  label: "Load cached A index\n\n1 thread"
+}
+
+cache_check_b: B Index Cached? {
+  shape: diamond
+  style.fill: "#ffdddd"
+}
+
+build_b: Build B Index {
+  style.fill: "#f3e8ff"
+  style.border-radius: 6
+  label: "Encode all B records\n(ONNX batch x 256)\nBuild HNSW / flat\n\n1 thread"
+}
+
+load_b_cache: Load B Index {
+  style.fill: "#e8f8e8"
+  style.border-radius: 6
+  label: "Load cached B index\n\n1 thread"
+}
+
+blocking_a: Build A BlockingIndex {
+  style.fill: "#e0f0ff"
+  style.border-radius: 6
+  label: "Build A BlockingIndex\n\n1 thread"
+}
+
+load_crossmap: Load CrossMap CSV {
+  style.fill: "#e8f8e8"
+  style.border-radius: 6
+  label: "Load CrossMap CSV\n(or start empty)\n\n1 thread"
+}
+
+mode: Batch or Live? {
+  shape: diamond
+  style.fill: "#ffdddd"
+}
+
+start -> load_config -> init_encoder -> load_a -> cache_check_a
+cache_check_a -> build_a: "missing / stale"
+cache_check_a -> load_a_cache: "valid"
+build_a -> blocking_a
+load_a_cache -> blocking_a
+blocking_a -> load_b -> cache_check_b
+cache_check_b -> build_b: "missing / stale"
+cache_check_b -> load_b_cache: "valid"
+build_b -> load_crossmap
+load_b_cache -> load_crossmap
+load_crossmap -> mode
+
+# ===========================================================================
+# BATCH MODE
+# ===========================================================================
+
+batch: Batch Mode Only {
+  style.fill: "#e8f0fe"
+  style.border-radius: 8
+  style.stroke: "#4285f4"
+  style.stroke-width: 2
+
+  common_id: Common-ID Pre-Match {
+    style.fill: "#fef7e0"
+    style.border-radius: 6
+    style.stroke-dash: 3
+    label: "Common-ID Pre-Match\n(optional, bulk)\n\n1 thread"
+  }
+
+  sync: All Data Ready {
+    shape: diamond
+    style.fill: "#d4edda"
+  }
+
+  score_all: Score All B Records {
+    style.fill: "#fff0e0"
+    style.border-radius: 6
+    style.stroke: "#e65100"
+    style.stroke-width: 2
+    label: "rayon par_iter\nN threads (unbounded)\n\nper record:\n1. skip if in crossmap\n2. blocking query\n3. ANN search\n4. score candidates\n5. crossmap.claim()"
+  }
+
+  collect: Collect Results {
+    shape: diamond
+    style.fill: "#d4edda"
+    label: "all scored"
+  }
+
+  write: Write Output {
+    style.fill: "#e8f0fe"
+    style.border-radius: 6
+    style.double-border: true
+    label: "Write CSVs\n(results / review / unmatched)\nSave CrossMap CSV\n\n1 thread"
+  }
+
+  common_id -> sync -> score_all -> collect -> write
+}
+
+mode -> batch.common_id: "meld run"
+
+# ===========================================================================
+# LIVE MODE
+# ===========================================================================
+
+live: Live Mode Only {
+  style.fill: "#fce8e8"
+  style.border-radius: 8
+  style.stroke: "#ea4335"
+  style.stroke-width: 2
+
+  blocking_b: Build B BlockingIndex {
+    style.fill: "#e0f0ff"
+    style.border-radius: 6
+    label: "Build B BlockingIndex\n\n1 thread"
+  }
+
+  replay_wal: Replay WAL {
+    style.fill: "#f5f5f5"
+    style.border-radius: 6
+    label: "Replay WAL events\n(re-encode + re-apply)\n\n1 thread"
+  }
+
+  ready: Start Serving {
+    shape: diamond
+    style.fill: "#d4edda"
+    label: "ready"
+  }
+
+  blocking_b -> replay_wal -> ready
+
+  # --- per-request ---
+
+  request: Every Add Request {
+    style.fill: "#fff5f5"
+    style.border-radius: 8
+    style.stroke: "#cc0000"
+    style.stroke-dash: 3
+
+    http: HTTP Request {
+      style.fill: "#f5f5f5"
+      style.border-radius: 6
+      label: "HTTP Request\n(axum / tokio)\n\nunlimited concurrent"
+    }
+
+    spawn: spawn_blocking {
+      style.fill: "#f5f5f5"
+      style.border-radius: 6
+      label: "spawn_blocking\n\ntokio blocking pool"
+    }
+
+    hash_check: Hash Changed? {
+      shape: diamond
+      style.fill: "#fef7e0"
+    }
+
+    encode: ONNX Encode {
+      style.fill: "#f3e8ff"
+      style.border-radius: 6
+      style.stroke: "#7c3aed"
+      style.stroke-width: 2
+      label: "ONNX Encode\n1 of N sessions\n(mutex per slot)\n\n1 of M threads"
+    }
+
+    upsert_vec: Upsert Vector {
+      style.fill: "#fff0e0"
+      style.border-radius: 6
+      label: "Upsert into index\n(lock-free)\n\n1 of M threads"
+    }
+
+    record_mgmt: Record Insert {
+      style.fill: "#e8f8e8"
+      style.border-radius: 6
+      label: "Break old crossmap (atomic)\nInsert record (lock-free)\nUpdate blocking (brief RwLock)\n\n1 of M threads"
+    }
+
+    wal_upsert: WAL Append {
+      style.fill: "#f5f5f5"
+      style.border-radius: 6
+      label: "WAL: UpsertRecord\n(mutex on BufWriter)\n\n1 of M threads"
+    }
+
+    common_id_live: Common-ID Match? {
+      shape: diamond
+      style.fill: "#fef7e0"
+      style.stroke-dash: 3
+    }
+
+    score: Score Candidates {
+      style.fill: "#e0f0ff"
+      style.border-radius: 6
+      label: "Blocking query (RwLock read, ~1us)\nANN search (lock-free)\nScore candidates (lock-free)\n\n1 of M threads"
+    }
+
+    classify: Classification? {
+      shape: diamond
+      style.fill: "#ffdddd"
+    }
+
+    auto: Auto Match {
+      style.fill: "#d4edda"
+      style.border-radius: 6
+      label: "CrossMap.claim() (atomic)\n\n1 of M threads"
+    }
+
+    wal_confirm: WAL Append {
+      style.fill: "#f5f5f5"
+      style.border-radius: 6
+      label: "WAL: CrossMapConfirm\n(mutex on BufWriter)\n\n1 of M threads"
+    }
+
+    review_out: Review {
+      style.fill: "#fff3cd"
+      style.border-radius: 6
+      label: "In review band\nno crossmap change\n\n1 of M threads"
+    }
+
+    no_match: No Match {
+      style.fill: "#f8d7da"
+      style.border-radius: 6
+      label: "Below floor\nstays unmatched\n\n1 of M threads"
+    }
+
+    response: JSON Response {
+      style.fill: "#f5f5f5"
+      style.border-radius: 6
+      style.double-border: true
+      label: "JSON Response\nmatches + classification\n\n1 of M threads"
+    }
+
+    http -> spawn -> hash_check
+    hash_check -> encode: "yes (~80%)"
+    hash_check -> record_mgmt: "no (~20%)"
+    encode -> upsert_vec -> record_mgmt
+    record_mgmt -> wal_upsert -> common_id_live
+    common_id_live -> response: "common-ID hit\n(instant match)"
+    common_id_live -> score: "no common-ID"
+    score -> classify
+    classify -> auto: "auto"
+    classify -> review_out: "review"
+    classify -> no_match: "no match"
+    auto -> wal_confirm -> response
+    review_out -> response
+    no_match -> response
+  }
+
+  ready -> request.http
+}
+
+mode -> live.blocking_b: "meld serve"
