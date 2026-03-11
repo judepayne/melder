@@ -398,7 +398,12 @@ pub fn build_or_load_combined_index(
             }
         };
 
-        if proceed_to_load && cache_path.exists() {
+        // For flat backend the cache is a single `.index` file; for usearch
+        // it is a `.usearchdb` directory next to the `.index` path.  Check
+        // whichever is appropriate so we don't miss an existing usearch cache.
+        let cache_exists = cache_path.exists() || cache_path.with_extension("usearchdb").is_dir();
+
+        if proceed_to_load && cache_exists {
             // Step 2: Load existing index
             let load_start = Instant::now();
             match load_index(backend, cache_path) {

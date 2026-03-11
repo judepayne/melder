@@ -238,10 +238,20 @@ and has a sensible default.
 
 ```yaml
 performance:
-  encoder_pool_size: 4    # parallel ONNX sessions (default: 1)
-  quantized: true         # optional — use INT8 quantised model — ~2x faster encoding,
-                          # negligible quality loss (default: false)
+  encoder_pool_size: 4          # parallel ONNX sessions (default: 1)
+  encoder_batch_wait_ms: 0      # live mode only — batch encoding window in ms (default: 0, disabled)
+  quantized: true               # optional — use INT8 quantised model — ~2x faster encoding,
+                                # negligible quality loss (default: false)
 ```
+
+`encoder_batch_wait_ms` controls an optional encoding coordinator for live
+mode (`meld serve`). When > 0, concurrent encoding requests are collected
+for up to this many milliseconds and dispatched as a single ONNX batch call.
+This can improve throughput with large models or very high concurrency
+(c >= 20), but adds latency equal to the batch window. With small models
+(MiniLM) and `encoder_pool_size >= 4`, leaving this at 0 (disabled) is
+typically faster because parallel independent sessions outperform batched
+single-session encoding. Has no effect on batch mode.
 
 `quantized` is supported for `all-MiniLM-L6-v2` and `all-MiniLM-L12-v2`.
 BGE models do not have quantised variants and will error if `quantized: true`
@@ -1017,10 +1027,11 @@ Apple Silicon M3 Macbook Air
 
 | | flat 10k × 10k | usearch 10k × 10k | flat 100k × 100k | usearch 100k × 100k |
 |---|---:|---:|---:|---:|
-| Index build time (no cache) | ~16s | ~18s | ~3m | ~3m 42s |
-| Index load time (pre-existing cache) | ~25ms | ~50ms | ~650ms | ~650ms |
-| Scoring throughput | 4,877 rec/s | **22,464 rec/s** | 363 rec/s | **8,407 rec/s** |
-| Wall time | 1.6s | 0.85s | 4m 37s | 13s |
+| Index build time (no cache) | ~16s | ~18s | ~3m | ~3m 24s |
+| Index load time (pre-existing cache) | ~25ms | ~50ms | ~650ms | ~700ms |
+| Scoring throughput | 4,877 rec/s | **22,464 rec/s** | 363 rec/s | **9,886 rec/s** |
+| Wall time (cold) | — | — | — | 3m 36s |
+| Wall time (warm) | 1.6s | 0.85s | 4m 37s | **12s** |
 
 **Observations**
 
@@ -1069,12 +1080,15 @@ Halving the encoding load has little impact; we're already encoding as fast as w
 
 | Metric | flat (c=1) | usearch (c=1) | flat (c=10) | usearch (c=10) |
 |--------|----------:|-------------:|------------:|---------------:|
-| Throughput | 133 req/s | 309 req/s | 211 req/s | 834 req/s |
-| p50 latency | 6.6ms | 3.0ms | 42.5ms | 7.2ms |
-| p95 latency | 11.1ms | 4.1ms | 85.2ms | 30.8ms |
-| p99 latency | 22.6ms | 5.5ms | 125.1ms | 48.4ms |
+| Throughput | 133 req/s | 309 req/s | 211 req/s | **968 req/s** |
+| p50 latency | 6.6ms | 3.0ms | 42.5ms | 6.8ms |
+| p95 latency | 11.1ms | 4.1ms | 85.2ms | 28.7ms |
+| p99 latency | 22.6ms | 5.5ms | 125.1ms | 42.3ms |
 
 Similar to batch, at larger index sizes, usearch degrades more gracefully than flat.
+The usearch c=10 result includes the text-hash skip optimisation: the 20% of
+requests that only modify non-embedding fields skip ONNX encoding and complete
+in ~3ms (vs ~7ms for encoding requests).
 
 ### Benchmarking
 
