@@ -19,6 +19,9 @@ const VALID_BACKENDS: &[&str] = &["local"];
 /// Valid vector storage backends.
 const VALID_VECTOR_BACKENDS: &[&str] = &["flat", "usearch"];
 
+/// Valid vector quantization types (for usearch index storage).
+const VALID_VECTOR_QUANTIZATIONS: &[&str] = &["f32", "f16", "bf16"];
+
 /// Valid data formats.
 const VALID_FORMATS: &[&str] = &["csv", "parquet", "jsonl"];
 
@@ -252,6 +255,21 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
             field: "vector_backend".into(),
             message: "usearch backend requires building with --features usearch".into(),
         });
+    }
+
+    // 30. vector_quantization
+    if let Some(ref vq) = cfg.performance.vector_quantization {
+        require_one_of(
+            vq,
+            VALID_VECTOR_QUANTIZATIONS,
+            "performance.vector_quantization",
+        )?;
+        if cfg.vector_backend == "flat" && vq != "f32" {
+            eprintln!(
+                "Note: vector_quantization {:?} has no effect with flat backend",
+                vq
+            );
+        }
     }
 
     Ok(())
@@ -708,5 +726,107 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
         apply_defaults(&mut cfg);
         validate(&cfg).unwrap();
         assert_eq!(cfg.match_fields[0].scorer, Some("wratio".into()));
+    }
+
+    #[test]
+    fn vector_quantization_f16_accepted() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+performance:
+  vector_quantization: f16
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(cfg.performance.vector_quantization, Some("f16".to_string()));
+    }
+
+    #[test]
+    fn vector_quantization_bf16_accepted() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+performance:
+  vector_quantization: bf16
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(
+            cfg.performance.vector_quantization,
+            Some("bf16".to_string())
+        );
+    }
+
+    #[test]
+    fn vector_quantization_invalid_rejected() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+performance:
+  vector_quantization: i8
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("vector_quantization"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn vector_quantization_none_defaults_to_f32_behavior() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        // When not set, vector_quantization is None (callers default to "f32")
+        assert_eq!(cfg.performance.vector_quantization, None);
     }
 }

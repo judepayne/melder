@@ -685,7 +685,7 @@ mod usearch_block_tests {
 
         db.save(&path).unwrap();
 
-        let loaded = UsearchVectorDB::load(&path).unwrap();
+        let loaded = UsearchVectorDB::load(&path, "f32").unwrap();
 
         assert_eq!(loaded.len(), n);
         assert_eq!(loaded.dim(), DIM);
@@ -757,5 +757,96 @@ mod usearch_block_tests {
             .unwrap();
         assert_eq!(results.len(), 10);
         assert_eq!(results[0].id, "id_0");
+    }
+
+    #[test]
+    fn f16_quantization_insert_and_search() {
+        // F16 quantization: vectors are stored as half-precision but the API
+        // still accepts/returns f32. Search should still find self-matches.
+        let db = UsearchVectorDB::new_with_emb_specs(DIM, None, Vec::new(), "f16");
+
+        let n = 50;
+        for i in 0..n {
+            db.upsert(
+                &format!("id_{}", i),
+                &random_unit_vec(DIM, i as u64),
+                &dummy_record(),
+                Side::A,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(db.len(), n);
+
+        // Self-match: query for id_0's vector, expect id_0 as top result.
+        let query = random_unit_vec(DIM, 0);
+        let results = db.search(&query, 5, &dummy_record(), Side::A).unwrap();
+        assert_eq!(results[0].id, "id_0");
+        // F16 has ~0.1% relative error, so self-similarity should still be
+        // very close to 1.0 (within ~0.01).
+        assert!(
+            results[0].score > 0.98,
+            "F16 self-similarity too low: {}",
+            results[0].score
+        );
+    }
+
+    #[test]
+    fn bf16_quantization_insert_and_search() {
+        let db = UsearchVectorDB::new_with_emb_specs(DIM, None, Vec::new(), "bf16");
+
+        let n = 50;
+        for i in 0..n {
+            db.upsert(
+                &format!("id_{}", i),
+                &random_unit_vec(DIM, i as u64),
+                &dummy_record(),
+                Side::A,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(db.len(), n);
+
+        let query = random_unit_vec(DIM, 0);
+        let results = db.search(&query, 5, &dummy_record(), Side::A).unwrap();
+        assert_eq!(results[0].id, "id_0");
+        assert!(
+            results[0].score > 0.97,
+            "BF16 self-similarity too low: {}",
+            results[0].score
+        );
+    }
+
+    #[test]
+    fn f16_save_and_load_roundtrip() {
+        let db = UsearchVectorDB::new_with_emb_specs(DIM, None, Vec::new(), "f16");
+
+        for i in 0..10 {
+            db.upsert(
+                &format!("id_{}", i),
+                &random_unit_vec(DIM, i as u64),
+                &dummy_record(),
+                Side::A,
+            )
+            .unwrap();
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_f16.usearch");
+        db.save(&path).unwrap();
+
+        let loaded = UsearchVectorDB::load(&path, "f16").unwrap();
+        assert_eq!(loaded.len(), 10);
+
+        // Verify search still works after load.
+        let query = random_unit_vec(DIM, 0);
+        let results = loaded.search(&query, 5, &dummy_record(), Side::A).unwrap();
+        assert_eq!(results[0].id, "id_0");
+        assert!(
+            results[0].score > 0.98,
+            "F16 round-trip self-similarity too low: {}",
+            results[0].score
+        );
     }
 }

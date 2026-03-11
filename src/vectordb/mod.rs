@@ -188,6 +188,7 @@ pub fn new_index(
     dim: usize,
     #[allow(unused_variables)] blocking_config: Option<&BlockingConfig>,
     emb_specs: &[(String, String, f64)],
+    #[allow(unused_variables)] quantization: &str,
 ) -> Box<dyn VectorDB> {
     match backend {
         #[cfg(feature = "usearch")]
@@ -195,6 +196,7 @@ pub fn new_index(
             dim,
             blocking_config,
             emb_specs.to_vec(),
+            quantization,
         )),
         "flat" | _ => Box::new(flat::FlatVectorDB::new_with_emb_specs(
             dim,
@@ -204,10 +206,17 @@ pub fn new_index(
 }
 
 /// Load a vector index from a cache file.
-pub fn load_index(backend: &str, path: &Path) -> Result<Box<dyn VectorDB>, VectorDBError> {
+pub fn load_index(
+    backend: &str,
+    path: &Path,
+    #[allow(unused_variables)] quantization: &str,
+) -> Result<Box<dyn VectorDB>, VectorDBError> {
     match backend {
         #[cfg(feature = "usearch")]
-        "usearch" => Ok(Box::new(usearch_backend::UsearchVectorDB::load(path)?)),
+        "usearch" => Ok(Box::new(usearch_backend::UsearchVectorDB::load(
+            path,
+            quantization,
+        )?)),
         "flat" | _ => Ok(Box::new(flat::FlatVectorDB::load(path)?)),
     }
 }
@@ -229,18 +238,24 @@ pub fn is_index_stale(
 // Combined embedding index
 // ---------------------------------------------------------------------------
 
-/// Compute an 8-character FNV-1a hex hash of the embedding field spec string.
+/// Compute an 8-character FNV-1a hex hash of the embedding field spec string
+/// and vector quantization setting.
 ///
 /// The input is the ordered, semicolon-separated list of
-/// `"field_a/field_b/weight"` tuples for all embedding match fields.
-/// Any change to field identity, order, or weight produces a different hash,
-/// making the old cache path unreachable and forcing a cold rebuild.
-pub fn spec_hash(emb_specs: &[(String, String, f64)]) -> String {
-    let s: String = emb_specs
+/// `"field_a/field_b/weight"` tuples for all embedding match fields, plus
+/// `";q=<quantization>"` suffix. Any change to field identity, order, weight,
+/// or quantization produces a different hash, making the old cache path
+/// unreachable and forcing a cold rebuild.
+pub fn spec_hash(emb_specs: &[(String, String, f64)], vector_quantization: &str) -> String {
+    let mut s: String = emb_specs
         .iter()
         .map(|(fa, fb, w)| format!("{}/{}/{:.6}", fa, fb, w))
         .collect::<Vec<_>>()
         .join(";");
+    // Append quantization so that changing f32→f16 invalidates the cache.
+    // "f32" is the default; we always include it for consistency.
+    s.push_str(";q=");
+    s.push_str(vector_quantization);
     let mut h: u64 = 0xcbf29ce484222325;
     for byte in s.bytes() {
         h ^= byte as u64;
@@ -363,7 +378,12 @@ pub fn build_or_load_combined_index(
 
     let field_dim = encoder_pool.dim();
     let combined_dim = field_dim * emb_specs.len();
-    let current_spec_hash = spec_hash(&emb_specs);
+    let vq = config
+        .performance
+        .vector_quantization
+        .as_deref()
+        .unwrap_or("f32");
+    let current_spec_hash = spec_hash(&emb_specs, vq);
     let current_blocking_hash = blocking_hash(&config.blocking);
     let current_model = &config.embeddings.model;
 
@@ -406,7 +426,7 @@ pub fn build_or_load_combined_index(
         if proceed_to_load && cache_exists {
             // Step 2: Load existing index
             let load_start = Instant::now();
-            match load_index(backend, cache_path) {
+            match load_index(backend, cache_path, vq) {
                 Err(e) => {
                     eprintln!(
                         "Warning: {} combined index cache load failed ({}), rebuilding...",
@@ -544,7 +564,7 @@ pub fn build_or_load_combined_index(
         emb_specs.len(),
     );
     let build_start = Instant::now();
-    let index = new_index(backend, combined_dim, blocking_config, &emb_specs);
+    let index = new_index(backend, combined_dim, blocking_config, &emb_specs, vq);
     let all_ids: Vec<&String> = ids.iter().collect();
 
     encode_and_upsert(
@@ -703,8 +723,8 @@ mod combined_tests {
                 0.20_f64,
             ),
         ];
-        let h1 = spec_hash(&specs);
-        let h2 = spec_hash(&specs);
+        let h1 = spec_hash(&specs, "f32");
+        let h2 = spec_hash(&specs, "f32");
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 8);
     }
@@ -713,20 +733,37 @@ mod combined_tests {
     fn spec_hash_changes_on_weight_change() {
         let specs1 = vec![("f_a".to_string(), "f_b".to_string(), 0.55_f64)];
         let specs2 = vec![("f_a".to_string(), "f_b".to_string(), 0.60_f64)];
-        assert_ne!(spec_hash(&specs1), spec_hash(&specs2));
+        assert_ne!(spec_hash(&specs1, "f32"), spec_hash(&specs2, "f32"));
     }
 
     #[test]
     fn spec_hash_changes_on_field_change() {
         let specs1 = vec![("name_a".to_string(), "name_b".to_string(), 0.55_f64)];
         let specs2 = vec![("other_a".to_string(), "name_b".to_string(), 0.55_f64)];
-        assert_ne!(spec_hash(&specs1), spec_hash(&specs2));
+        assert_ne!(spec_hash(&specs1, "f32"), spec_hash(&specs2, "f32"));
     }
 
     #[test]
     fn spec_hash_empty() {
-        let h = spec_hash(&[]);
+        let h = spec_hash(&[], "f32");
         assert_eq!(h.len(), 8);
+    }
+
+    #[test]
+    fn spec_hash_changes_on_quantization() {
+        let specs = vec![("f_a".to_string(), "f_b".to_string(), 0.55_f64)];
+        let h_f32 = spec_hash(&specs, "f32");
+        let h_f16 = spec_hash(&specs, "f16");
+        let h_bf16 = spec_hash(&specs, "bf16");
+        assert_ne!(h_f32, h_f16, "f32 and f16 should produce different hashes");
+        assert_ne!(
+            h_f32, h_bf16,
+            "f32 and bf16 should produce different hashes"
+        );
+        assert_ne!(
+            h_f16, h_bf16,
+            "f16 and bf16 should produce different hashes"
+        );
     }
 
     #[test]

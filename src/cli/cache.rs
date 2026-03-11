@@ -171,7 +171,12 @@ pub fn cmd_cache_clear(config_path: &Path, all: bool) {
     } else {
         // Smart clear: compute the reachable file names and only delete others.
         let emb_specs = crate::vectordb::embedding_field_specs(&cfg);
-        let hash = crate::vectordb::spec_hash(&emb_specs);
+        let vq = cfg
+            .performance
+            .vector_quantization
+            .as_deref()
+            .unwrap_or("f32");
+        let hash = crate::vectordb::spec_hash(&emb_specs, vq);
 
         // Build the set of reachable base names (stem + extension, no dir).
         let mut reachable: HashSet<String> = HashSet::new();

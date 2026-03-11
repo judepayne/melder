@@ -31,6 +31,22 @@ use super::texthash::TextHashStore;
 use super::{SearchResult, VectorDB, VectorDBError};
 
 // ---------------------------------------------------------------------------
+// ScalarKind parsing helper
+// ---------------------------------------------------------------------------
+
+/// Map a config string to a usearch `ScalarKind`.
+///
+/// Allowed values: `"f32"`, `"f16"`, `"bf16"`. Everything else falls back to
+/// `F32` (the caller — `loader.rs` — already validates the input).
+fn parse_scalar_kind(s: &str) -> ScalarKind {
+    match s {
+        "f16" => ScalarKind::F16,
+        "bf16" => ScalarKind::BF16,
+        _ => ScalarKind::F32,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Block key: composite of lowercased/trimmed blocking field values
 // ---------------------------------------------------------------------------
 
@@ -89,11 +105,11 @@ struct BlockState {
 }
 
 impl BlockState {
-    fn new(dim: usize) -> Result<Self, VectorDBError> {
+    fn new(dim: usize, quantization: ScalarKind) -> Result<Self, VectorDBError> {
         let opts = IndexOptions {
             dimensions: dim,
             metric: MetricKind::IP,
-            quantization: ScalarKind::F32,
+            quantization,
             connectivity: 0,  // usearch default (typically 16)
             expansion_add: 0, // usearch default
             expansion_search: 0,
@@ -124,6 +140,8 @@ impl BlockState {
 /// Blocks are determined by blocking config fields and created lazily.
 pub struct UsearchVectorDB {
     dim: usize,
+    /// Usearch vector quantization level (F32, F16, or BF16).
+    quantization: ScalarKind,
     /// Blocking field pairs for computing block keys.
     blocking_fields: Vec<BlockingFieldPair>,
     /// Whether blocking is enabled.
@@ -158,20 +176,24 @@ impl UsearchVectorDB {
     /// - `dim`: embedding dimension (e.g. 384 for MiniLM-L6-v2).
     /// - `blocking_config`: the job's blocking configuration. If `None` or
     ///   disabled, all records go into a single default block.
+    /// - `quantization`: vector quantization level (`"f32"`, `"f16"`, or
+    ///   `"bf16"`). Defaults to `"f32"` if unrecognised.
     ///
     /// Used in tests and wherever emb_specs are not needed. The text-hash
     /// store will be empty (no-op on upsert).
     pub fn new(dim: usize, blocking_config: Option<&BlockingConfig>) -> Self {
-        Self::new_with_emb_specs(dim, blocking_config, Vec::new())
+        Self::new_with_emb_specs(dim, blocking_config, Vec::new(), "f32")
     }
 
     /// Create a new UsearchVectorDB with embedding specs for text hashing.
     ///
     /// Called by `new_index()` in mod.rs when building the combined index.
+    /// `quantization` controls the usearch scalar kind for storage/search.
     pub fn new_with_emb_specs(
         dim: usize,
         blocking_config: Option<&BlockingConfig>,
         emb_specs: Vec<(String, String, f64)>,
+        quantization: &str,
     ) -> Self {
         let (blocking_enabled, blocking_fields) = match blocking_config {
             Some(cfg) if cfg.enabled && !cfg.fields.is_empty() => (true, cfg.fields.clone()),
@@ -179,6 +201,7 @@ impl UsearchVectorDB {
         };
         Self {
             dim,
+            quantization: parse_scalar_kind(quantization),
             blocking_fields,
             blocking_enabled,
             block_router: RwLock::new(HashMap::new()),
@@ -205,7 +228,7 @@ impl UsearchVectorDB {
         if let Some(&idx) = router.get(block_key) {
             return Ok(idx);
         }
-        let state = BlockState::new(self.dim)?;
+        let state = BlockState::new(self.dim, self.quantization)?;
         let mut blocks = self.blocks.write().unwrap();
         let idx = blocks.len();
         blocks.push(RwLock::new(state));
@@ -637,7 +660,13 @@ impl VectorDB for UsearchVectorDB {
 
 impl UsearchVectorDB {
     /// Load a previously saved UsearchVectorDB from disk.
-    pub fn load(path: &Path) -> Result<Self, VectorDBError> {
+    ///
+    /// `quantization` controls the scalar kind used when re-creating the
+    /// usearch `IndexOptions`. It must match whatever was used when the index
+    /// was originally built (the cache path already encodes the quantization
+    /// via `spec_hash`, so mismatches are prevented at a higher level).
+    pub fn load(path: &Path, quantization: &str) -> Result<Self, VectorDBError> {
+        let scalar_kind = parse_scalar_kind(quantization);
         let dir = path.with_extension("usearchdb");
         let manifest_path = dir.join("manifest.json");
         let data = std::fs::read_to_string(&manifest_path)?;
@@ -654,7 +683,7 @@ impl UsearchVectorDB {
             let opts = IndexOptions {
                 dimensions: dim,
                 metric: MetricKind::IP,
-                quantization: ScalarKind::F32,
+                quantization: scalar_kind,
                 connectivity: 0,
                 expansion_add: 0,
                 expansion_search: 0,
@@ -709,6 +738,7 @@ impl UsearchVectorDB {
 
         Ok(Self {
             dim,
+            quantization: scalar_kind,
             blocking_fields: manifest.blocking_fields,
             blocking_enabled: manifest.blocking_enabled,
             block_router: RwLock::new(block_router),

@@ -464,7 +464,13 @@ impl LiveMatchState {
         if emb_specs.is_empty() {
             return Ok(());
         }
-        let hash = spec_hash(&emb_specs);
+        let vq = self
+            .config
+            .performance
+            .vector_quantization
+            .as_deref()
+            .unwrap_or("f32");
+        let hash = spec_hash(&emb_specs, vq);
 
         // A-side (always configured)
         if let Some(ref idx) = self.a.combined_index {

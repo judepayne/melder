@@ -210,6 +210,13 @@ thresholds:
   auto_match: 0.85
   review_floor: 0.60
 
+# --- Performance tuning (optional) ----------------------------------------
+# All fields have sensible defaults; omit the section entirely if unsure.
+performance:
+  encoder_pool_size: 4            # parallel ONNX sessions (default: 1)
+  quantized: true                 # INT8 quantised ONNX model (default: false)
+  vector_quantization: f16        # usearch storage precision: f32, f16, bf16 (default: f32)
+
 # --- Output paths (batch mode) -------------------------------------------
 output:
   results_path: output/results.csv      # confirmed + auto matches
@@ -233,30 +240,70 @@ top_n: 5                  # max matches returned per request (top-level field)
 
 ### Performance config
 
-The `performance` section controls parallelism. The setting is optional
-and has a sensible default.
+The `performance` section is optional. All fields have sensible defaults.
 
 ```yaml
 performance:
-  encoder_pool_size: 4          # parallel ONNX sessions (default: 1)
-  encoder_batch_wait_ms: 0      # live mode only — batch encoding window in ms (default: 0, disabled)
-  quantized: true               # optional — use INT8 quantised model — ~2x faster encoding,
-                                # negligible quality loss (default: false)
+  encoder_pool_size: 4            # parallel ONNX sessions (default: 1)
+  encoder_batch_wait_ms: 0        # live mode only — batch window in ms (default: 0, disabled)
+  quantized: true                 # INT8 quantised ONNX model (default: false)
+  vector_quantization: f16        # usearch storage precision: f32, f16, bf16 (default: f32)
 ```
 
-`encoder_batch_wait_ms` controls an optional encoding coordinator for live
-mode (`meld serve`). When > 0, concurrent encoding requests are collected
-for up to this many milliseconds and dispatched as a single ONNX batch call.
-This can improve throughput with large models or very high concurrency
-(c >= 20), but adds latency equal to the batch window. With small models
-(MiniLM) and `encoder_pool_size >= 4`, leaving this at 0 (disabled) is
-typically faster because parallel independent sessions outperform batched
-single-session encoding. Has no effect on batch mode.
+**`encoder_pool_size`** -- number of ONNX inference sessions to run in
+parallel. Each session holds a copy of the model in memory. Higher
+values increase encoding throughput at the cost of RAM. 4 is a good
+starting point on machines with 4+ cores; 1 is fine for small datasets.
 
-`quantized` is supported for `all-MiniLM-L6-v2` and `all-MiniLM-L12-v2`.
-BGE models do not have quantised variants and will error if `quantized: true`
-is set. Expect ~2% of borderline pairs to shift classification bucket when
-switching between full-precision and quantised on the same dataset.
+**`quantized`** -- load the INT8 quantised variant of the ONNX model
+instead of the full FP32 model. Roughly doubles encoding speed with
+negligible quality loss. Supported for `all-MiniLM-L6-v2` and
+`all-MiniLM-L12-v2`; BGE models do not have quantised variants and
+will error if set. Expect ~2% of borderline pairs to shift
+classification bucket when switching between full-precision and
+quantised on the same dataset.
+
+**`vector_quantization`** -- controls how the usearch vector backend
+stores vectors on disk and in memory. Allowed values:
+
+| Value | Bytes per dimension | Notes |
+|-------|--------------------:|-------|
+| `f32` | 4 | Full precision. Default. |
+| `f16` | 2 | Half precision. ~43% smaller index, negligible recall loss. |
+| `bf16` | 2 | Brain float 16. Similar savings to f16, slightly different rounding. |
+
+The primary benefit is **disk cache size**. At 100k records with 384-dim
+embeddings, the usearch cache is 171 MB per side with `f32` and 98 MB
+per side with `f16` -- a 43% reduction. Scoring throughput and match
+quality are effectively unchanged:
+
+| Metric | f32 | f16 |
+|---|---:|---:|
+| Warm scoring throughput | 9,241 rec/s | 9,346 rec/s |
+| Cache size (A + B) | 346 MB | 199 MB |
+| Cache load time | 612 ms | 599 ms |
+| Auto-matched (of 100k) | 53,395 | 53,387 |
+
+Only affects the `usearch` backend; the `flat` backend always stores
+full f32. Changing this value invalidates existing caches (the spec
+hash changes), so the first run after a change will do a cold rebuild.
+
+> **`quantized` vs `vector_quantization`** -- these are independent
+> settings that control different things.
+> `quantized` controls the *ONNX encoder model* precision (FP32 vs INT8)
+> -- it affects how fast text is converted into vectors.
+> `vector_quantization` controls the *vector index storage* precision
+> (f32/f16/bf16) -- it affects how much disk and memory the cached
+> index consumes. You can use either, both, or neither.
+
+**`encoder_batch_wait_ms`** -- live mode only. When > 0, concurrent
+encoding requests are collected for up to this many milliseconds and
+dispatched as a single ONNX batch call. This can improve throughput
+with large models or very high concurrency (c >= 20), but adds
+latency equal to the batch window. With small models (MiniLM) and
+`encoder_pool_size >= 4`, leaving this at 0 (disabled) is typically
+faster because parallel independent sessions outperform batched
+single-session encoding. Has no effect on batch mode.
 
 Batch scoring thread count is controlled by the `RAYON_NUM_THREADS`
 environment variable (defaults to logical CPU count if unset).

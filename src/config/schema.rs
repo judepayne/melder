@@ -178,6 +178,18 @@ pub struct PerformanceConfig {
     /// in large batches regardless of this setting.
     #[serde(default)]
     pub encoder_batch_wait_ms: Option<u64>,
+    /// Scalar quantization for vectors stored in the usearch HNSW index.
+    ///
+    /// - `"f32"` (default): full 32-bit precision, 1,536 bytes per 384-dim vector.
+    /// - `"f16"`: half precision, 768 bytes per vector. Negligible recall loss,
+    ///   ~50% smaller indices, faster search due to reduced memory bandwidth.
+    /// - `"bf16"`: brain float 16, same size as f16. Wider exponent range,
+    ///   slightly less mantissa precision. Also negligible recall loss.
+    ///
+    /// Has no effect when `vector_backend` is `flat`.
+    /// Changing this value invalidates the usearch index cache (forces rebuild).
+    #[serde(default)]
+    pub vector_quantization: Option<String>,
 }
 
 fn default_backend() -> String {
