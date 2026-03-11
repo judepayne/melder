@@ -52,7 +52,7 @@ match_fields:
   - field_a: lei
     field_b: lei_code
     method: exact
-    weight: 0.05
+    weight: 0.10
 
 thresholds:
   auto_match: 0.85

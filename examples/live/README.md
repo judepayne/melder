@@ -41,16 +41,15 @@ You will see startup output like:
 Initializing encoder pool (model=all-MiniLM-L6-v2, pool_size=2)...
 Encoder ready (dim=384), took 0.2s
 Loaded dataset A: 10 records in 0.0s
+Building A combined embedding index (10 records, dim=384, 1 field(s))...
+  A combined index: encoded 10/10
+A combined embedding index built: 10 vecs in 0.0s (...)
+Saved A combined index cache to examples/live/cache/a.combined_embedding_XXXXXXXX.index
+...
 Loaded dataset B: 10 records in 0.0s
-Building A index (10 records)...
-  encoded 10/10 A records...
-A index built: 10 vecs in 0.0s (...)
+Building B combined embedding index (10 records, dim=384, 1 field(s))...
 ...
-Building B index (10 records)...
-  encoded 10/10 B records...
-B index built: 10 vecs in 0.0s (...)
-...
-Live state loaded in 0.2s (A: 10 records/10 unmatched, B: 10 records/10 unmatched, crossmap: 0 pairs)
+Live state loaded in 0.3s (A: 10 records/10 unmatched, B: 10 records/10 unmatched, crossmap: 0 pairs)
 meld serve listening on port 9090
 ```
 
@@ -58,9 +57,10 @@ Let's break that down:
 
 - **Encoder pool** -- the ONNX model is loaded into memory. Two
   parallel sessions (`encoder_pool_size: 2`) for concurrent encoding.
-- **A index / B index** -- every record's text is encoded into a
-  384-dimensional vector. On first run this is done from scratch; on
-  subsequent runs the `.index` cache files are loaded in milliseconds.
+- **Combined embedding index** -- every record's embedding fields
+  are encoded into vectors and stored in a combined index. On first
+  run this is done from scratch; on subsequent runs the cache files
+  are loaded in milliseconds.
 - **10 unmatched** on each side -- no crossmap exists yet, so all
   records start as unmatched.
 - **Listening** -- the HTTP server is ready for requests.
@@ -227,11 +227,12 @@ The response shows the top matches from the A side:
 ```
 
 > **What just happened?** Melder encoded "ACME Corp." into a vector,
-> applied the 3-stage pipeline (blocking filter to US records only,
-> candidate selection on short_name/counterparty_name, then full scoring
-> across all four match fields), and returned the results. Because the
-> top score exceeded 0.85 (the `auto_match` threshold), the pair was
-> **automatically confirmed** and added to the crossmap.
+> applied the scoring pipeline (blocking filter to US records only,
+> embedding candidate selection to find the top 5 nearest vectors,
+> then full scoring across all four match fields), and returned the
+> results. Because the top score exceeded 0.85 (the `auto_match`
+> threshold), the pair was **automatically confirmed** and added to
+> the crossmap.
 
 Check health to confirm:
 
@@ -411,9 +412,11 @@ curl -s -X POST http://localhost:9090/api/v1/a/remove \
 }
 ```
 
-If ENT-011 was matched, the pairing would be broken and the
-opposite-side record returned to the unmatched pool. The record is
-removed from the vector index, blocking index, and records store.
+If ENT-011 had been matched to a B record, the response would include
+a `crossmap_broken` array listing the IDs of any opposite-side records
+whose pairings were broken (e.g. `"crossmap_broken": ["CP-017"]`),
+and those records would be returned to the unmatched pool. The record
+is removed from the vector index, blocking index, and records store.
 
 > **Removal is permanent for the current session.** The record is
 > gone from all in-memory structures. However, if the record exists
@@ -508,8 +511,8 @@ What happens on shutdown:
    same record 5 times, only the last version is kept).
 3. **Crossmap save** -- the current crossmap is written to
    `examples/live/output/crossmap.csv`.
-4. **Index caches** -- both A and B vector indices are saved to
-   `examples/live/cache/`.
+4. **Index caches** -- both A and B combined embedding indices are
+   saved to `examples/live/cache/`.
 
 Now restart:
 
@@ -520,18 +523,19 @@ Now restart:
 Watch the startup log. You should see:
 
 ```
-Loaded A index from cache: 10 vecs in 0.0ms
-Loaded B index from cache: 10 vecs in 0.0ms
+Loaded A combined embedding index from cache: 10 vecs, all fresh in 0.1ms
+...
+Loaded B combined embedding index from cache: 10 vecs, all fresh in 0.1ms
 ...
 Loaded crossmap: N pairs
 Replaying M WAL events...
-WAL replay complete
+...
 ```
 
 What happens on restart:
 
-1. **Cache load** -- vector indices are loaded from the `.index` files
-   saved at shutdown. No ONNX encoding needed.
+1. **Cache load** -- combined embedding indices are loaded from the
+   cache files saved at shutdown. No ONNX encoding needed.
 2. **Crossmap load** -- confirmed pairs are restored.
 3. **WAL replay** -- any events that happened after the last csv load
    are replayed. Records added via the API are re-inserted, crossmap
@@ -557,7 +561,7 @@ shutdown.
 Stop the server (Ctrl-C), then remove all generated files:
 
 ```bash
-rm -f examples/live/cache/*.index
+rm -f examples/live/cache/*.index examples/live/cache/*.manifest examples/live/cache/*.texthash
 rm -f examples/live/output/*.csv
 rm -f examples/live/output/*.ndjson
 ```

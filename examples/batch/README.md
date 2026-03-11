@@ -114,12 +114,12 @@ Job: batch_example (Worked example — 10 entities vs 25 counterparties)
 Datasets: A=examples/batch/reference.csv B=examples/batch/incoming.csv
 Thresholds: auto_match=0.85, review_floor=0.6
 Initializing encoder pool (model=all-MiniLM-L6-v2, pool_size=2)...
-Encoder ready (dim=384), took 0.2s
+Encoder ready (dim=384), took 0.1s
 Loaded dataset A: 10 records in 0.0s
-Building A index (10 records)...
-  encoded 10/10 A records...
-A index built: 10 vecs in 0.1s (...)
-Saved A index cache to examples/batch/cache/a.index
+Building A combined embedding index (10 records, dim=384, 1 field(s))...
+  A combined index: encoded 10/10
+A combined embedding index built: 10 vecs in 0.0s (...)
+Saved A combined index cache to examples/batch/cache/a.combined_embedding_XXXXXXXX.index
 ...
 ```
 
@@ -131,18 +131,19 @@ Let's break down what happens:
 
 2. **A index build** -- each A record's `legal_name` is fed through the
    model to produce a 384-dimensional vector. These vectors are saved
-   to `examples/batch/cache/a.index`.
+   to `examples/batch/cache/a.combined_embedding_XXXXXXXX.index` (the
+   hash in the filename encodes the field spec and quantization so the
+   cache is automatically invalidated when config changes).
 
-3. **B index build** -- same for B records, saved to
-   `examples/batch/cache/b.index`.
+3. **B index build** -- same for B records, saved alongside the A cache.
 
 4. **Blocking** -- melder builds an index on `country_code` / `domicile`.
    Only records in the same country are compared, avoiding wasted work.
 
-5. **Scoring** -- for each B record, melder applies the 3-stage
-    pipeline: blocking filter (same country), candidate selection
-    (top 10 by fuzzy score on short_name/counterparty_name), then
-    full scoring across all four match fields.
+5. **Scoring** -- for each B record, melder applies the scoring
+   pipeline: blocking filter (same country only), embedding candidate
+   selection (top 10 nearest vectors by cosine similarity), then full
+   scoring across all four match fields.
 
 6. **Classification** -- each B record's best score is classified:
    - score >= 0.85 --> **auto-match** (written to results.csv, added
@@ -160,22 +161,29 @@ After the run, look at the cache directory:
 ls -lh examples/batch/cache/
 ```
 
-You should see two binary files:
+You should see files like:
 
 ```
-a.index    ~15K   (10 vectors x 384 dimensions x 4 bytes + IDs)
-b.index    ~40K   (25 vectors x 384 dimensions x 4 bytes + IDs)
+a.combined_embedding_XXXXXXXX.index          ~15K
+a.combined_embedding_XXXXXXXX.manifest       manifest metadata
+a.combined_embedding_XXXXXXXX.texthash       per-record text hashes
+b.combined_embedding_XXXXXXXX.index          ~40K
+b.combined_embedding_XXXXXXXX.manifest
+b.combined_embedding_XXXXXXXX.texthash
 ```
 
-These cache files mean the next run will skip the expensive ONNX
-encoding step. Try running again:
+The `.index` files contain the encoded vectors. The `.manifest` and
+`.texthash` sidecars enable incremental cache updates -- if you add a
+record to the csv and re-run, only the new record is encoded.
+
+Try running again:
 
 ```bash
 ./target/release/meld run -c examples/batch/config.yaml --verbose
 ```
 
-Notice the log now says "Loaded A index from cache" and "Loaded B
-index from cache" -- the encoding step is skipped entirely.
+Notice the log now says "Loaded A combined embedding index from cache"
+-- the encoding step is skipped entirely.
 
 > **Why does this matter?** Encoding is the slowest part of a batch
 > run. At 10 records the difference is negligible, but at 10,000
@@ -298,8 +306,10 @@ To remove all cached data and start fresh:
 rm -f examples/batch/output/*.csv
 ```
 
-This deletes the `.index` files from `cache/` and all output files.
-The next run will re-encode everything from scratch.
+This deletes stale cache files from `cache/` and all output files.
+The next run will re-encode everything from scratch. Add `--all` to
+`cache clear` to delete the current cache too (by default it only
+removes files from old configs).
 
 ---
 
@@ -312,12 +322,13 @@ Here is what each section of `config.yaml` does:
 | `job` | Metadata -- name and description for your reference |
 | `datasets` | Paths to the csv files and the ID column in each |
 | `cross_map` | Where to persist confirmed matches |
-| `embeddings` | Model name and cache file paths |
+| `embeddings` | Model name and cache directories |
+| `vector_backend` | `flat` (brute-force) or `usearch` (ANN). Flat is fine for small datasets |
+| `top_n` | How many candidates to retrieve from the embedding index before full scoring |
 | `blocking` | Pre-filter: only compare records sharing the same country |
 | `match_fields` | The scoring rules: which fields to compare, how, and how much weight each carries |
-| `candidates` | Narrowing: score blocked records on one field pair, keep top N for full scoring |
 | `thresholds` | Score boundaries for auto-match vs review vs no-match |
 | `output` | Where to write the three output csv files |
-| `performance` | Parallelism settings (encoder pool size, worker threads) |
+| `performance` | Encoder pool size, ONNX quantization, vector index quantization |
 
 For full configuration documentation, see the main [README](../../README.md).
