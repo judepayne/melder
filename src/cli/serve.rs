@@ -83,9 +83,9 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
             eprintln!("Warning: final crossmap flush failed: {}", e);
         }
 
-        // Save field index caches
-        if let Err(e) = state.save_field_index_caches() {
-            eprintln!("Warning: field index cache save failed: {}", e);
+        // Save combined embedding index caches
+        if let Err(e) = state.save_combined_index_caches() {
+            eprintln!("Warning: combined index cache save failed: {}", e);
         }
 
         let sess = session.as_ref();

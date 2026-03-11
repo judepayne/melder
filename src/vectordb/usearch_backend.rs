@@ -27,6 +27,7 @@ use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 use crate::config::schema::{BlockingConfig, BlockingFieldPair};
 use crate::models::{Record, Side};
 
+use super::texthash::TextHashStore;
 use super::{SearchResult, VectorDB, VectorDBError};
 
 // ---------------------------------------------------------------------------
@@ -135,6 +136,8 @@ pub struct UsearchVectorDB {
     record_block: RwLock<HashMap<String, usize>>,
     /// Monotonic counter for assigning u64 keys to usearch.
     next_key: AtomicU64,
+    /// Text-hash store (global, not per-block) for incremental re-encoding.
+    text_hashes: RwLock<TextHashStore>,
 }
 
 impl std::fmt::Debug for UsearchVectorDB {
@@ -155,7 +158,21 @@ impl UsearchVectorDB {
     /// - `dim`: embedding dimension (e.g. 384 for MiniLM-L6-v2).
     /// - `blocking_config`: the job's blocking configuration. If `None` or
     ///   disabled, all records go into a single default block.
+    ///
+    /// Used in tests and wherever emb_specs are not needed. The text-hash
+    /// store will be empty (no-op on upsert).
     pub fn new(dim: usize, blocking_config: Option<&BlockingConfig>) -> Self {
+        Self::new_with_emb_specs(dim, blocking_config, Vec::new())
+    }
+
+    /// Create a new UsearchVectorDB with embedding specs for text hashing.
+    ///
+    /// Called by `new_index()` in mod.rs when building the combined index.
+    pub fn new_with_emb_specs(
+        dim: usize,
+        blocking_config: Option<&BlockingConfig>,
+        emb_specs: Vec<(String, String, f64)>,
+    ) -> Self {
         let (blocking_enabled, blocking_fields) = match blocking_config {
             Some(cfg) if cfg.enabled && !cfg.fields.is_empty() => (true, cfg.fields.clone()),
             _ => (false, Vec::new()),
@@ -168,6 +185,7 @@ impl UsearchVectorDB {
             blocks: RwLock::new(Vec::new()),
             record_block: RwLock::new(HashMap::new()),
             next_key: AtomicU64::new(1), // start at 1; 0 reserved
+            text_hashes: RwLock::new(TextHashStore::new(emb_specs)),
         }
     }
 
@@ -293,6 +311,11 @@ impl VectorDB for UsearchVectorDB {
         // Update global record→block mapping.
         let mut rb = self.record_block.write().unwrap();
         rb.insert(id.to_string(), block_idx);
+        drop(rb);
+
+        // Update text hash (no-op if emb_specs is empty).
+        let mut th = self.text_hashes.write().unwrap();
+        th.update(id, record, side);
 
         Ok(())
     }
@@ -321,6 +344,11 @@ impl VectorDB for UsearchVectorDB {
 
         let mut rb = self.record_block.write().unwrap();
         rb.remove(id);
+        drop(rb);
+
+        // Remove text hash entry.
+        let mut th = self.text_hashes.write().unwrap();
+        th.remove(id);
 
         Ok(true)
     }
@@ -568,7 +596,18 @@ impl VectorDB for UsearchVectorDB {
             .map_err(|e| VectorDBError::Serialization(e.to_string()))?;
         std::fs::write(&manifest_path, json)?;
 
+        // Save text-hash sidecar alongside the .usearchdb directory.
+        // The sidecar path is derived from `path` (the .index base path),
+        // not from `dir` (the .usearchdb directory).
+        let th = self.text_hashes.read().unwrap();
+        th.save(path)
+            .map_err(|e| VectorDBError::Backend(format!("texthash save: {}", e)))?;
+
         Ok(())
+    }
+
+    fn stored_text_hashes(&self) -> HashMap<String, u64> {
+        self.text_hashes.read().unwrap().all().clone()
     }
 
     fn is_stale(path: &Path, expected_count: usize) -> Result<bool, VectorDBError>
@@ -660,6 +699,10 @@ impl UsearchVectorDB {
             })
             .collect();
 
+        // Restore text-hash sidecar (empty store if sidecar is absent).
+        let text_hashes = TextHashStore::load(path)
+            .map_err(|e| VectorDBError::Backend(format!("texthash load: {}", e)))?;
+
         Ok(Self {
             dim,
             blocking_fields: manifest.blocking_fields,
@@ -668,6 +711,7 @@ impl UsearchVectorDB {
             blocks: RwLock::new(blocks_vec),
             record_block: RwLock::new(record_blocks),
             next_key: AtomicU64::new(manifest.next_key),
+            text_hashes: RwLock::new(text_hashes),
         })
     }
 }

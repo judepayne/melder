@@ -16,8 +16,6 @@ pub struct Config {
     pub blocking: BlockingConfig,
     pub match_fields: Vec<MatchField>,
     #[serde(default)]
-    pub candidates: CandidatesConfig,
-    #[serde(default)]
     pub output_mapping: Vec<FieldMapping>,
     pub thresholds: ThresholdsConfig,
     pub output: OutputConfig,
@@ -29,6 +27,11 @@ pub struct Config {
     /// (per-block HNSW, requires building with `--features usearch`).
     #[serde(default = "default_vector_backend")]
     pub vector_backend: String,
+    /// Maximum candidates to return from ANN search and to return in live
+    /// match responses. Defaults to 5. Set higher for better recall at the
+    /// cost of more full-scoring work.
+    #[serde(default)]
+    pub top_n: Option<usize>,
     // Derived at load time (not in YAML). Populated by `compute_required_fields`.
     #[serde(skip)]
     pub required_fields_a: Vec<String>,
@@ -82,10 +85,10 @@ pub struct CrossMapConfig {
 pub struct EmbeddingsConfig {
     /// HuggingFace model name or local ONNX path.
     pub model: String,
-    /// Directory for A-side per-field vector index caches. Created
+    /// Directory for A-side combined embedding index cache. Created
     /// automatically on first run; loaded on subsequent runs to skip encoding.
     pub a_cache_dir: String,
-    /// Directory for B-side per-field vector index caches. Optional — omit
+    /// Directory for B-side combined embedding index cache. Optional — omit
     /// to skip B-side caching (vectors rebuilt from scratch each run).
     #[serde(default)]
     pub b_cache_dir: Option<String>,
@@ -125,28 +128,6 @@ pub struct MatchField {
     pub weight: f64,
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct CandidatesConfig {
-    /// nil/true = enabled.
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    /// A-side field to score for candidate selection.
-    #[serde(default)]
-    pub field_a: Option<String>,
-    /// B-side field to score for candidate selection.
-    #[serde(default)]
-    pub field_b: Option<String>,
-    /// Scoring method: "fuzzy", "embedding", or "exact".
-    #[serde(default)]
-    pub method: Option<String>,
-    /// Fuzzy scorer (only used when method is "fuzzy"). Default "wratio".
-    #[serde(default)]
-    pub scorer: Option<String>,
-    /// Number of top candidates to pass to full scoring. Default 10.
-    #[serde(default)]
-    pub n: Option<usize>,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct FieldMapping {
     pub from: String,
@@ -168,9 +149,6 @@ pub struct OutputConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct LiveConfig {
-    /// Default 5.
-    #[serde(default)]
-    pub top_n: Option<usize>,
     #[serde(default)]
     pub upsert_log: Option<String>,
     /// How often dirty CrossMap state is flushed to disk (seconds). Default 5.
@@ -184,6 +162,10 @@ pub struct PerformanceConfig {
     /// Number of concurrent ONNX inference sessions. Default 1.
     #[serde(default)]
     pub encoder_pool_size: Option<usize>,
+    /// Use the INT8-quantised ONNX model variant. ~2x faster encoding,
+    /// negligible quality loss. Default false.
+    #[serde(default)]
+    pub quantized: bool,
 }
 
 fn default_backend() -> String {
@@ -220,7 +202,7 @@ mod tests {
         assert!((config.match_fields[0].weight - 0.55).abs() < f64::EPSILON);
         assert!((config.thresholds.auto_match - 0.85).abs() < f64::EPSILON);
         assert!((config.thresholds.review_floor - 0.60).abs() < f64::EPSILON);
-        assert_eq!(config.live.top_n, Some(5));
+        assert_eq!(config.top_n, Some(5));
         assert_eq!(config.performance.encoder_pool_size, Some(4));
     }
 
@@ -247,7 +229,7 @@ mod tests {
             serde_yaml::from_str(&yaml).expect("failed to deserialize bench1kx1k.yaml");
 
         assert_eq!(config.datasets.a.path, "testdata/dataset_a_1k.csv");
-        assert_eq!(config.candidates.scorer, Some("wratio".into()));
-        assert_eq!(config.candidates.n, Some(10));
+        // top_n: 20 is set explicitly in bench1kx1k.yaml
+        assert_eq!(config.top_n, Some(20));
     }
 }

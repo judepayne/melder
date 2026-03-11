@@ -21,11 +21,11 @@ invalidate the index without any warning. Storing a hash of the blocking config
 in the cache manifest and comparing on load would catch this and trigger a
 rebuild or at least a loud warning. Tiny effort, prevents real wrong-results bugs.
 
-**3. Quantised ONNX models.** *(Encoding)*
-ONNX Runtime supports INT8 quantisation. A quantised MiniLM-L6 runs ~2x faster
-on CPU with negligible quality loss for entity matching. `fastembed` supports
-quantised graphs natively — just point it at a different model directory.
-Immediate win for every live-mode user.
+**3. Quantised ONNX models.** *(Encoding)* ✓ DONE
+`performance.quantized: true` in config selects the INT8 quantised ONNX variant
+for any model that has one (AllMiniLML6V2Q, AllMiniLML12V2Q). Encode throughput
+~2x faster; ~2% of borderline pairs shift classification bucket. Models without
+a quantised variant error clearly. Default: false.
 
 **4. Live mode review queue.** *(Live mode)*
 `crossmap/confirm` already lets callers confirm any of the top-N matches, but
@@ -36,11 +36,10 @@ re-interpreting raw scores against thresholds. Beyond that, borderline matches
 could be held in a server-side queue accessible via a `/review` endpoint family
 (list, accept, reject), mirroring the batch-mode CLI review commands.
 
-**5. Parallel candidate scoring (live mode).** *(Candidates)*
-`select_candidates` scores sequentially. Each candidate is independent —
-`par_iter` in that function would immediately parallelise across the worker pool.
-At 100K blocked candidates this drops from ~200ms to ~25ms on 8 cores. The batch
-engine already does this; live mode doesn't. Near one-liner change.
+**5. Parallel candidate scoring (live mode).** *(Candidates)* ✓ DONE
+Both flat-scan paths in `select_candidates` now use `par_iter` (rayon). The
+no-embeddings path and the dot-product scoring path are both parallelised.
+At 100K blocked candidates this drops from ~200ms to ~25ms on 8 cores.
 
 **6. GC / TTL for stale live-mode blocks.** *(Live mode)*
 The blocking index accumulates entries for records that are added then removed in
@@ -126,15 +125,11 @@ Buys: no staleness problem, durable persistence, multiple melder instances shari
 one index. Costs: network round-trip (~1–5ms) per search, external service
 dependency. Only worth it at 1M+ records or when horizontal scaling is needed.
 
-**18. Windows compatibility — tidy up `--socket` flag.** *(Operational)*
-The codebase is broadly Windows-compatible: all paths use `PathBuf`, signal
-handling is already correctly gated (`#[cfg(unix)]` / `#[cfg(not(unix))]]`),
-and all dependencies (`fastembed`/ONNX Runtime, `usearch`, `tokio`, `rayon`)
-have Windows builds. One loose end: the `--socket <path>` CLI flag is parsed on
-all platforms but silently ignored (bound to `_socket`, never passed to
-`cmd_serve`). Before release either remove it entirely or gate it with
-`#[cfg(unix)]` so it doesn't appear in `--help` on Windows. Build requirement
-on Windows: MSVC C++ toolchain (needed by `usearch` and ONNX Runtime).
+**18. Windows compatibility — tidy up `--socket` flag.** *(Operational)* ✓ DONE
+The `--socket` field in the `Serve` subcommand and its match arm are now gated
+with `#[cfg(unix)]`. On Windows the flag no longer appears in `--help` and is
+not parsed. Build requirement on Windows: MSVC C++ toolchain (needed by
+`usearch` and ONNX Runtime).
 
 ---
 

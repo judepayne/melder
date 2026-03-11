@@ -13,9 +13,6 @@ const VALID_METHODS: &[&str] = &["exact", "fuzzy", "embedding", "numeric"];
 /// Valid fuzzy scorers.
 const VALID_SCORERS: &[&str] = &["wratio", "partial_ratio", "token_sort", "ratio"];
 
-/// Valid candidate selection methods.
-const VALID_CANDIDATE_METHODS: &[&str] = &["exact", "fuzzy", "embedding"];
-
 /// Valid cross-map backends.
 const VALID_BACKENDS: &[&str] = &["local"];
 
@@ -43,26 +40,12 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
 // ---------------------------------------------------------------------------
 
 fn apply_defaults(cfg: &mut Config) {
-    // candidates — infer enabled from presence of config fields
-    let candidates_has_config = cfg.candidates.field_a.is_some()
-        || cfg.candidates.field_b.is_some()
-        || cfg.candidates.method.is_some();
-    let candidates_enabled = cfg.candidates.enabled.unwrap_or(candidates_has_config);
-    if candidates_enabled {
-        if cfg.candidates.n.is_none() || cfg.candidates.n == Some(0) {
-            cfg.candidates.n = Some(10);
-        }
-        if cfg.candidates.method.as_deref() == Some("fuzzy")
-            && cfg.candidates.scorer.as_deref().unwrap_or("").is_empty()
-        {
-            cfg.candidates.scorer = Some("wratio".into());
-        }
+    // top_n: default 5
+    if cfg.top_n.is_none() || cfg.top_n == Some(0) {
+        cfg.top_n = Some(5);
     }
 
     // live
-    if cfg.live.top_n.is_none() || cfg.live.top_n == Some(0) {
-        cfg.live.top_n = Some(5);
-    }
     if cfg.live.crossmap_flush_secs.is_none() || cfg.live.crossmap_flush_secs == Some(0) {
         cfg.live.crossmap_flush_secs = Some(5);
     }
@@ -244,43 +227,7 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         }
     }
 
-    // 28. candidates
-    // If the candidates section is entirely omitted (enabled=None, no fields/method),
-    // treat as disabled. If the section is present with fields, treat as enabled.
-    let candidates_has_config = cfg.candidates.field_a.is_some()
-        || cfg.candidates.field_b.is_some()
-        || cfg.candidates.method.is_some();
-    let candidates_enabled = cfg.candidates.enabled.unwrap_or(candidates_has_config);
-    if candidates_enabled {
-        let fa = cfg.candidates.field_a.as_deref().unwrap_or("");
-        let fb = cfg.candidates.field_b.as_deref().unwrap_or("");
-        if fa.is_empty() {
-            return Err(ConfigError::MissingField {
-                field: "candidates.field_a".into(),
-            });
-        }
-        if fb.is_empty() {
-            return Err(ConfigError::MissingField {
-                field: "candidates.field_b".into(),
-            });
-        }
-        let method = cfg.candidates.method.as_deref().unwrap_or("");
-        if method.is_empty() {
-            return Err(ConfigError::MissingField {
-                field: "candidates.method".into(),
-            });
-        }
-        require_one_of(method, VALID_CANDIDATE_METHODS, "candidates.method")?;
-        if method == "fuzzy" {
-            if let Some(ref scorer) = cfg.candidates.scorer {
-                if !scorer.is_empty() {
-                    require_one_of(scorer, VALID_SCORERS, "candidates.scorer")?;
-                }
-            }
-        }
-    }
-
-    // 29-31. performance + live constraints
+    // 28. performance + live constraints
     if let Some(pool) = cfg.performance.encoder_pool_size {
         if pool < 1 {
             return Err(ConfigError::InvalidValue {
@@ -298,7 +245,7 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         }
     }
 
-    // 32. vector_backend
+    // 29. vector_backend
     require_one_of(&cfg.vector_backend, VALID_VECTOR_BACKENDS, "vector_backend")?;
     if cfg.vector_backend == "usearch" && !cfg!(feature = "usearch") {
         return Err(ConfigError::InvalidValue {
@@ -447,15 +394,15 @@ mod tests {
         let cfg = load_config(Path::new("testdata/configs/bench_live.yaml")).unwrap();
         assert_eq!(cfg.job.name, "bench_live_10kx10k");
         assert_eq!(cfg.performance.encoder_pool_size, Some(4));
-        assert_eq!(cfg.live.top_n, Some(5));
+        assert_eq!(cfg.top_n, Some(5));
         assert_eq!(cfg.live.crossmap_flush_secs, Some(5)); // default applied
     }
 
     #[test]
     fn load_bench1kx1k() {
         let cfg = load_config(Path::new("testdata/configs/bench1kx1k.yaml")).unwrap();
-        assert_eq!(cfg.candidates.n, Some(10));
-        assert_eq!(cfg.candidates.scorer, Some("wratio".into()));
+        // top_n: 20 is set explicitly in bench1kx1k.yaml
+        assert_eq!(cfg.top_n, Some(20));
         assert_eq!(cfg.performance.encoder_pool_size, Some(4));
     }
 

@@ -46,6 +46,7 @@ enum Commands {
         #[arg(short, long, default_value = "8080")]
         port: u16,
         /// Unix socket path (alternative to port)
+        #[cfg(unix)]
         #[arg(long)]
         socket: Option<PathBuf>,
     },
@@ -91,9 +92,9 @@ enum CacheAction {
     Clear {
         #[arg(short, long)]
         config: PathBuf,
-        /// Only clear index files, keep embeddings
+        /// Delete ALL cache files (including current). Default: only delete stale files.
         #[arg(long)]
-        index_only: bool,
+        all: bool,
     },
 }
 
@@ -156,15 +157,14 @@ fn main() {
         Commands::Serve {
             config,
             port,
-            socket: _socket,
+            #[cfg(unix)]
+                socket: _socket,
         } => melder::cli::serve::cmd_serve(&config, port),
         Commands::Tune { config, verbose } => melder::cli::tune::cmd_tune(&config, verbose),
         Commands::Cache { action } => match action {
             CacheAction::Build { config } => melder::cli::cache::cmd_cache_build(&config),
             CacheAction::Status { config } => melder::cli::cache::cmd_cache_status(&config),
-            CacheAction::Clear { config, index_only } => {
-                melder::cli::cache::cmd_cache_clear(&config, index_only)
-            }
+            CacheAction::Clear { config, all } => melder::cli::cache::cmd_cache_clear(&config, all),
         },
         Commands::Review { action } => match action {
             ReviewAction::List { config } => melder::cli::review::cmd_review_list(&config),

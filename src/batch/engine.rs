@@ -23,8 +23,7 @@ use crate::error::MelderError;
 use crate::matching::blocking::BlockingIndex;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
-use crate::vectordb;
-use crate::vectordb::field_indexes::FieldIndexes;
+use crate::vectordb::{self, VectorDB};
 
 /// Result of a batch matching run.
 pub struct BatchResult {
@@ -54,12 +53,12 @@ enum RecordOutcome {
 /// Run the batch matching engine.
 ///
 /// Loads B records from csv, processes each against the pre-built A-side data.
-/// If `b_cache_dir` is configured, B field vectors are cached to disk so
+/// If `b_cache_dir` is configured, B combined index is cached to disk so
 /// subsequent runs (e.g. with different thresholds) skip ONNX encoding.
 pub fn run_batch(
     config: &Config,
     records_a: &DashMap<String, Record>,
-    field_indexes_a: &FieldIndexes,
+    combined_index_a: Option<&dyn VectorDB>,
     encoder_pool: &EncoderPool,
     crossmap: &mut CrossMap,
     limit: Option<usize>,
@@ -104,8 +103,8 @@ pub fn run_batch(
         b_ids.len()
     };
 
-    // Build or load B-side field indexes.
-    let field_indexes_b = vectordb::build_or_load_field_indexes(
+    // Build or load B-side combined embedding index.
+    let combined_index_b_owned = vectordb::build_or_load_combined_index(
         &config.vector_backend,
         config.embeddings.b_cache_dir.as_deref(),
         &b_records_map,
@@ -113,8 +112,8 @@ pub fn run_batch(
         config,
         false,
         encoder_pool,
-        encoder_pool.dim(),
     )?;
+    let combined_index_b: Option<&dyn VectorDB> = combined_index_b_owned.as_deref();
 
     // Convert B records to DashMap for shared pipeline use
     let b_records: DashMap<String, Record> = DashMap::with_capacity(b_records_map.len());
@@ -202,6 +201,12 @@ pub fn run_batch(
     // Wrap crossmap in Mutex for concurrent access during parallel scoring.
     let crossmap_mu = Mutex::new(crossmap);
 
+    // Pre-compute top_n from config (0 = no limit in batch → best result only).
+    let top_n = config.top_n.unwrap_or(5);
+
+    // Precompute embedding specs once for combined-vec lookup during scoring.
+    let emb_specs = vectordb::embedding_field_specs(config);
+
     // Score all B records in a single parallel pass.
     let progress = AtomicUsize::new(0);
     let work_total = work_ids.len();
@@ -236,17 +241,22 @@ pub fn run_batch(
                 }
             }
 
+            // Fetch the query combined vec from the B-side index.
+            let query_combined_vec: Vec<f32> = combined_index_b
+                .and_then(|idx| idx.get(b_id).ok().flatten())
+                .unwrap_or_default();
+
             // Shared pipeline: blocking → candidates → full scoring
             let results = pipeline::score_pool(
                 b_id,
                 b_record.value(),
                 Side::B,
+                &query_combined_vec,
                 records_a,
-                &field_indexes_b,
-                field_indexes_a,
+                combined_index_a,
                 bi_ref,
                 config,
-                0, // no top_n limit in batch — we want the best result
+                top_n,
             );
 
             if let Some(mut top) = results.into_iter().next() {
@@ -307,6 +317,10 @@ pub fn run_batch(
         skipped,
         elapsed_secs: elapsed,
     };
+
+    // Suppress unused variable warning for emb_specs (used implicitly via
+    // vectordb::embedding_field_specs above but not captured in closure).
+    let _ = emb_specs;
 
     Ok(BatchResult {
         matched,

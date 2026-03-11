@@ -1,4 +1,4 @@
-//! MatchState: composite struct holding datasets, field indexes, and encoder pool.
+//! MatchState: composite struct holding datasets, combined index, and encoder pool.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -11,8 +11,7 @@ use crate::data;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::models::Record;
-use crate::vectordb;
-use crate::vectordb::field_indexes::FieldIndexes;
+use crate::vectordb::{self, VectorDB};
 
 /// Options controlling what to load.
 #[derive(Debug, Clone)]
@@ -28,10 +27,12 @@ pub struct MatchState {
     pub config: Config,
     pub records_a: DashMap<String, Record>,
     pub ids_a: Vec<String>,
-    pub field_indexes_a: FieldIndexes,
+    /// Combined embedding index for side A. None if no embedding fields configured.
+    pub combined_index_a: Option<Box<dyn VectorDB>>,
     pub records_b: Option<DashMap<String, Record>>,
     pub ids_b: Option<Vec<String>>,
-    pub field_indexes_b: Option<FieldIndexes>,
+    /// Combined embedding index for side B. None if not loaded or no embedding fields.
+    pub combined_index_b: Option<Box<dyn VectorDB>>,
     pub encoder_pool: EncoderPool,
 }
 
@@ -39,11 +40,14 @@ impl std::fmt::Debug for MatchState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MatchState")
             .field("records_a", &self.records_a.len())
-            .field("field_indexes_a", &self.field_indexes_a.len())
+            .field(
+                "combined_index_a",
+                &self.combined_index_a.as_ref().map(|i| i.len()),
+            )
             .field("records_b", &self.records_b.as_ref().map(|r| r.len()))
             .field(
-                "field_indexes_b",
-                &self.field_indexes_b.as_ref().map(|fi| fi.len()),
+                "combined_index_b",
+                &self.combined_index_b.as_ref().map(|i| i.len()),
             )
             .finish()
     }
@@ -68,12 +72,15 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         "Initializing encoder pool (model={}, pool_size={})...",
         config.embeddings.model, pool_size
     );
-    let encoder_pool =
-        EncoderPool::new(&config.embeddings.model, pool_size).map_err(MelderError::Encoder)?;
-    let dim = encoder_pool.dim();
+    let encoder_pool = EncoderPool::new(
+        &config.embeddings.model,
+        pool_size,
+        config.performance.quantized,
+    )
+    .map_err(MelderError::Encoder)?;
     eprintln!(
         "Encoder ready (dim={}), took {:.1}s",
-        dim,
+        encoder_pool.dim(),
         start.elapsed().as_secs_f64()
     );
 
@@ -92,8 +99,8 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         a_start.elapsed().as_secs_f64()
     );
 
-    // 3. Build/load A-side field indexes
-    let field_indexes_a = vectordb::build_or_load_field_indexes(
+    // 3. Build/load A-side combined embedding index
+    let combined_index_a = vectordb::build_or_load_combined_index(
         &config.vector_backend,
         Some(&config.embeddings.a_cache_dir),
         &records_a,
@@ -101,11 +108,10 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         &config,
         true,
         &encoder_pool,
-        dim,
     )?;
 
     // 4. Optionally load dataset B
-    let (records_b, ids_b, field_indexes_b) = if opts.load_b {
+    let (records_b, ids_b, combined_index_b) = if opts.load_b {
         let b_start = Instant::now();
         let (recs, ids) = data::load_dataset(
             Path::new(&config.datasets.b.path),
@@ -120,8 +126,8 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
             b_start.elapsed().as_secs_f64()
         );
 
-        // Build/load B-side field indexes
-        let fi = vectordb::build_or_load_field_indexes(
+        // Build/load B-side combined embedding index
+        let idx = vectordb::build_or_load_combined_index(
             &config.vector_backend,
             config.embeddings.b_cache_dir.as_deref(),
             &recs,
@@ -129,20 +135,18 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
             &config,
             false,
             &encoder_pool,
-            dim,
         )?;
 
-        (Some(recs), Some(ids), Some(fi))
+        (Some(recs), Some(ids), idx)
     } else {
         (None, None, None)
     };
 
     let total = start.elapsed();
     eprintln!(
-        "State loaded in {:.1}s (A: {} records, field indexes: {} vecs{})",
+        "State loaded in {:.1}s (A: {} records{})",
         total.as_secs_f64(),
         records_a.len(),
-        field_indexes_a.len(),
         if let Some(ref rb) = records_b {
             format!(", B: {} records", rb.len())
         } else {
@@ -154,10 +158,10 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         config,
         records_a: into_dashmap(records_a),
         ids_a,
-        field_indexes_a,
+        combined_index_a,
         records_b: records_b.map(into_dashmap),
         ids_b,
-        field_indexes_b,
+        combined_index_b,
         encoder_pool,
     })
 }

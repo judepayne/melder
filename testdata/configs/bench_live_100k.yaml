@@ -1,23 +1,23 @@
-# bench/bench10kx10k.yaml
-# Benchmark job: 10k A vs 10k B, no cross-map pre-seeded.
+# Live-mode config for 100k x 100k stress testing.
+# Mirrors bench_live.yaml but uses the 100k datasets.
 
 job:
-  name: bench_10kx10k
-  description: Benchmark — 10k x 10k synthetic data, empty cross-map
+  name: bench_live_100kx100k
+  description: Live serve — 100k x 100k synthetic data, upsert stress test
 
 datasets:
   a:
-    path: testdata/dataset_a_10k.csv
+    path: testdata/dataset_a_100k.csv
     id_field: entity_id
     format: csv
   b:
-    path: testdata/dataset_b_10k.csv
+    path: testdata/dataset_b_100k.csv
     id_field: counterparty_id
     format: csv
 
 cross_map:
   backend: local
-  path: bench/crossmap10k.csv
+  path: bench/crossmap_live_100k.csv
   a_id_field: entity_id
   b_id_field: counterparty_id
 
@@ -32,6 +32,8 @@ blocking:
   fields:
     - field_a: country_code
       field_b: domicile
+
+top_n: 5
 
 match_fields:
   - field_a: legal_name
@@ -59,13 +61,16 @@ thresholds:
   auto_match: 0.85
   review_floor: 0.60
 
-output:
-  results_path:   bench/output/results_10k.csv
-  review_path:    bench/output/review_10k.csv
-  unmatched_path: bench/output/unmatched_10k.csv
+vector_backend: flat
 
 performance:
   encoder_pool_size: 4
 
-vector_backend: usearch
-top_n: 20
+live:
+  upsert_log: bench/live_upserts_100k.ndjson
+
+# output paths unused in live mode but required by the config validator
+output:
+  results_path:   bench/output/live_results_100k.csv
+  review_path:    bench/output/live_review_100k.csv
+  unmatched_path: bench/output/live_unmatched_100k.csv

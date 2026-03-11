@@ -13,6 +13,7 @@ use std::sync::RwLock;
 use crate::error::IndexError;
 use crate::models::{Record, Side};
 
+use super::texthash::TextHashStore;
 use super::{SearchResult, VectorDB, VectorDBError};
 
 // ===========================================================================
@@ -376,9 +377,10 @@ pub fn is_cache_stale(path: &Path, record_count: usize) -> bool {
 /// Brute-force flat vector index implementing `VectorDB`.
 ///
 /// O(N*D) search via dot product. Suitable for datasets up to ~100K vectors.
-/// Uses `RwLock<VecIndex>` internally for `Send + Sync`.
+/// Uses `RwLock` internally for `Send + Sync`.
 pub struct FlatVectorDB {
     inner: RwLock<VecIndex>,
+    text_hashes: RwLock<TextHashStore>,
     dim: usize,
 }
 
@@ -394,28 +396,47 @@ impl std::fmt::Debug for FlatVectorDB {
 
 impl FlatVectorDB {
     /// Create an empty FlatVectorDB with the given embedding dimension.
+    ///
+    /// Used in tests and wherever emb_specs are not needed. The text-hash
+    /// store will be empty (no-op on upsert).
     pub fn new(dim: usize) -> Self {
         Self {
             inner: RwLock::new(VecIndex::new(dim)),
+            text_hashes: RwLock::new(TextHashStore::empty()),
             dim,
         }
     }
 
-    /// Create from a pre-existing VecIndex.
+    /// Create an empty FlatVectorDB with embedding specs for text hashing.
+    ///
+    /// Called by `new_index()` in mod.rs when building the combined index.
+    pub fn new_with_emb_specs(dim: usize, emb_specs: Vec<(String, String, f64)>) -> Self {
+        Self {
+            inner: RwLock::new(VecIndex::new(dim)),
+            text_hashes: RwLock::new(TextHashStore::new(emb_specs)),
+            dim,
+        }
+    }
+
+    /// Create from a pre-existing VecIndex (used in tests).
     pub fn from_vec_index(index: VecIndex) -> Self {
         let dim = index.dim();
         Self {
             inner: RwLock::new(index),
+            text_hashes: RwLock::new(TextHashStore::empty()),
             dim,
         }
     }
 
-    /// Load from a binary cache file.
+    /// Load from a binary cache file, restoring the text-hash sidecar if present.
     pub fn load(path: &Path) -> Result<Self, VectorDBError> {
         let index = load_index(path).map_err(|e| VectorDBError::Backend(e.to_string()))?;
         let dim = index.dim();
+        let text_hashes = TextHashStore::load(path)
+            .map_err(|e| VectorDBError::Backend(format!("texthash load: {}", e)))?;
         Ok(Self {
             inner: RwLock::new(index),
+            text_hashes: RwLock::new(text_hashes),
             dim,
         })
     }
@@ -426,8 +447,8 @@ impl VectorDB for FlatVectorDB {
         &self,
         id: &str,
         vec: &[f32],
-        _record: &Record,
-        _side: Side,
+        record: &Record,
+        side: Side,
     ) -> Result<(), VectorDBError> {
         if vec.len() != self.dim {
             return Err(VectorDBError::DimensionMismatch {
@@ -437,12 +458,22 @@ impl VectorDB for FlatVectorDB {
         }
         let mut idx = self.inner.write().unwrap();
         idx.upsert(id, vec);
+        drop(idx);
+        // Update text hash (no-op if emb_specs is empty).
+        let mut th = self.text_hashes.write().unwrap();
+        th.update(id, record, side);
         Ok(())
     }
 
     fn remove(&self, id: &str) -> Result<bool, VectorDBError> {
         let mut idx = self.inner.write().unwrap();
-        Ok(idx.remove(id))
+        let removed = idx.remove(id);
+        drop(idx);
+        if removed {
+            let mut th = self.text_hashes.write().unwrap();
+            th.remove(id);
+        }
+        Ok(removed)
     }
 
     fn search(
@@ -509,7 +540,16 @@ impl VectorDB for FlatVectorDB {
 
     fn save(&self, path: &Path) -> Result<(), VectorDBError> {
         let idx = self.inner.read().unwrap();
-        save_index(path, &idx).map_err(|e| VectorDBError::Backend(e.to_string()))
+        save_index(path, &idx).map_err(|e| VectorDBError::Backend(e.to_string()))?;
+        drop(idx);
+        let th = self.text_hashes.read().unwrap();
+        th.save(path)
+            .map_err(|e| VectorDBError::Backend(format!("texthash save: {}", e)))?;
+        Ok(())
+    }
+
+    fn stored_text_hashes(&self) -> HashMap<String, u64> {
+        self.text_hashes.read().unwrap().all().clone()
     }
 
     fn is_stale(path: &Path, expected_count: usize) -> Result<bool, VectorDBError> {

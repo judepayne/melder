@@ -324,7 +324,10 @@ macro_rules! vectordb_tests {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("test.vectordb");
                 db.save(&path).unwrap();
-                assert!(path.exists());
+                // Flat backend creates the file at `path`; usearch backend
+                // creates a `.usearchdb` directory alongside it.
+                let saved = path.exists() || path.with_extension("usearchdb").exists();
+                assert!(saved, "neither {:?} nor the .usearchdb dir exists", path);
             }
 
             #[test]

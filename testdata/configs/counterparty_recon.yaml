@@ -33,13 +33,6 @@ blocking:
   field_a: country_code
   field_b: domicile
 
-candidates:
-  field_a: short_name
-  field_b: counterparty_name
-  method: fuzzy
-  scorer: wratio
-  n: 10
-
 match_fields:
   - field_a: legal_name
     field_b: counterparty_name
@@ -83,6 +76,9 @@ output:
 
 performance:
   encoder_pool_size: 2
+
+vector_backend: usearch
+top_n: 20
 
 sidecar:
   address: localhost:50051

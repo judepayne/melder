@@ -26,8 +26,12 @@ Usage:
   --b-path      Path to dataset B CSV                    (default: testdata/dataset_b_10k.csv)
   --a-id        A ID field name                          (default: entity_id)
   --b-id        B ID field name                          (default: counterparty_id)
-  --seed        Random seed for reproducibility          (default: 42)
-  --no-serve    Skip starting the server (must already be running on --port)
+  --seed          Random seed for reproducibility          (default: 42)
+  --no-serve      Skip starting the server (must already be running on --port)
+  --encoding-pct  Percentage of requests that require ONNX encoding (default: 80).
+                  Split evenly across 4 encoding op types (new_a, new_b,
+                  upd_a_emb, upd_b_emb); remainder split across 2 non-encoding
+                  types (upd_a_field, upd_b_field).
 """
 
 import argparse
@@ -208,6 +212,12 @@ def main() -> None:
     parser.add_argument("--b-id", default="counterparty_id")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--encoding-pct",
+        type=int,
+        default=80,
+        help="Percentage of requests requiring ONNX encoding (default: 80)",
+    )
+    parser.add_argument(
         "--no-serve", action="store_true", help="Skip starting the server"
     )
     args = parser.parse_args()
@@ -267,13 +277,16 @@ def main() -> None:
         # Build operation sequence
         # ------------------------------------------------------------------
         n = args.iterations
+        enc = args.encoding_pct / 100.0
+        each_enc = enc / 4.0  # split evenly across 4 encoding op types
+        each_non = (1.0 - enc) / 2.0  # split evenly across 2 non-encoding types
         op_counts = {
-            "new_a": int(n * 0.30),
-            "new_b": int(n * 0.30),
-            "upd_a_emb": int(n * 0.10),
-            "upd_a_field": int(n * 0.10),
-            "upd_b_emb": int(n * 0.10),
-            "upd_b_field": int(n * 0.10),
+            "new_a": int(n * each_enc),
+            "new_b": int(n * each_enc),
+            "upd_a_emb": int(n * each_enc),
+            "upd_b_emb": int(n * each_enc),
+            "upd_a_field": int(n * each_non),
+            "upd_b_field": int(n * each_non),
         }
         ops = []
         for op, count in op_counts.items():

@@ -28,12 +28,9 @@ blocking:
     - field_a: country_code
       field_b: domicile
 
-candidates:
-  field_a: short_name
-  field_b: counterparty_name
-  method: fuzzy
-  scorer: wratio
-  n: 10
+# Small example dataset — flat scan is fast enough and has no dependencies.
+vector_backend: flat
+top_n: 10
 
 match_fields:
   - field_a: legal_name
@@ -55,7 +52,7 @@ match_fields:
   - field_a: lei
     field_b: lei_code
     method: exact
-    weight: 0.10
+    weight: 0.05
 
 thresholds:
   auto_match: 0.85

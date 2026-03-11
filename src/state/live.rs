@@ -1,7 +1,7 @@
 //! Live match state: concurrent data structures for the live HTTP server.
 //!
 //! Both A and B sides are fully symmetrical: each has a DashMap of records,
-//! per-field vector indexes, a BlockingIndex, and an unmatched set.
+//! a combined embedding index, a BlockingIndex, and an unmatched set.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,13 +18,14 @@ use crate::error::MelderError;
 use crate::matching::blocking::BlockingIndex;
 use crate::models::{Record, Side};
 use crate::state::upsert_log::{UpsertLog, WalEvent};
-use crate::vectordb;
-use crate::vectordb::field_indexes::FieldIndexes;
+use crate::vectordb::{self, combined_cache_path, spec_hash, VectorDB};
 
-/// Per-side live state: records, field indexes, blocking, unmatched set.
+/// Per-side live state: records, combined index, blocking, unmatched set.
 pub struct LiveSideState {
     pub records: DashMap<String, Record>,
-    pub field_indexes: FieldIndexes,
+    /// Single combined embedding index for this side.
+    /// `None` if no embedding fields are configured in the job config.
+    pub combined_index: Option<Box<dyn VectorDB>>,
     pub blocking_index: RwLock<BlockingIndex>,
     pub unmatched: DashSet<String>,
     /// Reverse index: common_id_value -> record_id. Only populated when
@@ -36,7 +37,10 @@ impl std::fmt::Debug for LiveSideState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveSideState")
             .field("records", &self.records.len())
-            .field("field_indexes_len", &self.field_indexes.len())
+            .field(
+                "combined_index_len",
+                &self.combined_index.as_ref().map(|i| i.len()).unwrap_or(0),
+            )
             .field("unmatched", &self.unmatched.len())
             .finish()
     }
@@ -72,15 +76,16 @@ impl LiveMatchState {
     /// 1. Init encoder pool
     /// 2. Load A dataset
     /// 3. Load B dataset
-    /// 4. Build/load A-side field indexes
-    /// 5. Build/load B-side field indexes
+    /// 4. Build/load A-side combined embedding index
+    /// 5. Build/load B-side combined embedding index
     /// 6. Build BlockingIndex for A
     /// 7. Build BlockingIndex for B
     /// 8. Load CrossMap
     /// 9. Build unmatched sets
     /// 10. Open WAL, replay events
     /// 11. Rebuild unmatched sets after WAL replay
-    /// 12. Log startup summary
+    /// 12. Build common_id_index
+    /// 13. Log startup summary
     pub fn load(config: Config) -> Result<Arc<Self>, MelderError> {
         let start = Instant::now();
 
@@ -90,8 +95,12 @@ impl LiveMatchState {
             "Initializing encoder pool (model={}, pool_size={})...",
             config.embeddings.model, pool_size
         );
-        let encoder_pool =
-            EncoderPool::new(&config.embeddings.model, pool_size).map_err(MelderError::Encoder)?;
+        let encoder_pool = EncoderPool::new(
+            &config.embeddings.model,
+            pool_size,
+            config.performance.quantized,
+        )
+        .map_err(MelderError::Encoder)?;
         let dim = encoder_pool.dim();
         eprintln!(
             "Encoder ready (dim={}), took {:.1}s",
@@ -129,8 +138,8 @@ impl LiveMatchState {
             b_start.elapsed().as_secs_f64()
         );
 
-        // 4. Build/load A-side field indexes
-        let field_indexes_a = vectordb::build_or_load_field_indexes(
+        // 4. Build/load A-side combined embedding index
+        let combined_index_a = vectordb::build_or_load_combined_index(
             &config.vector_backend,
             Some(&config.embeddings.a_cache_dir),
             &records_a_map,
@@ -138,11 +147,10 @@ impl LiveMatchState {
             &config,
             true,
             &encoder_pool,
-            dim,
         )?;
 
-        // 5. Build/load B-side field indexes
-        let field_indexes_b = vectordb::build_or_load_field_indexes(
+        // 5. Build/load B-side combined embedding index
+        let combined_index_b = vectordb::build_or_load_combined_index(
             &config.vector_backend,
             config.embeddings.b_cache_dir.as_deref(),
             &records_b_map,
@@ -150,7 +158,6 @@ impl LiveMatchState {
             &config,
             false,
             &encoder_pool,
-            dim,
         )?;
 
         // 6 & 7. Build BlockingIndex for A and B
@@ -189,12 +196,12 @@ impl LiveMatchState {
 
         // Move records into DashMaps
         let records_a: DashMap<String, Record> = DashMap::with_capacity(records_a_map.len());
-        for (id, rec) in records_a_map {
-            records_a.insert(id, rec);
+        for (id, rec) in &records_a_map {
+            records_a.insert(id.clone(), rec.clone());
         }
         let records_b: DashMap<String, Record> = DashMap::with_capacity(records_b_map.len());
-        for (id, rec) in records_b_map {
-            records_b.insert(id, rec);
+        for (id, rec) in &records_b_map {
+            records_b.insert(id.clone(), rec.clone());
         }
 
         // 9. Build unmatched sets
@@ -223,7 +230,7 @@ impl LiveMatchState {
         let wal_events = UpsertLog::replay(Path::new(wal_path))
             .map_err(|e| MelderError::Other(anyhow::anyhow!("WAL replay failed: {}", e)))?;
 
-        let emb_fields = vectordb::embedding_field_keys(&config);
+        let emb_specs = vectordb::embedding_field_specs(&config);
 
         let mut crossmap = crossmap;
         if !wal_events.is_empty() {
@@ -231,23 +238,33 @@ impl LiveMatchState {
             for event in &wal_events {
                 match event {
                     WalEvent::UpsertRecord { side, record } => {
-                        let (id_field, side_records, side_fi) = match side {
-                            Side::A => (&config.datasets.a.id_field, &records_a, &field_indexes_a),
-                            Side::B => (&config.datasets.b.id_field, &records_b, &field_indexes_b),
+                        let is_a = *side == Side::A;
+                        let (id_field, side_records, side_idx) = match side {
+                            Side::A => (
+                                &config.datasets.a.id_field,
+                                &records_a,
+                                combined_index_a.as_deref(),
+                            ),
+                            Side::B => (
+                                &config.datasets.b.id_field,
+                                &records_b,
+                                combined_index_b.as_deref(),
+                            ),
                         };
                         if let Some(id) = record.get(id_field) {
                             side_records.insert(id.clone(), record.clone());
 
-                            // Re-encode per-field vectors into field indexes
-                            let is_a = *side == Side::A;
-                            for (field_key, field_a_name, field_b_name) in &emb_fields {
-                                let field_name = if is_a { field_a_name } else { field_b_name };
-                                let text = record
-                                    .get(field_name)
-                                    .map(|v| v.trim().to_string())
-                                    .unwrap_or_default();
-                                if let Ok(vec) = encoder_pool.encode_one(&text) {
-                                    let _ = side_fi.upsert(id, field_key, &vec, record, *side);
+                            // Re-encode combined vector and upsert into index
+                            if let Some(idx) = side_idx {
+                                if let Ok(combined_vec) = vectordb::encode_combined_vector(
+                                    record,
+                                    &emb_specs,
+                                    &encoder_pool,
+                                    is_a,
+                                ) {
+                                    if !combined_vec.is_empty() {
+                                        let _ = idx.upsert(id, &combined_vec, record, *side);
+                                    }
                                 }
                             }
                         }
@@ -264,10 +281,13 @@ impl LiveMatchState {
                             Side::B => &records_b,
                         };
                         side_records.remove(id);
-                        // Remove from field indexes
-                        match side {
-                            Side::A => field_indexes_a.remove_record(id),
-                            Side::B => field_indexes_b.remove_record(id),
+                        // Remove from combined index
+                        let side_idx = match side {
+                            Side::A => combined_index_a.as_deref(),
+                            Side::B => combined_index_b.as_deref(),
+                        };
+                        if let Some(idx) = side_idx {
+                            let _ = idx.remove(id);
                         }
                         // Break any crossmap pair involving this ID
                         match side {
@@ -328,7 +348,7 @@ impl LiveMatchState {
 
         let a_side = LiveSideState {
             records: records_a,
-            field_indexes: field_indexes_a,
+            combined_index: combined_index_a,
             blocking_index: RwLock::new(blocking_a),
             unmatched: unmatched_a,
             common_id_index: common_id_a,
@@ -336,7 +356,7 @@ impl LiveMatchState {
 
         let b_side = LiveSideState {
             records: records_b,
-            field_indexes: field_indexes_b,
+            combined_index: combined_index_b,
             blocking_index: RwLock::new(blocking_b),
             unmatched: unmatched_b,
             common_id_index: common_id_b,
@@ -414,21 +434,43 @@ impl LiveMatchState {
         Ok(())
     }
 
-    /// Save field index caches to disk (only for sides with a configured cache dir).
-    pub fn save_field_index_caches(&self) -> Result<(), MelderError> {
-        // Always save A field index caches
-        if let Err(e) = self
-            .a
-            .field_indexes
-            .save_all(&self.config.embeddings.a_cache_dir, "a")
-        {
-            eprintln!("Warning: failed to save A field index caches: {}", e);
+    /// Save combined embedding index caches to disk.
+    ///
+    /// The cache path encodes a hash of the embedding field spec so that any
+    /// config change (field names, order, weights) produces a new path and
+    /// forces a cold rebuild on next startup.
+    pub fn save_combined_index_caches(&self) -> Result<(), MelderError> {
+        let emb_specs = vectordb::embedding_field_specs(&self.config);
+        if emb_specs.is_empty() {
+            return Ok(());
+        }
+        let hash = spec_hash(&emb_specs);
+
+        // A-side (always configured)
+        if let Some(ref idx) = self.a.combined_index {
+            let path = combined_cache_path(&self.config.embeddings.a_cache_dir, "a", &hash);
+            if let Some(parent) = Path::new(&path).parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+            }
+            if let Err(e) = idx.save(Path::new(&path)) {
+                eprintln!("Warning: failed to save A combined index cache: {}", e);
+            }
         }
 
-        // Only save B field index caches if explicitly configured
+        // B-side (only if b_cache_dir configured)
         if let Some(ref b_dir) = self.config.embeddings.b_cache_dir {
-            if let Err(e) = self.b.field_indexes.save_all(b_dir, "b") {
-                eprintln!("Warning: failed to save B field index caches: {}", e);
+            if let Some(ref idx) = self.b.combined_index {
+                let path = combined_cache_path(b_dir, "b", &hash);
+                if let Some(parent) = Path::new(&path).parent() {
+                    if !parent.exists() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                }
+                if let Err(e) = idx.save(Path::new(&path)) {
+                    eprintln!("Warning: failed to save B combined index cache: {}", e);
+                }
             }
         }
 

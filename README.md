@@ -28,6 +28,23 @@ Operates in two modes:
   opposite side. A and B sides are treated symmetrically -- both have
   identical capabilities.
 
+## Contents
+
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Matching Algorithms](#matching-algorithms)
+- [Scoring Pipeline](#scoring-pipeline)
+- [Operation](#operation)
+- [CLI Reference](#cli-reference)
+- [Live Mode API](#live-mode-api)
+- [Data Formats](#data-formats)
+- [Performance](#performance)
+- [How vector caching works](#how-vector-caching-works)
+- [Project Structure](#project-structure)
+- [Building](#building)
+- [License](#license)
+
 ## Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install) 1.85 or later
@@ -89,7 +106,7 @@ datasets:
 # Used by any match field with method: embedding. The model is downloaded
 # automatically on first run.
 #
-# a_cache_dir (required): directory for A-side per-field vector index caches.
+# a_cache_dir (required): directory for the A-side combined embedding index cache.
 # Created automatically on first run; loaded on subsequent runs to skip encoding.
 #
 # b_cache_dir (optional): directory for B-side caches. Omit to skip B-side
@@ -99,10 +116,24 @@ embeddings:
   a_cache_dir: cache
   b_cache_dir: cache              # optional — omit to skip B-side caching
 
-# For each record being matched, the Melder matching pipeline has three
-# phases in both batch and live modes:
+# --- Vector backend -------------------------------------------------------
+# Controls the embedding index used for candidate selection.
+#
+# flat    (default): brute-force scan — O(N) search, no dependencies.
+#                    Good for development and datasets under ~10k records.
+# usearch: HNSW approximate nearest-neighbour index — O(log N) search.
+#           Dramatically faster at scale. Requires the usearch feature flag
+#           at build time: cargo build --release --features usearch
+#
+# Use flat for quick tests; use usearch for any production workload.
+vector_backend: usearch
 
-# Blocking -> Candidates selection -> Full scoring
+# --- top_n ----------------------------------------------------------------
+# How many candidates to retrieve from the embedding index before full
+# scoring, and the maximum number of match results returned per record.
+# A value of 20 is a good default: large enough to find the true match
+# almost always, small enough that full scoring stays fast.
+top_n: 20
 
 # --- Blocking (pre-filter) -----------------------------------------------
 # Before candidate selection, blocking eliminates obviously wrong candidates by
@@ -120,29 +151,9 @@ blocking:
     - field_a: country_code
       field_b: domicile
 
-# --- Candidates (narrowing) -----------------------------------------------
-# After blocking, there may still be hundreds of records to score. The
-# candidates stage narrows this down to the top N by scoring on a single
-# field pair using a fast method, before the full multi-field scoring
-# runs. This is much cheaper than full scoring every blocked record.
-#
-# field_a / field_b: the field pair to score for candidate selection.
-# method: "fuzzy", "embedding", or "exact".
-# scorer: fuzzy scorer (only when method is fuzzy). Default "wratio".
-# n: how many top candidates to pass to full scoring. Default 10.
-#
-# Omit the candidates section entirely to disable it -- all blocked
-# records will go straight to full scoring (thorough but slower).
-candidates:
-  enabled: true
-  field_a: short_name
-  field_b: counterparty_name
-  method: fuzzy
-  scorer: wratio
-  n: 10
-
 # --- Match fields (full scoring) -------------------------------------------
-# After candidate selection, the final phase of the matching pipeline.
+# The match_fields list defines how each field pair is compared and how
+# much it contributes to the overall score.
 # Each entry pairs a field from A with a field from B, specifies how to
 # compare them, and assigns a weight. The weights control how much each
 # field contributes to the overall score. Weights must sum to exactly
@@ -213,9 +224,12 @@ command line sets the listening port (default 8080).
 
 ```yaml
 live:
-  top_n: 5                # max matches returned per request
   upsert_log: wal.ndjson  # write-ahead log for crash recovery
+
+top_n: 5                  # max matches returned per request (top-level field)
 ```
+
+`top_n` is a top-level config field shared by both batch and live modes.
 
 ### Performance config
 
@@ -225,7 +239,14 @@ and has a sensible default.
 ```yaml
 performance:
   encoder_pool_size: 4    # parallel ONNX sessions (default: 1)
+  quantized: true         # optional — use INT8 quantised model — ~2x faster encoding,
+                          # negligible quality loss (default: false)
 ```
+
+`quantized` is supported for `all-MiniLM-L6-v2` and `all-MiniLM-L12-v2`.
+BGE models do not have quantised variants and will error if `quantized: true`
+is set. Expect ~2% of borderline pairs to shift classification bucket when
+switching between full-precision and quantised on the same dataset.
 
 Batch scoring thread count is controlled by the `RAYON_NUM_THREADS`
 environment variable (defaults to logical CPU count if unset).
@@ -346,37 +367,45 @@ above where we are matching entities against counterparties.
 When melder processes a B-side record -- say counterparty "JPMorgan
 Chase & Co" from the US -- the pipeline works as follows:
 
-**Step 0: Matching Common ID filter**
+**Step 0: Common ID fast-path.**
 If `common_id_field` is configured on both datasets, melder first
-checks whether the incoming record shares a common identifier value with
-any record on the opposite side. If a match is found, the pair is
-immediately confirmed with a score of 1.0 and no further scoring is
-performed. This is useful when both sides share a stable key (e.g. ISIN,
-LEI) for a subset of records.
-Those records with a matchable Common ID are resolved instantly and
-the scoring pipeline is not pursued further.
+checks whether the incoming record shares a common identifier (ISIN,
+LEI, etc.) with any record on the opposite side. If a match is found,
+the pair is immediately confirmed with score 1.0 and no further scoring
+is performed. This short-circuit happens before any vector arithmetic.
 
-**Step 1: Blocking.** Before any scoring happens, melder eliminates
-candidates that cannot possibly match. In our config, blocking requires
-`country_code == domicile`, so if the counterparty's domicile is "US",
-only A-side entities with `country_code: US` are considered. This is a
-cheap filter that avoids wasting time scoring thousands of irrelevant
-pairs. If blocking is disabled (`enabled: false` or the section omitted),
-this step is skipped and all records proceed to candidate selection.
+**Step 1: Blocking.**
+Before any scoring happens, melder eliminates records that cannot
+possibly match using cheap field equality. In our config, blocking
+requires `country_code == domicile`, so if the counterparty's domicile
+is "US", only A-side entities with `country_code: US` are considered.
+This is free to evaluate and can eliminate 95%+ of the pool in a well-
+blocked job. Disable it (`enabled: false`) only if you need cross-
+country matching.
 
-**Step 2: Candidate selection.** Among the records that passed blocking,
-there may still be hundreds of candidates. The candidates stage
-narrows them to the top N by scoring on a single configured field pair.
-In our config, this means comparing `short_name` (A) against
-`counterparty_name` (B) using fuzzy matching (`wratio`), then keeping
-the 10 highest-scoring candidates for full scoring. This is much
-cheaper than running all four match fields on every blocked record.
+**Step 2: Candidate selection via the combined embedding index.**
+Among the records that passed blocking there may still be hundreds.
+Rather than scoring every one of them across all match fields, melder
+uses the embedding index to find the `top_n` nearest neighbours in one
+fast vector lookup. This is the heart of the performance story.
 
-If the candidates section is omitted, all blocked records go straight
-to full scoring -- thorough but slower on large datasets.
+Melder represents each record as a single *combined embedding vector*.
+For every `method: embedding` field in your config, melder encodes
+the field text into a 384-dimensional unit vector and scales it by the
+square root of the field's weight. These scaled vectors are concatenated
+end-to-end into one long vector per record. The mathematical consequence
+is that the dot product between two combined vectors exactly equals the
+weighted cosine-similarity sum that full scoring would compute for the
+embedding fields alone. This means the ANN search retrieves the same
+top-N candidates that an exhaustive scan would find, without scanning
+everything.
 
-**Step 3: Full scoring.** Each candidate pair is scored across all four
-match fields defined in the config:
+With `vector_backend: usearch`, this search runs over an HNSW graph
+index and takes O(log N) time regardless of pool size. With
+`vector_backend: flat` it falls back to a brute-force O(N) scan.
+
+**Step 3: Full scoring.**
+Each of the `top_n` candidates is scored across all match fields:
 
 | Field pair | Method | Score example | Weight |
 |-----------|--------|---------------|--------|
@@ -385,23 +414,26 @@ match fields defined in the config:
 | country_code vs domicile | exact | 1.00 | 0.20 |
 | lei vs lei_code | exact | 0.00 (one side empty) | 0.05 |
 
-The composite score is the weighted average:
-`(0.92 * 0.55) + (0.85 * 0.20) + (1.00 * 0.20) + (0.00 * 0.05) = 0.876`
+The per-field embedding scores are recovered cheaply by slicing the
+combined vectors — no second model call is needed. The composite score
+is the weighted average:
 
-**Step 4: Classification.** The composite score is compared against the
-configured thresholds:
+`(0.92 × 0.55) + (0.85 × 0.20) + (1.00 × 0.20) + (0.00 × 0.05) = 0.876`
 
-- **0.876 >= 0.85 (auto_match)?** Yes -- this pair is classified as
-  `auto` and written to the results file as a confirmed match.
-- If the score had been 0.72, it would fall between `review_floor` (0.60)
-  and `auto_match` (0.85), so it would be classified as `review` and
-  written to the review file for a human to decide.
-- Below 0.60 it would be discarded as a non-match.
+**Step 4: Classification.**
+The composite score is compared against the configured thresholds:
 
-The same pipeline code (`matching::pipeline::score_pool`) is used by
-both batch and live modes. In batch mode, Rayon parallelises it across
-all B records. In live mode, each incoming request runs the pipeline
-inside a `spawn_blocking` task to avoid blocking the async runtime.
+- **0.876 ≥ 0.85 (auto_match)?** Yes — classified as `auto`, written
+  to the results file as a confirmed match.
+- A score of 0.72 falls between `review_floor` (0.60) and `auto_match`
+  (0.85) — classified as `review`, written to the review file for a
+  human to decide.
+- Below 0.60 — discarded as a non-match.
+
+The same pipeline (`matching::pipeline::score_pool`) is used by both
+batch and live modes. In batch mode, Rayon parallelises it across all B
+records. In live mode, each incoming request runs it inside a
+`spawn_blocking` task.
 
 ## Operation
 
@@ -622,18 +654,33 @@ meld cache status --config config.yaml
 
 ### `meld cache clear`
 
-Delete cache files. By default deletes both index and embedding caches.
-Use `--index-only` to keep the raw embedding files and only delete the
-index.
+Delete stale cache files. The default behaviour is *smart*: it computes
+the cache filename that the current config expects (derived from a hash
+of the embedding field names, order, and weights) and deletes only files
+that do **not** match — i.e. files left over from a previous config that
+are now unreachable. The current valid cache is left untouched.
+
+Use `--all` to delete everything regardless.
 
 ```bash
+# Smart clear: delete stale files only (safe to run before any rebuild)
 meld cache clear --config config.yaml
-meld cache clear --config config.yaml --index-only
+
+# Full wipe: delete all cache files including the current valid ones
+meld cache clear --config config.yaml --all
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--index-only` | Only delete index files, keep embedding caches. |
+| `--all` | Delete all cache files, including the current valid cache. Forces a cold rebuild on the next run. |
+
+**When to use `--all`**: after changing the embedding model, or when
+you want to reclaim disk space and are happy to re-encode from scratch.
+
+**When the smart default is enough**: after changing field weights,
+adding a new match field, or renaming fields. These all change the spec
+hash, so the old cache files become unreachable automatically — the
+smart clear finds and removes them without touching anything current.
 
 ### `meld review list`
 
@@ -953,67 +1000,80 @@ supported.
 
 ## Performance
 
-Benchmarked on Apple Silicon, `all-MiniLM-L6-v2` model, flat vector backend.
+Benchmarked on Apple Silicon, `all-MiniLM-L6-v2` model, `encoder_pool_size: 4`.
 
-### Live mode (3,000 mixed requests, 80% requiring encoding)
+### Batch mode — flat vs usearch, top_n: 20
 
-| Metric | Sequential (c=1) | Concurrent (c=10) |
-|--------|-----------------|-------------------|
-| Throughput | 255 req/s | 760 req/s |
-| p50 latency | 3.8ms | 11.6ms |
-| p95 latency | 4.8ms | 24.6ms |
-| p99 latency | 6.0ms | 33.8ms |
+`flat` scans all candidates linearly; `usearch` uses an HNSW
+approximate nearest-neighbour (ANN) graph for O(log N) candidate selection.
+Cold builds encode from scratch and save to disk; every subsequent run
+is warm. Both backends use `country_code` blocking, which limits each B
+record to its country block (~5k A records out of 100k).
 
-### Batch mode
+**Batch mode benchmarks**
 
-Apple Silicon, `all-MiniLM-L6-v2`, `encoder_pool_size: 4`, flat vector backend,
-`candidates: enabled: false` (every B record scored against every A record — no
-blocking pre-filter).
+10k x 10k means 10,000 records in the A set. 10,000 in B with zero initial crossmappings.
+Apple Silicon M3 Macbook Air
 
-**Warm (cache hit — vectors loaded from disk):**
+| | flat 10k × 10k | usearch 10k × 10k | flat 100k × 100k | usearch 100k × 100k |
+|---|---:|---:|---:|---:|
+| Index build time (no cache) | ~16s | ~18s | ~3m | ~3m 42s |
+| Index load time (pre-existing cache) | ~25ms | ~50ms | ~650ms | ~650ms |
+| Scoring throughput | 4,877 rec/s | **22,464 rec/s** | 363 rec/s | **8,407 rec/s** |
+| Wall time | 1.6s | 0.85s | 4m 37s | 13s |
 
-| | 1k × 1k | 10k × 10k | 100k × 100k |
-|---|---:|---:|---:|
-| Scoring throughput | 26,918 rec/s | 2,733 rec/s | 179 rec/s |
-| Wall time | 0.3s | 4.0s | 9m 20s |
+**Observations**
 
-**Cold (first run — all vectors encoded from scratch):**
+- the first build of cached indices for large use cases can be slow. vector encoding is compute intenstive. If this is a problem for you use case, set `quantized: true` in the `performance:` section of config (see example config at top). This speeds up encoding 2x.
+- Thereafter, pre-built indices on disk are re-used and startup is fast.
+- the 'flat' back end index store is file based and has only O(N) performance. Use only for small experiments.
+- 'usearch' an in-process vector database has O(logN) performance (ANN lookup) and should be used for most real world and large use cases. Storage of vectors is slightly slower than 'flat'.
 
-| | 1k × 1k | 10k × 10k | 100k × 100k |
-|---|---:|---:|---:|
-| Encoding time | ~1.7s | ~16s | ~2m 49s |
-| Scoring throughput | 544 rec/s | 820 rec/s | 163 rec/s |
-| Wall time | 3.6s | 19.7s | 11m 28s |
+### Live mode: 3,000 add requests, 80% requiring encoding
 
-Cold runs encode once and cache to disk; every subsequent run is warm.
+**pre-populated caches (10k x 10k)**
 
-With candidates disabled, every B record is scored against all A records in
-its block. Blocking is still active — the 100k × 100k run above uses
-`country_code` blocking, which produces 20 blocks of ~5k A records each, so
-each B record is scored against ~5k A records, not 100k.
+Apple Silicon M3 Macbook Air
+`all-MiniLM-L6-v2`, `encoder_pool_size: 4`
+`c=1` menas one http client submitting 3,000 requests sequentially
+`c=10` means ten http clients each submitting 3,000 add requests simultaneously. 30k total.
 
-**flat vs usearch at 100k (candidates disabled):**
+| Metric | flat (c=1) | usearch (c=1) | flat (c=10) | usearch (c=10) |
+|--------|----------:|-------------:|------------:|---------------:|
+| Throughput | 355 req/s | 397 req/s | 624 req/s | 917 req/s |
+| p50 latency | 2.6ms | 2.3ms | 13.2ms | 5.8ms |
+| p95 latency | 3.8ms | 3.4ms | 34.2ms | 29.2ms |
+| p99 latency | 6.5ms | 5.4ms | 52.7ms | 44.3ms |
 
-| | cold scoring | warm scoring |
-|---|---:|---:|
-| flat | 163 rec/s | 179 rec/s |
-| usearch | 146 rec/s | 186 rec/s |
+### Live mode: 3,000 add requests, 40% requiring encoding
 
-With candidates disabled the usearch backend is no faster than flat, and
-slightly slower cold. The reason: when candidates are disabled,
-`select_candidates` calls `get_vec(id)` individually for every blocked
-candidate rather than calling `search()`. Flat's `get()` is a single lock
-acquisition plus a HashMap lookup and slice copy. Usearch's `get()` requires
-three nested lock acquisitions, two HashMap lookups, and an HNSW data-structure
-key retrieval. Both paths are O(N) in the block size; usearch just has a
-higher constant per call. With ~5k `get()` calls per B record, the overhead
-accumulates.
+**pre-populated caches (10k x 10k)**
 
-Usearch's O(log N) advantage only materialises when `candidates: enabled:
-true` triggers `search()` with a small K — that is the HNSW ANN path.
-Enabling candidates pre-filters each block to the top-N nearest neighbours
-before full scoring, which is where HNSW earns its keep at large scale.
-These tuning decisions stay in the user's hands via the config file.
+*as above*
+
+| Metric | flat (c=1) | usearch (c=1) | flat (c=10) | usearch (c=10) |
+|--------|----------:|-------------:|------------:|---------------:|
+| Throughput | 366 req/s | 382 req/s | 686 req/s | 913 req/s |
+| p50 latency | 2.5ms | 2.4ms | 12.6ms | 5.7ms |
+| p95 latency | 3.4ms | 3.5ms | 30.8ms | 30.3ms |
+| p99 latency | 5.8ms | 5.9ms | 41.2ms | 42.7ms |
+
+Halving the encoding load has little impact; search indices dominates both backends.
+
+### Live mode: 3,000 add requests, 80% requiring encoding
+
+**pre-populated caches (100k x 100k)**
+
+*as above*
+
+| Metric | flat (c=1) | usearch (c=1) | flat (c=10) | usearch (c=10) |
+|--------|----------:|-------------:|------------:|---------------:|
+| Throughput | 133 req/s | 309 req/s | 211 req/s | 834 req/s |
+| p50 latency | 6.6ms | 3.0ms | 42.5ms | 7.2ms |
+| p95 latency | 11.1ms | 4.1ms | 85.2ms | 30.8ms |
+| p99 latency | 22.6ms | 5.5ms | 125.1ms | 48.4ms |
+
+Similar to batch, at larger index sizes, usearch degrades more gracefully than flat.
 
 ### Benchmarking
 
@@ -1086,17 +1146,32 @@ including encoder pool size comparisons and Go baseline comparison.
 ## How vector caching works
 
 Melder uses a sentence-transformer model (default: `all-MiniLM-L6-v2`) to
-convert the text of each record into a 384-dimensional vector — a numeric
-fingerprint that captures the meaning of the text. Two records about the
-same entity will produce vectors that point in nearly the same direction,
-even if the exact wording differs. This is how the `embedding` match
-method works: it compares vectors using cosine similarity rather than
-comparing characters.
+convert each record's text fields into dense numeric vectors — fingerprints
+that capture meaning rather than characters. Two records about the same
+entity produce vectors that point in nearly the same direction, even if the
+wording differs completely. This is how `method: embedding` scoring works.
 
-Encoding text into vectors is expensive — it requires running each record
-through an ONNX neural network. For 10,000 records this takes ~8 seconds.
-To avoid repeating this work, melder caches the encoded vectors to disk
-in a compact binary format (the `.index` files).
+Encoding is expensive: running 10,000 records through the ONNX model takes
+around 8 seconds. To avoid repeating this work, melder caches the encoded
+vectors to disk after the first run.
+
+### The combined embedding index
+
+Rather than storing a separate vector index for every embedding field,
+melder builds a single *combined index* per side. For each record, the
+vectors for all embedding fields are scaled by the square root of their
+weights and concatenated into one long vector. This combined vector has a
+useful property: searching for the nearest combined vectors is exactly
+equivalent to finding the records with the highest weighted cosine
+similarity across all embedding fields — the same ranking that full scoring
+would produce. A single ANN search therefore retrieves the right candidates
+without needing multiple per-field lookups.
+
+The cache filename encodes a hash of the field names, their order, and their
+weights. Changing any of these produces a different filename, so the old
+cache is ignored and a fresh one is built automatically. `meld cache clear`
+(without `--all`) uses this same hash to identify and delete only the
+now-unreachable stale files.
 
 ### Config options
 
@@ -1107,75 +1182,126 @@ embeddings:
   b_cache_dir: cache                 # optional — omit to skip B-side caching
 ```
 
-`a_cache_dir` is required — the A-side per-field vector indexes are always
-cached. On first run the directory is populated automatically; on subsequent
-runs indexes are loaded in milliseconds.
+`a_cache_dir` is required — the A-side combined index is always cached to
+disk. On first run the directory is created and populated; on subsequent
+runs the index loads in milliseconds (~170ms for 100k records).
 
-`b_cache_dir` is optional. When set, B-side indexes are also cached to
-disk. When omitted, B vectors are encoded from scratch every run.
+`b_cache_dir` is optional. When set, the B-side combined index is also
+saved to disk. When omitted, B vectors are re-encoded from scratch on
+every run.
 
 ### Batch mode lifecycle
 
 ```
 First run:
-  A vectors: encode (slow) → save to a_cache_dir
-  B vectors: encode (slow) → save to b_cache_dir (if configured)
+  A index: check manifest → missing → cold build → save index + manifest + texthash
+  B index: same
 
-Subsequent runs (same data):
-  A vectors: load from a_cache_dir (~5ms)
-  B vectors: load from b_cache_dir (~5ms) OR re-encode if not configured
+Subsequent runs (same data, same config):
+  A index: manifest fresh → load index + texthash → diff: 0 changed → return (ms)
+  B index: same
 
-Scoring:
-  For each B record, run the 3-stage pipeline (blocking → candidates → full
-  scoring). Precomputed vectors from both indices are used for any embedding
-  match fields — no re-encoding needed.
+Subsequent runs (some records changed):
+  A index: manifest fresh → load → diff: N records changed → re-encode N → save
+  B index: same
+
+Config changed (model / spec / blocking):
+  A index: manifest mismatch → log reason → cold build
+  B index: same
+
+Scoring (per B record):
+  1. Look up B record's combined vector in the B index
+  2. Search the A combined index for the top_n nearest neighbours (O(log N)
+     with usearch, O(N) with flat)
+  3. Score each candidate across all match fields
+  4. Classify and output
 ```
 
-Setting `b_cache_dir` is particularly valuable when tuning thresholds or
-weights across multiple runs on the same data. Without it, every run
-re-encodes all B records through the neural network. With it, a 14-second
-run drops to under 6 seconds.
+Setting `b_cache_dir` is especially valuable when tuning thresholds or
+weights — encoding is done once and the score distribution can be explored
+cheaply on subsequent runs.
 
 ### Live mode lifecycle
 
 ```
 Startup:
-  A vectors: load from a_cache_dir (or encode + save if stale)
-  B vectors: load from b_cache_dir (or encode; only saved if configured)
-  Both indices live in memory behind RwLock for concurrent access.
+  A index: load from a_cache_dir (or encode + build if stale)
+  B index: load from b_cache_dir (or encode; only saved if configured)
+  Both indices live in memory for fast concurrent access.
 
-During operation:
-  /a/add or /b/add: encode the single new record, insert into the
-  in-memory index. The vector is available immediately for matching.
+During operation (upsert / try-match):
+  Encode the record's embedding fields into a combined vector.
+  Upsert the combined vector into the in-memory index.
+  Search the opposite side's index for top_n nearest neighbours.
 
 Shutdown:
-  A vectors: saved to a_cache_dir
-  B vectors: saved to b_cache_dir (if configured)
+  Save combined indices to their cache directories.
 ```
 
-In live mode both sides always have an in-memory vector index (required
-for bidirectional matching). The cache directories only control whether
-indexes are persisted to disk between restarts.
+### Staleness and invalidation
 
-### Staleness
+Cache validation is multi-layered and runs automatically on every startup.
+No manual intervention is needed for any of the scenarios below.
 
-The cache is considered fresh if the number of vectors in the file
-matches the number of records in the dataset. If the dataset changes
-size, the cache is rebuilt automatically. Note: if the dataset changes
-content but not size, the stale cache is reused — a known limitation.
+**Layer 1 — Config hash (manifest check).** A `.manifest` sidecar is
+stored alongside each cache file. It records a hash of the embedding
+field spec (field names, order, weights), the blocking configuration
+(enabled/operator/fields), and the model name. On load, these hashes are
+compared against the current config. Any mismatch triggers an immediate
+cold rebuild with a clear log message explaining what changed:
 
-### Future: vector database
+```
+Warning: A combined index cache invalidated (blocking config changed), rebuilding from scratch.
+Warning: B combined index cache invalidated (embedding model changed), rebuilding from scratch.
+```
 
-The current vector index is a flat brute-force scan — every search
-compares the query against all vectors in the index. This is fast up
-to ~100K records (a single scan takes <1ms at 10K) but scales linearly.
+This catches config changes that previously caused silent wrong-result
+bugs — for example, adding a new blocking field used to silently reuse an
+index that was built without that field.
 
-At larger scales, an approximate nearest neighbour (ANN) index such as
-HNSW would give logarithmic search time while preserving the single-binary
-architecture. Beyond that, an external vector database (Qdrant, Milvus)
-would offer distributed storage, native persistence, and metadata
-filtering — at the cost of a network round-trip per query and a more
-complex deployment. See [FUTURE.md](FUTURE.md) for more detail.
+**Layer 2 — Text-hash deduplication (incremental encoding).** After the
+manifest check passes, the engine computes a FNV-1a hash of each record's
+source text and compares it against the stored hashes in a `.texthash`
+sidecar. Records whose text hasn't changed since the last run are skipped:
+their cached vectors are reused as-is. Only records whose text actually
+changed (or that are new) are re-encoded through the ONNX model.
+
+This means:
+- Recurring batch jobs where most records are stable only re-encode the
+  changed minority — avoiding the full encoding cost on every run.
+- Datasets that change content but not size (delete one record, insert
+  another with the same count) are detected correctly: the changed
+  records' hashes differ, so their vectors are updated automatically.
+
+If more than 90% of records change in a single run, a full cold rebuild
+is triggered instead (more efficient batching outweighs the incremental
+overhead at that point).
+
+**Spec hash → cache filename.** If you change a field's weight, rename a
+field, or add/remove an embedding field, the spec hash embedded in the
+cache filename changes and the old cache file becomes unreachable. The
+engine builds a fresh index automatically; `meld cache clear` (smart mode)
+finds and removes the now-unreachable old file along with its sidecars.
+
+**Cache files produced per index:**
+
+| File | Contents |
+|------|----------|
+| `*.index` | Flat backend: combined vectors (binary). Usearch: key mapping manifest only. |
+| `*.usearchdb/` | Usearch backend: HNSW graph files, one per block. |
+| `*.index.manifest` | Config hashes, model name, record count, build timestamp. |
+| `*.index.texthash` | Per-record FNV-1a hashes of source text. |
+
+`meld cache status` now prints the model, spec hash, blocking hash,
+record count, and build timestamp from each manifest:
+
+```
+  A cache          bench/cache (1 index files, 52.3 MB)
+    model=all-MiniLM-L6-v2 spec=a3f7c2b1 blocking=deadbeef records=100000 built=2026-03-10T14:22:05Z
+```
+
+`meld cache clear` and `meld cache clear --all` both delete the sidecars
+alongside the index files they belong to.
 
 ## Project Structure
 
@@ -1188,7 +1314,7 @@ src/
   config/              YAML config loading and validation
   data/                Dataset loaders (csv, JSONL, Parquet)
   encoder/             ONNX encoder pool (fastembed)
-  index/               Flat vector index with binary cache
+  vectordb/            Vector index abstraction (flat + usearch backends), combined index logic
   fuzzy/               Fuzzy string matchers (ratio, partial_ratio, token_sort, wratio)
   scoring/             Scoring dispatch (exact, fuzzy, embedding, numeric)
   matching/            Blocking filter, candidate selection, scoring pipeline
@@ -1204,8 +1330,14 @@ src/
 ```bash
 cargo build --release
 
+# With HNSW approximate nearest-neighbour index (recommended for production)
+cargo build --release --features usearch
+
 # With Parquet support
 cargo build --release --features parquet-format
+
+# Both features together
+cargo build --release --features usearch,parquet-format
 ```
 
 The ONNX model is downloaded automatically on first run to

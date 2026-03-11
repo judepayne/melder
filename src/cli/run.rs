@@ -84,7 +84,14 @@ pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<u
 
         println!("Dry run:");
         println!("  A records:       {}", state.records_a.len());
-        println!("  A field indexes: {}", state.field_indexes_a.len());
+        println!(
+            "  A combined index: {} vecs",
+            state
+                .combined_index_a
+                .as_ref()
+                .map(|i| i.len())
+                .unwrap_or(0)
+        );
         println!("  B records:       {}", b_count);
         println!(
             "  Limit:           {}",
@@ -103,7 +110,7 @@ pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<u
     let result = match crate::batch::run_batch(
         &state.config,
         &state.records_a,
-        &state.field_indexes_a,
+        state.combined_index_a.as_deref(),
         &state.encoder_pool,
         &mut crossmap,
         limit,

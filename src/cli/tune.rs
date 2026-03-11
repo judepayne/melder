@@ -44,7 +44,7 @@ pub fn cmd_tune(config_path: &Path, verbose: bool) {
     let result = match crate::batch::run_batch(
         &state.config,
         &state.records_a,
-        &state.field_indexes_a,
+        state.combined_index_a.as_deref(),
         &state.encoder_pool,
         &mut crossmap,
         None,

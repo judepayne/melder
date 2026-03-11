@@ -174,7 +174,7 @@ impl Session {
 
     /// Upsert a record into the live state and attempt matching.
     ///
-    /// Encodes per-field embedding vectors, stores them in FieldVectors,
+    /// Encodes the combined embedding vector, stores it in the combined index,
     /// then performs insertion and scoring.
     pub fn upsert_record(
         &self,
@@ -194,30 +194,29 @@ impl Session {
                 field: id_field.clone(),
             })?;
 
-        // Encode per-field embedding vectors
-        let emb_fields = crate::vectordb::embedding_field_keys(config);
-        let this_side = self.state.side(side);
-        for (field_key, field_a_name, field_b_name) in &emb_fields {
-            let field_name = if is_a_side {
-                field_a_name
-            } else {
-                field_b_name
-            };
-            let text = record
-                .get(field_name)
-                .map(|v| v.trim().to_string())
-                .unwrap_or_default();
-            let vec = self.state.encoder_pool.encode_one(&text)?;
-            let _ = this_side
-                .field_indexes
-                .upsert(&id, field_key, &vec, &record, side);
+        // Encode and store the combined embedding vector
+        let emb_specs = crate::vectordb::embedding_field_specs(config);
+        if !emb_specs.is_empty() {
+            let combined_vec = crate::vectordb::encode_combined_vector(
+                &record,
+                &emb_specs,
+                &self.state.encoder_pool,
+                is_a_side,
+            )
+            .map_err(melder_to_session_err)?;
+            if !combined_vec.is_empty() {
+                let this_side = self.state.side(side);
+                if let Some(ref idx) = this_side.combined_index {
+                    let _ = idx.upsert(&id, &combined_vec, &record, side);
+                }
+            }
         }
 
         self.upsert_record_inner(side, record)
     }
 
     /// Upsert a record whose per-field vectors have already been stored in
-    /// field indexes. Handles insertion, crossmap management, and scoring.
+    /// the combined index. Handles insertion, crossmap management, and scoring.
     fn upsert_record_inner(
         &self,
         side: Side,
@@ -428,18 +427,24 @@ impl Session {
         }
 
         // 9. Pipeline: blocking → candidate selection → full scoring
-        let top_n = config.live.top_n.unwrap_or(5);
+        let top_n = config.top_n.unwrap_or(5);
         let opp_bi = opp_side
             .blocking_index
             .read()
             .unwrap_or_else(|e| e.into_inner());
+        // Fetch the query combined vec from this side's index.
+        let query_combined_vec: Vec<f32> = this_side
+            .combined_index
+            .as_ref()
+            .and_then(|idx| idx.get(&id).ok().flatten())
+            .unwrap_or_default();
         let results = pipeline::score_pool(
             &id,
             &record,
             side,
+            &query_combined_vec,
             &opp_side.records,
-            &this_side.field_indexes,
-            &opp_side.field_indexes,
+            opp_side.combined_index.as_deref(),
             Some(&opp_bi),
             config,
             top_n,
@@ -554,8 +559,10 @@ impl Session {
             bi.remove(id, &record, side);
         }
 
-        // Remove from field indexes
-        this_side.field_indexes.remove_record(id);
+        // Remove from combined index
+        if let Some(ref idx) = this_side.combined_index {
+            let _ = idx.remove(id);
+        }
 
         // Remove from unmatched set
         this_side.unmatched.remove(id);
@@ -593,9 +600,9 @@ impl Session {
 
     /// Try matching a record without persisting it (read-only).
     ///
-    /// Encodes per-field embedding vectors into the query side's field
-    /// indexes (enriching the VectorDB), then scores against the
-    /// opposite side via the normal pipeline.
+    /// Encodes the combined embedding vector into the query side's combined
+    /// index (enriching the VectorDB), then scores against the opposite side
+    /// via the normal pipeline.
     pub fn try_match(&self, side: Side, record: Record) -> Result<MatchResponse, SessionError> {
         let config = &self.state.config;
         let is_a_side = side == Side::A;
@@ -605,30 +612,29 @@ impl Session {
         };
         let id = record.get(id_field).cloned().unwrap_or_default();
 
-        // Encode per-field vectors into the real field indexes
-        let emb_fields = crate::vectordb::embedding_field_keys(config);
-        let this_side = self.state.side(side);
-        for (field_key, field_a_name, field_b_name) in &emb_fields {
-            let field_name = if is_a_side {
-                field_a_name
-            } else {
-                field_b_name
-            };
-            let text = record
-                .get(field_name)
-                .map(|v| v.trim().to_string())
-                .unwrap_or_default();
-            let vec = self.state.encoder_pool.encode_one(&text)?;
-            let _ = this_side
-                .field_indexes
-                .upsert(&id, field_key, &vec, &record, side);
+        // Encode and store combined embedding vector
+        let emb_specs = crate::vectordb::embedding_field_specs(config);
+        if !emb_specs.is_empty() {
+            let combined_vec = crate::vectordb::encode_combined_vector(
+                &record,
+                &emb_specs,
+                &self.state.encoder_pool,
+                is_a_side,
+            )
+            .map_err(melder_to_session_err)?;
+            if !combined_vec.is_empty() {
+                let this_side = self.state.side(side);
+                if let Some(ref idx) = this_side.combined_index {
+                    let _ = idx.upsert(&id, &combined_vec, &record, side);
+                }
+            }
         }
 
         self.try_match_inner(side, record, &id)
     }
 
     /// Try matching a record whose per-field vectors are already in the
-    /// field indexes (read-only scoring).
+    /// combined index (read-only scoring).
     ///
     /// Used by both the single-record path and the batch path.
     fn try_match_inner(
@@ -679,19 +685,25 @@ impl Session {
         }
 
         // Pipeline: blocking → candidate selection → full scoring
-        let top_n = config.live.top_n.unwrap_or(5);
+        let top_n = config.top_n.unwrap_or(5);
         let opp_bi = opp_side
             .blocking_index
             .read()
             .unwrap_or_else(|e| e.into_inner());
         let this_side = self.state.side(side);
+        // Fetch the query combined vec from this side's index.
+        let query_combined_vec: Vec<f32> = this_side
+            .combined_index
+            .as_ref()
+            .and_then(|idx| idx.get(id).ok().flatten())
+            .unwrap_or_default();
         let results = pipeline::score_pool(
             id,
             &record,
             side,
+            &query_combined_vec,
             &opp_side.records,
-            &this_side.field_indexes,
-            &opp_side.field_indexes,
+            opp_side.combined_index.as_deref(),
             Some(&opp_bi),
             config,
             top_n,
@@ -943,7 +955,7 @@ impl Session {
 
         let is_a_side = side == Side::A;
         let config = &self.state.config;
-        let emb_fields = crate::vectordb::embedding_field_keys(config);
+        let emb_specs = crate::vectordb::embedding_field_specs(config);
         let id_field = match side {
             Side::A => &config.datasets.a.id_field,
             Side::B => &config.datasets.b.id_field,
@@ -956,33 +968,45 @@ impl Session {
             .map(|r| r.get(id_field).cloned().unwrap_or_default())
             .collect();
 
-        // 2. Batch encode per embedding field — one ONNX call per field
-        for (field_key, field_a_name, field_b_name) in &emb_fields {
-            let field_name = if is_a_side {
-                field_a_name
-            } else {
-                field_b_name
-            };
-            let texts: Vec<String> = records
-                .iter()
-                .map(|r| {
-                    r.get(field_name)
-                        .map(|v| v.trim().to_string())
-                        .unwrap_or_default()
-                })
-                .collect();
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            let vecs = self.state.encoder_pool.encode(&text_refs)?;
-            for (i, vec) in vecs.into_iter().enumerate() {
-                let rec_id = &ids[i];
-                let record = &records[i];
-                let _ = this_side
-                    .field_indexes
-                    .upsert(rec_id, field_key, &vec, record, side);
+        // 2. Batch encode combined vectors — one ONNX call per field, assembled
+        //    into per-record combined vecs, then stored in the combined index.
+        if !emb_specs.is_empty() {
+            // Build combined_vecs per record by encoding field-by-field in batches.
+            let field_dim = self.state.encoder_pool.dim();
+            let combined_dim = field_dim * emb_specs.len();
+            let mut combined_vecs: Vec<Vec<f32>> =
+                vec![Vec::with_capacity(combined_dim); records.len()];
+
+            for (field_a, field_b, weight) in &emb_specs {
+                let field_name = if is_a_side { field_a } else { field_b };
+                let texts: Vec<String> = records
+                    .iter()
+                    .map(|r| {
+                        r.get(field_name)
+                            .map(|v| v.trim().to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                let mut vecs = self.state.encoder_pool.encode(&text_refs)?;
+                let sqrt_w = weight.sqrt() as f32;
+                for (i, vec) in vecs.iter_mut().enumerate() {
+                    for v in vec.iter_mut() {
+                        *v *= sqrt_w;
+                    }
+                    combined_vecs[i].extend_from_slice(vec);
+                }
+            }
+
+            // Store combined vecs in the combined index.
+            if let Some(ref idx) = this_side.combined_index {
+                for (i, rec_id) in ids.iter().enumerate() {
+                    let _ = idx.upsert(rec_id, &combined_vecs[i], &records[i], side);
+                }
             }
         }
 
-        // 3. Insert + score each record sequentially (vectors already stored)
+        // 3. Insert + score each record sequentially (combined vectors already stored)
         let mut results = Vec::with_capacity(records.len());
         for record in records {
             let resp = self.upsert_record_inner(side, record);
@@ -1036,7 +1060,7 @@ impl Session {
 
         let is_a_side = side == Side::A;
         let config = &self.state.config;
-        let emb_fields = crate::vectordb::embedding_field_keys(config);
+        let emb_specs = crate::vectordb::embedding_field_specs(config);
         let id_field = match side {
             Side::A => &config.datasets.a.id_field,
             Side::B => &config.datasets.b.id_field,
@@ -1049,29 +1073,38 @@ impl Session {
             .map(|r| r.get(id_field).cloned().unwrap_or_default())
             .collect();
 
-        // 2. Batch encode per embedding field — store in real field indexes
-        for (field_key, field_a_name, field_b_name) in &emb_fields {
-            let field_name = if is_a_side {
-                field_a_name
-            } else {
-                field_b_name
-            };
-            let texts: Vec<String> = records
-                .iter()
-                .map(|r| {
-                    r.get(field_name)
-                        .map(|v| v.trim().to_string())
-                        .unwrap_or_default()
-                })
-                .collect();
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            let vecs = self.state.encoder_pool.encode(&text_refs)?;
-            for (i, vec) in vecs.into_iter().enumerate() {
-                let rec_id = &ids[i];
-                let record = &records[i];
-                let _ = this_side
-                    .field_indexes
-                    .upsert(rec_id, field_key, &vec, record, side);
+        // 2. Batch encode combined vectors — store in combined index
+        if !emb_specs.is_empty() {
+            let field_dim = self.state.encoder_pool.dim();
+            let combined_dim = field_dim * emb_specs.len();
+            let mut combined_vecs: Vec<Vec<f32>> =
+                vec![Vec::with_capacity(combined_dim); records.len()];
+
+            for (field_a, field_b, weight) in &emb_specs {
+                let field_name = if is_a_side { field_a } else { field_b };
+                let texts: Vec<String> = records
+                    .iter()
+                    .map(|r| {
+                        r.get(field_name)
+                            .map(|v| v.trim().to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                let mut vecs = self.state.encoder_pool.encode(&text_refs)?;
+                let sqrt_w = weight.sqrt() as f32;
+                for (i, vec) in vecs.iter_mut().enumerate() {
+                    for v in vec.iter_mut() {
+                        *v *= sqrt_w;
+                    }
+                    combined_vecs[i].extend_from_slice(vec);
+                }
+            }
+
+            if let Some(ref idx) = this_side.combined_index {
+                for (i, rec_id) in ids.iter().enumerate() {
+                    let _ = idx.upsert(rec_id, &combined_vecs[i], &records[i], side);
+                }
             }
         }
 
@@ -1159,6 +1192,20 @@ impl Session {
             upserts: self.upsert_count.load(Ordering::Relaxed),
             matches: self.match_count.load(Ordering::Relaxed),
         }
+    }
+}
+
+/// Convert a `MelderError` to a `SessionError`.
+///
+/// Used to propagate `encode_combined_vector` errors across the session
+/// boundary. Only `MelderError::Encoder` variants can occur here; others
+/// are mapped to a generic `MissingField` error message.
+fn melder_to_session_err(e: crate::error::MelderError) -> SessionError {
+    match e {
+        crate::error::MelderError::Encoder(enc) => SessionError::Encoder(enc),
+        other => SessionError::MissingField {
+            field: format!("encoding failed: {}", other),
+        },
     }
 }
 

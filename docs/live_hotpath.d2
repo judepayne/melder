@@ -1,0 +1,202 @@
+direction: down
+
+title: {
+  label: "Live /add request — current hot path"
+  style.font-size: 22
+  style.underline: true
+  near: top-center
+  shape: text
+}
+
+# ── Entry ──
+
+http: "POST /api/v1/{side}/add" {
+  shape: rectangle
+  style.fill: "#e3f2fd"
+  style.stroke: "#1565c0"
+  style.bold: true
+}
+
+spawn: "tokio::spawn_blocking" {
+  style.fill: "#fff3e0"
+  style.stroke: "#e65100"
+}
+
+http -> spawn: "dispatch to\nblocking thread pool"
+
+# ── Phase 1: Encode ──
+
+encode: "1  Encode combined vector" {
+  style.fill: "#fce4ec"
+  style.stroke: "#c62828"
+  style.bold: true
+
+  desc: |md
+    for each embedding field
+    `encoder_pool.encode_one(text)`
+  |
+  desc.shape: text
+  desc.style.font-size: 13
+
+  lock: "Mutex<TextEmbedding>" {
+    style.fill: "#ef9a9a"
+    style.stroke: "#c62828"
+    style.bold: true
+  }
+
+  cost: "~3-5 ms  (ONNX)" {
+    shape: text
+    style.font-size: 12
+    style.italic: true
+  }
+}
+
+spawn -> encode
+
+# ── Phase 2: Upsert vector into this-side HNSW ──
+
+upsert_idx: "2  Upsert vector into this-side index" {
+  style.fill: "#fff9c4"
+  style.stroke: "#f57f17"
+
+  bw: "blocks[i].write()" {
+    style.fill: "#ffee58"
+    style.stroke: "#f57f17"
+  }
+  rbw: "record_block.write()" {
+    style.fill: "#ffee58"
+    style.stroke: "#f57f17"
+  }
+  thw: "text_hashes.write()" {
+    style.fill: "#ffee58"
+    style.stroke: "#f57f17"
+  }
+  cost: "~0.2 ms" {
+    shape: text
+    style.font-size: 12
+    style.italic: true
+  }
+}
+
+encode -> upsert_idx
+
+# ── Phase 3: Insert record + blocking index ──
+
+insert: "3  Insert record + blocking index" {
+  style.fill: "#e8f5e9"
+  style.stroke: "#2e7d32"
+
+  dm: "DashMap (shard lock)" {
+    style.fill: "#a5d6a7"
+    style.stroke: "#2e7d32"
+  }
+  biw: "this_side.blocking_index.write()" {
+    style.fill: "#ffcc80"
+    style.stroke: "#e65100"
+    style.bold: true
+  }
+  wal: "WAL Mutex" {
+    style.fill: "#a5d6a7"
+    style.stroke: "#2e7d32"
+  }
+  cost: "~0.01 ms" {
+    shape: text
+    style.font-size: 12
+    style.italic: true
+  }
+}
+
+upsert_idx -> insert
+
+# ══════════════════════════════════════════════
+# Phase 4: Scoring pipeline  *** BOTTLENECK ***
+# ══════════════════════════════════════════════
+
+scoring: "4  Scoring pipeline  *** BOTTLENECK ***" {
+  style.fill: "#ffcdd2"
+  style.stroke: "#b71c1c"
+  style.stroke-width: 4
+  style.bold: true
+  style.font-size: 16
+
+  bi_read: "opp_side.blocking_index.read()" {
+    style.fill: "#ef9a9a"
+    style.stroke: "#b71c1c"
+    style.bold: true
+    style.font-size: 14
+  }
+
+  held: |md
+    **HELD FOR ALL OF PHASE 4**
+    ~5-15 ms at 100k
+    Starves opposite-side writes
+  |
+  held.style.fill: "#ffcdd2"
+  held.style.stroke: "#b71c1c"
+  held.style.stroke-dash: 5
+  held.style.font-size: 12
+
+  bi_read -> held: {
+    style.stroke-dash: 5
+    style.stroke: "#b71c1c"
+  }
+
+  s1: "bi.query()  ~0.001 ms" {
+    style.fill: "#c8e6c9"
+    style.stroke: "#2e7d32"
+  }
+  s2: "HNSW ANN search  ~1-3 ms\nopp blocks[i].read()" {
+    style.fill: "#ffcc80"
+    style.stroke: "#e65100"
+  }
+  s3: "idx.get() x top_n  ~0.05 ms\nread locks x5" {
+    style.fill: "#fff9c4"
+    style.stroke: "#f57f17"
+  }
+  s4: "score_pair() x top_n  ~2-5 ms\nfuzzy + exact, CPU only" {
+    style.fill: "#c8e6c9"
+    style.stroke: "#2e7d32"
+  }
+
+  s1 -> s2 -> s3 -> s4
+}
+
+insert -> scoring
+
+# ── Phase 5: Classify + respond ──
+
+classify: "5  Classify + crossmap.write()" {
+  style.fill: "#e8f5e9"
+  style.stroke: "#2e7d32"
+}
+
+scoring -> classify
+
+response: "JSON response" {
+  style.fill: "#e3f2fd"
+  style.stroke: "#1565c0"
+}
+
+classify -> response
+
+# ── Annotation ──
+
+explanation: |md
+  ## Why halving encoding has no effect
+
+  Every request — encoding or not —
+  runs the **same scoring pipeline** (phase 4).
+
+  Phase 4 holds `blocking_index.read()` for
+  ~5-15 ms, starving opposite-side writes.
+
+  Encoding (phase 1) runs in parallel across
+  4 Mutex slots and is **not** the constraint.
+
+  **The bottleneck is phase-4 lock hold time.**
+|
+explanation.style.fill: "#fafafa"
+explanation.style.stroke: "#9e9e9e"
+explanation.style.stroke-dash: 5
+explanation.style.font-size: 14
+explanation.near: top-right
