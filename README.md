@@ -28,12 +28,12 @@ against the A-side pool, and write results, review, and unmatched csvs.</p>
 internal reference master overnight, and extracting additional data to enrich your master with.</p></blockquote>
 </li>
 <li><p><strong>Live mode</strong> (<code>meld serve</code>): Start an HTTP server with both datasets
-preloaded. New records can be added to either side at any time, and melder will immediately find
+preloaded. New records can be added to either side at any time, and the melder will immediately find
 and return the best matches from the opposite side. A and B sides are treated symmetrically —
 both have identical capabilities.</p>
 <blockquote><p><strong>Example use case:</strong> You have two master systems with independent
 data setup processes, and you wish to sync them in real time. The machinery to create common
-identifiers is outside of melder's remit, but melder strongly supports being the core of
+identifiers is outside of the melder's remit, but the melder strongly supports being the core of
 the end-to-end processing chain.</p></blockquote>
 <blockquote><p><strong>Example use case:</strong> You have a master and want to offer a fast
 search facility to prevent your users setting up duplicate data.</p></blockquote>
@@ -94,7 +94,7 @@ cargo build --release
 
 All behaviour is driven by a single YAML config file. Here is a working
 example that matches a list of legal entities (A) against a list of
-counterparties (B):
+counterparties (B) e.g. a batch mode config:
 
 ```yaml
 # --- Job metadata (for your reference, not used by the engine) ----------
@@ -250,15 +250,18 @@ command line sets the listening port (default 8080).
 ```yaml
 live:
   upsert_log: wal.ndjson  # write-ahead log for crash recovery
-
-top_n: 5                  # max matches returned per request (top-level field)
 ```
 
-`top_n` is a top-level config field shared by both batch and live modes.
+Beyond the http responses, the write ahead log is the secondary mechanism
+for getting a stream of events from live mode. It is also used
+(automatically) for restoring state after a restart or a crash.
 
 ### Performance config
 
 The `performance` section is optional. All fields have sensible defaults.
+The below fields control how values are encoded into vectors and stored
+in the backend database (usearch for production) that supports fast semantic
+similarity search.
 
 ```yaml
 performance:
@@ -328,10 +331,10 @@ environment variable (defaults to logical CPU count if unset).
 
 ## Matching Algorithms
 
-melder supports four scoring methods, each suited to different field
+the melder supports four scoring methods, each suited to different field
 types. Each field is scored independently, producing a value between
 0.0 and 1.0. These per-field scores are then combined into a weighted
-average to produce a single composite score for the pair.
+average to produce a single composite score for the candidate pair.
 
 ### Exact
 
@@ -423,6 +426,11 @@ The vector index is brute-force O(N*D), which is fine up to ~100K records
 but would need an ANN index (HNSW, IVF) for millions. Each encoder pool
 slot uses ~50-100MB of RAM.
 
+> For domain-specific use cases (e.g. counterparty reconciliation), general-purpose
+> models can be fine-tuned on your own matched pairs to improve accuracy. See
+> `vault/ideas/Fine Tuning Embeddings.md` for a high-level guide covering training
+> data, tooling, and the ONNX export step needed to use the result with the melder.
+
 ### Numeric
 
 **Algorithm class:** Numeric equality.
@@ -439,18 +447,18 @@ identifiers. A future version may add tolerance-based comparison.
 To understand how matching works end-to-end, consider the config example
 above where we are matching entities against counterparties.
 
-When melder processes a B-side record -- say counterparty "JPMorgan
+When the melder processes a B-side record -- say counterparty "JPMorgan
 Chase & Co" from the US -- the pipeline works as follows:
 
 **Step 0: Common ID fast-path.**
-If `common_id_field` is configured on both datasets, melder first
+If `common_id_field` is configured on both datasets, the melder first
 checks whether the incoming record shares a common identifier (ISIN,
 LEI, etc.) with any record on the opposite side. If a match is found,
 the pair is immediately confirmed with score 1.0 and no further scoring
 is performed. This short-circuit happens before any vector arithmetic.
 
 **Step 1: Blocking.**
-Before any scoring happens, melder eliminates records that cannot
+Before any scoring happens, the melder eliminates records that cannot
 possibly match using cheap field equality. In our config, blocking
 requires `country_code == domicile`, so if the counterparty's domicile
 is "US", only A-side entities with `country_code: US` are considered.
@@ -460,12 +468,12 @@ country matching.
 
 **Step 2: Candidate selection via the combined embedding index.**
 Among the records that passed blocking there may still be hundreds.
-Rather than scoring every one of them across all match fields, melder
+Rather than scoring every one of them across all match fields, the melder
 uses the embedding index to find the `top_n` nearest neighbours in one
 fast vector lookup. This is the heart of the performance story.
 
-Melder represents each record as a single *combined embedding vector*.
-For every `method: embedding` field in your config, melder encodes
+The melder represents each record as a single *combined embedding vector*.
+For every `method: embedding` field in your config, the melder encodes
 the field text into a 384-dimensional unit vector and scales it by the
 square root of the field's weight. These scaled vectors are concatenated
 end-to-end into one long vector per record. The mathematical consequence
@@ -524,7 +532,7 @@ a single pass. Run it with:
 meld run --config config.yaml
 ```
 
-When the job completes, melder writes three output csvs (paths configured
+When the job completes, the melder writes three output csvs (paths configured
 in the `output` section):
 
 | File | Contents |
@@ -570,7 +578,7 @@ matches records on the fly as they arrive:
 meld serve --config config.yaml --port 8090
 ```
 
-**Startup.** On launch, melder loads both datasets, builds embedding
+**Startup.** On launch, the melder loads both datasets, builds embedding
 indices and blocking indices, loads the cross-map, and replays the
 write-ahead log (WAL) to recover any records added since the last
 restart. Progress is logged to stderr. Once ready, it prints:
@@ -619,7 +627,7 @@ flushed to the cross-map csv periodically (every `crossmap_flush_secs`,
 default 5 seconds) and on shutdown. The cross-map file is the durable
 record of which pairs have been matched.
 
-**Shutdown.** Send Ctrl-C or SIGTERM. Melder will stop accepting new
+**Shutdown.** Send Ctrl-C or SIGTERM. The melder will stop accepting new
 connections, drain in-flight requests, flush and compact the WAL, save
 the cross-map, and persist index caches. No data is lost.
 
@@ -857,7 +865,7 @@ All endpoints are under `/api/v1/`.
 
 ### Adding a record
 
-When you add a record to one side, melder immediately encodes it,
+When you add a record to one side, the melder immediately encodes it,
 searches the opposite side for matches, and returns the top results.
 If the record already exists (same ID), it is updated and re-matched.
 
@@ -1255,7 +1263,7 @@ compacted file is needed for full recovery).
 
 ## Data Formats
 
-melder reads csv (default), JSONL/NDJSON, and Parquet files. The format is
+the melder reads csv (default), JSONL/NDJSON, and Parquet files. The format is
 inferred from the file extension or set explicitly in the config:
 
 ```yaml
@@ -1429,20 +1437,20 @@ including encoder pool size comparisons and Go baseline comparison.
 
 ## How vector caching works
 
-Melder uses a sentence-transformer model (default: `all-MiniLM-L6-v2`) to
+The melder uses a sentence-transformer model (default: `all-MiniLM-L6-v2`) to
 convert each record's text fields into dense numeric vectors — fingerprints
 that capture meaning rather than characters. Two records about the same
 entity produce vectors that point in nearly the same direction, even if the
 wording differs completely. This is how `method: embedding` scoring works.
 
 Encoding is expensive: running 10,000 records through the ONNX model takes
-around 8 seconds. To avoid repeating this work, melder caches the encoded
+around 8 seconds. To avoid repeating this work, the melder caches the encoded
 vectors to disk after the first run.
 
 ### The combined embedding index
 
 Rather than storing a separate vector index for every embedding field,
-melder builds a single *combined index* per side. For each record, the
+the melder builds a single *combined index* per side. For each record, the
 vectors for all embedding fields are scaled by the square root of their
 weights and concatenated into one long vector. This combined vector has a
 useful property: searching for the nearest combined vectors is exactly

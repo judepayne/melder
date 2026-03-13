@@ -20,6 +20,9 @@ examples/*/output/*
 !examples/**/cache/.gitkeep
 !examples/**/output/.gitkeep
 
+# Tufte document workspace (personal, not part of the project)
+tufte/
+
 # OS files
 .DS_Store
 
