@@ -25,9 +25,9 @@ jobs:
             binary: meld
             archive: tar.gz
 
-          - name: Linux x86_64 musl
+          - name: Linux x86_64
             os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
+            target: x86_64-unknown-linux-gnu
             binary: meld
             archive: tar.gz
 
@@ -48,31 +48,9 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      # ── Linux musl ──────────────────────────────────────────────────────────
-      # usearch is a C++ cmake crate. musl-tools alone can't link C++ stdlib
-      # statically; use Zig as the cross-compiler instead (handles libstdc++).
-      - name: Install Zig + cargo-zigbuild (Linux musl)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: |
-          pip3 install ziglang
-          cargo install cargo-zigbuild --locked
-          # Wrapper scripts so cmake (used by usearch) picks up Zig as CC/CXX
-          printf '#!/bin/sh\nzig cc -target x86_64-linux-musl "$@"\n'  > /tmp/zigcc
-          printf '#!/bin/sh\nzig c++ -target x86_64-linux-musl "$@"\n' > /tmp/zigcxx
-          chmod +x /tmp/zigcc /tmp/zigcxx
-
       # ── Build ───────────────────────────────────────────────────────────────
-      - name: Build (macOS / Windows)
-        if: matrix.target != 'x86_64-unknown-linux-musl'
+      - name: Build
         run: cargo build --release --features usearch --target ${{ matrix.target }}
-
-      - name: Build (Linux musl)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        env:
-          CC: /tmp/zigcc
-          CXX: /tmp/zigcxx
-          AR: zig ar
-        run: cargo zigbuild --release --features usearch --target ${{ matrix.target }}
 
       # ── Package ─────────────────────────────────────────────────────────────
       - name: Package (tar.gz)
