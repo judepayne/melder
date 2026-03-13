@@ -172,6 +172,6 @@ async fn coordinator_loop(
         })
         .await
         .ok(); // If spawn_blocking panics, the oneshot senders are dropped
-               // and callers get a "coordinator dropped result" error.
+        // and callers get a "coordinator dropped result" error.
     }
 }

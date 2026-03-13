@@ -76,14 +76,14 @@ fn apply_defaults(cfg: &mut Config) {
 // ---------------------------------------------------------------------------
 
 fn normalise_blocking(cfg: &mut Config) {
-    if cfg.blocking.fields.is_empty() {
-        if let Some(ref fa) = cfg.blocking.field_a {
-            let fb = cfg.blocking.field_b.clone().unwrap_or_default();
-            cfg.blocking.fields.push(BlockingFieldPair {
-                field_a: fa.clone(),
-                field_b: fb,
-            });
-        }
+    if cfg.blocking.fields.is_empty()
+        && let Some(ref fa) = cfg.blocking.field_a
+    {
+        let fb = cfg.blocking.field_b.clone().unwrap_or_default();
+        cfg.blocking.fields.push(BlockingFieldPair {
+            field_a: fa.clone(),
+            field_b: fb,
+        });
     }
     if cfg.blocking.operator.is_empty() {
         cfg.blocking.operator = "and".into();
@@ -106,12 +106,10 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     require_one_of(&cfg.cross_map.backend, VALID_BACKENDS, "cross_map.backend")?;
 
     // 7. cross_map.path required if local
-    if cfg.cross_map.backend == "local" {
-        if cfg.cross_map.path.as_deref().unwrap_or("").is_empty() {
-            return Err(ConfigError::MissingField {
-                field: "cross_map.path".into(),
-            });
-        }
+    if cfg.cross_map.backend == "local" && cfg.cross_map.path.as_deref().unwrap_or("").is_empty() {
+        return Err(ConfigError::MissingField {
+            field: "cross_map.path".into(),
+        });
     }
 
     // 9-10. cross_map id fields
@@ -154,12 +152,11 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         require_non_empty(&mf.field_b, &format!("{}.field_b", prefix))?;
         require_one_of(&mf.method, VALID_METHODS, &format!("{}.method", prefix))?;
 
-        if mf.method == "fuzzy" {
-            if let Some(ref scorer) = mf.scorer {
-                if !scorer.is_empty() {
-                    require_one_of(scorer, VALID_SCORERS, &format!("{}.scorer", prefix))?;
-                }
-            }
+        if mf.method == "fuzzy"
+            && let Some(ref scorer) = mf.scorer
+            && !scorer.is_empty()
+        {
+            require_one_of(scorer, VALID_SCORERS, &format!("{}.scorer", prefix))?;
         }
 
         if mf.weight <= 0.0 {
@@ -231,21 +228,21 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // 28. performance + live constraints
-    if let Some(pool) = cfg.performance.encoder_pool_size {
-        if pool < 1 {
-            return Err(ConfigError::InvalidValue {
-                field: "performance.encoder_pool_size".into(),
-                message: "must be >= 1".into(),
-            });
-        }
+    if let Some(pool) = cfg.performance.encoder_pool_size
+        && pool < 1
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "performance.encoder_pool_size".into(),
+            message: "must be >= 1".into(),
+        });
     }
-    if let Some(secs) = cfg.live.crossmap_flush_secs {
-        if secs < 1 {
-            return Err(ConfigError::InvalidValue {
-                field: "live.crossmap_flush_secs".into(),
-                message: "must be >= 1".into(),
-            });
-        }
+    if let Some(secs) = cfg.live.crossmap_flush_secs
+        && secs < 1
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "live.crossmap_flush_secs".into(),
+            message: "must be >= 1".into(),
+        });
     }
 
     // 29. vector_backend
@@ -338,15 +335,15 @@ fn derive_required_fields(cfg: &mut Config) {
     seen_b.insert(cfg.datasets.b.id_field.clone());
 
     // common_id fields
-    if let Some(ref cid) = cfg.datasets.a.common_id_field {
-        if !cid.is_empty() {
-            seen_a.insert(cid.clone());
-        }
+    if let Some(ref cid) = cfg.datasets.a.common_id_field
+        && !cid.is_empty()
+    {
+        seen_a.insert(cid.clone());
     }
-    if let Some(ref cid) = cfg.datasets.b.common_id_field {
-        if !cid.is_empty() {
-            seen_b.insert(cid.clone());
-        }
+    if let Some(ref cid) = cfg.datasets.b.common_id_field
+        && !cid.is_empty()
+    {
+        seen_b.insert(cid.clone());
     }
 
     // match fields
@@ -442,12 +439,14 @@ mod tests {
         assert!(cfg.required_fields_a.contains(&"country_code".to_string()));
         assert!(cfg.required_fields_a.contains(&"lei".to_string()));
         // B side should include: counterparty_id, counterparty_name, domicile, lei_code
-        assert!(cfg
-            .required_fields_b
-            .contains(&"counterparty_id".to_string()));
-        assert!(cfg
-            .required_fields_b
-            .contains(&"counterparty_name".to_string()));
+        assert!(
+            cfg.required_fields_b
+                .contains(&"counterparty_id".to_string())
+        );
+        assert!(
+            cfg.required_fields_b
+                .contains(&"counterparty_name".to_string())
+        );
         assert!(cfg.required_fields_b.contains(&"domicile".to_string()));
         assert!(cfg.required_fields_b.contains(&"lei_code".to_string()));
     }

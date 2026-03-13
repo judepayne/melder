@@ -247,10 +247,10 @@ impl CrossMap {
 
     /// Save the CrossMap to a CSV file (atomic write via temp + rename).
     pub fn save(&self, path: &Path, a_field: &str, b_field: &str) -> Result<(), CrossMapError> {
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)?;
         }
 
         let temp_path = path.with_extension("tmp");

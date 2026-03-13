@@ -52,6 +52,7 @@ pub struct Candidate {
 /// - `query_record`: query record, used by usearch for block routing.
 /// - `query_side`: query side, used by usearch for block routing.
 /// - `backend`: "usearch" or "flat".
+#[allow(clippy::too_many_arguments)]
 pub fn select_candidates(
     query_combined_vec: &[f32],
     top_n: usize,
@@ -66,21 +67,22 @@ pub fn select_candidates(
 
     // usearch path: block-aware ANN search — O(log N).
     #[cfg(feature = "usearch")]
-    if backend == "usearch" && has_embeddings {
-        if let Some(idx) = pool_combined_index {
-            let k = if top_n > 0 { top_n } else { usize::MAX };
-            if let Ok(results) = idx.search(query_combined_vec, k, query_record, query_side) {
-                return results
-                    .into_iter()
-                    .filter_map(|r| {
-                        pool_records.get(&r.id).map(|entry| Candidate {
-                            id: r.id.clone(),
-                            record: entry.value().clone(),
-                            combined_dot: r.score as f64,
-                        })
+    if backend == "usearch"
+        && has_embeddings
+        && let Some(idx) = pool_combined_index
+    {
+        let k = if top_n > 0 { top_n } else { usize::MAX };
+        if let Ok(results) = idx.search(query_combined_vec, k, query_record, query_side) {
+            return results
+                .into_iter()
+                .filter_map(|r| {
+                    pool_records.get(&r.id).map(|entry| Candidate {
+                        id: r.id.clone(),
+                        record: entry.value().clone(),
+                        combined_dot: r.score as f64,
                     })
-                    .collect();
-            }
+                })
+                .collect();
         }
     }
 

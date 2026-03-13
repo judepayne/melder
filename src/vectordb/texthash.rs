@@ -122,6 +122,11 @@ impl TextHashStore {
         self.hashes.len()
     }
 
+    /// Returns `true` if no hash entries are stored.
+    pub fn is_empty(&self) -> bool {
+        self.hashes.is_empty()
+    }
+
     // ---------------------------------------------------------------------------
     // Persistence
     // ---------------------------------------------------------------------------
@@ -145,7 +150,7 @@ impl TextHashStore {
 
         // emb_specs as length-prefixed JSON
         let json = serde_json::to_string(&self.emb_specs)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         let json_bytes = json.as_bytes();
         file.write_all(&(json_bytes.len() as u32).to_le_bytes())?;
         file.write_all(json_bytes)?;

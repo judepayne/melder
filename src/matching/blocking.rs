@@ -107,7 +107,7 @@ fn passes_blocking(
 ///
 /// If query is B-side, query uses field_b and pool (A-side) uses field_a.
 /// If query is A-side, query uses field_a and pool (B-side) uses field_b.
-fn field_pair_for_side<'a>(fp: &'a BlockingFieldPair, query_side: Side) -> (&'a str, &'a str) {
+fn field_pair_for_side(fp: &BlockingFieldPair, query_side: Side) -> (&str, &str) {
     match query_side {
         Side::B => (&fp.field_b, &fp.field_a),
         Side::A => (&fp.field_a, &fp.field_b),
@@ -213,12 +213,12 @@ impl BlockingIndex {
                         .get(field)
                         .map(|s| s.trim().to_lowercase())
                         .unwrap_or_default();
-                    if !val.is_empty() {
-                        if let Some(set) = self.or_indices[i].get_mut(&val) {
-                            set.remove(id);
-                            if set.is_empty() {
-                                self.or_indices[i].remove(&val);
-                            }
+                    if !val.is_empty()
+                        && let Some(set) = self.or_indices[i].get_mut(&val)
+                    {
+                        set.remove(id);
+                        if set.is_empty() {
+                            self.or_indices[i].remove(&val);
                         }
                     }
                 }

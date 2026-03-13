@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use serde::Deserialize;
 use tracing::{info, warn};
 
@@ -116,9 +116,7 @@ where
     match tokio::task::spawn_blocking(f).await {
         Ok(Ok(val)) => json_ok(val),
         Ok(Err(e)) => error_response(err_status, &e.to_string()).into_response(),
-        Err(e) => {
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response()
-        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
 }
 
@@ -126,11 +124,7 @@ where
 // Handler helpers — one per operation family, parameterised by Side
 // ---------------------------------------------------------------------------
 
-async fn upsert_handler(
-    side: Side,
-    session: AppState,
-    record: Record,
-) -> axum::response::Response {
+async fn upsert_handler(side: Side, session: AppState, record: Record) -> axum::response::Response {
     let t0 = std::time::Instant::now();
     let s = side_str(side);
     match tokio::task::spawn_blocking(move || session.upsert_record(side, record)).await {
@@ -146,11 +140,7 @@ async fn upsert_handler(
     }
 }
 
-async fn match_handler(
-    side: Side,
-    session: AppState,
-    record: Record,
-) -> axum::response::Response {
+async fn match_handler(side: Side, session: AppState, record: Record) -> axum::response::Response {
     let t0 = std::time::Instant::now();
     let s = side_str(side);
     match tokio::task::spawn_blocking(move || session.try_match(side, record)).await {
@@ -166,17 +156,16 @@ async fn match_handler(
     }
 }
 
-async fn remove_handler(
-    side: Side,
-    session: AppState,
-    id: String,
-) -> axum::response::Response {
+async fn remove_handler(side: Side, session: AppState, id: String) -> axum::response::Response {
     let s = side_str(side);
     run_blocking(
         move || {
             let r = session.remove_record(side, &id);
-            if r.is_ok() { info!(side = s, id = %id, "remove"); }
-            else { warn!(side = s, id = %id, "remove failed"); }
+            if r.is_ok() {
+                info!(side = s, id = %id, "remove");
+            } else {
+                warn!(side = s, id = %id, "remove failed");
+            }
             r
         },
         StatusCode::NOT_FOUND,
@@ -184,12 +173,12 @@ async fn remove_handler(
     .await
 }
 
-async fn query_handler(
-    side: Side,
-    session: AppState,
-    id: String,
-) -> axum::response::Response {
-    run_blocking(move || session.query_record(side, &id), StatusCode::NOT_FOUND).await
+async fn query_handler(side: Side, session: AppState, id: String) -> axum::response::Response {
+    run_blocking(
+        move || session.query_record(side, &id),
+        StatusCode::NOT_FOUND,
+    )
+    .await
 }
 
 async fn add_batch_handler(
@@ -259,30 +248,100 @@ async fn remove_batch_handler(
 // Public A/B record handlers — thin wrappers over the helpers above
 // ---------------------------------------------------------------------------
 
-pub async fn add_a(State(s): State<AppState>, Json(b): Json<AddRequest>) -> axum::response::Response { upsert_handler(Side::A, s, b.record).await }
-pub async fn add_b(State(s): State<AppState>, Json(b): Json<AddRequest>) -> axum::response::Response { upsert_handler(Side::B, s, b.record).await }
+pub async fn add_a(
+    State(s): State<AppState>,
+    Json(b): Json<AddRequest>,
+) -> axum::response::Response {
+    upsert_handler(Side::A, s, b.record).await
+}
+pub async fn add_b(
+    State(s): State<AppState>,
+    Json(b): Json<AddRequest>,
+) -> axum::response::Response {
+    upsert_handler(Side::B, s, b.record).await
+}
 
-pub async fn match_a(State(s): State<AppState>, Json(b): Json<AddRequest>) -> axum::response::Response { match_handler(Side::A, s, b.record).await }
-pub async fn match_b(State(s): State<AppState>, Json(b): Json<AddRequest>) -> axum::response::Response { match_handler(Side::B, s, b.record).await }
+pub async fn match_a(
+    State(s): State<AppState>,
+    Json(b): Json<AddRequest>,
+) -> axum::response::Response {
+    match_handler(Side::A, s, b.record).await
+}
+pub async fn match_b(
+    State(s): State<AppState>,
+    Json(b): Json<AddRequest>,
+) -> axum::response::Response {
+    match_handler(Side::B, s, b.record).await
+}
 
-pub async fn remove_a(State(s): State<AppState>, Json(b): Json<RemoveRequest>) -> axum::response::Response { remove_handler(Side::A, s, b.id).await }
-pub async fn remove_b(State(s): State<AppState>, Json(b): Json<RemoveRequest>) -> axum::response::Response { remove_handler(Side::B, s, b.id).await }
+pub async fn remove_a(
+    State(s): State<AppState>,
+    Json(b): Json<RemoveRequest>,
+) -> axum::response::Response {
+    remove_handler(Side::A, s, b.id).await
+}
+pub async fn remove_b(
+    State(s): State<AppState>,
+    Json(b): Json<RemoveRequest>,
+) -> axum::response::Response {
+    remove_handler(Side::B, s, b.id).await
+}
 
-pub async fn query_a(State(s): State<AppState>, Query(p): Query<QueryParams>) -> axum::response::Response { query_handler(Side::A, s, p.id).await }
-pub async fn query_b(State(s): State<AppState>, Query(p): Query<QueryParams>) -> axum::response::Response { query_handler(Side::B, s, p.id).await }
+pub async fn query_a(
+    State(s): State<AppState>,
+    Query(p): Query<QueryParams>,
+) -> axum::response::Response {
+    query_handler(Side::A, s, p.id).await
+}
+pub async fn query_b(
+    State(s): State<AppState>,
+    Query(p): Query<QueryParams>,
+) -> axum::response::Response {
+    query_handler(Side::B, s, p.id).await
+}
 
 // ---------------------------------------------------------------------------
 // Public batch handlers
 // ---------------------------------------------------------------------------
 
-pub async fn add_batch_a(State(s): State<AppState>, Json(b): Json<AddBatchRequest>) -> axum::response::Response { add_batch_handler(Side::A, s, b.records).await }
-pub async fn add_batch_b(State(s): State<AppState>, Json(b): Json<AddBatchRequest>) -> axum::response::Response { add_batch_handler(Side::B, s, b.records).await }
+pub async fn add_batch_a(
+    State(s): State<AppState>,
+    Json(b): Json<AddBatchRequest>,
+) -> axum::response::Response {
+    add_batch_handler(Side::A, s, b.records).await
+}
+pub async fn add_batch_b(
+    State(s): State<AppState>,
+    Json(b): Json<AddBatchRequest>,
+) -> axum::response::Response {
+    add_batch_handler(Side::B, s, b.records).await
+}
 
-pub async fn match_batch_a(State(s): State<AppState>, Json(b): Json<AddBatchRequest>) -> axum::response::Response { match_batch_handler(Side::A, s, b.records).await }
-pub async fn match_batch_b(State(s): State<AppState>, Json(b): Json<AddBatchRequest>) -> axum::response::Response { match_batch_handler(Side::B, s, b.records).await }
+pub async fn match_batch_a(
+    State(s): State<AppState>,
+    Json(b): Json<AddBatchRequest>,
+) -> axum::response::Response {
+    match_batch_handler(Side::A, s, b.records).await
+}
+pub async fn match_batch_b(
+    State(s): State<AppState>,
+    Json(b): Json<AddBatchRequest>,
+) -> axum::response::Response {
+    match_batch_handler(Side::B, s, b.records).await
+}
 
-pub async fn remove_batch_a(State(s): State<AppState>, Json(b): Json<RemoveBatchRequest>) -> axum::response::Response { remove_batch_handler(Side::A, s, b.ids).await }
-pub async fn remove_batch_b(State(s): State<AppState>, Json(b): Json<RemoveBatchRequest>) -> axum::response::Response { remove_batch_handler(Side::B, s, b.ids).await }
+pub async fn remove_batch_a(
+    State(s): State<AppState>,
+    Json(b): Json<RemoveBatchRequest>,
+) -> axum::response::Response {
+    remove_batch_handler(Side::A, s, b.ids).await
+}
+pub async fn remove_batch_b(
+    State(s): State<AppState>,
+    Json(b): Json<RemoveBatchRequest>,
+) -> axum::response::Response {
+    remove_batch_handler(Side::B, s, b.ids).await
+}
 
 // ---------------------------------------------------------------------------
 // CrossMap handlers
@@ -300,8 +359,11 @@ pub async fn crossmap_confirm(
     run_blocking(
         move || {
             let r = session.confirm_match(&a_id, &b_id);
-            if r.is_ok() { info!(a_id = %a_log, b_id = %b_log, "crossmap confirm"); }
-            else { warn!(a_id = %a_log, b_id = %b_log, "crossmap confirm failed"); }
+            if r.is_ok() {
+                info!(a_id = %a_log, b_id = %b_log, "crossmap confirm");
+            } else {
+                warn!(a_id = %a_log, b_id = %b_log, "crossmap confirm failed");
+            }
             r
         },
         StatusCode::BAD_REQUEST,
@@ -323,7 +385,11 @@ pub async fn crossmap_lookup(
         }
     };
     let id = params.id;
-    run_blocking(move || session.lookup_crossmap(&id, side), StatusCode::BAD_REQUEST).await
+    run_blocking(
+        move || session.lookup_crossmap(&id, side),
+        StatusCode::BAD_REQUEST,
+    )
+    .await
 }
 
 /// POST /api/v1/crossmap/break
@@ -338,8 +404,11 @@ pub async fn crossmap_break(
     run_blocking(
         move || {
             let r = session.break_crossmap(&a_id, &b_id);
-            if r.is_ok() { info!(a_id = %a_log, b_id = %b_log, "crossmap break"); }
-            else { warn!(a_id = %a_log, b_id = %b_log, "crossmap break failed"); }
+            if r.is_ok() {
+                info!(a_id = %a_log, b_id = %b_log, "crossmap break");
+            } else {
+                warn!(a_id = %a_log, b_id = %b_log, "crossmap break failed");
+            }
             r
         },
         StatusCode::BAD_REQUEST,
@@ -390,12 +459,7 @@ async fn unmatched_handler(
     let include_records = params.include_records.unwrap_or(false);
     run_blocking(
         move || {
-            Ok::<_, SessionError>(session.unmatched_records(
-                side,
-                offset,
-                limit,
-                include_records,
-            ))
+            Ok::<_, SessionError>(session.unmatched_records(side, offset, limit, include_records))
         },
         StatusCode::INTERNAL_SERVER_ERROR,
     )
@@ -417,9 +481,7 @@ pub async fn unmatched_b(
 }
 
 /// GET /api/v1/crossmap/stats
-pub async fn crossmap_stats(
-    State(session): State<AppState>,
-) -> axum::response::Response {
+pub async fn crossmap_stats(State(session): State<AppState>) -> axum::response::Response {
     run_blocking(
         move || Ok::<_, SessionError>(session.crossmap_stats()),
         StatusCode::INTERNAL_SERVER_ERROR,

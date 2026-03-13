@@ -148,27 +148,27 @@ pub fn run_batch(
             if crossmap.has_b(b_id) {
                 continue;
             }
-            if let Some(b_entry) = b_records.get(b_id) {
-                if let Some(b_val) = b_entry.value().get(b_cid_field) {
-                    let b_val = b_val.trim();
-                    if !b_val.is_empty() {
-                        if let Some(a_id) = a_common_index.get(b_val) {
-                            crossmap.add(a_id, b_id);
-                            let a_rec = records_a.get(a_id).map(|e| e.value().clone());
-                            let mr = MatchResult {
-                                query_id: b_id.clone(),
-                                matched_id: a_id.clone(),
-                                query_side: Side::B,
-                                score: 1.0,
-                                field_scores: vec![],
-                                classification: Classification::Auto,
-                                matched_record: a_rec,
-                                from_crossmap: false,
-                            };
-                            matched.push(mr);
-                            common_count += 1;
-                        }
-                    }
+            if let Some(b_entry) = b_records.get(b_id)
+                && let Some(b_val) = b_entry.value().get(b_cid_field)
+            {
+                let b_val = b_val.trim();
+                if !b_val.is_empty()
+                    && let Some(a_id) = a_common_index.get(b_val)
+                {
+                    crossmap.add(a_id, b_id);
+                    let a_rec = records_a.get(a_id).map(|e| e.value().clone());
+                    let mr = MatchResult {
+                        query_id: b_id.clone(),
+                        matched_id: a_id.clone(),
+                        query_side: Side::B,
+                        score: 1.0,
+                        field_scores: vec![],
+                        classification: Classification::Auto,
+                        matched_record: a_rec,
+                        from_crossmap: false,
+                    };
+                    matched.push(mr);
+                    common_count += 1;
                 }
             }
         }
@@ -213,7 +213,7 @@ pub fn run_batch(
 
             // Progress reporting (atomic, lock-free)
             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
-            if done % 1000 == 0 || done == work_total {
+            if done.is_multiple_of(1000) || done == work_total {
                 let elapsed = start.elapsed().as_secs_f64();
                 let rate = done as f64 / elapsed;
                 let eta = if done < work_total {
@@ -276,10 +276,10 @@ pub fn run_batch(
                     let a_id = &result.matched_id;
                     if crossmap.claim(a_id, b_id) {
                         // Attach matched record
-                        if result.matched_record.is_none() {
-                            if let Some(a_entry) = records_a.get(a_id) {
-                                result.matched_record = Some(a_entry.value().clone());
-                            }
+                        if result.matched_record.is_none()
+                            && let Some(a_entry) = records_a.get(a_id)
+                        {
+                            result.matched_record = Some(a_entry.value().clone());
                         }
                         outcome = Some(RecordOutcome::Auto(result));
                         break;

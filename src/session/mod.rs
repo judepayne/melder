@@ -4,14 +4,14 @@
 //! All operations are synchronous internally; the HTTP layer wraps them
 //! in `spawn_blocking` as needed.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::error::SessionError;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
-use crate::state::live::{review_queue_key, LiveMatchState, ReviewEntry};
+use crate::state::live::{LiveMatchState, ReviewEntry, review_queue_key};
 use crate::state::upsert_log::WalEvent;
 
 /// Response types for API serialization.
@@ -268,18 +268,18 @@ impl Session {
             let needs_encoding = match this_side.combined_index {
                 Some(ref idx) => {
                     let current_hash =
-                        crate::vectordb::texthash::compute_text_hash(&record, &emb_specs, side);
+                        crate::vectordb::texthash::compute_text_hash(&record, emb_specs, side);
                     idx.text_hash_for(&id) != Some(current_hash)
                 }
                 None => true,
             };
 
             if needs_encoding {
-                let combined_vec = self.encode_combined(&record, &emb_specs, is_a_side)?;
-                if !combined_vec.is_empty() {
-                    if let Some(ref idx) = this_side.combined_index {
-                        let _ = idx.upsert(&id, &combined_vec, &record, side);
-                    }
+                let combined_vec = self.encode_combined(&record, emb_specs, is_a_side)?;
+                if !combined_vec.is_empty()
+                    && let Some(ref idx) = this_side.combined_index
+                {
+                    let _ = idx.upsert(&id, &combined_vec, &record, side);
                 }
             }
         }
@@ -677,12 +677,12 @@ impl Session {
             Side::A => self.state.config.datasets.a.common_id_field.as_deref(),
             Side::B => self.state.config.datasets.b.common_id_field.as_deref(),
         };
-        if let Some(cid_field) = cid_field {
-            if let Some(cid_val) = record.get(cid_field) {
-                let cid_val = cid_val.trim();
-                if !cid_val.is_empty() {
-                    this_side.common_id_index.remove(cid_val);
-                }
+        if let Some(cid_field) = cid_field
+            && let Some(cid_val) = record.get(cid_field)
+        {
+            let cid_val = cid_val.trim();
+            if !cid_val.is_empty() {
+                this_side.common_id_index.remove(cid_val);
             }
         }
 
@@ -724,14 +724,14 @@ impl Session {
             let needs_encoding = match this_side.combined_index {
                 Some(ref idx) => {
                     let current_hash =
-                        crate::vectordb::texthash::compute_text_hash(&record, &emb_specs, side);
+                        crate::vectordb::texthash::compute_text_hash(&record, emb_specs, side);
                     idx.text_hash_for(&id) != Some(current_hash)
                 }
                 None => true,
             };
 
             if needs_encoding {
-                let combined_vec = self.encode_combined(&record, &emb_specs, is_a_side)?;
+                let combined_vec = self.encode_combined(&record, emb_specs, is_a_side)?;
                 if !combined_vec.is_empty() {
                     let this_side = self.state.side(side);
                     if let Some(ref idx) = this_side.combined_index {
@@ -760,8 +760,8 @@ impl Session {
 
         // Check crossmap for existing match
         let existing = match side {
-            Side::A => self.state.crossmap.get_b(&id),
-            Side::B => self.state.crossmap.get_a(&id),
+            Side::A => self.state.crossmap.get_b(id),
+            Side::B => self.state.crossmap.get_a(id),
         };
 
         if let Some(paired_id) = existing {

@@ -24,11 +24,11 @@ use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use manifest::{blocking_hash, check_manifest, make_manifest, write_manifest, StaleReason};
+use manifest::{StaleReason, blocking_hash, check_manifest, make_manifest, write_manifest};
 use texthash::compute_text_hash;
 
-use crate::config::schema::BlockingConfig;
 use crate::config::Config;
+use crate::config::schema::BlockingConfig;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::models::{Record, Side};
@@ -198,7 +198,7 @@ pub fn new_index(
             emb_specs.to_vec(),
             quantization,
         )),
-        "flat" | _ => Box::new(flat::FlatVectorDB::new_with_emb_specs(
+        _ => Box::new(flat::FlatVectorDB::new_with_emb_specs(
             dim,
             emb_specs.to_vec(),
         )),
@@ -217,7 +217,7 @@ pub fn load_index(
             path,
             quantization,
         )?)),
-        "flat" | _ => Ok(Box::new(flat::FlatVectorDB::load(path)?)),
+        _ => Ok(Box::new(flat::FlatVectorDB::load(path)?)),
     }
 }
 
@@ -230,7 +230,7 @@ pub fn is_index_stale(
     match backend {
         #[cfg(feature = "usearch")]
         "usearch" => usearch_backend::UsearchVectorDB::is_stale(path, expected_count),
-        "flat" | _ => flat::FlatVectorDB::is_stale(path, expected_count),
+        _ => flat::FlatVectorDB::is_stale(path, expected_count),
     }
 }
 
@@ -350,13 +350,13 @@ pub fn encode_combined_vector(
 /// 5. **Threshold** — >90% of records changed → cold build is more efficient.
 /// 6. **Incremental** — encode + upsert changed records, remove deleted ones.
 /// 7. **Cold build** — encode everything from scratch.
-/// Build or load a combined embedding index from cache.
 ///
 /// When `skip_deletes` is true (live mode), records present in the cache but
 /// absent from the dataset are retained rather than removed.  This preserves
 /// vectors that were added via the API and persisted at shutdown — the WAL
 /// replay will confirm their presence.  Batch and tune modes pass `false` so
 /// stale records are cleaned up normally.
+#[allow(clippy::too_many_arguments)]
 pub fn build_or_load_combined_index(
     backend: &str,
     cache_dir: Option<&str>,
@@ -639,6 +639,7 @@ pub fn build_or_load_combined_index(
 /// One ONNX call per field per batch; fields are interleaved into combined
 /// vectors before upserting. This is shared between cold build and incremental
 /// encoding.
+#[allow(clippy::too_many_arguments)]
 fn encode_and_upsert(
     index: &dyn VectorDB,
     ids: &[&String],
@@ -710,10 +711,10 @@ fn encode_and_upsert(
 
 /// Create parent directories for `path` if they don't exist.
 fn ensure_parent(path: &Path) {
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).ok();
-        }
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent).ok();
     }
 }
 

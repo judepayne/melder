@@ -13,13 +13,13 @@ use dashmap::{DashMap, DashSet};
 use crate::config::Config;
 use crate::crossmap::CrossMap;
 use crate::data;
-use crate::encoder::coordinator::EncoderCoordinator;
 use crate::encoder::EncoderPool;
+use crate::encoder::coordinator::EncoderCoordinator;
 use crate::error::MelderError;
 use crate::matching::blocking::BlockingIndex;
 use crate::models::{Record, Side};
 use crate::state::upsert_log::{UpsertLog, WalEvent};
-use crate::vectordb::{self, combined_cache_path, spec_hash, VectorDB};
+use crate::vectordb::{self, VectorDB, combined_cache_path, spec_hash};
 
 /// Per-side live state: records, combined index, blocking, unmatched set.
 pub struct LiveSideState {
@@ -213,7 +213,7 @@ impl LiveMatchState {
             &config.cross_map.b_id_field,
         ) {
             Ok(cm) => {
-                if cm.len() > 0 {
+                if !cm.is_empty() {
                     eprintln!("Loaded crossmap: {} pairs", cm.len());
                 }
                 cm
@@ -262,7 +262,6 @@ impl LiveMatchState {
 
         let emb_specs = vectordb::embedding_field_specs(&config);
 
-        let crossmap = crossmap;
         let mut wal_skipped = 0usize;
         let mut wal_encoded = 0usize;
         if !wal_events.is_empty() {
@@ -571,10 +570,10 @@ impl LiveMatchState {
         // A-side (always configured)
         if let Some(ref idx) = self.a.combined_index {
             let path = combined_cache_path(&self.config.embeddings.a_cache_dir, "a", &hash);
-            if let Some(parent) = path.parent() {
-                if !parent.exists() {
-                    std::fs::create_dir_all(parent).ok();
-                }
+            if let Some(parent) = path.parent()
+                && !parent.exists()
+            {
+                std::fs::create_dir_all(parent).ok();
             }
             if let Err(e) = idx.save(&path) {
                 eprintln!("Warning: failed to save A combined index cache: {}", e);
@@ -582,17 +581,17 @@ impl LiveMatchState {
         }
 
         // B-side (only if b_cache_dir configured)
-        if let Some(ref b_dir) = self.config.embeddings.b_cache_dir {
-            if let Some(ref idx) = self.b.combined_index {
-                let path = combined_cache_path(b_dir, "b", &hash);
-                if let Some(parent) = path.parent() {
-                    if !parent.exists() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                }
-                if let Err(e) = idx.save(&path) {
-                    eprintln!("Warning: failed to save B combined index cache: {}", e);
-                }
+        if let Some(ref b_dir) = self.config.embeddings.b_cache_dir
+            && let Some(ref idx) = self.b.combined_index
+        {
+            let path = combined_cache_path(b_dir, "b", &hash);
+            if let Some(parent) = path.parent()
+                && !parent.exists()
+            {
+                std::fs::create_dir_all(parent).ok();
+            }
+            if let Err(e) = idx.save(&path) {
+                eprintln!("Warning: failed to save B combined index cache: {}", e);
             }
         }
 

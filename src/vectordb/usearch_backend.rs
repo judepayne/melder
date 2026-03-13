@@ -18,8 +18,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     RwLock,
+    atomic::{AtomicU64, Ordering},
 };
 
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
@@ -278,22 +278,22 @@ impl VectorDB for UsearchVectorDB {
         // If the record already exists in a *different* block, remove it there first.
         {
             let rb = self.record_block.read().unwrap();
-            if let Some(&old_block_idx) = rb.get(id) {
-                if old_block_idx != block_idx {
-                    drop(rb);
-                    // Remove from old block.
-                    let blocks = self.blocks.read().unwrap();
-                    let mut old_state = blocks[old_block_idx].write().unwrap();
-                    if let Some(old_key) = old_state.id_to_key.remove(id) {
-                        old_state.key_to_id.remove(&old_key);
-                        old_state.id_to_side.remove(id);
-                        // Mark removed in usearch (orphan retention — vector stays).
-                        let _ = old_state.index.remove(old_key);
-                    }
-                    drop(old_state);
-                    let mut rb = self.record_block.write().unwrap();
-                    rb.remove(id);
+            if let Some(&old_block_idx) = rb.get(id)
+                && old_block_idx != block_idx
+            {
+                drop(rb);
+                // Remove from old block.
+                let blocks = self.blocks.read().unwrap();
+                let mut old_state = blocks[old_block_idx].write().unwrap();
+                if let Some(old_key) = old_state.id_to_key.remove(id) {
+                    old_state.key_to_id.remove(&old_key);
+                    old_state.id_to_side.remove(id);
+                    // Mark removed in usearch (orphan retention — vector stays).
+                    let _ = old_state.index.remove(old_key);
                 }
+                drop(old_state);
+                let mut rb = self.record_block.write().unwrap();
+                rb.remove(id);
             }
         }
 

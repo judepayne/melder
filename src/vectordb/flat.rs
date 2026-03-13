@@ -266,13 +266,15 @@ fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
 // Cache serialization
 // ===========================================================================
 
-/// Binary format:
-/// ```text
-/// [4 bytes] N (u32 little-endian) — number of vectors
-/// [4 bytes] D (u32 little-endian) — dimension
-/// [N*D*4 bytes] vectors (f32 little-endian, row-major)
-/// [variable] N newline-separated ID strings (UTF-8)
-/// ```
+// Binary format:
+// ```text
+// [4 bytes] N (u32 little-endian) — number of vectors
+// [4 bytes] D (u32 little-endian) — dimension
+// [N*D*4 bytes] vectors (f32 little-endian, row-major)
+// [variable] N newline-separated ID strings (UTF-8)
+// ```
+
+// ---
 
 /// Save a VecIndex to a binary cache file.
 pub fn save_index(path: &Path, index: &VecIndex) -> Result<(), IndexError> {

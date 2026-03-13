@@ -88,6 +88,7 @@ pub fn score_pair(
 }
 
 /// Build a full `MatchResult` from a score result.
+#[allow(clippy::too_many_arguments)]
 pub fn build_match_result(
     query_id: &str,
     matched_id: &str,

@@ -12,7 +12,8 @@ pub mod validate;
 pub fn init_tracing(log_format: &str) {
     use tracing_subscriber::EnvFilter;
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("melder=info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("melder=info"));
 
     match log_format {
         "json" => {

@@ -63,7 +63,7 @@ fn iso8601_now() -> String {
 
 /// Generate a compact timestamp for filenames (e.g. `20260311T184207Z`).
 fn filename_timestamp() -> String {
-    iso8601_now().replace(':', "").replace('-', "")
+    iso8601_now().replace([':', '-'], "")
 }
 
 /// Generate a WAL filename with a startup timestamp.
@@ -139,10 +139,10 @@ impl UpsertLog {
     /// `bench/live_upserts_20260311T184207Z.ndjson`).
     pub fn open(base_path: &Path) -> io::Result<Self> {
         let path = timestamped_wal_path(base_path);
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            fs::create_dir_all(parent)?;
         }
 
         eprintln!("WAL: writing to {}", path.display());
@@ -176,7 +176,7 @@ impl UpsertLog {
         let mut w = self
             .writer
             .lock()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         w.write_all(line.as_bytes())?;
         w.write_all(b"\n")?;
         Ok(())
@@ -207,7 +207,7 @@ impl UpsertLog {
         let mut w = self
             .writer
             .lock()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         w.write_all(line.as_bytes())?;
         w.write_all(b"\n")?;
         Ok(())
@@ -218,7 +218,7 @@ impl UpsertLog {
         let mut w = self
             .writer
             .lock()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         w.flush()
     }
 
@@ -477,7 +477,7 @@ impl UpsertLog {
         let mut w = self
             .writer
             .lock()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         *w = BufWriter::new(file);
 
         eprintln!(

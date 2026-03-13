@@ -1,8 +1,8 @@
 //! Unified scoring pipeline shared by batch and live modes.
 //!
 //! Three stages:
-//!   1. Blocking filter  — now done by the *caller* before invoking score_pool;
-//!                         `blocked_ids` is passed in as a pre-queried slice.
+//!   1. Blocking filter — now done by the *caller* before invoking score_pool;
+//!      `blocked_ids` is passed in as a pre-queried slice.
 //!   2. Candidate selection — ANN search (usearch) or flat scan to get top_n
 //!   3. Full scoring — score candidates on all match_fields, classify, sort
 //!
@@ -37,16 +37,17 @@ use crate::vectordb::VectorDB;
 /// - `query_id`:             ID of the query record
 /// - `query_record`:         the query record itself
 /// - `query_side`:           which side the query belongs to (A or B)
-/// - `query_combined_vec`:   pre-encoded combined embedding vector for the query
-///                           (empty slice if no embedding fields configured)
-/// - `pool_records`:         opposite-side records (DashMap)
-/// - `pool_combined_index`:  combined embedding index for the pool side
-///                           (`None` if no embedding fields configured)
-/// - `blocked_ids`:          IDs pre-selected by the caller's blocking query;
-///                           pass all pool IDs if blocking is disabled
-/// - `config`:               job config
-/// - `top_n`:                max candidates from ANN search and max results to
-///                           return (0 = no limit, flat path only)
+/// - `query_combined_vec`: pre-encoded combined embedding vector for the query
+///   (empty slice if no embedding fields configured)
+/// - `pool_records`: opposite-side records (DashMap)
+/// - `pool_combined_index`: combined embedding index for the pool side
+///   (`None` if no embedding fields configured)
+/// - `blocked_ids`: IDs pre-selected by the caller's blocking query;
+///   pass all pool IDs if blocking is disabled
+/// - `config`: job config
+/// - `top_n`: max candidates from ANN search and max results to
+///   return (0 = no limit, flat path only)
+#[allow(clippy::too_many_arguments)]
 pub fn score_pool(
     query_id: &str,
     query_record: &Record,
@@ -127,10 +128,10 @@ pub fn score_pool(
     }
 
     // Attach matched record (with output mapping) to the top result only.
-    if let Some(top) = results.first_mut() {
-        if let Some(cand) = cands.iter().find(|c| c.id == top.matched_id) {
-            top.matched_record = Some(apply_output_mapping(&cand.record, config));
-        }
+    if let Some(top) = results.first_mut()
+        && let Some(cand) = cands.iter().find(|c| c.id == top.matched_id)
+    {
+        top.matched_record = Some(apply_output_mapping(&cand.record, config));
     }
 
     results

@@ -77,16 +77,14 @@ pub fn load_parquet(
             .map_err(|e| DataError::Parse(format!("{}: error reading batch: {}", path_str, e)))?;
 
         let num_rows = batch.num_rows();
-        let num_cols = batch.num_columns();
 
         for row_idx in 0..num_rows {
             // Extract all column values as strings
             let mut record = Record::new();
             let mut id_value = String::new();
 
-            for col_idx in 0..num_cols {
+            for (col_idx, col_name) in column_names.iter().enumerate() {
                 let col = batch.column(col_idx);
-                let col_name = &column_names[col_idx];
                 let value = column_value_to_string(col, row_idx);
 
                 if col_idx == id_col_idx {

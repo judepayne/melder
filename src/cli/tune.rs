@@ -39,14 +39,14 @@ pub fn cmd_tune(config_path: &Path, verbose: bool) {
     };
 
     // 3. Run batch engine with a throwaway crossmap (no persistence)
-    let mut crossmap = crate::crossmap::CrossMap::new();
+    let crossmap = crate::crossmap::CrossMap::new();
     eprintln!("Running batch matching for score analysis...");
     let result = match crate::batch::run_batch(
         &state.config,
         &state.records_a,
         state.combined_index_a.as_deref(),
         &state.encoder_pool,
-        &mut crossmap,
+        &crossmap,
         None,
     ) {
         Ok(r) => r,
@@ -90,7 +90,7 @@ pub fn cmd_tune(config_path: &Path, verbose: bool) {
     let max_count = *buckets.iter().max().unwrap_or(&1);
     let bar_width = 40;
 
-    for i in 0..10 {
+    for (i, &count) in buckets.iter().enumerate() {
         let lo = i as f64 * 0.1;
         let hi = lo + 0.1;
         let label = if i == 9 {
@@ -98,8 +98,6 @@ pub fn cmd_tune(config_path: &Path, verbose: bool) {
         } else {
             format!("[{:.1}-{:.1})", lo, hi)
         };
-
-        let count = buckets[i];
         let bar_len = if max_count > 0 {
             (count as f64 / max_count as f64 * bar_width as f64).round() as usize
         } else {
@@ -136,7 +134,7 @@ pub fn cmd_tune(config_path: &Path, verbose: bool) {
         let min = sorted.first().copied().unwrap_or(0.0);
         let max = sorted.last().copied().unwrap_or(0.0);
         let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
-        let median = if sorted.len() % 2 == 0 {
+        let median = if sorted.len().is_multiple_of(2) {
             (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
         } else {
             sorted[sorted.len() / 2]

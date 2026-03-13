@@ -2,6 +2,7 @@
 //! the composite `MatchState` that holds everything needed for matching.
 
 pub mod live;
+#[allow(clippy::module_inception)]
 pub mod state;
 pub mod upsert_log;
 

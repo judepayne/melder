@@ -202,15 +202,15 @@ pub fn cmd_review_import(config_path: &Path, decisions_path: &Path) {
     }
 
     // Save updated crossmap
-    if accepted > 0 {
-        if let Err(e) = crossmap.save(
+    if accepted > 0
+        && let Err(e) = crossmap.save(
             Path::new(crossmap_path),
             &cfg.cross_map.a_id_field,
             &cfg.cross_map.b_id_field,
-        ) {
-            eprintln!("Failed to save crossmap: {}", e);
-            process::exit(1);
-        }
+        )
+    {
+        eprintln!("Failed to save crossmap: {}", e);
+        process::exit(1);
     }
 
     // Update review csv: remove accepted/rejected pairs
@@ -224,14 +224,12 @@ pub fn cmd_review_import(config_path: &Path, decisions_path: &Path) {
             .has_headers(true)
             .from_path(decisions_path)
         {
-            for result in rdr2.records() {
-                if let Ok(row) = result {
-                    let a_id = row.get(a_idx).unwrap_or("").trim().to_string();
-                    let b_id = row.get(b_idx).unwrap_or("").trim().to_string();
-                    let dec = row.get(dec_idx).unwrap_or("").trim().to_lowercase();
-                    if dec == "accept" || dec == "reject" {
-                        decided_pairs.insert((a_id, b_id));
-                    }
+            for row in rdr2.records().flatten() {
+                let a_id = row.get(a_idx).unwrap_or("").trim().to_string();
+                let b_id = row.get(b_idx).unwrap_or("").trim().to_string();
+                let dec = row.get(dec_idx).unwrap_or("").trim().to_lowercase();
+                if dec == "accept" || dec == "reject" {
+                    decided_pairs.insert((a_id, b_id));
                 }
             }
         }
@@ -240,31 +238,28 @@ pub fn cmd_review_import(config_path: &Path, decisions_path: &Path) {
         if let Ok(mut review_rdr) = csv::ReaderBuilder::new()
             .has_headers(true)
             .from_path(review_path)
+            && let Ok(review_headers) = review_rdr.headers().cloned()
         {
-            if let Ok(review_headers) = review_rdr.headers().cloned() {
-                let review_a_idx = review_headers.iter().position(|h| h == "a_id");
-                let review_b_idx = review_headers.iter().position(|h| h == "b_id");
+            let review_a_idx = review_headers.iter().position(|h| h == "a_id");
+            let review_b_idx = review_headers.iter().position(|h| h == "b_id");
 
-                if let (Some(ra), Some(rb)) = (review_a_idx, review_b_idx) {
-                    let mut remaining_rows: Vec<csv::StringRecord> = Vec::new();
-                    for result in review_rdr.records() {
-                        if let Ok(row) = result {
-                            let a_id = row.get(ra).unwrap_or("").trim().to_string();
-                            let b_id = row.get(rb).unwrap_or("").trim().to_string();
-                            if !decided_pairs.contains(&(a_id, b_id)) {
-                                remaining_rows.push(row);
-                            }
-                        }
+            if let (Some(ra), Some(rb)) = (review_a_idx, review_b_idx) {
+                let mut remaining_rows: Vec<csv::StringRecord> = Vec::new();
+                for row in review_rdr.records().flatten() {
+                    let a_id = row.get(ra).unwrap_or("").trim().to_string();
+                    let b_id = row.get(rb).unwrap_or("").trim().to_string();
+                    if !decided_pairs.contains(&(a_id, b_id)) {
+                        remaining_rows.push(row);
                     }
+                }
 
-                    // Rewrite review csv
-                    if let Ok(mut wtr) = csv::Writer::from_path(review_path) {
-                        let _ = wtr.write_record(&review_headers);
-                        for row in &remaining_rows {
-                            let _ = wtr.write_record(row);
-                        }
-                        let _ = wtr.flush();
+                // Rewrite review csv
+                if let Ok(mut wtr) = csv::Writer::from_path(review_path) {
+                    let _ = wtr.write_record(&review_headers);
+                    for row in &remaining_rows {
+                        let _ = wtr.write_record(row);
                     }
+                    let _ = wtr.flush();
                 }
             }
         }

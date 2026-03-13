@@ -60,7 +60,7 @@ fn resolve_model(model_name: &str, quantized: bool) -> Result<EmbeddingModel, En
         _ => {
             return Err(EncoderError::ModelNotFound {
                 model: model_name.to_string(),
-            })
+            });
         }
     };
     Ok(base)

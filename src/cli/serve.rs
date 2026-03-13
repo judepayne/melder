@@ -40,8 +40,7 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
         let flush_state = state.clone();
         let flush_secs = state.config.live.crossmap_flush_secs.unwrap_or(5);
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(flush_secs));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(flush_secs));
             loop {
                 interval.tick().await;
                 if let Err(e) = flush_state.flush_crossmap() {
@@ -53,8 +52,7 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
         // Start background WAL flusher
         let wal_state = state.clone();
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(1));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
             loop {
                 interval.tick().await;
                 if let Err(e) = wal_state.wal.flush() {

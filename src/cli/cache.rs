@@ -78,7 +78,7 @@ pub fn cmd_cache_status(config_path: &Path) {
     if let Some(ref b_dir) = cfg.embeddings.b_cache_dir {
         print_cache_dir_status("B cache", b_dir);
     } else {
-        println!("  {:<16} {}", "B cache", "not configured");
+        println!("  {:<16} not configured", "B cache");
     }
 }
 
@@ -100,12 +100,12 @@ fn print_cache_dir_status(label: &str, dir: &str) {
                     file_count += 1;
                     if path.is_file() {
                         total_size += std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    } else if path.is_dir() {
-                        if let Ok(sub) = std::fs::read_dir(&path) {
-                            for se in sub.flatten() {
-                                total_size +=
-                                    std::fs::metadata(se.path()).map(|m| m.len()).unwrap_or(0);
-                            }
+                    } else if path.is_dir()
+                        && let Ok(sub) = std::fs::read_dir(&path)
+                    {
+                        for se in sub.flatten() {
+                            total_size +=
+                                std::fs::metadata(se.path()).map(|m| m.len()).unwrap_or(0);
                         }
                     }
                     // Count sidecar sizes too.
@@ -115,10 +115,9 @@ fn print_cache_dir_status(label: &str, dir: &str) {
                     total_size += std::fs::metadata(&tp).map(|m| m.len()).unwrap_or(0);
 
                     // Collect manifest info for display.
-                    if is_index {
-                        if let Ok(Some(m)) = crate::vectordb::manifest::read_manifest(&path) {
-                            manifests.push(m);
-                        }
+                    if is_index && let Ok(Some(m)) = crate::vectordb::manifest::read_manifest(&path)
+                    {
+                        manifests.push(m);
                     }
                 }
             }

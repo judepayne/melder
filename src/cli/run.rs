@@ -47,13 +47,13 @@ pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<u
         .path
         .as_deref()
         .unwrap_or("crossmap.csv");
-    let mut crossmap = match crate::crossmap::CrossMap::load(
+    let crossmap = match crate::crossmap::CrossMap::load(
         Path::new(crossmap_path),
         &state.config.cross_map.a_id_field,
         &state.config.cross_map.b_id_field,
     ) {
         Ok(cm) => {
-            if cm.len() > 0 {
+            if !cm.is_empty() {
                 eprintln!("Loaded crossmap: {} existing pairs", cm.len());
             }
             cm
@@ -112,7 +112,7 @@ pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<u
         &state.records_a,
         state.combined_index_a.as_deref(),
         &state.encoder_pool,
-        &mut crossmap,
+        &crossmap,
         limit,
     ) {
         Ok(r) => r,

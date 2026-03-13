@@ -102,8 +102,8 @@ pub fn manifest_path(cache_path: &Path) -> std::path::PathBuf {
 
 /// Write (or overwrite) the manifest sidecar.
 pub fn write_manifest(cache_path: &Path, manifest: &CacheManifest) -> Result<(), std::io::Error> {
-    let json = serde_json::to_string_pretty(manifest)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    let json =
+        serde_json::to_string_pretty(manifest).map_err(|e| std::io::Error::other(e.to_string()))?;
     std::fs::write(manifest_path(cache_path), json)
 }
 
