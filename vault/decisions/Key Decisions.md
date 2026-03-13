@@ -83,4 +83,20 @@ Architectural decisions made during Melder's development, with rationale.
 
 ---
 
+## CI/CD Pipeline and Release Builds
+
+**Decision**: GitHub Actions with three release targets: macOS ARM (`aarch64-apple-darwin`), Linux glibc (`x86_64-unknown-linux-gnu`, runner `ubuntu-latest`), Windows MSVC (`x86_64-pc-windows-msvc`). Triggered by `v*.*.*` tags.
+
+**Why not Linux musl**: `fastembed` (the ONNX model library) pulls in `hf-hub` → HTTP/TLS stack → `openssl-sys` as a transitive dependency. Cross-compiling `openssl-sys` to musl requires a musl-compatible OpenSSL sysroot; pkg-config cannot find one on `ubuntu-latest`. `usearch` (C++ cmake crate) adds a second cross-compilation layer. The combination of usearch C++ + openssl-sys + musl is solvable but requires either a custom Docker build environment or vendoring OpenSSL from source — complexity not justified for the current use case.
+
+**Linux glibc deployment constraint**: The binary built on `ubuntu-latest` (Ubuntu 24.04, glibc 2.39) requires glibc ≥ 2.39 on the runtime system. This means:
+- Alpine Linux containers will **not** work — Alpine uses musl, not glibc. `libc6-compat` is fragile for complex binaries (ONNX, tokio async runtime).
+- Recommended container base: `debian:bookworm-slim` (glibc 2.36) — verify symbol compatibility, or switch the runner to `ubuntu-22.04` (glibc 2.35) for a lower floor.
+- For Docker deployments, `ca-certificates` is the only runtime apt dependency (needed for ONNX model download over HTTPS on first run). Mount `/root/.cache/huggingface` as a volume to persist the model across container restarts.
+- Scratch-based containers are not possible with a glibc binary.
+
+**Files**: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

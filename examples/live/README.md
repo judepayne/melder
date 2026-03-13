@@ -18,6 +18,10 @@ and restarting with state recovery.
 Build melder from the project root:
 
 ```bash
+# macOS / Linux — build with HNSW vector index (strongly recommended; up to 5x faster at scale)
+cargo build --release --features usearch
+
+# Windows — usearch has a known MSVC build bug; build without it (flat backend)
 cargo build --release
 ```
 

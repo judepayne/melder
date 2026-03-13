@@ -53,10 +53,13 @@ Operates in two modes:
 ## Quick Start
 
 ```bash
-# Build
+# macOS / Linux — build with HNSW vector index (strongly recommended; up to 5x faster at scale)
+cargo build --release --features usearch
+
+# Windows — usearch has a known MSVC build bug; build without it (flat backend)
 cargo build --release
 
-# The binary is at ./target/release/meld
+# The binary is at ./target/release/meld  (Windows: .\target\release\meld.exe)
 # Either add it to your PATH or invoke it directly:
 
 # Validate a config file

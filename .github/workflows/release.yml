@@ -25,18 +25,21 @@ jobs:
             target: aarch64-apple-darwin
             binary: meld
             archive: tar.gz
+            cargo_features: "--features usearch"
 
           - name: Linux x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: meld
             archive: tar.gz
+            cargo_features: "--features usearch"
 
           - name: Windows x86_64 MSVC
             os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: meld.exe
             archive: zip
+            cargo_features: ""  # usearch v2.24.0 has MAP_FAILED + AVX-512 FP16 MSVC bugs
 
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +54,7 @@ jobs:
 
       # ── Build ───────────────────────────────────────────────────────────────
       - name: Build
-        run: cargo build --release --features usearch --target ${{ matrix.target }}
+        run: cargo build --release ${{ matrix.cargo_features }} --target ${{ matrix.target }}
 
       # ── Package ─────────────────────────────────────────────────────────────
       - name: Package (tar.gz)
