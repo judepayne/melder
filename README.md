@@ -1,32 +1,47 @@
+
 ```
-                ▄▄
-                ██    █▄
- ▄              ██    ██       ▄
- ███▄███▄ ▄█▀█▄ ██ ▄████ ▄█▀█▄ ████▄
- ██ ██ ██ ██▄█▀ ██ ██ ██ ██▄█▀ ██
-▄██ ██ ▀█▄▀█▄▄▄▄██▄█▀███▄▀█▄▄▄▄█▀
+                                ▄▄                   
+ █▄ █▄                           ██    █▄            
+▄██▄██            ▄              ██    ██       ▄    
+ ██ ████▄ ▄█▀█▄   ███▄███▄ ▄█▀█▄ ██ ▄████ ▄█▀█▄ ████▄
+ ██ ██ ██ ██▄█▀   ██ ██ ██ ██▄█▀ ██ ██ ██ ██▄█▀ ██   
+▄██▄██ ██▄▀█▄▄▄  ▄██ ██ ▀█▄▀█▄▄▄▄██▄█▀███▄▀█▄▄▄▄█▀   
 ```
 
 A high-performance record matching engine written in Rust. Given two
-datasets -- A and B -- melder finds which records in B correspond to
+datasets -- A and B -- the melder finds which records in B correspond to
 records in A, using a configurable pipeline of exact, fuzzy, and
 semantic similarity scoring.
 
 This is the kind of problem that comes up in entity resolution,
-counterparty reconciliation, deduplication, and data migration: you have
+reconciliation, deduplication, and data migration: you have
 two lists of things that *should* refer to the same real-world entities,
 but the names are spelled differently, fields are missing, and there is
 no shared key to join on.
 
 Operates in two modes:
 
-- **Batch mode** (`meld run`): Load both datasets, match every B record
-  against the A-side pool, and write results, review, and unmatched csvs.
-- **Live mode** (`meld serve`): Start an HTTP server with both datasets
-  preloaded. New records can be added to either side at any time, and
-  melder will immediately find and return the best matches from the
-  opposite side. A and B sides are treated symmetrically -- both have
-  identical capabilities.
+<ul>
+<li><p><strong>Batch mode</strong> (<code>meld run</code>): Load both datasets, match every B record
+against the A-side pool, and write results, review, and unmatched csvs.</p>
+<blockquote><p><strong>Example use case:</strong> matching huge vendor datasets to your company's
+internal reference master overnight, and extracting additional data to enrich your master with.</p></blockquote>
+</li>
+<li><p><strong>Live mode</strong> (<code>meld serve</code>): Start an HTTP server with both datasets
+preloaded. New records can be added to either side at any time, and melder will immediately find
+and return the best matches from the opposite side. A and B sides are treated symmetrically —
+both have identical capabilities.</p>
+<blockquote><p><strong>Example use case:</strong> You have two master systems with independent
+data setup processes, and you wish to sync them in real time. The machinery to create common
+identifiers is outside of melder's remit, but melder strongly supports being the core of
+the end-to-end processing chain.</p></blockquote>
+<blockquote><p><strong>Example use case:</strong> You have a master and want to offer a fast
+search facility to prevent your users setting up duplicate data.</p></blockquote>
+</li>
+</ul>
+
+Both modes are optimized for high performance, supporting large dataset sizes,
+fast response times, and high throughput in live mode.
 
 ## Contents
 
