@@ -25,6 +25,23 @@ use std::sync::RwLock;
 
 use crate::error::CrossMapError;
 
+/// Cross-platform rename that replaces the destination if it exists.
+///
+/// On Unix `fs::rename` atomically replaces the target.  On Windows it fails
+/// if the destination already exists, so we remove-then-rename (tiny window
+/// of non-atomicity, acceptable for crossmap flush).
+fn rename_replacing(from: &Path, to: &Path) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        std::fs::rename(from, to)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::fs::remove_file(to);
+        std::fs::rename(from, to)
+    }
+}
+
 // ── private inner state ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -246,7 +263,7 @@ impl CrossMap {
             wtr.flush()?;
         }
 
-        std::fs::rename(&temp_path, path)?;
+        rename_replacing(&temp_path, path)?;
         Ok(())
     }
 }
@@ -473,7 +490,12 @@ mod tests {
 
     #[test]
     fn load_missing_file() {
-        let cm = CrossMap::load(Path::new("/nonexistent/crossmap.csv"), "a", "b").unwrap();
+        let cm = CrossMap::load(
+            &Path::new("nonexistent_dir_for_test").join("crossmap.csv"),
+            "a",
+            "b",
+        )
+        .unwrap();
         assert_eq!(cm.len(), 0);
     }
 

@@ -11,8 +11,7 @@ use std::time::Instant;
 use crate::error::SessionError;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
-use crate::state::live::LiveMatchState;
-
+use crate::state::live::{review_queue_key, LiveMatchState, ReviewEntry};
 use crate::state::upsert_log::WalEvent;
 
 /// Response types for API serialization.
@@ -149,6 +148,64 @@ pub mod response {
     #[derive(Debug, Serialize)]
     pub struct BatchRemoveResponse {
         pub results: Vec<RemoveResponse>,
+    }
+
+    // --- Crossmap, unmatched, stats, and review responses ---
+
+    #[derive(Debug, Serialize)]
+    pub struct CrossmapPairEntry {
+        pub a_id: String,
+        pub b_id: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct CrossmapPairsResponse {
+        pub total: usize,
+        pub offset: usize,
+        pub pairs: Vec<CrossmapPairEntry>,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct UnmatchedEntry {
+        pub id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub record: Option<std::collections::HashMap<String, String>>,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct UnmatchedResponse {
+        pub side: Side,
+        pub total: usize,
+        pub offset: usize,
+        pub records: Vec<UnmatchedEntry>,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct CrossmapStatsResponse {
+        pub records_a: usize,
+        pub records_b: usize,
+        pub crossmap_pairs: usize,
+        pub matched_a: usize,
+        pub matched_b: usize,
+        pub unmatched_a: usize,
+        pub unmatched_b: usize,
+        pub coverage_a: f64,
+        pub coverage_b: f64,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    pub struct ReviewListEntry {
+        pub id: String,
+        pub side: Side,
+        pub candidate_id: String,
+        pub score: f64,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct ReviewListResponse {
+        pub total: usize,
+        pub offset: usize,
+        pub reviews: Vec<ReviewListEntry>,
     }
 }
 
@@ -315,6 +372,12 @@ impl Session {
 
         if this_side.records.contains_key(&id) {
             status = "updated";
+
+            // Clear stale review entries for this record (re-upsert
+            // invalidates any prior review-band match).
+            self.state
+                .review_queue
+                .retain(|_, v| v.id != id && v.candidate_id != id);
 
             // Check crossmap — if matched, atomically read-and-remove the pair.
             // take_a / take_b are used instead of get_b + remove to eliminate
@@ -517,13 +580,24 @@ impl Session {
                 // B was taken — try next candidate
                 continue;
             }
-            // Score is in review band — emit ReviewMatch WAL event
+            // Score is in review band — emit ReviewMatch WAL event and
+            // add to the in-memory review queue.
             let _ = self.state.wal.append(&WalEvent::ReviewMatch {
                 id: id.clone(),
                 side,
                 candidate_id: result.matched_id.clone(),
                 score: result.score,
             });
+            let key = review_queue_key(side, &id, &result.matched_id);
+            self.state.review_queue.insert(
+                key,
+                ReviewEntry {
+                    id: id.clone(),
+                    side,
+                    candidate_id: result.matched_id.clone(),
+                    score: result.score,
+                },
+            );
             classification = "review".to_string();
             break;
         }
@@ -575,6 +649,11 @@ impl Session {
         } else {
             vec![]
         };
+
+        // Drain any review entries involving this record.
+        self.state
+            .review_queue
+            .retain(|_, v| v.id != id && v.candidate_id != id);
 
         // Remove from blocking index
         {
@@ -789,6 +868,11 @@ impl Session {
         self.state.a.unmatched.remove(a_id);
         self.state.b.unmatched.remove(b_id);
 
+        // Drain any review entries involving either ID.
+        self.state.review_queue.retain(|_, v| {
+            !((v.id == a_id || v.candidate_id == a_id) || (v.id == b_id || v.candidate_id == b_id))
+        });
+
         let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
@@ -844,6 +928,11 @@ impl Session {
 
         self.state.a.unmatched.insert(a_id.to_string());
         self.state.b.unmatched.insert(b_id.to_string());
+
+        // Drain any review entries involving either ID.
+        self.state.review_queue.retain(|_, v| {
+            !((v.id == a_id || v.candidate_id == a_id) || (v.id == b_id || v.candidate_id == b_id))
+        });
 
         let _ = self.state.wal.append(&WalEvent::CrossMapBreak {
             a_id: a_id.to_string(),
@@ -1190,6 +1279,145 @@ impl Session {
             uptime_seconds: self.start_time.elapsed().as_secs_f64(),
             upserts: self.upsert_count.load(Ordering::Relaxed),
             matches: self.match_count.load(Ordering::Relaxed),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Crossmap, unmatched, stats, and review queries
+    // -----------------------------------------------------------------------
+
+    /// Return all confirmed crossmap pairs with pagination.
+    pub fn crossmap_pairs(&self, offset: usize, limit: Option<usize>) -> CrossmapPairsResponse {
+        let mut all = self.state.crossmap.pairs();
+        all.sort();
+        let total = all.len();
+        let start = offset.min(total);
+        let end = match limit {
+            Some(l) => (start + l).min(total),
+            None => total,
+        };
+        let pairs = all[start..end]
+            .iter()
+            .map(|(a, b)| CrossmapPairEntry {
+                a_id: a.clone(),
+                b_id: b.clone(),
+            })
+            .collect();
+        CrossmapPairsResponse {
+            total,
+            offset: start,
+            pairs,
+        }
+    }
+
+    /// Return unmatched record IDs for a given side with pagination.
+    pub fn unmatched_records(
+        &self,
+        side: Side,
+        offset: usize,
+        limit: Option<usize>,
+        include_records: bool,
+    ) -> UnmatchedResponse {
+        let this_side = self.state.side(side);
+        let mut ids: Vec<String> = this_side
+            .unmatched
+            .iter()
+            .map(|r| r.key().clone())
+            .collect();
+        ids.sort();
+        let total = ids.len();
+        let start = offset.min(total);
+        let end = match limit {
+            Some(l) => (start + l).min(total),
+            None => total,
+        };
+        let records = ids[start..end]
+            .iter()
+            .map(|id| {
+                let record = if include_records {
+                    this_side.records.get(id).map(|r| r.value().clone())
+                } else {
+                    None
+                };
+                UnmatchedEntry {
+                    id: id.clone(),
+                    record,
+                }
+            })
+            .collect();
+        UnmatchedResponse {
+            side,
+            total,
+            offset: start,
+            records,
+        }
+    }
+
+    /// Return crossmap coverage statistics.
+    pub fn crossmap_stats(&self) -> CrossmapStatsResponse {
+        let records_a = self.state.a.records.len();
+        let records_b = self.state.b.records.len();
+        let crossmap_pairs = self.state.crossmap.len();
+        let unmatched_a = self.state.a.unmatched.len();
+        let unmatched_b = self.state.b.unmatched.len();
+        let matched_a = records_a.saturating_sub(unmatched_a);
+        let matched_b = records_b.saturating_sub(unmatched_b);
+        let coverage_a = if records_a > 0 {
+            matched_a as f64 / records_a as f64
+        } else {
+            0.0
+        };
+        let coverage_b = if records_b > 0 {
+            matched_b as f64 / records_b as f64
+        } else {
+            0.0
+        };
+        CrossmapStatsResponse {
+            records_a,
+            records_b,
+            crossmap_pairs,
+            matched_a,
+            matched_b,
+            unmatched_a,
+            unmatched_b,
+            coverage_a,
+            coverage_b,
+        }
+    }
+
+    /// Return pending review-band matches with pagination.
+    pub fn review_list(&self, offset: usize, limit: Option<usize>) -> ReviewListResponse {
+        let mut reviews: Vec<ReviewListEntry> = self
+            .state
+            .review_queue
+            .iter()
+            .map(|entry| {
+                let v = entry.value();
+                ReviewListEntry {
+                    id: v.id.clone(),
+                    side: v.side,
+                    candidate_id: v.candidate_id.clone(),
+                    score: v.score,
+                }
+            })
+            .collect();
+        // Sort by score descending for deterministic output with highest
+        // confidence reviews first.
+        reviews.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let total = reviews.len();
+        let start = offset.min(total);
+        let end = match limit {
+            Some(l) => (start + l).min(total),
+            None => total,
+        };
+        ReviewListResponse {
+            total,
+            offset: start,
+            reviews: reviews[start..end].to_vec(),
         }
     }
 }

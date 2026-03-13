@@ -68,8 +68,7 @@ pub enum DataError {
     Io(#[from] std::io::Error),
 }
 
-// Stub error types for Phase 2+ modules. Variants added when those modules
-// are implemented.
+// Module-level error types for encoder, index, crossmap, and session.
 
 #[derive(Debug, thiserror::Error)]
 pub enum EncoderError {

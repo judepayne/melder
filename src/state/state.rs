@@ -108,6 +108,7 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         &config,
         true,
         &encoder_pool,
+        false,
     )?;
 
     // 4. Optionally load dataset B
@@ -135,6 +136,7 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
             &config,
             false,
             &encoder_pool,
+            false,
         )?;
 
         (Some(recs), Some(ids), idx)

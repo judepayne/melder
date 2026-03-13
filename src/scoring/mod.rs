@@ -19,7 +19,7 @@ pub struct ScoreResult {
 /// - For `fuzzy` fields: dispatches to the configured scorer
 /// - For `embedding` fields: uses pre-computed cosine similarity if provided,
 ///   otherwise scores 0.0 (embedding scorer injected at a higher level)
-/// - For `numeric` fields: stub returning 0.0 (implemented later)
+/// - For `numeric` fields: 1.0 if both values parse as equal f64, else 0.0
 ///
 /// `precomputed_emb_scores`: optional per-field embedding cosine similarities
 /// keyed by "field_a/field_b". When present, used instead of computing.
@@ -57,10 +57,7 @@ pub fn score_pair(
                     .copied()
                     .unwrap_or(0.0)
             }
-            "numeric" => {
-                // Stub — will be implemented in a later task
-                numeric_score(a_val, b_val)
-            }
+            "numeric" => numeric_score(a_val, b_val),
             _ => 0.0,
         };
 

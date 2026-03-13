@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "doc-agent": {
+      "mode": "subagent",
+      "description": "Project Historian & Architecture Guardian for the Obsidian vault.",
+      "model": "anthropic/claude-haiku-4-5",
+      "temperature": 0.1,
+      "permission": {
+        "edit": "allow",
+        "write": "allow",
+        "task": { "explore": "allow" }
+      },
+      "prompt": "{file:./prompts/doc-agent.txt}"
+    }
+  }
+}

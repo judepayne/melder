@@ -1,0 +1,70 @@
+job:
+  name: restart_test
+  description: End-to-end restart consistency test
+
+datasets:
+  a:
+    path: tests/restart/a.csv
+    id_field: entity_id
+  b:
+    path: tests/restart/b.csv
+    id_field: counterparty_id
+
+cross_map:
+  backend: local
+  path: __TMPDIR__/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: __TMPDIR__/cache
+  b_cache_dir: __TMPDIR__/cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+
+vector_backend: usearch
+top_n: 5
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: embedding
+    weight: 0.55
+
+  - field_a: short_name
+    field_b: counterparty_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+
+  - field_a: country_code
+    field_b: domicile
+    method: exact
+    weight: 0.20
+
+  - field_a: lei
+    field_b: lei_code
+    method: exact
+    weight: 0.05
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.55
+
+output:
+  results_path:   __TMPDIR__/results.csv
+  review_path:    __TMPDIR__/review.csv
+  unmatched_path: __TMPDIR__/unmatched.csv
+
+performance:
+  encoder_pool_size: 1
+
+live:
+  upsert_log: __TMPDIR__/wal.ndjson
+  crossmap_flush_secs: 1

@@ -47,6 +47,24 @@ impl std::fmt::Debug for LiveSideState {
     }
 }
 
+/// Build the composite key for a review queue entry.
+pub fn review_queue_key(side: Side, id: &str, candidate_id: &str) -> String {
+    let s = match side {
+        Side::A => "a",
+        Side::B => "b",
+    };
+    format!("{}:{}:{}", s, id, candidate_id)
+}
+
+/// A pending review-band match awaiting human resolution.
+#[derive(Debug, Clone)]
+pub struct ReviewEntry {
+    pub id: String,
+    pub side: Side,
+    pub candidate_id: String,
+    pub score: f64,
+}
+
 /// Composite live match state with both sides + shared resources.
 pub struct LiveMatchState {
     pub config: Config,
@@ -59,6 +77,10 @@ pub struct LiveMatchState {
     pub coordinator: Option<EncoderCoordinator>,
     pub wal: UpsertLog,
     pub crossmap_dirty: AtomicBool,
+    /// Pending review-band matches. Keyed by `"{side}:{id}:{candidate_id}"`.
+    /// Populated on `ReviewMatch` WAL events, drained on crossmap
+    /// confirm/break and record re-upsert.
+    pub review_queue: DashMap<String, ReviewEntry>,
 }
 
 impl std::fmt::Debug for LiveMatchState {
@@ -67,6 +89,7 @@ impl std::fmt::Debug for LiveMatchState {
             .field("a", &self.a)
             .field("b", &self.b)
             .field("crossmap_len", &self.crossmap.len())
+            .field("review_queue_len", &self.review_queue.len())
             .finish()
     }
 }
@@ -142,6 +165,8 @@ impl LiveMatchState {
         );
 
         // 4. Build/load A-side combined embedding index
+        //    skip_deletes=true: WAL-added records may be in the cache and should
+        //    be retained until replay confirms their presence.
         let combined_index_a = vectordb::build_or_load_combined_index(
             &config.vector_backend,
             Some(&config.embeddings.a_cache_dir),
@@ -150,6 +175,7 @@ impl LiveMatchState {
             &config,
             true,
             &encoder_pool,
+            true,
         )?;
 
         // 5. Build/load B-side combined embedding index
@@ -161,6 +187,7 @@ impl LiveMatchState {
             &config,
             false,
             &encoder_pool,
+            true,
         )?;
 
         // 6 & 7. Build BlockingIndex for A and B
@@ -236,30 +263,45 @@ impl LiveMatchState {
         let emb_specs = vectordb::embedding_field_specs(&config);
 
         let crossmap = crossmap;
+        let mut wal_skipped = 0usize;
+        let mut wal_encoded = 0usize;
         if !wal_events.is_empty() {
             eprintln!("Replaying {} WAL events...", wal_events.len());
             for event in &wal_events {
                 match event {
                     WalEvent::UpsertRecord { side, record } => {
                         let is_a = *side == Side::A;
-                        let (id_field, side_records, side_idx) = match side {
+                        let (id_field, side_records, side_idx, blocking) = match side {
                             Side::A => (
                                 &config.datasets.a.id_field,
                                 &records_a,
                                 combined_index_a.as_deref(),
+                                &mut blocking_a,
                             ),
                             Side::B => (
                                 &config.datasets.b.id_field,
                                 &records_b,
                                 combined_index_b.as_deref(),
+                                &mut blocking_b,
                             ),
                         };
                         if let Some(id) = record.get(id_field) {
+                            // Remove old record from blocking index before overwrite
+                            if let Some(old_rec) = side_records.get(id) {
+                                blocking.remove(id, &old_rec, *side);
+                            }
+
                             side_records.insert(id.clone(), record.clone());
 
-                            // Re-encode combined vector and upsert into index
+                            // Update blocking index with new record
+                            blocking.insert(id, record, *side);
+
+                            // Re-encode combined vector only if not already
+                            // present in the cached index (saved at shutdown).
                             if let Some(idx) = side_idx {
-                                if let Ok(combined_vec) = vectordb::encode_combined_vector(
+                                if idx.contains(id) {
+                                    wal_skipped += 1;
+                                } else if let Ok(combined_vec) = vectordb::encode_combined_vector(
                                     record,
                                     &emb_specs,
                                     &encoder_pool,
@@ -268,6 +310,7 @@ impl LiveMatchState {
                                     if !combined_vec.is_empty() {
                                         let _ = idx.upsert(id, &combined_vec, record, *side);
                                     }
+                                    wal_encoded += 1;
                                 }
                             }
                         }
@@ -282,16 +325,16 @@ impl LiveMatchState {
                         crossmap.remove(a_id, b_id);
                     }
                     WalEvent::RemoveRecord { side, id } => {
-                        let side_records = match side {
-                            Side::A => &records_a,
-                            Side::B => &records_b,
+                        let (side_records, side_idx, blocking) = match side {
+                            Side::A => (&records_a, combined_index_a.as_deref(), &mut blocking_a),
+                            Side::B => (&records_b, combined_index_b.as_deref(), &mut blocking_b),
                         };
+                        // Remove from blocking index (needs record data)
+                        if let Some(entry) = side_records.get(id) {
+                            blocking.remove(id, &entry, *side);
+                        }
                         side_records.remove(id);
                         // Remove from combined index
-                        let side_idx = match side {
-                            Side::A => combined_index_a.as_deref(),
-                            Side::B => combined_index_b.as_deref(),
-                        };
                         if let Some(idx) = side_idx {
                             let _ = idx.remove(id);
                         }
@@ -310,6 +353,12 @@ impl LiveMatchState {
                         }
                     }
                 }
+            }
+            if wal_skipped > 0 || wal_encoded > 0 {
+                eprintln!(
+                    "WAL vector index: {} skipped (cached), {} re-encoded",
+                    wal_skipped, wal_encoded
+                );
             }
 
             // 11. Rebuild unmatched sets after WAL replay
@@ -379,6 +428,49 @@ impl LiveMatchState {
             crossmap.len(),
         );
 
+        // 14. Build review queue from WAL replay
+        let review_queue: DashMap<String, ReviewEntry> = DashMap::new();
+        for event in &wal_events {
+            match event {
+                WalEvent::ReviewMatch {
+                    id,
+                    side,
+                    candidate_id,
+                    score,
+                } => {
+                    let key = review_queue_key(*side, id, candidate_id);
+                    review_queue.insert(
+                        key,
+                        ReviewEntry {
+                            id: id.clone(),
+                            side: *side,
+                            candidate_id: candidate_id.clone(),
+                            score: *score,
+                        },
+                    );
+                }
+                WalEvent::CrossMapConfirm { a_id, b_id, .. } => {
+                    review_queue.retain(|_, v| {
+                        !((v.id == *a_id || v.candidate_id == *a_id)
+                            || (v.id == *b_id || v.candidate_id == *b_id))
+                    });
+                }
+                WalEvent::CrossMapBreak { a_id, b_id } => {
+                    review_queue.retain(|_, v| {
+                        !((v.id == *a_id || v.candidate_id == *a_id)
+                            || (v.id == *b_id || v.candidate_id == *b_id))
+                    });
+                }
+                WalEvent::RemoveRecord { id, .. } => {
+                    review_queue.retain(|_, v| v.id != *id && v.candidate_id != *id);
+                }
+                _ => {}
+            }
+        }
+        if !review_queue.is_empty() {
+            eprintln!("Review queue: {} pending reviews", review_queue.len());
+        }
+
         Ok(Arc::new(Self {
             config,
             a: a_side,
@@ -388,6 +480,7 @@ impl LiveMatchState {
             coordinator: None,
             wal,
             crossmap_dirty: AtomicBool::new(false),
+            review_queue,
         }))
     }
 
@@ -478,12 +571,12 @@ impl LiveMatchState {
         // A-side (always configured)
         if let Some(ref idx) = self.a.combined_index {
             let path = combined_cache_path(&self.config.embeddings.a_cache_dir, "a", &hash);
-            if let Some(parent) = Path::new(&path).parent() {
+            if let Some(parent) = path.parent() {
                 if !parent.exists() {
                     std::fs::create_dir_all(parent).ok();
                 }
             }
-            if let Err(e) = idx.save(Path::new(&path)) {
+            if let Err(e) = idx.save(&path) {
                 eprintln!("Warning: failed to save A combined index cache: {}", e);
             }
         }
@@ -492,17 +585,148 @@ impl LiveMatchState {
         if let Some(ref b_dir) = self.config.embeddings.b_cache_dir {
             if let Some(ref idx) = self.b.combined_index {
                 let path = combined_cache_path(b_dir, "b", &hash);
-                if let Some(parent) = Path::new(&path).parent() {
+                if let Some(parent) = path.parent() {
                     if !parent.exists() {
                         std::fs::create_dir_all(parent).ok();
                     }
                 }
-                if let Err(e) = idx.save(Path::new(&path)) {
+                if let Err(e) = idx.save(&path) {
                     eprintln!("Warning: failed to save B combined index cache: {}", e);
                 }
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn review_queue_key_format() {
+        let key = review_queue_key(Side::A, "ENT-1", "CP-2");
+        assert_eq!(key, "a:ENT-1:CP-2");
+        let key = review_queue_key(Side::B, "X", "Y");
+        assert_eq!(key, "b:X:Y");
+    }
+
+    #[test]
+    fn review_queue_insert_and_drain_on_confirm() {
+        let queue: DashMap<String, ReviewEntry> = DashMap::new();
+
+        // Simulate two reviews
+        let k1 = review_queue_key(Side::A, "A-1", "B-5");
+        queue.insert(
+            k1,
+            ReviewEntry {
+                id: "A-1".into(),
+                side: Side::A,
+                candidate_id: "B-5".into(),
+                score: 0.75,
+            },
+        );
+        let k2 = review_queue_key(Side::B, "B-2", "A-3");
+        queue.insert(
+            k2,
+            ReviewEntry {
+                id: "B-2".into(),
+                side: Side::B,
+                candidate_id: "A-3".into(),
+                score: 0.65,
+            },
+        );
+        assert_eq!(queue.len(), 2);
+
+        // Confirm A-1 <-> B-5: should drain the first review
+        queue.retain(|_, v| {
+            !((v.id == "A-1" || v.candidate_id == "A-1")
+                || (v.id == "B-5" || v.candidate_id == "B-5"))
+        });
+        assert_eq!(queue.len(), 1, "only the unrelated review should remain");
+    }
+
+    #[test]
+    fn review_queue_drain_on_re_upsert() {
+        let queue: DashMap<String, ReviewEntry> = DashMap::new();
+
+        let k = review_queue_key(Side::A, "A-1", "B-5");
+        queue.insert(
+            k,
+            ReviewEntry {
+                id: "A-1".into(),
+                side: Side::A,
+                candidate_id: "B-5".into(),
+                score: 0.75,
+            },
+        );
+
+        // Re-upsert A-1: clears its stale review
+        let id = "A-1";
+        queue.retain(|_, v| v.id != id && v.candidate_id != id);
+        assert_eq!(queue.len(), 0, "review should be drained on re-upsert");
+    }
+
+    #[test]
+    fn review_queue_drain_on_remove_candidate() {
+        let queue: DashMap<String, ReviewEntry> = DashMap::new();
+
+        let k = review_queue_key(Side::A, "A-1", "B-5");
+        queue.insert(
+            k,
+            ReviewEntry {
+                id: "A-1".into(),
+                side: Side::A,
+                candidate_id: "B-5".into(),
+                score: 0.75,
+            },
+        );
+
+        // Remove B-5: should drain the review referencing it
+        let id = "B-5";
+        queue.retain(|_, v| v.id != id && v.candidate_id != id);
+        assert_eq!(
+            queue.len(),
+            0,
+            "review should be drained when candidate is removed"
+        );
+    }
+
+    #[test]
+    fn review_queue_unrelated_entries_preserved() {
+        let queue: DashMap<String, ReviewEntry> = DashMap::new();
+
+        let k1 = review_queue_key(Side::A, "A-1", "B-5");
+        queue.insert(
+            k1,
+            ReviewEntry {
+                id: "A-1".into(),
+                side: Side::A,
+                candidate_id: "B-5".into(),
+                score: 0.75,
+            },
+        );
+        let k2 = review_queue_key(Side::A, "A-2", "B-6");
+        queue.insert(
+            k2,
+            ReviewEntry {
+                id: "A-2".into(),
+                side: Side::A,
+                candidate_id: "B-6".into(),
+                score: 0.70,
+            },
+        );
+
+        // Confirm A-1 <-> B-5: should keep A-2 <-> B-6
+        queue.retain(|_, v| {
+            !((v.id == "A-1" || v.candidate_id == "A-1")
+                || (v.id == "B-5" || v.candidate_id == "B-5"))
+        });
+        assert_eq!(queue.len(), 1);
+        assert!(
+            queue.iter().any(|e| e.value().id == "A-2"),
+            "A-2 review should be preserved"
+        );
     }
 }

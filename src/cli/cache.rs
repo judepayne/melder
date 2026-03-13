@@ -181,10 +181,10 @@ pub fn cmd_cache_clear(config_path: &Path, all: bool) {
         // Build the set of reachable base names (stem + extension, no dir).
         let mut reachable: HashSet<String> = HashSet::new();
         let a_path = crate::vectordb::combined_cache_path(&cfg.embeddings.a_cache_dir, "a", &hash);
-        if let Some(name) = Path::new(&a_path).file_name() {
+        if let Some(name) = a_path.file_name() {
             reachable.insert(name.to_string_lossy().to_string());
             // usearch backend stores a directory with the same stem
-            let stem = Path::new(&a_path)
+            let stem = a_path
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy()
@@ -193,9 +193,9 @@ pub fn cmd_cache_clear(config_path: &Path, all: bool) {
         }
         if let Some(ref b_dir) = cfg.embeddings.b_cache_dir {
             let b_path = crate::vectordb::combined_cache_path(b_dir, "b", &hash);
-            if let Some(name) = Path::new(&b_path).file_name() {
+            if let Some(name) = b_path.file_name() {
                 reachable.insert(name.to_string_lossy().to_string());
-                let stem = Path::new(&b_path)
+                let stem = b_path
                     .file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()

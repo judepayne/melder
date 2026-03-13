@@ -34,10 +34,17 @@ pub fn build_router(session: Arc<Session>) -> Router {
         .route("/api/v1/b/remove-batch", post(handlers::remove_batch_b))
         // Backward-compat alias
         .route("/api/v1/match/b", post(handlers::match_b))
+        // Unmatched endpoints
+        .route("/api/v1/a/unmatched", get(handlers::unmatched_a))
+        .route("/api/v1/b/unmatched", get(handlers::unmatched_b))
         // CrossMap endpoints
         .route("/api/v1/crossmap/confirm", post(handlers::crossmap_confirm))
         .route("/api/v1/crossmap/lookup", get(handlers::crossmap_lookup))
         .route("/api/v1/crossmap/break", post(handlers::crossmap_break))
+        .route("/api/v1/crossmap/pairs", get(handlers::crossmap_pairs))
+        .route("/api/v1/crossmap/stats", get(handlers::crossmap_stats))
+        // Review endpoints
+        .route("/api/v1/review/list", get(handlers::review_list))
         // Health / status
         .route("/api/v1/health", get(handlers::health))
         .route("/api/v1/status", get(handlers::status))

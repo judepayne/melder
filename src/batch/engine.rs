@@ -111,6 +111,7 @@ pub fn run_batch(
         config,
         false,
         encoder_pool,
+        false,
     )?;
     let combined_index_b: Option<&dyn VectorDB> = combined_index_b_owned.as_deref();
 

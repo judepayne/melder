@@ -9,6 +9,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+/// Cross-platform rename that replaces the destination if it exists.
+///
+/// On Unix `fs::rename` atomically replaces the target.  On Windows it fails
+/// if the destination already exists, so we remove-then-rename (tiny window
+/// of non-atomicity, acceptable for WAL compaction).
+fn rename_replacing(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::rename(from, to)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fs::remove_file(to);
+        fs::rename(from, to)
+    }
+}
+
 use serde::{Deserialize, Serialize};
 
 use crate::models::{Record, Side};
@@ -449,8 +466,8 @@ impl UpsertLog {
             writer.flush()?;
         }
 
-        // Atomic rename
-        std::fs::rename(&temp_path, &self.path)?;
+        // Atomic rename (cross-platform: see rename_replacing)
+        rename_replacing(&temp_path, &self.path)?;
 
         // Reopen the file for appending (the old file handle is now stale)
         let file = OpenOptions::new()
@@ -664,7 +681,8 @@ mod tests {
 
     #[test]
     fn replay_missing_file() {
-        let events = UpsertLog::replay(Path::new("/nonexistent/wal.log")).unwrap();
+        let events =
+            UpsertLog::replay(&Path::new("nonexistent_dir_for_test").join("wal.log")).unwrap();
         assert!(events.is_empty());
     }
 

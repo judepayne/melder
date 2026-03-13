@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false   # run all three even if one fails
+      matrix:
+        include:
+          - name: macOS ARM
+            os: macos-14
+            target: aarch64-apple-darwin
+            binary: meld
+            archive: tar.gz
+
+          - name: Linux x86_64 musl
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary: meld
+            archive: tar.gz
+
+          - name: Windows x86_64 MSVC
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: meld.exe
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # ── Linux musl ──────────────────────────────────────────────────────────
+      # usearch is a C++ cmake crate. musl-tools alone can't link C++ stdlib
+      # statically; use Zig as the cross-compiler instead (handles libstdc++).
+      - name: Install Zig + cargo-zigbuild (Linux musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          pip3 install ziglang
+          cargo install cargo-zigbuild --locked
+          # Wrapper scripts so cmake (used by usearch) picks up Zig as CC/CXX
+          printf '#!/bin/sh\nzig cc -target x86_64-linux-musl "$@"\n'  > /tmp/zigcc
+          printf '#!/bin/sh\nzig c++ -target x86_64-linux-musl "$@"\n' > /tmp/zigcxx
+          chmod +x /tmp/zigcc /tmp/zigcxx
+
+      # ── Build ───────────────────────────────────────────────────────────────
+      - name: Build (macOS / Windows)
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        run: cargo build --release --features usearch --target ${{ matrix.target }}
+
+      - name: Build (Linux musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        env:
+          CC: /tmp/zigcc
+          CXX: /tmp/zigcxx
+          AR: zig ar
+        run: cargo zigbuild --release --features usearch --target ${{ matrix.target }}
+
+      # ── Package ─────────────────────────────────────────────────────────────
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          ARCHIVE="meld-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          tar -czf "$ARCHIVE" -C "target/${{ matrix.target }}/release" "${{ matrix.binary }}"
+          echo "ASSET=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $archive = "meld-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          Compress-Archive `
+            -Path "target\${{ matrix.target }}\release\${{ matrix.binary }}" `
+            -DestinationPath $archive
+          "ASSET=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meld-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+
+  # ── Publish ─────────────────────────────────────────────────────────────────
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -842,7 +842,10 @@ mod cache_tests {
 
     #[test]
     fn staleness_missing_file() {
-        assert!(is_cache_stale(Path::new("/nonexistent/file.index"), 100));
+        assert!(is_cache_stale(
+            &Path::new("nonexistent_dir_for_test").join("file.index"),
+            100,
+        ));
     }
 
     #[test]

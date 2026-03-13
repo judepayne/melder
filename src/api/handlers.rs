@@ -10,6 +10,7 @@ use axum::Json;
 use serde::Deserialize;
 use tracing::{info, warn};
 
+use crate::error::SessionError;
 use crate::models::{Record, Side};
 use crate::session::Session;
 
@@ -61,6 +62,19 @@ pub struct RemoveBatchRequest {
 #[derive(Deserialize)]
 pub struct QueryParams {
     pub id: String,
+}
+
+#[derive(Deserialize)]
+pub struct PaginationParams {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct UnmatchedParams {
+    pub include_records: Option<bool>,
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -345,4 +359,84 @@ pub async fn health(State(session): State<AppState>) -> axum::response::Response
 /// GET /api/v1/status
 pub async fn status(State(session): State<AppState>) -> axum::response::Response {
     json_ok(session.status())
+}
+
+// ---------------------------------------------------------------------------
+// Crossmap, unmatched, stats, and review handlers
+// ---------------------------------------------------------------------------
+
+/// GET /api/v1/crossmap/pairs?offset=0&limit=100
+pub async fn crossmap_pairs(
+    State(session): State<AppState>,
+    Query(params): Query<PaginationParams>,
+) -> axum::response::Response {
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit;
+    run_blocking(
+        move || Ok::<_, SessionError>(session.crossmap_pairs(offset, limit)),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await
+}
+
+/// GET /api/v1/a/unmatched or /api/v1/b/unmatched
+async fn unmatched_handler(
+    side: Side,
+    session: AppState,
+    params: UnmatchedParams,
+) -> axum::response::Response {
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit;
+    let include_records = params.include_records.unwrap_or(false);
+    run_blocking(
+        move || {
+            Ok::<_, SessionError>(session.unmatched_records(
+                side,
+                offset,
+                limit,
+                include_records,
+            ))
+        },
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await
+}
+
+pub async fn unmatched_a(
+    State(s): State<AppState>,
+    Query(p): Query<UnmatchedParams>,
+) -> axum::response::Response {
+    unmatched_handler(Side::A, s, p).await
+}
+
+pub async fn unmatched_b(
+    State(s): State<AppState>,
+    Query(p): Query<UnmatchedParams>,
+) -> axum::response::Response {
+    unmatched_handler(Side::B, s, p).await
+}
+
+/// GET /api/v1/crossmap/stats
+pub async fn crossmap_stats(
+    State(session): State<AppState>,
+) -> axum::response::Response {
+    run_blocking(
+        move || Ok::<_, SessionError>(session.crossmap_stats()),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await
+}
+
+/// GET /api/v1/review/list?offset=0&limit=100
+pub async fn review_list(
+    State(session): State<AppState>,
+    Query(params): Query<PaginationParams>,
+) -> axum::response::Response {
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit;
+    run_blocking(
+        move || Ok::<_, SessionError>(session.review_list(offset, limit)),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await
 }

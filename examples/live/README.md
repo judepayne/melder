@@ -644,6 +644,11 @@ failing the whole request. Maximum 1000 records per batch.
 | POST | `/api/v1/crossmap/confirm` | Confirm a match (add to crossmap) |
 | POST | `/api/v1/crossmap/break` | Break a confirmed match |
 | GET | `/api/v1/crossmap/lookup?id=X&side=a` | Check if a record is matched |
+| GET | `/api/v1/crossmap/pairs` | Export all confirmed crossmap pairs (paginated) |
+| GET | `/api/v1/crossmap/stats` | Coverage statistics per side |
+| GET | `/api/v1/a/unmatched` | List unmatched A record IDs (paginated) |
+| GET | `/api/v1/b/unmatched` | List unmatched B record IDs (paginated) |
+| GET | `/api/v1/review/list` | List pending review-band matches (paginated) |
 
 All POST endpoints that add or match records expect the body format
 `{"record": {...}}` (single) or `{"records": [...]}` (batch). Remove

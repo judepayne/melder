@@ -829,6 +829,11 @@ All endpoints are under `/api/v1/`.
 | POST | `/crossmap/confirm` | Confirm a match (add to cross-map) |
 | POST | `/crossmap/break` | Break a confirmed match (remove from cross-map) |
 | GET | `/crossmap/lookup?id=X&side=a` | Look up whether a record has a confirmed match |
+| GET | `/crossmap/pairs` | Export all confirmed crossmap pairs (paginated) |
+| GET | `/crossmap/stats` | Coverage statistics (matched/unmatched counts per side) |
+| GET | `/a/unmatched` | List A-side record IDs with no crossmap pair (paginated) |
+| GET | `/b/unmatched` | List B-side record IDs with no crossmap pair (paginated) |
+| GET | `/review/list` | List pending review-band matches (paginated) |
 | GET | `/health` | Health check |
 | GET | `/status` | Detailed server status (record counts, uptime) |
 
@@ -1026,12 +1031,209 @@ If the record is unmatched, `crossmap.status` is `"unmatched"` and the
 `paired_id` and `paired_record` fields are omitted. Returns 404 if the
 record ID is not found.
 
+### Crossmap pairs
+
+Export all confirmed crossmap pairs. Supports pagination via `offset`
+and `limit` query parameters. When omitted, all pairs are returned.
+
+```
+GET /api/v1/crossmap/pairs?offset=0&limit=100
+```
+
+Response:
+
+```json
+{
+  "total": 4523,
+  "offset": 0,
+  "pairs": [
+    { "a_id": "ENT-001", "b_id": "CP-042" },
+    { "a_id": "ENT-007", "b_id": "CP-119" }
+  ]
+}
+```
+
+`total` is the full count of crossmap pairs (regardless of pagination).
+Pairs are sorted by `a_id` for deterministic ordering.
+
+### Crossmap stats
+
+Coverage statistics for the current crossmap. Shows matched and
+unmatched counts per side, total crossmap pairs, and coverage
+percentages.
+
+```
+GET /api/v1/crossmap/stats
+```
+
+Response:
+
+```json
+{
+  "records_a": 10000,
+  "records_b": 9500,
+  "crossmap_pairs": 4523,
+  "matched_a": 4523,
+  "matched_b": 4523,
+  "unmatched_a": 5477,
+  "unmatched_b": 4977,
+  "coverage_a": 0.4523,
+  "coverage_b": 0.4761
+}
+```
+
+### Unmatched records
+
+List record IDs that have no crossmap pair on a given side. Supports
+pagination and an optional `include_records=true` parameter to return
+full record data alongside each ID.
+
+```
+GET /api/v1/a/unmatched?offset=0&limit=50
+GET /api/v1/b/unmatched?include_records=true&limit=10
+```
+
+Response (without `include_records`):
+
+```json
+{
+  "side": "a",
+  "total": 5477,
+  "offset": 0,
+  "records": [
+    { "id": "ENT-003" },
+    { "id": "ENT-009" }
+  ]
+}
+```
+
+Response (with `include_records=true`):
+
+```json
+{
+  "side": "b",
+  "total": 4977,
+  "offset": 0,
+  "records": [
+    {
+      "id": "CP-055",
+      "record": {
+        "counterparty_id": "CP-055",
+        "counterparty_name": "Initech LLC",
+        "domicile": "US"
+      }
+    }
+  ]
+}
+```
+
+`total` is the full count of unmatched records on that side. Records
+are sorted by ID for deterministic ordering.
+
+### Review list
+
+List pending review-band matches -- pairs that scored between
+`review_floor` and `auto_match` during upsert but were not
+auto-confirmed. This is a read-only endpoint; resolution happens via
+the existing `/crossmap/confirm` and `/crossmap/break` endpoints.
+
+```
+GET /api/v1/review/list?offset=0&limit=20
+```
+
+Response:
+
+```json
+{
+  "total": 37,
+  "offset": 0,
+  "reviews": [
+    {
+      "id": "ENT-012",
+      "side": "a",
+      "candidate_id": "CP-088",
+      "score": 0.74
+    },
+    {
+      "id": "CP-201",
+      "side": "b",
+      "candidate_id": "ENT-055",
+      "score": 0.69
+    }
+  ]
+}
+```
+
+`total` is the count of all pending reviews. Reviews are sorted by
+score descending (highest-confidence pairs first). Confirming or
+breaking a pair via the crossmap endpoints removes it from the review
+queue. Re-upserting a record also clears its stale review entries.
+
 ### Symmetry
 
 Live mode treats A and B sides identically. Adding, removing, querying,
 and matching records works the same way on both sides. Both sides
 support the same operations, the same scoring logic, and the same match
 semantics.
+
+### Persistence and restart
+
+Live mode is designed to survive restarts. The full state —
+records added via the API, confirmed crossmap pairs, and embedding
+vectors — is persisted to disk and restored on the next startup.
+
+**What is persisted:**
+
+| Component | Mechanism | When |
+|-----------|-----------|------|
+| Record mutations (add, remove) | Write-ahead log (WAL) | Every API call |
+| Crossmap confirmations/breaks | WAL + crossmap CSV | API call + periodic flush |
+| Embedding vectors | Index cache (`.usearchdb` or `.index`) | Shutdown |
+| Review queue | WAL (`ReviewMatch` events) | Every API call |
+
+**Shutdown sequence.** When the server receives SIGTERM or Ctrl-C:
+
+1. WAL is flushed and compacted (deduplicates per record ID, last-write-wins)
+2. Crossmap CSV is flushed to disk
+3. Combined embedding index caches are saved (includes all API-added vectors)
+
+**Startup sequence.** When `meld serve` starts:
+
+1. Dataset files (CSV/JSONL/Parquet) are loaded as the base record set
+2. Embedding index caches are loaded from disk (if present and valid)
+3. Blocking indices are built from the dataset records
+4. Crossmap CSV is loaded
+5. All WAL files are replayed in chronological order:
+   - Records are inserted/removed from the in-memory store
+   - Blocking indices are updated for each replayed record
+   - Crossmap confirms/breaks are applied
+   - Embedding vectors already in the cached index are skipped
+     (no ONNX re-encoding)
+6. Unmatched sets and common-ID indices are rebuilt from the final state
+7. Review queue is populated from unresolved `ReviewMatch` WAL events
+8. A new timestamped WAL file is opened for the current run
+
+**What this means in practice:**
+
+- Records added via `/a/add` or `/b/add` survive restarts. They are
+  replayed from the WAL and their embedding vectors are loaded from the
+  index cache — no re-encoding required.
+- Confirmed crossmap pairs survive via both the crossmap CSV and WAL
+  replay (belt and suspenders).
+- Blocking works correctly for WAL-replayed records. A new record added
+  after restart will find WAL-replayed records on the opposite side as
+  match candidates.
+- The review queue is rebuilt from WAL events, minus any pairs that were
+  subsequently confirmed or broken.
+- The base dataset files are never modified. The WAL captures the delta.
+
+**WAL files.** Each server run creates a new timestamped WAL file (e.g.
+`wal_20260312T143207Z.ndjson`). On startup, all WAL files matching the
+configured base path are discovered and replayed in lexicographic
+(chronological) order. Each run's WAL is compacted at shutdown to
+deduplicate per-record events. Old WAL files accumulate across runs;
+delete them manually if disk space is a concern (only the most recent
+compacted file is needed for full recovery).
 
 ## Data Formats
 
@@ -1093,15 +1295,15 @@ Apple Silicon M3 Macbook Air
 
 Apple Silicon M3 Macbook Air
 `all-MiniLM-L6-v2`, `encoder_pool_size: 4`
-`c=1` menas one http client submitting 3,000 requests sequentially
+`c=1` means one http client submitting 3,000 requests sequentially
 `c=10` means ten http clients each submitting 3,000 add requests simultaneously. 30k total.
 
 | Metric | flat (c=1) | usearch (c=1) | flat (c=10) | usearch (c=10) |
 |--------|----------:|-------------:|------------:|---------------:|
-| Throughput | 355 req/s | 397 req/s | 624 req/s | 917 req/s |
-| p50 latency | 2.6ms | 2.3ms | 13.2ms | 5.8ms |
-| p95 latency | 3.8ms | 3.4ms | 34.2ms | 29.2ms |
-| p99 latency | 6.5ms | 5.4ms | 52.7ms | 44.3ms |
+| Throughput | 349 req/s | 673 req/s | 616 req/s | **1,624 req/s** |
+| p50 latency | 2.2ms | 0.7ms | 13.3ms | 3.9ms |
+| p95 latency | 4.4ms | 2.9ms | 39.9ms | 21.8ms |
+| p99 latency | 9.7ms | 3.3ms | 64.4ms | 35.4ms |
 
 ### Live mode: 3,000 add requests, 40% requiring encoding
 
@@ -1111,12 +1313,14 @@ Apple Silicon M3 Macbook Air
 
 | Metric | flat (c=1) | usearch (c=1) | flat (c=10) | usearch (c=10) |
 |--------|----------:|-------------:|------------:|---------------:|
-| Throughput | 366 req/s | 382 req/s | 686 req/s | 913 req/s |
-| p50 latency | 2.5ms | 2.4ms | 12.6ms | 5.7ms |
-| p95 latency | 3.4ms | 3.5ms | 30.8ms | 30.3ms |
-| p99 latency | 5.8ms | 5.9ms | 41.2ms | 42.7ms |
+| Throughput | 407 req/s | 928 req/s | 890 req/s | **2,474 req/s** |
+| p50 latency | 1.9ms | 0.6ms | 10.1ms | 2.4ms |
+| p95 latency | 4.4ms | 3.0ms | 21.0ms | 11.1ms |
+| p99 latency | 8.0ms | 3.5ms | 36.5ms | 24.3ms |
 
-Halving the encoding load has little impact; we're already encoding as fast as we can (at 40%).
+Halving the encoding load gives a meaningful speedup on usearch: the
+text-hash skip optimisation means non-encoding requests complete in
+under 1ms, pulling the average down significantly.
 
 
 ### Live mode: 3,000 add requests, 80% requiring encoding
@@ -1127,15 +1331,15 @@ Halving the encoding load has little impact; we're already encoding as fast as w
 
 | Metric | flat (c=1) | usearch (c=1) | flat (c=10) | usearch (c=10) |
 |--------|----------:|-------------:|------------:|---------------:|
-| Throughput | 133 req/s | 309 req/s | 211 req/s | **968 req/s** |
-| p50 latency | 6.6ms | 3.0ms | 42.5ms | 6.8ms |
-| p95 latency | 11.1ms | 4.1ms | 85.2ms | 28.7ms |
-| p99 latency | 22.6ms | 5.5ms | 125.1ms | 42.3ms |
+| Throughput | 160 req/s | 546 req/s | 251 req/s | **1,448 req/s** |
+| p50 latency | 5.6ms | 0.9ms | 30.5ms | 5.1ms |
+| p95 latency | 8.1ms | 3.5ms | 94.4ms | 19.8ms |
+| p99 latency | 11.3ms | 3.9ms | 199.7ms | 31.2ms |
 
-Similar to batch, at larger index sizes, usearch degrades more gracefully than flat.
-The usearch c=10 result includes the text-hash skip optimisation: the 20% of
-requests that only modify non-embedding fields skip ONNX encoding and complete
-in ~3ms (vs ~7ms for encoding requests).
+At 100k records, usearch is 3.4x faster than flat at c=1 and 5.8x
+faster at c=10. The usearch c=10 result includes text-hash skip: the
+20% of requests that only modify non-embedding fields skip ONNX
+encoding and complete in ~1ms (vs ~7ms for encoding requests).
 
 ### Benchmarking
 
@@ -1403,13 +1607,49 @@ cargo build --release --features usearch,parquet-format
 ```
 
 The ONNX model is downloaded automatically on first run to
-`~/.cache/fastembed/`.
+`~/.cache/fastembed/` on Linux/macOS or `%LOCALAPPDATA%\fastembed\` on
+Windows.
 
 ### Environment
 
 - `RUST_LOG=melder=debug` -- enable debug logging
 - `RUST_LOG=melder=info` -- default log level
 - `--log-format json` -- JSON structured log output (for production)
+
+### Windows
+
+Melder builds and runs on Windows. A few things to be aware of:
+
+**Prerequisites.** Install Rust via [rustup](https://rustup.rs/) which
+defaults to the MSVC toolchain on Windows. You will need the
+**Visual Studio Build Tools** (or full Visual Studio) with the
+"Desktop development with C++" workload installed -- this provides the
+MSVC compiler and linker that Rust requires. If you enable the `usearch`
+feature, you will also need **CMake** on your PATH (the usearch crate
+compiles C++ via a build script).
+
+**Building.** The same `cargo build` commands work. The binary is
+produced at `target\release\meld.exe`:
+
+```powershell
+cargo build --release --features usearch,parquet-format
+.\target\release\meld.exe validate --config config.yaml
+```
+
+**Environment variables.** `RUST_LOG` and `RAYON_NUM_THREADS` work the
+same way. Set them in PowerShell with `$env:RUST_LOG = "melder=debug"`
+or in cmd with `set RUST_LOG=melder=debug`.
+
+**Graceful shutdown.** On Unix, melder listens for both Ctrl-C and
+SIGTERM. On Windows, SIGTERM is not available -- use Ctrl-C to trigger
+a clean shutdown (in-flight requests drain, WAL is compacted, cross-map
+and index caches are saved).
+
+**Unix sockets.** The `--socket` CLI option for `meld serve` is not
+available on Windows. Use `--port` instead (the default).
+
+**Config paths.** Both forward slashes and backslashes work in YAML
+config file paths (`datasets.a.path`, `output.results_path`, etc.).
 
 ## License
 

@@ -21,7 +21,7 @@ mod tests;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use manifest::{blocking_hash, check_manifest, make_manifest, write_manifest, StaleReason};
@@ -280,11 +280,8 @@ pub fn embedding_field_specs(config: &Config) -> Vec<(String, String, f64)> {
 /// Pattern: `{cache_dir}/{side_prefix}.combined_embedding_{hash}.index`
 ///
 /// Example: `bench/cache/a.combined_embedding_a3f7c2b1.index`
-pub fn combined_cache_path(cache_dir: &str, side_prefix: &str, hash: &str) -> String {
-    format!(
-        "{}/{}.combined_embedding_{}.index",
-        cache_dir, side_prefix, hash
-    )
+pub fn combined_cache_path(cache_dir: &str, side_prefix: &str, hash: &str) -> PathBuf {
+    Path::new(cache_dir).join(format!("{}.combined_embedding_{}.index", side_prefix, hash))
 }
 
 /// Encode a record's embedding fields into a single combined vector.
@@ -353,6 +350,13 @@ pub fn encode_combined_vector(
 /// 5. **Threshold** — >90% of records changed → cold build is more efficient.
 /// 6. **Incremental** — encode + upsert changed records, remove deleted ones.
 /// 7. **Cold build** — encode everything from scratch.
+/// Build or load a combined embedding index from cache.
+///
+/// When `skip_deletes` is true (live mode), records present in the cache but
+/// absent from the dataset are retained rather than removed.  This preserves
+/// vectors that were added via the API and persisted at shutdown — the WAL
+/// replay will confirm their presence.  Batch and tune modes pass `false` so
+/// stale records are cleaned up normally.
 pub fn build_or_load_combined_index(
     backend: &str,
     cache_dir: Option<&str>,
@@ -361,6 +365,7 @@ pub fn build_or_load_combined_index(
     config: &Config,
     is_a_side: bool,
     encoder_pool: &EncoderPool,
+    skip_deletes: bool,
 ) -> Result<Option<Box<dyn VectorDB>>, MelderError> {
     let emb_specs = embedding_field_specs(config);
     if emb_specs.is_empty() {
@@ -390,15 +395,13 @@ pub fn build_or_load_combined_index(
     // -----------------------------------------------------------------------
     // Cache path
     // -----------------------------------------------------------------------
-    let cache_path_opt: Option<String> =
+    let cache_path_opt: Option<PathBuf> =
         cache_dir.map(|dir| combined_cache_path(dir, side_prefix, &current_spec_hash));
 
     // -----------------------------------------------------------------------
     // Steps 1–6: attempt to use / incrementally update existing cache
     // -----------------------------------------------------------------------
-    if let Some(ref cache_path_str) = cache_path_opt {
-        let cache_path = Path::new(cache_path_str);
-
+    if let Some(ref cache_path) = cache_path_opt {
         // Step 1: Manifest check
         let stale_reason = check_manifest(
             cache_path,
@@ -448,11 +451,17 @@ pub fn build_or_load_combined_index(
                         })
                         .collect();
 
-                    let to_delete: Vec<String> = stored
-                        .keys()
-                        .filter(|id| !current_ids_set.contains(id.as_str()))
-                        .cloned()
-                        .collect();
+                    let to_delete: Vec<String> = if skip_deletes {
+                        // Live mode: extra records in cache are WAL additions
+                        // that will be confirmed during replay — do not remove.
+                        vec![]
+                    } else {
+                        stored
+                            .keys()
+                            .filter(|id| !current_ids_set.contains(id.as_str()))
+                            .cloned()
+                            .collect()
+                    };
 
                     // Step 4: Full cache hit
                     if to_encode.is_empty() && to_delete.is_empty() {
@@ -543,7 +552,11 @@ pub fn build_or_load_combined_index(
                             if let Err(e) = write_manifest(cache_path, &m) {
                                 eprintln!("Warning: could not write {} manifest: {}", side, e);
                             }
-                            eprintln!("Saved {} combined index cache to {}", side, cache_path_str);
+                            eprintln!(
+                                "Saved {} combined index cache to {}",
+                                side,
+                                cache_path.display()
+                            );
                         }
 
                         return Ok(Some(index));
@@ -589,8 +602,7 @@ pub fn build_or_load_combined_index(
     );
 
     // Save to cache.
-    if let Some(ref cache_path_str) = cache_path_opt {
-        let cache_path = Path::new(cache_path_str);
+    if let Some(ref cache_path) = cache_path_opt {
         ensure_parent(cache_path);
         if let Err(e) = index.save(cache_path) {
             eprintln!(
@@ -607,7 +619,11 @@ pub fn build_or_load_combined_index(
             if let Err(e) = write_manifest(cache_path, &m) {
                 eprintln!("Warning: could not write {} manifest: {}", side, e);
             }
-            eprintln!("Saved {} combined index cache to {}", side, cache_path_str);
+            eprintln!(
+                "Saved {} combined index cache to {}",
+                side,
+                cache_path.display()
+            );
         }
     }
 
@@ -769,7 +785,8 @@ mod combined_tests {
     #[test]
     fn combined_cache_path_format() {
         let path = combined_cache_path("bench/cache", "a", "a3f7c2b1");
-        assert_eq!(path, "bench/cache/a.combined_embedding_a3f7c2b1.index");
+        let expected = Path::new("bench/cache").join("a.combined_embedding_a3f7c2b1.index");
+        assert_eq!(path, expected);
     }
 
     #[test]

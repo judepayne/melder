@@ -367,12 +367,14 @@ mod tests {
 
     #[test]
     fn sidecar_path_pattern() {
-        let p = std::path::Path::new("bench/cache/a.combined_embedding_abc.index");
-        let sp = texthash_sidecar_path(p);
-        assert_eq!(
-            sp.to_string_lossy(),
-            "bench/cache/a.combined_embedding_abc.index.texthash"
-        );
+        let p = std::path::Path::new("bench")
+            .join("cache")
+            .join("a.combined_embedding_abc.index");
+        let sp = texthash_sidecar_path(&p);
+        let expected = std::path::Path::new("bench")
+            .join("cache")
+            .join("a.combined_embedding_abc.index.texthash");
+        assert_eq!(sp, expected);
     }
 
     #[test]
