@@ -183,9 +183,11 @@ short-circuit runs before anything else.
 **Phase 1 — Blocking.** Before any scoring happens, the melder
 eliminates records that cannot possibly match using cheap field equality.
 For example, if you configure blocking on country code, a record from
-the US will never be compared against one from Japan. This is a simple
-equality check, and it can eliminate 95%+ of the candidate pool. It
-costs almost nothing and saves enormous work downstream.
+the US will never be compared against one from Japan. You can block on
+multiple fields at once, combined with AND (all must match) or OR (any
+one is enough). This is a simple equality check per field, and it can
+eliminate 95%+ of the candidate pool. It costs almost nothing and saves
+enormous work downstream.
 
 **Phase 2 — Candidate selection.** Among the records that survived
 blocking, there may still be hundreds or thousands. Rather than scoring
@@ -377,20 +379,27 @@ vector_backend: usearch
 top_n: 20
 
 # --- Blocking (pre-filter) -----------------------------------------------
-# Before candidate selection, blocking eliminates obviously wrong candidates by
-# requiring cheap field equality. Here we require the country to match --
+# Before candidate selection, blocking eliminates obviously wrong candidates
+# by requiring cheap field equality. Here we require the country to match --
 # a record in France will never be compared against one in Japan.
 # This dramatically reduces the number of pairs that need expensive
 # scoring, at the cost of never finding cross-country matches.
+#
+# You can block on multiple fields. The operator controls how they combine:
+#   "and" (default) — all fields must match (intersection)
+#   "or"            — any field matching is enough (union)
 #
 # To disable blocking entirely, set enabled: false (or omit the blocking
 # section). Every record will then be considered as a candidate, which
 # is thorough but slower on large datasets.
 blocking:
   enabled: true
+  operator: "and"                 # "and" | "or" (default: "and")
   fields:
     - field_a: country_code
       field_b: domicile
+    # - field_a: currency         # add more fields as needed
+    #   field_b: ccy
 
 # --- Match fields (the scoring equation) -----------------------------------
 # The match_fields list defines your scoring equation: how each field pair
