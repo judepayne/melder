@@ -209,7 +209,7 @@ mod tests {
             field_a: None,
             field_b: None,
         };
-        let (_store, crossmap) = crate::store::sqlite::open_sqlite(&path, &bc).unwrap();
+        let (_store, crossmap, _conn) = crate::store::sqlite::open_sqlite(&path, &bc).unwrap();
         std::mem::forget(dir);
         crossmap
     }
@@ -354,14 +354,14 @@ mod tests {
 
         // Insert data
         {
-            let (_store, cm) = crate::store::sqlite::open_sqlite(&path, &bc).unwrap();
+            let (_store, cm, _conn) = crate::store::sqlite::open_sqlite(&path, &bc).unwrap();
             cm.add("A-1", "B-1");
             cm.add("A-2", "B-2");
         }
 
         // Reopen and verify
         {
-            let (_store, cm) = crate::store::sqlite::open_sqlite(&path, &bc).unwrap();
+            let (_store, cm, _conn) = crate::store::sqlite::open_sqlite(&path, &bc).unwrap();
             assert_eq!(cm.len(), 2);
             assert_eq!(cm.get_b("A-1"), Some("B-1".to_string()));
             assert_eq!(cm.get_b("A-2"), Some("B-2".to_string()));

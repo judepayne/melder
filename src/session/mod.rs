@@ -377,9 +377,7 @@ impl Session {
 
             // Clear stale review entries for this record (re-upsert
             // invalidates any prior review-band match).
-            self.state
-                .review_queue
-                .retain(|_, v| v.id != id && v.candidate_id != id);
+            self.state.drain_reviews_for_id(&id);
 
             // Check crossmap — if matched, atomically read-and-remove the pair.
             let paired_id = match side {
@@ -611,7 +609,7 @@ impl Session {
                 score: result.score,
             });
             let key = review_queue_key(side, &id, &result.matched_id);
-            self.state.review_queue.insert(
+            self.state.insert_review(
                 key,
                 ReviewEntry {
                     id: id.clone(),
@@ -669,9 +667,7 @@ impl Session {
         };
 
         // Drain any review entries involving this record.
-        self.state
-            .review_queue
-            .retain(|_, v| v.id != id && v.candidate_id != id);
+        self.state.drain_reviews_for_id(id);
 
         // Remove from blocking index
         store.blocking_remove(side, id, &record);
@@ -926,9 +922,7 @@ impl Session {
         store.mark_matched(Side::B, b_id);
 
         // Drain any review entries involving either ID.
-        self.state.review_queue.retain(|_, v| {
-            !((v.id == a_id || v.candidate_id == a_id) || (v.id == b_id || v.candidate_id == b_id))
-        });
+        self.state.drain_reviews_for_pair(a_id, b_id);
 
         let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
             a_id: a_id.to_string(),
@@ -991,9 +985,7 @@ impl Session {
         store.mark_unmatched(Side::B, b_id);
 
         // Drain any review entries involving either ID.
-        self.state.review_queue.retain(|_, v| {
-            !((v.id == a_id || v.candidate_id == a_id) || (v.id == b_id || v.candidate_id == b_id))
-        });
+        self.state.drain_reviews_for_pair(a_id, b_id);
 
         let _ = self.state.wal.append(&WalEvent::CrossMapBreak {
             a_id: a_id.to_string(),

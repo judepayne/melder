@@ -87,12 +87,20 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 /// Open a SQLite database and create all tables.
 ///
-/// Returns the shared connection wrapped in `Arc<Mutex<..>>` for use by
-/// both `SqliteStore` and `SqliteCrossMap`.
+/// Returns the `SqliteStore`, `SqliteCrossMap`, and the shared
+/// `Arc<Mutex<Connection>>` for use by other components (e.g., review
+/// queue write-through).
 pub fn open_sqlite(
     path: &Path,
     blocking_config: &BlockingConfig,
-) -> Result<(SqliteStore, crate::crossmap::sqlite::SqliteCrossMap), rusqlite::Error> {
+) -> Result<
+    (
+        SqliteStore,
+        crate::crossmap::sqlite::SqliteCrossMap,
+        Arc<Mutex<Connection>>,
+    ),
+    rusqlite::Error,
+> {
     let conn = Connection::open(path)?;
 
     // Performance pragmas
@@ -116,7 +124,7 @@ pub fn open_sqlite(
 
     let crossmap = crate::crossmap::sqlite::SqliteCrossMap::from_conn(Arc::clone(&conn));
 
-    Ok((store, crossmap))
+    Ok((store, crossmap, conn))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -470,7 +478,7 @@ mod tests {
             field_a: None,
             field_b: None,
         };
-        let (store, _crossmap) = open_sqlite(&path, &bc).unwrap();
+        let (store, _crossmap, _conn) = open_sqlite(&path, &bc).unwrap();
         // Keep tempdir alive by leaking it — tests are short-lived
         std::mem::forget(dir);
         store
@@ -572,7 +580,7 @@ mod tests {
             field_a: None,
             field_b: None,
         };
-        let (store, _) = open_sqlite(&path, &bc).unwrap();
+        let (store, _, _conn) = open_sqlite(&path, &bc).unwrap();
 
         // Insert A-side records with blocking keys
         let r1 = make_record(&[("name", "Alice"), ("country_a", "US")]);
@@ -644,7 +652,7 @@ mod tests {
 
         // Insert data
         {
-            let (store, _) = open_sqlite(&path, &bc).unwrap();
+            let (store, _, _conn) = open_sqlite(&path, &bc).unwrap();
             let rec = make_record(&[("name", "Alice")]);
             store.insert(Side::A, "1", &rec);
             store.mark_unmatched(Side::A, "1");
@@ -653,7 +661,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let (store, _) = open_sqlite(&path, &bc).unwrap();
+            let (store, _, _conn) = open_sqlite(&path, &bc).unwrap();
             assert_eq!(store.len(Side::A), 1);
             assert_eq!(
                 store.get(Side::A, "1").unwrap().get("name").unwrap(),

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use dashmap::DashMap;
+use rusqlite::params;
 
 use crate::config::Config;
 use crate::crossmap::{CrossMapOps, MemoryCrossMap};
@@ -85,6 +86,9 @@ pub struct LiveMatchState {
     pub crossmap_dirty: AtomicBool,
     /// True when using SQLite-backed storage (crossmap flush is a no-op).
     pub uses_sqlite: bool,
+    /// Shared SQLite connection for review queue write-through.
+    /// `None` when using in-memory storage.
+    sqlite_conn: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
     /// Pending review-band matches. Keyed by `"{side}:{id}:{candidate_id}"`.
     /// Populated on `ReviewMatch` WAL events, drained on crossmap
     /// confirm/break and record re-upsert.
@@ -466,6 +470,7 @@ impl LiveMatchState {
             wal,
             crossmap_dirty: AtomicBool::new(false),
             uses_sqlite: false,
+            sqlite_conn: None,
             review_queue,
         }))
     }
@@ -482,8 +487,9 @@ impl LiveMatchState {
         let mode = if db_exists { "warm" } else { "cold" };
         eprintln!("SQLite {} start: {}", mode, db_path);
 
-        let (sqlite_store, sqlite_crossmap) = open_sqlite(Path::new(db_path), &config.blocking)
-            .map_err(|e| MelderError::Other(anyhow::anyhow!("SQLite open failed: {}", e)))?;
+        let (sqlite_store, sqlite_crossmap, sqlite_conn) =
+            open_sqlite(Path::new(db_path), &config.blocking)
+                .map_err(|e| MelderError::Other(anyhow::anyhow!("SQLite open failed: {}", e)))?;
 
         let store: Arc<dyn RecordStore> = Arc::new(sqlite_store);
         let crossmap: Box<dyn CrossMapOps> = Box::new(sqlite_crossmap);
@@ -651,8 +657,39 @@ impl LiveMatchState {
             crossmap.len(),
         );
 
-        // Review queue: empty for now (Step 5 will load from SQLite)
+        // Load review queue from SQLite
         let review_queue: DashMap<String, ReviewEntry> = DashMap::new();
+        {
+            let conn = sqlite_conn.lock().unwrap_or_else(|e| e.into_inner());
+            let mut stmt = conn
+                .prepare("SELECT key, id, side, candidate_id, score FROM reviews")
+                .expect("prepare reviews query");
+            let rows = stmt
+                .query_map([], |row| {
+                    let key: String = row.get(0)?;
+                    let id: String = row.get(1)?;
+                    let side_str: String = row.get(2)?;
+                    let candidate_id: String = row.get(3)?;
+                    let score: f64 = row.get(4)?;
+                    let side = if side_str == "a" { Side::A } else { Side::B };
+                    Ok((
+                        key,
+                        ReviewEntry {
+                            id,
+                            side,
+                            candidate_id,
+                            score,
+                        },
+                    ))
+                })
+                .expect("query reviews");
+            for (key, entry) in rows.flatten() {
+                review_queue.insert(key, entry);
+            }
+        }
+        if !review_queue.is_empty() {
+            eprintln!("Review queue: {} pending reviews", review_queue.len());
+        }
 
         Ok(Arc::new(Self {
             config,
@@ -665,6 +702,7 @@ impl LiveMatchState {
             wal,
             crossmap_dirty: AtomicBool::new(false),
             uses_sqlite: true,
+            sqlite_conn: Some(sqlite_conn),
             review_queue,
         }))
     }
@@ -807,6 +845,53 @@ impl LiveMatchState {
                 .map_err(MelderError::CrossMap)?;
         }
         Ok(())
+    }
+
+    // -------------------------------------------------------------------
+    // Review queue write-through methods
+    // -------------------------------------------------------------------
+
+    /// Insert a review entry into the queue (and SQLite if using SQLite).
+    pub fn insert_review(&self, key: String, entry: ReviewEntry) {
+        if let Some(ref conn) = self.sqlite_conn {
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            let side_str = match entry.side {
+                Side::A => "a",
+                Side::B => "b",
+            };
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO reviews (key, id, side, candidate_id, score) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![key, entry.id, side_str, entry.candidate_id, entry.score],
+            );
+        }
+        self.review_queue.insert(key, entry);
+    }
+
+    /// Drain review entries for a given record ID (on re-upsert or remove).
+    pub fn drain_reviews_for_id(&self, id: &str) {
+        self.review_queue
+            .retain(|_, v| v.id != id && v.candidate_id != id);
+        if let Some(ref conn) = self.sqlite_conn {
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = conn.execute(
+                "DELETE FROM reviews WHERE id = ?1 OR candidate_id = ?1",
+                params![id],
+            );
+        }
+    }
+
+    /// Drain review entries involving either ID (on crossmap confirm/break).
+    pub fn drain_reviews_for_pair(&self, a_id: &str, b_id: &str) {
+        self.review_queue.retain(|_, v| {
+            !((v.id == a_id || v.candidate_id == a_id) || (v.id == b_id || v.candidate_id == b_id))
+        });
+        if let Some(ref conn) = self.sqlite_conn {
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = conn.execute(
+                "DELETE FROM reviews WHERE id = ?1 OR candidate_id = ?1 OR id = ?2 OR candidate_id = ?2",
+                params![a_id, b_id],
+            );
+        }
     }
 
     /// Save combined embedding index caches to disk.
