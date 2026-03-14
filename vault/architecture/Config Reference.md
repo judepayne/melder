@@ -26,6 +26,7 @@ live:             # LiveConfig           — live mode only
 performance:      # PerformanceConfig    — default: all None/false
 vector_backend:   # String              — default: "flat"
 top_n:            # usize               — default: 5
+memory_budget:    # String              — optional; "auto" or size string like "24GB"
 ```
 
 ---
@@ -248,7 +249,7 @@ performance:
 | `quantized` | bool | `false` | INT8-quantized ONNX model — ~2× faster encoding, negligible quality loss. Recommended for datasets > 50k records. |
 | `encoder_batch_wait_ms` | Option\<u64\> | `0` | Coordinator batch window (ms). `0` = disabled. Only beneficial at concurrency ≥ 20 with large models. See [[Key Decisions#Encoding Coordinator Batched ONNX Inference]]. |
 | `vector_quantization` | Option\<String\> | `"f32"` | Cache precision: `"f32"` (default), `"f16"` (43% smaller, no measurable quality loss), `"bf16"`. usearch backend only. |
-| `vector_index_mode` | Option\<String\> | `"load"` | usearch backend only: `"load"` (load entire HNSW graph into RAM at startup) or `"mmap"` (memory-map the index file, let OS page in only traversed nodes). `"mmap"` reduces peak RAM for extreme-scale batch jobs but is read-only (not suitable for `meld serve`). See [[Key Decisions#Memory-Mapped Vector Index]]. |
+| `vector_index_mode` | Option\<String\> | `"load"` | usearch backend only: `"load"` (load entire HNSW graph into RAM at startup) or `"mmap"` (memory-map the index file, let OS page in only traversed nodes). `"mmap"` reduces peak RAM for extreme-scale batch jobs but is read-only (not suitable for `meld serve`). See [[Key Decisions#Memory-Mapped Vector Index]]. Explicit setting takes precedence over `memory_budget` auto-configuration. |
 
 See [[Performance Baselines]] for the throughput impact of each setting.
 
@@ -276,6 +277,27 @@ top_n: 20
 ```
 
 Controls both the ANN search width (number of candidates retrieved from the vector index) and the maximum number of matches returned per API response. Default is 5 in most configs; 20 is typical for batch mode where higher recall matters. Higher values improve recall at the cost of more full-scoring work per record.
+
+---
+
+## `memory_budget`
+
+```yaml
+memory_budget: "auto"    # or "24GB", "512MB", etc.
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `memory_budget` | Option\<String\> | None | Optional. `"auto"` detects available RAM at startup via sysinfo and uses 80% as budget. Alternatively, specify a size string like `"24GB"`, `"512MB"`. When set, auto-configures record store (SQLite vs memory) and vector index (mmap vs load) based on estimated footprint. 70/30 split: vector index gets 70% priority (higher per-miss cost), record store gets 30%. Explicit settings (`live.db_path`, `performance.vector_index_mode`) take precedence (warn-only at validation). See [[Key Decisions#Memory Budget Auto-Configuration]]. |
+
+**Estimation logic**:
+- Record count: reads from CacheManifest if available (fast), else line-counts the data file (CSV/JSONL), else 0 (Parquet — can't count without loading)
+- Footprint: 500B/record + dim×2B/vector for f16 (or dim×4B for f32)
+- When count is 0, no auto-configuration is applied (safe fallback to current behavior)
+
+**Batch mode**: If SQLite is selected, a temporary database is created and auto-cleaned on `MatchState` drop.
+
+**Live mode**: If SQLite is selected, `live.db_path` is auto-generated as `"{a_cache_dir}/{job_name}.db"` (unless already set).
 
 ---
 

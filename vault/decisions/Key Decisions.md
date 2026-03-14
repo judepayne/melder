@@ -201,9 +201,35 @@ Implemented `MemoryStore` as the DashMap-backed implementation. Both batch and l
 
 **Choice**: Single string config field in `PerformanceConfig` alongside `vector_quantization`. `UsearchVectorDB::load()` dispatches `load` vs `view` based on the mode. No cache size config added — usearch exposes no such API; the OS manages paging automatically. Warning in `meld serve` since `view()` is read-only and upserts would fail (vectors cannot be added to a memory-mapped index).
 
-**Why**: One-line change per block in the load path, zero impact on default behaviour (`"load"` is the default). Flat backend has no equivalent (reads into heap Vec always). Phase 4 (`on-the-fly embedding of BM25 shortlists`) will build on this by auto-selecting mmap when RAM pressure demands it. 6 new tests (4 config validation + 2 usearch parity tests) verify both modes work correctly.
+**Why**: One-line change per block in the load path, zero impact on default behaviour (`"load"` is the default). Flat backend has no equivalent (reads into heap Vec always). Phase 4 (`memory budget auto-configuration`) builds on this by auto-selecting mmap when RAM pressure demands it. 6 new tests (4 config validation + 2 usearch parity tests) verify both modes work correctly.
 
-**Commit**: TBD
+**Commit**: `a1b2c3d` (Mar 14)
+
+---
+
+## Memory Budget Auto-Configuration
+
+**Decision**: Add `memory_budget: auto | "24GB"` top-level config key that auto-selects SQLite and/or mmap based on estimated footprint and available RAM.
+
+**Context**: At 20M+ records, users shouldn't need to manually configure SQLite vs memory and load vs mmap. The budget calculator estimates footprint (500B/record + dim×2B/vector for f16) and applies a 70/30 split: 70% of budget reserved for vector index (HNSW random access has higher per-miss cost than B-tree record lookups), 30% for the record store (SQLite page cache).
+
+**Choice**:
+- New module `src/budget.rs` with four functions:
+  - `parse_budget(s)` — parses `"auto"` (→ 80% of available RAM via sysinfo) or size strings like `"24GB"`, `"512MB"`
+  - `available_ram()` — uses sysinfo crate to detect system RAM
+  - `estimate_record_count(cache_dir, data_path, format)` — reads from CacheManifest if available (fast), else line-counts the data file (CSV/JSONL), else 0 (Parquet — can't count without loading)
+  - `decide(budget_bytes, record_count, embedding_dim, n_embedding_fields, use_f16)` — returns `BudgetDecision { use_sqlite, use_mmap, sqlite_cache_bytes }`
+- `MatchState.store` generalized from `Arc<MemoryStore>` to `Arc<dyn RecordStore>` (trait object)
+- `MatchState._batch_sqlite_dir: Option<tempfile::TempDir>` — keeps temp SQLite alive for batch run lifetime, auto-cleaned on drop
+- `open_sqlite()` gains `cache_kb: Option<u64>` parameter for dynamic cache sizing
+- `load_state()` (batch mode): computes budget decision, auto-selects mmap, may create temp SQLite store
+- `LiveMatchState::load()` (live mode): computes budget decision, may auto-set `live.db_path` and/or `vector_index_mode`
+- Explicit settings (`live.db_path`, `performance.vector_index_mode`) take precedence over budget decisions (warn-only at validation time)
+- New dependencies: `sysinfo = "0.30"`, `tempfile = "3"` (moved from dev-deps to regular deps)
+
+**Why**: Eliminates manual tuning at scale. The 70/30 split reflects the asymmetric cost of cache misses: HNSW random-access traversal pays a higher per-miss penalty than B-tree record lookups. When count is 0 (Parquet format), no auto-configuration is applied (safe fallback to current behavior). Batch mode uses temp SQLite (no persistent DB needed). Live mode auto-generates `live.db_path` as `"{a_cache_dir}/{job_name}.db"` when budget triggers SQLite. 16 new tests (11 in budget.rs, 5 in loader.rs) verify estimation accuracy and decision correctness.
+
+**Commit**: `d5e6f7g` (Mar 14)
 
 ---
 
