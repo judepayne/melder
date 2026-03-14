@@ -3,7 +3,7 @@ type: architecture
 module: general
 status: active
 tags: [performance, benchmarks, baselines]
-related_code: [bench/, testdata/configs/]
+related_code: [benchmarks/]
 ---
 
 # Performance Baselines

@@ -1553,50 +1553,50 @@ requests complete in under 1ms.
 
 ### Benchmarking
 
-Four Python scripts in `bench/` exercise the live server. All four can
+Four Python scripts in `benchmarks/scripts/` exercise the live server. All four can
 start and stop the server automatically, or connect to one you already
 have running (`--no-serve`). They require only the Python standard
 library — no pip dependencies.
 
-**`bench/smoke_test.py`** — Quick sanity check. Starts the server,
+**`benchmarks/scripts/smoke_test.py`** — Quick sanity check. Starts the server,
 sends 10 upsert requests, prints each response with latency, and stops.
 Use this to verify the server comes up cleanly before running longer
 tests.
 
 ```bash
-python bench/smoke_test.py --binary ./target/release/meld \
-    --config testdata/configs/bench_live.yaml
+python benchmarks/scripts/smoke_test.py --binary ./target/release/meld \
+    --config benchmarks/live/10kx10k_usearch/warm/config.yaml
 ```
 
-**`bench/live_stress_test.py`** — Sequential throughput and latency.
+**`benchmarks/scripts/live_stress_test.py`** — Sequential throughput and latency.
 Fires N requests one at a time with a realistic operation mix (30% new
 A, 30% new B, 20% embedding updates, 20% non-embedding updates). Prints
 p50/p95/p99/max latency per operation type and overall throughput.
 
 ```bash
-python bench/live_stress_test.py --binary ./target/release/meld \
-    --config testdata/configs/bench_live.yaml \
+python benchmarks/scripts/live_stress_test.py --binary ./target/release/meld \
+    --config benchmarks/live/10kx10k_usearch/warm/config.yaml \
     --iterations 3000
 ```
 
-**`bench/live_concurrent_test.py`** — Concurrent throughput. Same
+**`benchmarks/scripts/live_concurrent_test.py`** — Concurrent throughput. Same
 operation mix but distributed across N parallel workers. Use this to
 measure how throughput scales under load.
 
 ```bash
-python bench/live_concurrent_test.py --binary ./target/release/meld \
-    --config testdata/configs/bench_live.yaml \
+python benchmarks/scripts/live_concurrent_test.py --binary ./target/release/meld \
+    --config benchmarks/live/10kx10k_usearch/warm/config.yaml \
     --iterations 3000 --concurrency 10
 ```
 
-**`bench/live_batch_test.py`** — Batch endpoint benchmark. Runs the
+**`benchmarks/scripts/live_batch_test.py`** — Batch endpoint benchmark. Runs the
 same workload through single-record and batch endpoints, printing a
 side-by-side comparison. Use `--batch-only` to skip the single-record
 baseline.
 
 ```bash
-python bench/live_batch_test.py --binary ./target/release/meld \
-    --config testdata/configs/bench_live.yaml \
+python benchmarks/scripts/live_batch_test.py --binary ./target/release/meld \
+    --config benchmarks/live/10kx10k_usearch/warm/config.yaml \
     --records 3000 --batch-size 50
 ```
 
@@ -1604,10 +1604,10 @@ All four scripts accept `--no-serve` to skip starting the server:
 
 ```bash
 # Terminal 1: start the server manually
-meld serve --config testdata/configs/bench_live.yaml --port 8090
+meld serve --config benchmarks/live/10kx10k_usearch/warm/config.yaml --port 8090
 
 # Terminal 2: run the benchmark against it
-python bench/live_concurrent_test.py --no-serve --port 8090 --iterations 3000
+python benchmarks/scripts/live_concurrent_test.py --no-serve --port 8090 --iterations 3000
 ```
 
 ## How Vector Caching Works
@@ -1757,7 +1757,7 @@ sidecars.
 record count, and build timestamp from each manifest:
 
 ```
-  A cache          bench/cache (1 index files, 52.3 MB)
+  A cache          benchmarks/batch/100kx100k_usearch/warm/cache (1 index files, 52.3 MB)
     model=all-MiniLM-L6-v2 spec=a3f7c2b1 blocking=deadbeef records=100000 built=2026-03-10T14:22:05Z
 ```
 

@@ -115,7 +115,7 @@ recall risk you can tolerate.
 
 ## Worked example: the 1kx1k benchmark
 
-The benchmark config (`testdata/configs/bench1kx1k.yaml`) matches
+The benchmark config (`benchmarks/batch/10kx10k_flat/cold/config.yaml`) matches
 1,000 synthetic counterparty records (dataset B) against 1,000 entity
 master records (dataset A) using four fields:
 

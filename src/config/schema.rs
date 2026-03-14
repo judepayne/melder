@@ -258,13 +258,13 @@ mod tests {
 
     #[test]
     fn deserialize_bench_live_yaml() {
-        let yaml = std::fs::read_to_string("testdata/configs/bench_live.yaml")
+        let yaml = std::fs::read_to_string("benchmarks/live/10kx10k_usearch/warm/config.yaml")
             .expect("failed to read bench_live.yaml");
         let config: Config =
             serde_yaml::from_str(&yaml).expect("failed to deserialize bench_live.yaml");
 
-        assert_eq!(config.job.name, "bench_live_10kx10k");
-        assert_eq!(config.datasets.a.path, "testdata/dataset_a_10k.csv");
+        assert_eq!(config.job.name, "live_10kx10k_usearch_warm");
+        assert_eq!(config.datasets.a.path, "benchmarks/data/dataset_a_10k.csv");
         assert_eq!(config.datasets.b.id_field, "counterparty_id");
         assert_eq!(config.cross_map.backend, "local");
         assert_eq!(config.embeddings.model, "all-MiniLM-L6-v2");
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn deserialize_counterparty_recon_with_sidecar() {
         // sidecar section in YAML is silently ignored by serde (no deny_unknown_fields)
-        let yaml = std::fs::read_to_string("testdata/configs/counterparty_recon.yaml")
+        let yaml = std::fs::read_to_string("tests/fixtures/counterparty_recon.yaml")
             .expect("failed to read counterparty_recon.yaml");
         let config: Config =
             serde_yaml::from_str(&yaml).expect("failed to deserialize counterparty_recon.yaml");
@@ -295,12 +295,12 @@ mod tests {
 
     #[test]
     fn deserialize_bench1kx1k() {
-        let yaml = std::fs::read_to_string("testdata/configs/bench1kx1k.yaml")
+        let yaml = std::fs::read_to_string("benchmarks/batch/10kx10k_flat/cold/config.yaml")
             .expect("failed to read bench1kx1k.yaml");
         let config: Config =
             serde_yaml::from_str(&yaml).expect("failed to deserialize bench1kx1k.yaml");
 
-        assert_eq!(config.datasets.a.path, "testdata/dataset_a_1k.csv");
+        assert_eq!(config.datasets.a.path, "benchmarks/data/dataset_a_10k.csv");
         // top_n: 20 is set explicitly in bench1kx1k.yaml
         assert_eq!(config.top_n, Some(20));
     }

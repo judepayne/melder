@@ -1,0 +1,69 @@
+job:
+  name: live_100kx100k_inject10k_usearch_warm
+  description: Live benchmark — 100k × 100k, usearch backend, 10k injected events, warm run (cache pre-built)
+
+datasets:
+  a:
+    path: benchmarks/data/dataset_a_100k.csv
+    id_field: entity_id
+  b:
+    path: benchmarks/data/dataset_b_100k.csv
+    id_field: counterparty_id
+
+cross_map:
+  backend: local
+  path: benchmarks/live/100kx100k_inject10k_usearch/warm/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: benchmarks/live/100kx100k_inject10k_usearch/warm/cache
+  b_cache_dir: benchmarks/live/100kx100k_inject10k_usearch/warm/cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: embedding
+    weight: 0.55
+  - field_a: short_name
+    field_b: counterparty_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+  - field_a: country_code
+    field_b: domicile
+    method: exact
+    weight: 0.20
+  - field_a: lei
+    field_b: lei_code
+    method: exact
+    weight: 0.05
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+vector_backend: usearch
+top_n: 5
+ann_candidates: 5
+
+performance:
+  encoder_pool_size: 6
+  encoder_batch_wait_ms: 0
+  vector_index_mode: "load"
+
+live:
+  upsert_log: benchmarks/live/100kx100k_inject10k_usearch/warm/wal/events.ndjson
+
+output:
+  results_path:   benchmarks/live/100kx100k_inject10k_usearch/warm/output/results.csv
+  review_path:    benchmarks/live/100kx100k_inject10k_usearch/warm/output/review.csv
+  unmatched_path: benchmarks/live/100kx100k_inject10k_usearch/warm/output/unmatched.csv

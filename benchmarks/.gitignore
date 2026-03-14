@@ -1,0 +1,14 @@
+# Generated outputs — never commit
+**/cache/*
+!**/cache/.gitkeep
+**/output/*
+!**/output/.gitkeep
+**/wal/*.ndjson
+!**/wal/.gitkeep
+**/crossmap.csv
+
+# Datasets are large — not committed; regenerate with: python3 benchmarks/data/generate.py
+data/*.csv
+data/*.jsonl
+data/*.parquet
+!data/generate.py

@@ -225,7 +225,7 @@ live:
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `upsert_log` | Option\<String\> | `"bench/upsert.wal"` | WAL base path. Each server run creates a new timestamped file: `events_20260311T184207Z.wal`. |
+| `upsert_log` | Option\<String\> | `"benchmarks/live/<test>/wal/events.ndjson"` | WAL base path. Each server run creates a new timestamped file: `events_20260311T184207Z.wal`. |
 | `crossmap_flush_secs` | Option\<u64\> | `5` | How often the CrossMap is flushed to disk when dirty |
 
 See [[State & Persistence#WAL]] for how the WAL file naming, replay, and compaction work.

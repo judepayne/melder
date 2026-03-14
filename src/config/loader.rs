@@ -555,8 +555,8 @@ mod tests {
 
     #[test]
     fn load_bench_live() {
-        let cfg = load_config(Path::new("testdata/configs/bench_live.yaml")).unwrap();
-        assert_eq!(cfg.job.name, "bench_live_10kx10k");
+        let cfg = load_config(Path::new("benchmarks/live/10kx10k_usearch/warm/config.yaml")).unwrap();
+        assert_eq!(cfg.job.name, "live_10kx10k_usearch_warm");
         assert_eq!(cfg.performance.encoder_pool_size, Some(4));
         assert_eq!(cfg.top_n, Some(5));
         assert_eq!(cfg.live.crossmap_flush_secs, Some(5)); // default applied
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn load_bench1kx1k() {
-        let cfg = load_config(Path::new("testdata/configs/bench1kx1k.yaml")).unwrap();
+        let cfg = load_config(Path::new("benchmarks/batch/10kx10k_flat/cold/config.yaml")).unwrap();
         // top_n: 20 is set explicitly in bench1kx1k.yaml
         assert_eq!(cfg.top_n, Some(20));
         assert_eq!(cfg.performance.encoder_pool_size, Some(4));
@@ -573,14 +573,14 @@ mod tests {
     #[test]
     fn load_counterparty_recon_with_sidecar() {
         // sidecar section in YAML is silently ignored
-        let cfg = load_config(Path::new("testdata/configs/counterparty_recon.yaml")).unwrap();
+        let cfg = load_config(Path::new("tests/fixtures/counterparty_recon.yaml")).unwrap();
         assert_eq!(cfg.output_mapping.len(), 4);
         assert_eq!(cfg.performance.encoder_pool_size, Some(2));
     }
 
     #[test]
     fn derived_fields_bench_live() {
-        let cfg = load_config(Path::new("testdata/configs/bench_live.yaml")).unwrap();
+        let cfg = load_config(Path::new("benchmarks/live/10kx10k_usearch/warm/config.yaml")).unwrap();
         // A side should include: entity_id, legal_name, short_name, country_code, lei
         assert!(cfg.required_fields_a.contains(&"entity_id".to_string()));
         assert!(cfg.required_fields_a.contains(&"legal_name".to_string()));
@@ -603,7 +603,7 @@ mod tests {
     #[test]
     fn legacy_blocking_normalised() {
         // counterparty_recon.yaml uses legacy single field_a/field_b blocking
-        let cfg = load_config(Path::new("testdata/configs/counterparty_recon.yaml")).unwrap();
+        let cfg = load_config(Path::new("tests/fixtures/counterparty_recon.yaml")).unwrap();
         assert!(cfg.blocking.enabled);
         assert_eq!(cfg.blocking.fields.len(), 1);
         assert_eq!(cfg.blocking.fields[0].field_a, "country_code");

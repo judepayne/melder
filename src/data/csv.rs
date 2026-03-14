@@ -93,9 +93,9 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn load_dataset_a_1k() {
+    fn load_dataset_a_10k() {
         let (records, ids) = load_csv(
-            Path::new("testdata/dataset_a_1k.csv"),
+            Path::new("benchmarks/data/dataset_a_10k.csv"),
             "entity_id",
             &[
                 "entity_id".into(),
@@ -107,8 +107,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(records.len(), 1000);
-        assert_eq!(ids.len(), 1000);
+        assert_eq!(records.len(), 10000);
+        assert_eq!(ids.len(), 10000);
 
         // IDs should be sorted
         let mut sorted = ids.clone();

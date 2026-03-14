@@ -134,7 +134,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_config() -> Config {
-        crate::config::load_config(Path::new("testdata/configs/bench1kx1k.yaml"))
+        crate::config::load_config(Path::new("benchmarks/batch/10kx10k_flat/cold/config.yaml"))
             .expect("failed to load config")
     }
 
