@@ -317,193 +317,283 @@ numeric identifiers. A future version may add tolerance-based comparison.
 
 ## Configuration
 
-All behaviour is driven by a single YAML config file. Here is a working
-example that matches a list of legal entities (A) against a list of
-counterparties (B) — a typical batch mode config:
+All behaviour is driven by a single YAML config file. The annotated
+example below shows every field with its type, default, and purpose.
+Required fields are marked `[required]`; everything else is optional.
 
 ```yaml
-# --- Job metadata (for your reference, not used by the engine) ----------
+# =============================================================================
+# MELDER — COMPLETE CONFIG REFERENCE
+# Every field is shown. Required fields are marked [required].
+# Defaults are shown in comments where they differ from the written value.
+# =============================================================================
+
+# --- Job metadata ------------------------------------------------------------
+# For your reference. Not used by the engine except job.name, which is used
+# as the filename stem when memory_budget auto-generates live.db_path.
 job:
-  name: counterparty_recon
+  name: counterparty_recon          # [required]
   description: Match entities to counterparties
 
-# --- Datasets -----------------------------------------------------------
-# Each side needs a file path and the name of the column that contains
-# the unique record ID. Field names in A and B do not need to match --
-# the mapping between them is defined in match_fields below.
+# --- Datasets ----------------------------------------------------------------
+# Field names in A and B do not need to match — the mapping is in match_fields.
 datasets:
   a:
-    path: entities.csv
-    id_field: entity_id
-    # common_id_field: isin    # optional -- see note below
+    path: data/entities.csv         # [required] path to CSV, JSONL, or Parquet
+    id_field: entity_id             # [required] column whose value is the unique record key
+    common_id_field: lei            # optional — stable shared identifier (LEI, ISIN, etc.).
+                                    #   Records where both sides share the same value are
+                                    #   matched immediately with score 1.0, before any scoring.
+                                    #   Must be set on both sides or neither.
+    format: csv                     # optional — "csv", "jsonl", or "parquet".
+                                    #   Inferred from file extension if omitted.
+    encoding: utf-8                 # optional — character encoding for csv/jsonl. Default: utf-8.
   b:
-    path: counterparties.csv
-    id_field: counterparty_id
-    # common_id_field: isin    # must be set on both sides or neither
+    path: data/counterparties.csv   # [required]
+    id_field: counterparty_id       # [required]
+    common_id_field: lei            # optional — must mirror datasets.a.common_id_field
+    format: csv                     # optional
+    encoding: utf-8                 # optional
 
-# If both sides share a stable identifier (ISIN, LEI, etc.), set
-# common_id_field on both datasets. Records with identical values are
-# matched immediately with score 1.0 before any scoring runs.
+# --- Cross-map ---------------------------------------------------------------
+# Persistent record of confirmed A↔B pairs. In batch mode this is a CSV file.
+# In live mode with live.db_path it is stored in SQLite instead.
+cross_map:
+  backend: local                    # "local" — the only supported backend
+  path: crossmap.csv                # [required] path to the cross-map CSV file
+  a_id_field: entity_id             # [required] A-side ID column written into the cross-map output
+  b_id_field: counterparty_id       # [required] B-side ID column written into the cross-map output
 
-# --- Embedding model -----------------------------------------------------
-# Used by any match field with method: embedding. The model is downloaded
-# automatically on first run.
-#
-# a_cache_dir (required): directory for the A-side combined embedding index cache.
-# Created automatically on first run; loaded on subsequent runs to skip encoding.
-#
-# b_cache_dir (optional): directory for B-side caches. Omit to skip B-side
-# caching (vectors rebuilt from scratch each run).
+# --- Embedding model ---------------------------------------------------------
+# Used by any match field with method: embedding. Model weights (~90 MB) are
+# downloaded automatically from HuggingFace on first run.
 embeddings:
-  model: all-MiniLM-L6-v2
-  a_cache_dir: cache
-  b_cache_dir: cache              # optional — omit to skip B-side caching
+  model: all-MiniLM-L6-v2          # [required] HuggingFace model name or local ONNX path.
+                                    #   Supported models and their dimensions:
+                                    #     all-MiniLM-L6-v2   — 384-dim, fast, good default
+                                    #     all-MiniLM-L12-v2  — 384-dim, slightly better, ~2x slower
+                                    #     bge-small-en-v1.5  — 384-dim, English-optimised
+                                    #     bge-base-en-v1.5   — 768-dim, higher capacity
+                                    #     bge-large-en-v1.5  — 1024-dim, highest quality, ~4x slower
+  a_cache_dir: cache/a             # [required] directory for the A-side combined embedding index.
+                                    #   Created automatically on first run; loaded on subsequent
+                                    #   runs to skip re-encoding. Also used by memory_budget to
+                                    #   locate the manifest for record count estimation.
+  b_cache_dir: cache/b             # optional — same for B-side. Omit to skip B-side caching
+                                    #   (B vectors are rebuilt from scratch on every run).
 
-# --- Vector backend -------------------------------------------------------
-# Controls the embedding index used for candidate selection.
+# --- Vector backend ----------------------------------------------------------
+# Controls the embedding index used for candidate selection (Phase 2).
 #
-# flat    (default): brute-force scan — O(N) search, no dependencies.
-#                    Good for development and datasets under ~10k records.
-# usearch: HNSW approximate nearest-neighbour index — O(log N) search.
-#           Dramatically faster at scale. Requires the usearch feature flag
-#           at build time: cargo build --release --features usearch
-#
-# Use flat for quick tests; use usearch for any production workload.
-vector_backend: usearch
+#   flat    (default) — brute-force O(N) scan. No extra build dependency.
+#                       Good for development and datasets under ~10k records.
+#   usearch — HNSW approximate nearest-neighbour graph. O(log N) search.
+#             Up to 5× faster at scale. Requires:
+#             cargo build --release --features usearch
+vector_backend: usearch             # "flat" | "usearch" (default: "flat")
 
-# --- top_n ----------------------------------------------------------------
-# How many candidates to retrieve from the embedding index before full
-# scoring, and the maximum number of match results returned per record.
-# A value of 20 is a good default: large enough to find the true match
-# almost always, small enough that full scoring stays fast.
-top_n: 20
+# --- Candidate selection sizes -----------------------------------------------
+# Controls the progressive narrowing of candidates before full scoring.
+# Required relationship: ann_candidates >= bm25_candidates >= top_n.
+top_n: 20                           # Maximum candidates passed to full scoring and maximum
+                                    #   results returned per record. Default: 5.
+ann_candidates: 200                 # Candidates the ANN (embedding) index retrieves per query.
+                                    #   Default: 50. Only used when embedding fields are present.
+                                    #   Larger values improve recall at the cost of scoring time.
+bm25_candidates: 50                 # Candidates BM25 keeps after re-ranking the ANN shortlist
+                                    #   (when both are configured), or retrieves directly from
+                                    #   the block (when BM25 is the only filter).
+                                    #   Default: 10. Only used when method: bm25 is in match_fields.
+                                    #   Requires: cargo build --release --features bm25
 
-# --- Blocking (pre-filter) -----------------------------------------------
-# Before candidate selection, blocking eliminates obviously wrong candidates
-# by requiring cheap field equality. Here we require the country to match --
-# a record in France will never be compared against one in Japan.
-# This dramatically reduces the number of pairs that need expensive
-# scoring, at the cost of never finding cross-country matches.
+# --- Memory budget (auto-configuration) -------------------------------------
+# Optional. When set, melder estimates the dataset's memory footprint from the
+# record count (read from the embedding cache manifest, or by counting lines in
+# the data file) and the configured embedding dimensions, then automatically
+# selects storage backends — no manual SQLite or mmap configuration needed.
 #
-# You can block on multiple fields. The operator controls how they combine:
-#   "and" (default) — all fields must match (intersection)
-#   "or"            — any field matching is enough (union)
+#   "auto"  — detect available RAM at startup and use 80% as the budget.
+#   "24GB"  — explicit ceiling. Supports: TB, GB, MB, KB, B; decimals OK ("1.5GB").
 #
-# To disable blocking entirely, set enabled: false (or omit the blocking
-# section). Every record will then be considered as a candidate, which
-# is thorough but slower on large datasets.
+# Decision thresholds (70/30 split):
+#   Estimated record store > 30% of budget  →  switch record store to SQLite.
+#   Estimated vector index > 70% of budget  →  switch vector index to mmap.
+#
+# In batch mode (meld run):
+#   Creates a temporary SQLite database in a system temp dir, populated with
+#   A-side records. Auto-deleted when the job finishes. SQLite cache = 30% of budget.
+#
+# In live mode (meld serve):
+#   Auto-generates live.db_path as "{a_cache_dir}/{job.name}.db" when SQLite
+#   is triggered. Equivalent to setting live.db_path explicitly.
+#
+# Explicit live.db_path or performance.vector_index_mode settings take
+# precedence; a note is printed at startup when this occurs.
+#
+# Default: not set — fully in-memory, current behaviour.
+memory_budget: auto                 # "auto" | "24GB" | "512MB" | etc. (default: not set)
+
+# --- Blocking (pre-filter) ---------------------------------------------------
+# Before candidate selection, blocking eliminates impossible candidates by
+# requiring cheap field equality. A record from France will never be compared
+# against one from Japan when blocking on country. Typically eliminates 95%+
+# of pairs at almost no cost.
+#
+# Multiple field pairs can be combined with AND (all must match) or OR (any
+# field match is enough). Omit this section or set enabled: false to disable —
+# every record then becomes a candidate (thorough but slow on large datasets).
 blocking:
   enabled: true
-  operator: "and"                 # "and" | "or" (default: "and")
+  operator: "and"                   # "and" (default) — all fields must match (intersection)
+                                    # "or"            — any one field matching is enough (union)
   fields:
     - field_a: country_code
       field_b: domicile
-    # - field_a: currency         # add more fields as needed
+    # - field_a: currency           # add more field pairs as needed
     #   field_b: ccy
 
-# --- Match fields (the scoring equation) -----------------------------------
-# The match_fields list defines your scoring equation: how each field pair
-# is compared and how much it contributes to the overall composite score.
-# Each entry pairs a field from A with a field from B, specifies a
-# comparison method, and assigns a weight.
+# --- Match fields (the scoring equation) ------------------------------------
+# Defines how similarity is measured. Each entry pairs a field from A with a
+# field from B, names a comparison method, and assigns a weight.
+# Weights must sum to exactly 1.0 — validated at startup.
 #
-# Weights must sum to exactly 1.0 — this is validated at startup and the
-# engine will refuse to run if they don't.
+# Methods:
+#   exact     — binary string equality (case-insensitive). Returns 1.0 or 0.0.
+#               Best for: identifiers, codes, categoricals (country, currency, ISIN).
 #
-# Available methods: exact, fuzzy, embedding, numeric
-# Available fuzzy scorers: ratio, partial_ratio, token_sort_ratio, wratio
+#   fuzzy     — edit-distance similarity. Select a scorer:
+#                 wratio (default)   — max of ratio, partial_ratio, token_sort; robust catch-all
+#                 partial_ratio      — best substring alignment; good for short names in long strings
+#                 token_sort_ratio   — sort tokens then compare; handles word-order variations
+#                 ratio              — normalised Levenshtein; general string comparison
+#               Best for: names, free text. Cannot handle synonyms — use embedding for that.
+#
+#   embedding — neural semantic similarity via the configured model and cosine distance.
+#               Understands synonyms, abbreviations, and translations. Builds a vector
+#               index at startup; requires a_cache_dir to be set in embeddings.
+#               Best for: the primary entity name field.
+#
+#   numeric   — numeric equality (parses both values as float). Returns 1.0 or 0.0.
+#               Use exact for numeric identifiers; this is a stub for now.
+#
+#   bm25      — IDF-weighted token overlap across all fuzzy/embedding text fields.
+#               Do NOT specify field_a or field_b — it operates automatically.
+#               Suppresses common-token noise from untrained models (e.g. "Holdings",
+#               "International"). Use as a scoring term alongside embedding, or as
+#               the sole candidate filter when no embedding fields are configured
+#               (fast start, no ONNX model, no vector index).
+#               Requires: cargo build --release --features bm25
 match_fields:
-  # Primary comparison: use the embedding model to capture semantic
-  # similarity between the legal name and counterparty name. This is
-  # the most powerful method -- it understands that "JP Morgan Chase"
-  # and "JPMorgan" refer to the same entity even though the characters
-  # are quite different. Highest weight because it is the most
-  # informative signal.
   - field_a: legal_name
     field_b: counterparty_name
-    method: embedding
+    method: embedding               # semantic similarity — understands meaning
     weight: 0.55
 
-  # Secondary comparison: use fuzzy character matching on the short
-  # name. partial_ratio is good here because a short name like "HSBC"
-  # may appear within a longer counterparty name like "HSBC Holdings".
   - field_a: short_name
     field_b: counterparty_name
     method: fuzzy
-    scorer: partial_ratio
-    weight: 0.20
+    scorer: partial_ratio           # wratio | partial_ratio | token_sort_ratio | ratio
+    weight: 0.20                    # scorer defaults to wratio if omitted
 
-  # Country must match exactly. This reinforces the blocking filter --
-  # even if blocking is disabled, country match still contributes to
-  # the score.
   - field_a: country_code
     field_b: domicile
     method: exact
     weight: 0.20
 
-  # LEI (Legal Entity Identifier) is a global standard code. When both
-  # sides have one it is strong evidence of a match, but many records
-  # have no LEI so it gets a low weight to avoid penalising the score
-  # when the field is empty.
   - field_a: lei
     field_b: lei_code
     method: exact
     weight: 0.05
 
-# --- Thresholds -----------------------------------------------------------
-# auto_match: pairs scoring at or above this are considered confirmed
-#   matches. They go straight into the results output.
-# review_floor: pairs scoring between review_floor and auto_match are
-#   borderline -- they are written to the review csv for a human to
-#   decide. Pairs below review_floor are discarded as non-matches.
+  # BM25 example (uncomment to enable; re-balance weights to sum to 1.0):
+  # - method: bm25
+  #   weight: 0.10                  # no field_a / field_b — operates across all text fields
+
+# --- Output mapping (optional) -----------------------------------------------
+# Copy fields from A-side records into the results CSV under a new column name.
+# Useful for enriching output without adding fields to match_fields.
+output_mapping:
+  - from: sector                    # field name in the A-side record
+    to: ref_sector                  # column name in the results/review CSV
+
+# --- Thresholds --------------------------------------------------------------
+# auto_match:   pairs scoring >= this are confirmed automatically → results CSV.
+# review_floor: pairs scoring between here and auto_match → review CSV for human decision.
+#               Pairs scoring below review_floor are discarded.
+# Constraint: 0 < review_floor < auto_match <= 1.0
 thresholds:
   auto_match: 0.85
   review_floor: 0.60
 
-# --- Performance tuning (optional) ----------------------------------------
-# All fields have sensible defaults; omit the section entirely if unsure.
-performance:
-  encoder_pool_size: 4            # parallel ONNX sessions (default: 1)
-  quantized: true                 # INT8 quantised ONNX model (default: false)
-  vector_quantization: f16        # usearch storage precision: f32, f16, bf16 (default: f32)
-
-# --- Output paths (batch mode) -------------------------------------------
+# --- Output paths (batch mode) -----------------------------------------------
+# Paths for the three output CSVs written by meld run.
 output:
-  results_path: output/results.csv      # confirmed + auto matches
+  results_path: output/results.csv      # confirmed matches (score >= auto_match)
   review_path: output/review.csv        # borderline pairs for human review
-  unmatched_path: output/unmatched.csv   # B records with no match at all
-```
+  unmatched_path: output/unmatched.csv  # B records with no match above review_floor
 
-### Live mode config
-
-Add a `live` section to use `meld serve`. The `--port` flag on the
-command line sets the listening port (default 8080).
-
-```yaml
+# --- Live mode (meld serve) --------------------------------------------------
+# Ignored by meld run. Omit this section for pure batch usage.
 live:
-  upsert_log: wal.ndjson  # write-ahead log for crash recovery
-```
+  upsert_log: wal.ndjson            # path for the write-ahead log. Every record add/remove
+                                    #   and crossmap change is appended here for crash recovery.
+                                    #   Compacted on clean shutdown.
+  crossmap_flush_secs: 5            # how often to flush the in-memory crossmap to disk (seconds).
+                                    #   Default: 5. Ignored when using live.db_path (SQLite is
+                                    #   the durable store in that case).
+  db_path: data/live.db             # optional — path to a SQLite database for durable live-mode
+                                    #   storage. When set:
+                                    #   • Cold start (no DB file): datasets loaded from CSV,
+                                    #     records inserted into SQLite, crossmap stored in SQLite.
+                                    #   • Warm start (DB exists): opens existing DB directly —
+                                    #     no WAL replay needed; restarts are instant.
+                                    #   When memory_budget triggers SQLite, this path is
+                                    #   auto-generated as "{a_cache_dir}/{job.name}.db".
+                                    #   Default: not set (in-memory MemoryStore + MemoryCrossMap).
 
-Beyond the HTTP responses, the write-ahead log is the secondary mechanism
-for getting a stream of events from live mode. It is also used
-automatically for restoring state after a restart or crash.
-
-### Performance config
-
-The `performance` section is optional. All fields have sensible defaults.
-
-```yaml
+# --- Performance tuning ------------------------------------------------------
+# All fields are optional with sensible defaults. Omit the section if unsure.
 performance:
-  encoder_pool_size: 4            # parallel ONNX sessions (default: 1)
-  encoder_batch_wait_ms: 0        # live mode only — batch window in ms (default: 0, disabled)
-  quantized: true                 # INT8 quantised ONNX model (default: false)
-  vector_quantization: f16        # usearch storage precision: f32, f16, bf16 (default: f32)
+  encoder_pool_size: 4              # Number of concurrent ONNX inference sessions.
+                                    #   Each session holds a model copy in RAM.
+                                    #   Default: 1. Good starting point: match your core count.
+  quantized: true                   # Load the INT8 quantised ONNX model variant.
+                                    #   ~2× faster encoding, negligible quality loss.
+                                    #   Default: false.
+                                    #   Supported: all-MiniLM-L6-v2, all-MiniLM-L12-v2.
+                                    #   BGE models have no quantised variant — will error if set.
+  encoder_batch_wait_ms: 0          # Live mode only. Collects concurrent encoding requests into
+                                    #   a single ONNX batch call for up to this many milliseconds.
+                                    #   Default: 0 (disabled — each request encodes independently).
+                                    #   Raise to 1–10 only for very high concurrency (c >= 20)
+                                    #   with large models; adds latency equal to the window.
+                                    #   Has no effect on batch mode.
+  vector_quantization: f16          # Storage precision for vectors in the usearch index.
+                                    #   f32 (default) — full 32-bit precision, 4 bytes/dimension.
+                                    #   f16           — half precision, 2 bytes/dim. ~43% smaller
+                                    #                   index and RAM footprint, negligible recall loss.
+                                    #   bf16          — brain float 16, same size as f16, slightly
+                                    #                   different rounding behaviour.
+                                    #   No effect with the flat backend.
+                                    #   Changing this invalidates the cache (forces cold rebuild).
+  vector_index_mode: load           # How to load the usearch HNSW index from its cache file.
+                                    #   "load" (default) — read the full index into RAM. Consistent
+                                    #   search latency. Safe for meld run and meld serve.
+                                    #   "mmap" — memory-map the file; OS pages in/out on demand.
+                                    #   Lower peak RAM at extreme scale (100M+ records) but
+                                    #   unpredictable cold-cache latency. READ-ONLY: do not use
+                                    #   with meld serve (live upserts write to the index).
+                                    #   Set automatically by memory_budget when needed.
+                                    #   No effect with the flat backend.
 ```
+
+### Field reference
 
 **`encoder_pool_size`** — number of ONNX inference sessions to run in
-parallel. Each session holds a copy of the model in memory. Higher
-values increase encoding throughput at the cost of RAM. 4 is a good
-starting point on machines with 4+ cores; 1 is fine for small datasets.
+parallel. Each session holds a copy of the model in memory (~50–100 MB
+per slot). Higher values increase encoding throughput at the cost of RAM.
+4 is a good starting point on machines with 4+ cores; 1 is fine for
+small datasets.
 
 **`quantized`** — load the INT8 quantised variant of the ONNX model
 instead of the full FP32 model. Roughly doubles encoding speed with
@@ -555,6 +645,26 @@ latency equal to the batch window. With small models (MiniLM) and
 `encoder_pool_size >= 4`, leaving this at 0 (disabled) is typically
 faster because parallel independent sessions outperform batched
 single-session encoding. Has no effect on batch mode.
+
+**`vector_index_mode`** — how the usearch HNSW index is loaded from
+its on-disk cache. `"load"` (default) pulls the full graph into RAM,
+giving consistent search latency. `"mmap"` memory-maps the file and
+lets the OS page-cache decide what stays in RAM — useful at extreme
+scale (100M+ records) where the index does not fit in memory, but HNSW
+random-access traversal causes frequent page faults on a cold cache, so
+latency is unpredictable. Not suitable for `meld serve` because upserts
+write to the index. Set automatically when `memory_budget` triggers it.
+
+**`memory_budget`** — auto-configures record store and vector index
+backends based on estimated memory footprint. The estimator reads the
+`record_count` field from the embedding cache manifest (zero I/O) and
+falls back to counting lines in the data file. Decision thresholds:
+record footprint > 30% of budget → SQLite; vector footprint > 70% of
+budget → mmap. The 70/30 split follows from the 1.5× size ratio between
+the vector index and record store, and the much higher per-miss cost of
+HNSW graph traversal versus B-tree record lookups. In batch mode a
+temporary SQLite database is created and auto-deleted on completion. In
+live mode the db path is auto-generated as `{a_cache_dir}/{job.name}.db`.
 
 Batch scoring thread count is controlled by the `RAYON_NUM_THREADS`
 environment variable (defaults to logical CPU count if unset).
