@@ -105,7 +105,7 @@ pub struct EmbeddingsConfig {
     pub b_cache_dir: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct BlockingConfig {
     #[serde(default)]
     pub enabled: bool,

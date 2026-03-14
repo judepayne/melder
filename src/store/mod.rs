@@ -1,9 +1,10 @@
 //! Abstract record storage with blocking, unmatched tracking, and common ID index.
 //!
 //! Two implementations: `MemoryStore` (DashMap-backed, used by batch mode)
-//! and `SqliteStore` (rusqlite-backed, used by live mode — added in Step 3).
+//! and `SqliteStore` (rusqlite-backed, used by live mode).
 
 pub mod memory;
+pub mod sqlite;
 
 use crate::models::{Record, Side};
 

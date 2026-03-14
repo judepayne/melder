@@ -50,6 +50,9 @@ usearch = { version = "2", optional = true }
 # BM25 full-text search (feature-flagged)
 tantivy = { version = "0.22", optional = true }
 
+# SQLite storage (live mode persistence)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # Error handling
 anyhow = "1"
 thiserror = "2"
