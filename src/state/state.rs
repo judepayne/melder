@@ -1,16 +1,15 @@
 //! MatchState: composite struct holding datasets, combined index, and encoder pool.
 
-use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
-
-use dashmap::DashMap;
 
 use crate::config::Config;
 use crate::data;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
-use crate::models::Record;
+use crate::store::RecordStore;
+use crate::store::memory::MemoryStore;
 use crate::vectordb::{self, VectorDB};
 
 /// Options controlling what to load.
@@ -25,11 +24,10 @@ pub struct LoadOptions {
 /// Composite state holding everything needed for matching.
 pub struct MatchState {
     pub config: Config,
-    pub records_a: DashMap<String, Record>,
+    pub store: Arc<MemoryStore>,
     pub ids_a: Vec<String>,
     /// Combined embedding index for side A. None if no embedding fields configured.
     pub combined_index_a: Option<Box<dyn VectorDB>>,
-    pub records_b: Option<DashMap<String, Record>>,
     pub ids_b: Option<Vec<String>>,
     /// Combined embedding index for side B. None if not loaded or no embedding fields.
     pub combined_index_b: Option<Box<dyn VectorDB>>,
@@ -39,27 +37,25 @@ pub struct MatchState {
 impl std::fmt::Debug for MatchState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MatchState")
-            .field("records_a", &self.records_a.len())
+            .field("records_a", &self.store.len(crate::models::Side::A))
             .field(
                 "combined_index_a",
                 &self.combined_index_a.as_ref().map(|i| i.len()),
             )
-            .field("records_b", &self.records_b.as_ref().map(|r| r.len()))
+            .field(
+                "records_b",
+                &if self.ids_b.is_some() {
+                    Some(self.store.len(crate::models::Side::B))
+                } else {
+                    None
+                },
+            )
             .field(
                 "combined_index_b",
                 &self.combined_index_b.as_ref().map(|i| i.len()),
             )
             .finish()
     }
-}
-
-/// Convert a HashMap into a DashMap (one-time move during state loading).
-fn into_dashmap(map: HashMap<String, Record>) -> DashMap<String, Record> {
-    let dm = DashMap::with_capacity(map.len());
-    for (k, v) in map {
-        dm.insert(k, v);
-    }
-    dm
 }
 
 /// Load the full match state: datasets, caches, encoder pool.
@@ -144,13 +140,20 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         (None, None, None)
     };
 
+    // 5. Build MemoryStore from loaded records
+    let store = Arc::new(MemoryStore::from_records(
+        records_a,
+        records_b.unwrap_or_default(),
+        &config.blocking,
+    ));
+
     let total = start.elapsed();
     eprintln!(
         "State loaded in {:.1}s (A: {} records{})",
         total.as_secs_f64(),
-        records_a.len(),
-        if let Some(ref rb) = records_b {
-            format!(", B: {} records", rb.len())
+        store.len(crate::models::Side::A),
+        if ids_b.is_some() {
+            format!(", B: {} records", store.len(crate::models::Side::B))
         } else {
             String::new()
         },
@@ -158,10 +161,9 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
 
     Ok(MatchState {
         config,
-        records_a: into_dashmap(records_a),
+        store,
         ids_a,
         combined_index_a,
-        records_b: records_b.map(into_dashmap),
         ids_b,
         combined_index_b,
         encoder_pool,

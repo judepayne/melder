@@ -11,7 +11,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use dashmap::DashMap;
 use rayon::prelude::*;
 
 use crate::config::Config;
@@ -19,11 +18,11 @@ use crate::crossmap::CrossMap;
 use crate::data;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
-use crate::matching::blocking::BlockingIndex;
 use crate::matching::pipeline;
 #[cfg(feature = "bm25")]
 use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
+use crate::store::RecordStore;
 use crate::vectordb::{self, VectorDB};
 
 /// Result of a batch matching run.
@@ -58,7 +57,7 @@ enum RecordOutcome {
 /// subsequent runs (e.g. with different thresholds) skip ONNX encoding.
 pub fn run_batch(
     config: &Config,
-    records_a: &DashMap<String, Record>,
+    store: &dyn RecordStore,
     combined_index_a: Option<&dyn VectorDB>,
     encoder_pool: &EncoderPool,
     crossmap: &CrossMap,
@@ -66,25 +65,7 @@ pub fn run_batch(
 ) -> Result<BatchResult, MelderError> {
     let start = Instant::now();
 
-    // Build blocking index from A records if blocking is enabled
-    let bi: Option<BlockingIndex> = if config.blocking.enabled {
-        let bi_start = Instant::now();
-        let mut bi = BlockingIndex::from_config(&config.blocking);
-        for entry in records_a.iter() {
-            bi.insert(entry.key(), entry.value(), Side::A);
-        }
-        eprintln!(
-            "Built blocking index for {} A records in {:.1}ms",
-            records_a.len(),
-            bi_start.elapsed().as_secs_f64() * 1000.0
-        );
-        Some(bi)
-    } else {
-        None
-    };
-    let bi_ref = bi.as_ref();
-
-    // Load B records (into HashMap from data loaders, then convert to DashMap)
+    // Load B records (into HashMap from data loaders)
     let (b_records_map, b_ids) = data::load_dataset(
         Path::new(&config.datasets.b.path),
         &config.datasets.b.id_field,
@@ -117,10 +98,9 @@ pub fn run_batch(
     )?;
     let combined_index_b: Option<&dyn VectorDB> = combined_index_b_owned.as_deref();
 
-    // Convert B records to DashMap for shared pipeline use
-    let b_records: DashMap<String, Record> = DashMap::with_capacity(b_records_map.len());
-    for (id, rec) in b_records_map {
-        b_records.insert(id, rec);
+    // Insert B records into the store (they go into the B side)
+    for (id, rec) in &b_records_map {
+        store.insert(Side::B, id, rec);
     }
 
     let mut matched = Vec::new();
@@ -136,11 +116,13 @@ pub fn run_batch(
     ) {
         let cid_start = Instant::now();
         let mut a_common_index: HashMap<String, String> = HashMap::new();
-        for entry in records_a.iter() {
-            if let Some(val) = entry.value().get(a_cid_field) {
+        for a_id in store.ids(Side::A) {
+            if let Some(a_rec) = store.get(Side::A, &a_id)
+                && let Some(val) = a_rec.get(a_cid_field)
+            {
                 let val = val.trim();
                 if !val.is_empty() {
-                    a_common_index.insert(val.to_string(), entry.key().clone());
+                    a_common_index.insert(val.to_string(), a_id);
                 }
             }
         }
@@ -150,15 +132,15 @@ pub fn run_batch(
             if crossmap.has_b(b_id) {
                 continue;
             }
-            if let Some(b_entry) = b_records.get(b_id)
-                && let Some(b_val) = b_entry.value().get(b_cid_field)
+            if let Some(b_rec) = store.get(Side::B, b_id)
+                && let Some(b_val) = b_rec.get(b_cid_field)
             {
                 let b_val = b_val.trim();
                 if !b_val.is_empty()
                     && let Some(a_id) = a_common_index.get(b_val)
                 {
                     crossmap.add(a_id, b_id);
-                    let a_rec = records_a.get(a_id).map(|e| e.value().clone());
+                    let a_rec = store.get(Side::A, a_id);
                     let mr = MatchResult {
                         query_id: b_id.clone(),
                         matched_id: a_id.clone(),
@@ -193,7 +175,7 @@ pub fn run_batch(
     for b_id in b_ids_slice {
         if crossmap.has_b(b_id) {
             skipped += 1;
-        } else if b_records.contains_key(b_id) {
+        } else if store.contains(Side::B, b_id) {
             work_ids.push(b_id.as_str());
         }
     }
@@ -210,11 +192,10 @@ pub fn run_batch(
         let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
-            let idx =
-                crate::bm25::index::BM25Index::build(records_a, &config.bm25_fields, Side::A)?;
+            let idx = crate::bm25::index::BM25Index::build(store, Side::A, &config.bm25_fields)?;
             eprintln!(
                 "Built BM25 index for {} A records in {:.1}ms",
-                records_a.len(),
+                store.len(Side::A),
                 bm25_start.elapsed().as_secs_f64() * 1000.0
             );
             Some(std::sync::Mutex::new(idx))
@@ -230,7 +211,7 @@ pub fn run_batch(
     let outcomes: Vec<RecordOutcome> = work_ids
         .par_iter()
         .filter_map(|b_id| {
-            let b_record = b_records.get(*b_id)?;
+            let b_record = store.get(Side::B, b_id)?;
 
             // Progress reporting (atomic, lock-free)
             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
@@ -253,15 +234,11 @@ pub fn run_batch(
                 return None;
             }
 
-            // Pre-query the blocking index (lock-free for the rest of scoring).
+            // Pre-query the blocking index via the store.
             let blocked_ids: Vec<String> = if config.blocking.enabled {
-                if let Some(bi) = bi_ref {
-                    bi.query(b_record.value(), Side::B).into_iter().collect()
-                } else {
-                    records_a.iter().map(|e| e.key().clone()).collect()
-                }
+                store.blocking_query(&b_record, Side::B)
             } else {
-                records_a.iter().map(|e| e.key().clone()).collect()
+                store.ids(Side::A)
             };
 
             // Fetch the query combined vec from the B-side index.
@@ -277,14 +254,15 @@ pub fn run_batch(
             #[cfg(feature = "bm25")]
             let results = if let Some(ref mtx) = bm25_index_a {
                 let mut guard = mtx.lock().unwrap_or_else(|e| e.into_inner());
-                let query_text = guard.query_text_for(b_record.value(), Side::B);
+                let query_text = guard.query_text_for(&b_record, Side::B);
                 let ctx = Bm25Ctx::new(&mut guard, query_text);
                 pipeline::score_pool(
                     b_id,
-                    b_record.value(),
+                    &b_record,
                     Side::B,
                     &query_combined_vec,
-                    records_a,
+                    store,
+                    Side::A,
                     combined_index_a,
                     &blocked_ids,
                     config,
@@ -296,10 +274,11 @@ pub fn run_batch(
             } else {
                 pipeline::score_pool(
                     b_id,
-                    b_record.value(),
+                    &b_record,
                     Side::B,
                     &query_combined_vec,
-                    records_a,
+                    store,
+                    Side::A,
                     combined_index_a,
                     &blocked_ids,
                     config,
@@ -313,10 +292,11 @@ pub fn run_batch(
             #[cfg(not(feature = "bm25"))]
             let results = pipeline::score_pool(
                 b_id,
-                b_record.value(),
+                &b_record,
                 Side::B,
                 &query_combined_vec,
-                records_a,
+                store,
+                Side::A,
                 combined_index_a,
                 &blocked_ids,
                 config,
@@ -331,20 +311,15 @@ pub fn run_batch(
             let mut outcome = None;
             for mut result in results {
                 if result.score < config.thresholds.review_floor {
-                    outcome = Some(RecordOutcome::NoMatch(
-                        b_id.to_string(),
-                        b_record.value().clone(),
-                    ));
+                    outcome = Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()));
                     break;
                 }
                 if result.score >= config.thresholds.auto_match {
                     let a_id = &result.matched_id;
                     if crossmap.claim(a_id, b_id) {
                         // Attach matched record
-                        if result.matched_record.is_none()
-                            && let Some(a_entry) = records_a.get(a_id)
-                        {
-                            result.matched_record = Some(a_entry.value().clone());
+                        if result.matched_record.is_none() {
+                            result.matched_record = store.get(Side::A, a_id);
                         }
                         outcome = Some(RecordOutcome::Auto(result));
                         break;
@@ -357,12 +332,7 @@ pub fn run_batch(
                 break;
             }
 
-            outcome.or_else(|| {
-                Some(RecordOutcome::NoMatch(
-                    b_id.to_string(),
-                    b_record.value().clone(),
-                ))
-            })
+            outcome.or_else(|| Some(RecordOutcome::NoMatch(b_id.to_string(), b_record)))
         })
         .collect();
 

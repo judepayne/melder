@@ -43,7 +43,7 @@ pub fn cmd_tune(config_path: &Path, verbose: bool) {
     eprintln!("Running batch matching for score analysis...");
     let result = match crate::batch::run_batch(
         &state.config,
-        &state.records_a,
+        state.store.as_ref(),
         state.combined_index_a.as_deref(),
         &state.encoder_pool,
         &crossmap,

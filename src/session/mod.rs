@@ -15,6 +15,7 @@ use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::live::{LiveMatchState, ReviewEntry, review_queue_key};
 use crate::state::upsert_log::WalEvent;
+use crate::store::RecordStore;
 
 /// Response types for API serialization.
 pub mod response {
@@ -349,6 +350,7 @@ impl Session {
         record: Record,
     ) -> Result<UpsertResponse, SessionError> {
         let config = &self.state.config;
+        let store = &self.state.store;
         let id_field = match side {
             Side::A => &config.datasets.a.id_field,
             Side::B => &config.datasets.b.id_field,
@@ -365,14 +367,13 @@ impl Session {
             return Err(SessionError::EmptyId);
         }
 
-        let this_side = self.state.side(side);
-        let opp_side = self.state.opposite_side(side);
+        let opp = side.opposite();
 
         // 2. Check if existing record
         let mut old_mapping: Option<OldMapping> = None;
         let mut status = "added";
 
-        if this_side.records.contains_key(&id) {
+        if store.contains(side, &id) {
             status = "updated";
 
             // Clear stale review entries for this record (re-upsert
@@ -382,8 +383,6 @@ impl Session {
                 .retain(|_, v| v.id != id && v.candidate_id != id);
 
             // Check crossmap — if matched, atomically read-and-remove the pair.
-            // take_a / take_b are used instead of get_b + remove to eliminate
-            // the TOCTOU window between the read and the write.
             let paired_id = match side {
                 Side::A => self.state.crossmap.take_a(&id),
                 Side::B => self.state.crossmap.take_b(&id),
@@ -395,8 +394,8 @@ impl Session {
                     Side::B => (paired_id.clone(), id.clone()),
                 };
                 // Add both back to unmatched
-                self.state.a.unmatched.insert(a_id.clone());
-                self.state.b.unmatched.insert(b_id.clone());
+                store.mark_unmatched(Side::A, &a_id);
+                store.mark_unmatched(Side::B, &b_id);
 
                 // WAL
                 let _ = self.state.wal.append(&WalEvent::CrossMapBreak {
@@ -409,12 +408,8 @@ impl Session {
             }
 
             // Remove old record from blocking index
-            if let Some(old_rec) = this_side.records.get(&id) {
-                let mut bi = this_side
-                    .blocking_index
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner());
-                bi.remove(&id, &old_rec, side);
+            if let Some(old_rec) = store.get(side, &id) {
+                store.blocking_remove(side, &id, &old_rec);
             }
         }
 
@@ -422,23 +417,17 @@ impl Session {
         let _ = self.state.wal.append_upsert(side, &record);
 
         // 4. Insert/replace record
-        this_side.records.insert(id.clone(), record.clone());
+        store.insert(side, &id, &record);
 
         // 5. Add to unmatched
-        this_side.unmatched.insert(id.clone());
+        store.mark_unmatched(side, &id);
 
         // 6. Update blocking index
-        {
-            let mut bi = this_side
-                .blocking_index
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            bi.insert(&id, &record, side);
-        }
+        store.blocking_insert(side, &id, &record);
 
         // 6b. Update BM25 index
         #[cfg(feature = "bm25")]
-        if let Some(ref bm25_mtx) = this_side.bm25_index {
+        if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
             let mut idx = bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
             idx.upsert(&id, &record);
         }
@@ -453,28 +442,22 @@ impl Session {
             if let Some(cid_val) = record.get(cid_field) {
                 let cid_val = cid_val.trim();
                 if !cid_val.is_empty() {
-                    this_side
-                        .common_id_index
-                        .insert(cid_val.to_string(), id.clone());
+                    store.common_id_insert(side, cid_val, &id);
 
                     // Check opposite side for a matching common ID
-                    if let Some(opp_entry) = opp_side.common_id_index.get(cid_val) {
-                        let opp_id = opp_entry.value().clone();
-                        drop(opp_entry);
-
+                    if let Some(opp_id) = store.common_id_lookup(opp, cid_val) {
                         // Break any existing crossmap for either record.
-                        // take_a / take_b atomically read-and-remove each pair.
                         if let Some(old_opp) = match side {
                             Side::A => self.state.crossmap.take_a(&id),
                             Side::B => self.state.crossmap.take_b(&id),
                         } {
-                            opp_side.unmatched.insert(old_opp);
+                            store.mark_unmatched(opp, &old_opp);
                         }
                         if let Some(old_this) = match side {
                             Side::A => self.state.crossmap.take_b(&opp_id),
                             Side::B => self.state.crossmap.take_a(&opp_id),
                         } {
-                            this_side.unmatched.insert(old_this);
+                            store.mark_unmatched(side, &old_this);
                         }
 
                         // Create the common ID match
@@ -483,8 +466,8 @@ impl Session {
                             Side::B => (opp_id.clone(), id.clone()),
                         };
                         self.state.crossmap.add(&a_id, &b_id);
-                        self.state.a.unmatched.remove(&a_id);
-                        self.state.b.unmatched.remove(&b_id);
+                        store.mark_matched(Side::A, &a_id);
+                        store.mark_matched(Side::B, &b_id);
 
                         let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
                             a_id: a_id.clone(),
@@ -493,7 +476,7 @@ impl Session {
                         });
                         self.state.mark_crossmap_dirty();
 
-                        let opp_record = opp_side.records.get(&opp_id).map(|r| r.value().clone());
+                        let opp_record = store.get(opp, &opp_id);
                         let match_entry = MatchEntry {
                             id: opp_id,
                             score: 1.0,
@@ -519,24 +502,16 @@ impl Session {
         }
 
         // 9. Pipeline: blocking → candidate selection → full scoring
-        //
-        // The blocking_index read lock is held only for the bi.query() call
-        // (~1µs), then dropped before scoring begins. This prevents the
-        // previously-wide lock window from starving opposite-side writes.
         let top_n = config.top_n.unwrap_or(5);
-        let blocked_ids: Vec<String> = {
-            let opp_bi = opp_side
-                .blocking_index
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            if config.blocking.enabled {
-                opp_bi.query(&record, side).into_iter().collect()
-            } else {
-                opp_side.records.iter().map(|e| e.key().clone()).collect()
-            }
-        }; // lock dropped here
+        let blocked_ids: Vec<String> = if config.blocking.enabled {
+            store.blocking_query(&record, side)
+        } else {
+            store.ids(opp)
+        };
 
         // Fetch the query combined vec from this side's index.
+        let this_side = self.state.side(side);
+        let opp_side = self.state.opposite_side(side);
         let query_combined_vec: Vec<f32> = this_side
             .combined_index
             .as_ref()
@@ -556,7 +531,8 @@ impl Session {
                 &record,
                 side,
                 &query_combined_vec,
-                &opp_side.records,
+                store.as_ref(),
+                opp,
                 opp_side.combined_index.as_deref(),
                 &blocked_ids,
                 config,
@@ -571,7 +547,8 @@ impl Session {
                 &record,
                 side,
                 &query_combined_vec,
-                &opp_side.records,
+                store.as_ref(),
+                opp,
                 opp_side.combined_index.as_deref(),
                 &blocked_ids,
                 config,
@@ -588,7 +565,8 @@ impl Session {
             &record,
             side,
             &query_combined_vec,
-            &opp_side.records,
+            store.as_ref(),
+            opp,
             opp_side.combined_index.as_deref(),
             &blocked_ids,
             config,
@@ -599,18 +577,12 @@ impl Session {
         );
 
         // 10. Claim loop: try candidates in ranked order.
-        //
-        // For each auto-match candidate, attempt to atomically claim the
-        // B-side record via crossmap.claim(). If that B is already taken by
-        // a concurrent request, try the next-best candidate. This replaces
-        // the previous unconditional crossmap.add() which could create
-        // duplicate pairings under concurrency.
         let mut classification = "no_match".to_string();
         let mut _claimed_idx: Option<usize> = None;
 
         for (i, result) in results.iter().enumerate() {
             if result.score < config.thresholds.review_floor {
-                break; // nothing left worth matching
+                break;
             }
             if result.score >= config.thresholds.auto_match {
                 let (a_id, b_id) = match side {
@@ -618,8 +590,8 @@ impl Session {
                     Side::B => (result.matched_id.clone(), id.clone()),
                 };
                 if self.state.crossmap.claim(&a_id, &b_id) {
-                    self.state.a.unmatched.remove(&a_id);
-                    self.state.b.unmatched.remove(&b_id);
+                    store.mark_matched(Side::A, &a_id);
+                    store.mark_matched(Side::B, &b_id);
                     let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
                         a_id,
                         b_id,
@@ -630,11 +602,9 @@ impl Session {
                     _claimed_idx = Some(i);
                     break;
                 }
-                // B was taken — try next candidate
                 continue;
             }
-            // Score is in review band — emit ReviewMatch WAL event and
-            // add to the in-memory review queue.
+            // Score is in review band
             let _ = self.state.wal.append(&WalEvent::ReviewMatch {
                 id: id.clone(),
                 side,
@@ -672,16 +642,12 @@ impl Session {
 
     /// Remove a record by ID. Breaks any crossmap pair, removes from all indices.
     pub fn remove_record(&self, side: Side, id: &str) -> Result<RemoveResponse, SessionError> {
-        let (this_side, _other_side) = match side {
-            Side::A => (&self.state.a, &self.state.b),
-            Side::B => (&self.state.b, &self.state.a),
-        };
+        let store = &self.state.store;
+        let opp = side.opposite();
 
         // Check the record exists
-        let record = this_side
-            .records
-            .get(id)
-            .map(|r| r.value().clone())
+        let record = store
+            .get(side, id)
             .ok_or_else(|| SessionError::MissingField {
                 field: format!("record {} not found on side {:?}", id, side),
             })?;
@@ -696,7 +662,7 @@ impl Session {
                 Side::A => self.state.crossmap.remove(id, &paired_id),
                 Side::B => self.state.crossmap.remove(&paired_id, id),
             }
-            _other_side.unmatched.insert(paired_id.clone());
+            store.mark_unmatched(opp, &paired_id);
             self.state.mark_crossmap_dirty();
             vec![paired_id]
         } else {
@@ -709,28 +675,22 @@ impl Session {
             .retain(|_, v| v.id != id && v.candidate_id != id);
 
         // Remove from blocking index
-        {
-            let mut bi = this_side
-                .blocking_index
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            bi.remove(id, &record, side);
-        }
+        store.blocking_remove(side, id, &record);
 
         // Remove from combined index
-        if let Some(ref idx) = this_side.combined_index {
+        if let Some(ref idx) = self.state.side(side).combined_index {
             let _ = idx.remove(id);
         }
 
         // Remove from BM25 index
         #[cfg(feature = "bm25")]
-        if let Some(ref bm25_mtx) = this_side.bm25_index {
+        if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
             let mut idx = bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
             idx.remove(id);
         }
 
         // Remove from unmatched set
-        this_side.unmatched.remove(id);
+        store.mark_matched(side, id);
 
         // Remove from common_id_index if configured
         let cid_field = match side {
@@ -742,12 +702,12 @@ impl Session {
         {
             let cid_val = cid_val.trim();
             if !cid_val.is_empty() {
-                this_side.common_id_index.remove(cid_val);
+                store.common_id_remove(side, cid_val);
             }
         }
 
         // Remove from records
-        this_side.records.remove(id);
+        store.remove(side, id);
 
         // Append to WAL
         let _ = self.state.wal.append(&WalEvent::RemoveRecord {
@@ -764,10 +724,6 @@ impl Session {
     }
 
     /// Try matching a record without persisting it (read-only).
-    ///
-    /// Encodes the combined embedding vector into the query side's combined
-    /// index (enriching the VectorDB), then scores against the opposite side
-    /// via the normal pipeline.
     pub fn try_match(&self, side: Side, record: Record) -> Result<MatchResponse, SessionError> {
         let config = &self.state.config;
         let is_a_side = side == Side::A;
@@ -806,8 +762,6 @@ impl Session {
 
     /// Try matching a record whose per-field vectors are already in the
     /// combined index (read-only scoring).
-    ///
-    /// Used by both the single-record path and the batch path.
     fn try_match_inner(
         &self,
         side: Side,
@@ -815,7 +769,8 @@ impl Session {
         id: &str,
     ) -> Result<MatchResponse, SessionError> {
         let config = &self.state.config;
-
+        let store = &self.state.store;
+        let opp = side.opposite();
         let opp_side = self.state.opposite_side(side);
 
         // Check crossmap for existing match
@@ -826,7 +781,7 @@ impl Session {
 
         if let Some(paired_id) = existing {
             // Return existing match from crossmap
-            let matched_record = opp_side.records.get(&paired_id).map(|r| r.value().clone());
+            let matched_record = store.get(opp, &paired_id);
 
             let entry = MatchEntry {
                 id: paired_id.clone(),
@@ -850,17 +805,11 @@ impl Session {
 
         // Pipeline: blocking → candidate selection → full scoring
         let top_n = config.top_n.unwrap_or(5);
-        let blocked_ids: Vec<String> = {
-            let opp_bi = opp_side
-                .blocking_index
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            if config.blocking.enabled {
-                opp_bi.query(&record, side).into_iter().collect()
-            } else {
-                opp_side.records.iter().map(|e| e.key().clone()).collect()
-            }
-        }; // lock dropped here
+        let blocked_ids: Vec<String> = if config.blocking.enabled {
+            store.blocking_query(&record, side)
+        } else {
+            store.ids(opp)
+        };
 
         let this_side = self.state.side(side);
         // Fetch the query combined vec from this side's index.
@@ -883,7 +832,8 @@ impl Session {
                 &record,
                 side,
                 &query_combined_vec,
-                &opp_side.records,
+                store.as_ref(),
+                opp,
                 opp_side.combined_index.as_deref(),
                 &blocked_ids,
                 config,
@@ -898,7 +848,8 @@ impl Session {
                 &record,
                 side,
                 &query_combined_vec,
-                &opp_side.records,
+                store.as_ref(),
+                opp,
                 opp_side.combined_index.as_deref(),
                 &blocked_ids,
                 config,
@@ -915,7 +866,8 @@ impl Session {
             &record,
             side,
             &query_combined_vec,
-            &opp_side.records,
+            store.as_ref(),
+            opp,
             opp_side.combined_index.as_deref(),
             &blocked_ids,
             config,
@@ -956,21 +908,23 @@ impl Session {
 
     /// Confirm a match: add to crossmap.
     pub fn confirm_match(&self, a_id: &str, b_id: &str) -> Result<ConfirmResponse, SessionError> {
+        let store = &self.state.store;
+
         // Validate both IDs exist
-        if !self.state.a.records.contains_key(a_id) {
+        if !store.contains(Side::A, a_id) {
             return Err(SessionError::MissingField {
                 field: format!("a_id '{}' not found", a_id),
             });
         }
-        if !self.state.b.records.contains_key(b_id) {
+        if !store.contains(Side::B, b_id) {
             return Err(SessionError::MissingField {
                 field: format!("b_id '{}' not found", b_id),
             });
         }
 
         self.state.crossmap.add(a_id, b_id);
-        self.state.a.unmatched.remove(a_id);
-        self.state.b.unmatched.remove(b_id);
+        store.mark_matched(Side::A, a_id);
+        store.mark_matched(Side::B, b_id);
 
         // Drain any review entries involving either ID.
         self.state.review_queue.retain(|_, v| {
@@ -991,14 +945,16 @@ impl Session {
 
     /// Lookup a crossmap entry.
     pub fn lookup_crossmap(&self, id: &str, side: Side) -> Result<LookupResponse, SessionError> {
+        let store = &self.state.store;
+        let opp = side.opposite();
+
         let paired_id = match side {
             Side::A => self.state.crossmap.get_b(id),
             Side::B => self.state.crossmap.get_a(id),
         };
 
         if let Some(ref pid) = paired_id {
-            let opp = self.state.opposite_side(side);
-            let matched_record = opp.records.get(pid).map(|r| r.value().clone());
+            let matched_record = store.get(opp, pid);
 
             Ok(LookupResponse {
                 id: id.to_string(),
@@ -1020,6 +976,8 @@ impl Session {
 
     /// Break a crossmap pair.
     pub fn break_crossmap(&self, a_id: &str, b_id: &str) -> Result<BreakResponse, SessionError> {
+        let store = &self.state.store;
+
         // Validate the pair exists
         let existing = self.state.crossmap.get_b(a_id);
         if existing.as_deref() != Some(b_id) {
@@ -1030,8 +988,8 @@ impl Session {
 
         self.state.crossmap.remove(a_id, b_id);
 
-        self.state.a.unmatched.insert(a_id.to_string());
-        self.state.b.unmatched.insert(b_id.to_string());
+        store.mark_unmatched(Side::A, a_id);
+        store.mark_unmatched(Side::B, b_id);
 
         // Drain any review entries involving either ID.
         self.state.review_queue.retain(|_, v| {
@@ -1053,16 +1011,12 @@ impl Session {
 
     /// Query a record by ID, returning the record and its crossmap status.
     pub fn query_record(&self, side: Side, id: &str) -> Result<QueryResponse, SessionError> {
-        let (this_side, _other_side) = match side {
-            Side::A => (&self.state.a, &self.state.b),
-            Side::B => (&self.state.b, &self.state.a),
-        };
+        let store = &self.state.store;
+        let opp = side.opposite();
 
         // Look up the record
-        let record = this_side
-            .records
-            .get(id)
-            .map(|r| r.value().clone())
+        let record = store
+            .get(side, id)
             .ok_or_else(|| SessionError::MissingField {
                 field: format!("record {} not found on side {:?}", id, side),
             })?;
@@ -1071,7 +1025,7 @@ impl Session {
         let crossmap = match side {
             Side::A => {
                 if let Some(b_id) = self.state.crossmap.get_b(id) {
-                    let paired_record = _other_side.records.get(&b_id).map(|r| r.value().clone());
+                    let paired_record = store.get(opp, &b_id);
                     QueryCrossmap {
                         status: "matched".to_string(),
                         paired_id: Some(b_id),
@@ -1087,7 +1041,7 @@ impl Session {
             }
             Side::B => {
                 if let Some(a_id) = self.state.crossmap.get_a(id) {
-                    let paired_record = _other_side.records.get(&a_id).map(|r| r.value().clone());
+                    let paired_record = store.get(opp, &a_id);
                     QueryCrossmap {
                         status: "matched".to_string(),
                         paired_id: Some(a_id),
@@ -1119,12 +1073,6 @@ impl Session {
     const MAX_BATCH_SIZE: usize = 1000;
 
     /// Add/update multiple records in a single call.
-    ///
-    /// For each embedding field, all record texts are gathered and encoded
-    /// in a single ONNX batch call. The resulting per-field vectors are
-    /// stored in the field indexes, then records are inserted and scored
-    /// sequentially so each record sees the crossmap state left by the
-    /// previous one.
     pub fn upsert_batch(
         &self,
         side: Side,
@@ -1160,10 +1108,8 @@ impl Session {
             .map(|r| r.get(id_field).cloned().unwrap_or_default())
             .collect();
 
-        // 2. Batch encode combined vectors — one ONNX call per field, assembled
-        //    into per-record combined vecs, then stored in the combined index.
+        // 2. Batch encode combined vectors
         if !emb_specs.is_empty() {
-            // Build combined_vecs per record by encoding field-by-field in batches.
             let field_dim = self.state.encoder_pool.dim();
             let combined_dim = field_dim * emb_specs.len();
             let mut combined_vecs: Vec<Vec<f32>> =
@@ -1198,15 +1144,13 @@ impl Session {
             }
         }
 
-        // 3. Insert + score each record sequentially (combined vectors already stored)
+        // 3. Insert + score each record sequentially
         let mut results = Vec::with_capacity(records.len());
         for record in records {
             let resp = self.upsert_record_inner(side, record);
             match resp {
                 Ok(r) => results.push(r),
                 Err(e) => {
-                    // Per-record error: produce an error entry rather
-                    // than failing the whole batch.
                     results.push(UpsertResponse {
                         status: format!("error: {}", e),
                         id: String::new(),
@@ -1225,11 +1169,6 @@ impl Session {
 
     /// Score multiple records against the opposite side without storing
     /// them (read-only batch).
-    ///
-    /// For each embedding field, all record texts are gathered and encoded
-    /// in a single ONNX batch call. The resulting per-field vectors are
-    /// stored in the query side's field indexes, then each record is
-    /// scored sequentially via the normal pipeline.
     pub fn match_batch(
         &self,
         side: Side,
@@ -1265,7 +1204,7 @@ impl Session {
             .map(|r| r.get(id_field).cloned().unwrap_or_default())
             .collect();
 
-        // 2. Batch encode combined vectors — store in combined index
+        // 2. Batch encode combined vectors
         if !emb_specs.is_empty() {
             let field_dim = self.state.encoder_pool.dim();
             let combined_dim = field_dim * emb_specs.len();
@@ -1323,9 +1262,6 @@ impl Session {
     }
 
     /// Remove multiple records by ID.
-    ///
-    /// Each removal is processed sequentially. Records not found produce
-    /// a "not_found" entry rather than failing the whole batch.
     pub fn remove_batch(
         &self,
         side: Side,
@@ -1366,12 +1302,13 @@ impl Session {
 
     /// Health check response.
     pub fn health(&self) -> HealthResponse {
+        let store = &self.state.store;
         let cm_len = self.state.crossmap.len();
         HealthResponse {
             status: "ready".to_string(),
             model: self.state.config.embeddings.model.clone(),
-            records_a: self.state.a.records.len(),
-            records_b: self.state.b.records.len(),
+            records_a: store.len(Side::A),
+            records_b: store.len(Side::B),
             crossmap_entries: cm_len,
         }
     }
@@ -1422,13 +1359,8 @@ impl Session {
         limit: Option<usize>,
         include_records: bool,
     ) -> UnmatchedResponse {
-        let this_side = self.state.side(side);
-        let mut ids: Vec<String> = this_side
-            .unmatched
-            .iter()
-            .map(|r| r.key().clone())
-            .collect();
-        ids.sort();
+        let store = &self.state.store;
+        let ids = store.unmatched_ids(side); // already sorted
         let total = ids.len();
         let start = offset.min(total);
         let end = match limit {
@@ -1439,7 +1371,7 @@ impl Session {
             .iter()
             .map(|id| {
                 let record = if include_records {
-                    this_side.records.get(id).map(|r| r.value().clone())
+                    store.get(side, id)
                 } else {
                     None
                 };
@@ -1459,11 +1391,12 @@ impl Session {
 
     /// Return crossmap coverage statistics.
     pub fn crossmap_stats(&self) -> CrossmapStatsResponse {
-        let records_a = self.state.a.records.len();
-        let records_b = self.state.b.records.len();
+        let store = &self.state.store;
+        let records_a = store.len(Side::A);
+        let records_b = store.len(Side::B);
         let crossmap_pairs = self.state.crossmap.len();
-        let unmatched_a = self.state.a.unmatched.len();
-        let unmatched_b = self.state.b.unmatched.len();
+        let unmatched_a = store.unmatched_count(Side::A);
+        let unmatched_b = store.unmatched_count(Side::B);
         let matched_a = records_a.saturating_sub(unmatched_a);
         let matched_b = records_b.saturating_sub(unmatched_b);
         let coverage_a = if records_a > 0 {
@@ -1527,10 +1460,6 @@ impl Session {
 }
 
 /// Convert a `MelderError` to a `SessionError`.
-///
-/// Used to propagate `encode_combined_vector` errors across the session
-/// boundary. Only `MelderError::Encoder` variants can occur here; others
-/// are mapped to a generic `MissingField` error message.
 fn melder_to_session_err(e: crate::error::MelderError) -> SessionError {
     match e {
         crate::error::MelderError::Encoder(enc) => SessionError::Encoder(enc),

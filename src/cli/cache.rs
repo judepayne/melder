@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process;
 
+use crate::store::RecordStore;
 use crate::vectordb::manifest::manifest_path;
 use crate::vectordb::texthash::texthash_sidecar_path;
 
@@ -30,17 +31,17 @@ pub fn cmd_cache_build(config_path: &Path) {
             println!("Cache build complete:");
             println!(
                 "  A-side: {} records, {} combined index vecs",
-                state.records_a.len(),
+                state.store.len(crate::models::Side::A),
                 state
                     .combined_index_a
                     .as_ref()
                     .map(|i| i.len())
                     .unwrap_or(0)
             );
-            if let Some(ref rb) = state.records_b {
+            if state.ids_b.is_some() {
                 println!(
                     "  B-side: {} records, {} combined index vecs",
-                    rb.len(),
+                    state.store.len(crate::models::Side::B),
                     state
                         .combined_index_b
                         .as_ref()

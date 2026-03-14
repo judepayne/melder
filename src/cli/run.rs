@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process;
 
+use crate::store::RecordStore;
+
 /// Run a batch matching job.
 pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<usize>) {
     // 1. Load and validate config
@@ -83,7 +85,10 @@ pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<u
         let skippable = crossmap.len().min(effective);
 
         println!("Dry run:");
-        println!("  A records:       {}", state.records_a.len());
+        println!(
+            "  A records:       {}",
+            state.store.len(crate::models::Side::A)
+        );
         println!(
             "  A combined index: {} vecs",
             state
@@ -109,7 +114,7 @@ pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<u
     // 5. Run batch engine
     let result = match crate::batch::run_batch(
         &state.config,
-        &state.records_a,
+        state.store.as_ref(),
         state.combined_index_a.as_deref(),
         &state.encoder_pool,
         &crossmap,

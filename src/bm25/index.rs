@@ -4,7 +4,6 @@
 //! text fields designated by `bm25_fields` into a single `content` field
 //! per document, enabling cross-field BM25 scoring with zero configuration.
 
-use dashmap::DashMap;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Field, STORED, STRING, Schema, TEXT, Value};
@@ -12,6 +11,7 @@ use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument, doc};
 use tracing::warn;
 
 use crate::models::{Record, Side};
+use crate::store::RecordStore;
 
 /// In-memory BM25 index wrapping Tantivy.
 pub struct BM25Index {
@@ -27,31 +27,31 @@ pub struct BM25Index {
 }
 
 impl BM25Index {
-    /// Build a BM25 index from an existing record store.
+    /// Build a BM25 index from a record store.
     ///
     /// `fields` are `(field_a, field_b)` pairs from fuzzy/embedding match
     /// field entries. For each record, the text values of these fields are
     /// concatenated (space-separated) into a single indexed document.
     pub fn build(
-        records: &DashMap<String, Record>,
-        fields: &[(String, String)],
+        store: &dyn RecordStore,
         side: Side,
+        fields: &[(String, String)],
     ) -> Result<Self, anyhow::Error> {
         let (schema, id_field, content_field) = build_schema();
         let index = Index::create_in_ram(schema);
         let mut writer = index.writer(50_000_000)?;
 
-        for entry in records.iter() {
-            let id = entry.key();
-            let record = entry.value();
-            let text = concat_fields(record, fields, side);
-            if text.is_empty() {
-                continue;
+        for id in store.ids(side) {
+            if let Some(record) = store.get(side, &id) {
+                let text = concat_fields(&record, fields, side);
+                if text.is_empty() {
+                    continue;
+                }
+                writer.add_document(doc!(
+                    id_field => id.as_str(),
+                    content_field => text.as_str(),
+                ))?;
             }
-            writer.add_document(doc!(
-                id_field => id.as_str(),
-                content_field => text.as_str(),
-            ))?;
         }
         writer.commit()?;
 
@@ -281,6 +281,8 @@ fn escape_query(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::BlockingConfig;
+    use crate::store::memory::MemoryStore;
 
     fn make_record(fields: &[(&str, &str)]) -> Record {
         fields
@@ -289,12 +291,12 @@ mod tests {
             .collect()
     }
 
-    fn make_records(data: Vec<(&str, Record)>) -> DashMap<String, Record> {
-        let map = DashMap::new();
+    fn make_store(data: Vec<(&str, Record)>, side: Side) -> MemoryStore {
+        let store = MemoryStore::new(&BlockingConfig::default());
         for (id, rec) in data {
-            map.insert(id.to_string(), rec);
+            store.insert(side, id, &rec);
         }
-        map
+        store
     }
 
     fn test_fields() -> Vec<(String, String)> {
@@ -306,30 +308,33 @@ mod tests {
 
     #[test]
     fn build_and_query_basic() {
-        let records = make_records(vec![
-            (
-                "1",
-                make_record(&[("name_a", "Apple Inc"), ("desc_a", "technology company")]),
-            ),
-            (
-                "2",
-                make_record(&[("name_a", "Microsoft"), ("desc_a", "software company")]),
-            ),
-            (
-                "3",
-                make_record(&[("name_a", "Apple Farms"), ("desc_a", "agriculture farm")]),
-            ),
-            (
-                "4",
-                make_record(&[("name_a", "Google LLC"), ("desc_a", "search engine")]),
-            ),
-            (
-                "5",
-                make_record(&[("name_a", "Amazon"), ("desc_a", "e-commerce company")]),
-            ),
-        ]);
+        let store = make_store(
+            vec![
+                (
+                    "1",
+                    make_record(&[("name_a", "Apple Inc"), ("desc_a", "technology company")]),
+                ),
+                (
+                    "2",
+                    make_record(&[("name_a", "Microsoft"), ("desc_a", "software company")]),
+                ),
+                (
+                    "3",
+                    make_record(&[("name_a", "Apple Farms"), ("desc_a", "agriculture farm")]),
+                ),
+                (
+                    "4",
+                    make_record(&[("name_a", "Google LLC"), ("desc_a", "search engine")]),
+                ),
+                (
+                    "5",
+                    make_record(&[("name_a", "Amazon"), ("desc_a", "e-commerce company")]),
+                ),
+            ],
+            Side::A,
+        );
 
-        let idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         assert_eq!(idx.num_docs(), 5);
 
         let results = idx.query("apple", 3);
@@ -342,33 +347,42 @@ mod tests {
 
     #[test]
     fn query_empty_text() {
-        let records = make_records(vec![("1", make_record(&[("name_a", "Apple Inc")]))]);
-        let idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = make_store(
+            vec![("1", make_record(&[("name_a", "Apple Inc")]))],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         let results = idx.query("", 5);
         assert!(results.is_empty());
     }
 
     #[test]
     fn query_zero_top_k() {
-        let records = make_records(vec![("1", make_record(&[("name_a", "Apple Inc")]))]);
-        let idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = make_store(
+            vec![("1", make_record(&[("name_a", "Apple Inc")]))],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         let results = idx.query("apple", 0);
         assert!(results.is_empty());
     }
 
     #[test]
     fn score_one_found() {
-        let records = make_records(vec![
-            (
-                "1",
-                make_record(&[("name_a", "Apple Inc"), ("desc_a", "technology")]),
-            ),
-            (
-                "2",
-                make_record(&[("name_a", "Microsoft"), ("desc_a", "software")]),
-            ),
-        ]);
-        let idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = make_store(
+            vec![
+                (
+                    "1",
+                    make_record(&[("name_a", "Apple Inc"), ("desc_a", "technology")]),
+                ),
+                (
+                    "2",
+                    make_record(&[("name_a", "Microsoft"), ("desc_a", "software")]),
+                ),
+            ],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         let score = idx.score_one("apple technology", "1");
         assert!(score.is_some(), "should find candidate 1");
         assert!(score.unwrap() > 0.0, "score should be positive");
@@ -376,8 +390,11 @@ mod tests {
 
     #[test]
     fn score_one_not_found() {
-        let records = make_records(vec![("1", make_record(&[("name_a", "Apple Inc")]))]);
-        let idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = make_store(
+            vec![("1", make_record(&[("name_a", "Apple Inc")]))],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         let score = idx.score_one("xyz zzz qqq", "1");
         // The query has no overlap with the document, so score should be None
         assert!(score.is_none(), "no-overlap query should return None");
@@ -385,11 +402,14 @@ mod tests {
 
     #[test]
     fn self_score_positive() {
-        let records = make_records(vec![
-            ("1", make_record(&[("name_a", "Apple Inc technology")])),
-            ("2", make_record(&[("name_a", "Microsoft software")])),
-        ]);
-        let mut idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = make_store(
+            vec![
+                ("1", make_record(&[("name_a", "Apple Inc technology")])),
+                ("2", make_record(&[("name_a", "Microsoft software")])),
+            ],
+            Side::A,
+        );
+        let mut idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         let ss = idx.self_score("apple inc technology");
         assert!(ss > 0.0, "self-score should be positive, got {}", ss);
         // After self-score, sentinel should be removed
@@ -398,8 +418,8 @@ mod tests {
 
     #[test]
     fn self_score_empty() {
-        let records: DashMap<String, Record> = DashMap::new();
-        let mut idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = MemoryStore::new(&BlockingConfig::default());
+        let mut idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         let ss = idx.self_score("");
         assert!(
             (ss - 0.0).abs() < f32::EPSILON,
@@ -409,8 +429,8 @@ mod tests {
 
     #[test]
     fn upsert_and_query() {
-        let records: DashMap<String, Record> = DashMap::new();
-        let mut idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = MemoryStore::new(&BlockingConfig::default());
+        let mut idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         assert_eq!(idx.num_docs(), 0);
 
         // Upsert a record
@@ -441,11 +461,14 @@ mod tests {
 
     #[test]
     fn remove_from_index() {
-        let records = make_records(vec![
-            ("1", make_record(&[("name_a", "Apple Inc")])),
-            ("2", make_record(&[("name_a", "Microsoft")])),
-        ]);
-        let mut idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = make_store(
+            vec![
+                ("1", make_record(&[("name_a", "Apple Inc")])),
+                ("2", make_record(&[("name_a", "Microsoft")])),
+            ],
+            Side::A,
+        );
+        let mut idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         assert_eq!(idx.num_docs(), 2);
 
         idx.remove("1");
@@ -458,11 +481,14 @@ mod tests {
     #[test]
     fn side_b_uses_field_b_names() {
         let fields = vec![("name_a".to_string(), "name_b".to_string())];
-        let records = make_records(vec![
-            ("1", make_record(&[("name_b", "Apple Inc")])),
-            ("2", make_record(&[("name_b", "Microsoft")])),
-        ]);
-        let idx = BM25Index::build(&records, &fields, Side::B).unwrap();
+        let store = make_store(
+            vec![
+                ("1", make_record(&[("name_b", "Apple Inc")])),
+                ("2", make_record(&[("name_b", "Microsoft")])),
+            ],
+            Side::B,
+        );
+        let idx = BM25Index::build(&store, Side::B, &fields).unwrap();
         assert_eq!(idx.num_docs(), 2);
 
         let results = idx.query("apple", 5);
@@ -472,22 +498,28 @@ mod tests {
 
     #[test]
     fn empty_fields_skipped() {
-        let records = make_records(vec![("1", make_record(&[("name_a", ""), ("desc_a", "")]))]);
-        let idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = make_store(
+            vec![("1", make_record(&[("name_a", ""), ("desc_a", "")]))],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         // Record with all empty fields should not be indexed
         assert_eq!(idx.num_docs(), 0);
     }
 
     #[test]
     fn special_characters_handled() {
-        let records = make_records(vec![
-            (
-                "1",
-                make_record(&[("name_a", "O'Brien & Associates (UK) Ltd.")]),
-            ),
-            ("2", make_record(&[("name_a", "Smith+Jones: Partners")])),
-        ]);
-        let idx = BM25Index::build(&records, &test_fields(), Side::A).unwrap();
+        let store = make_store(
+            vec![
+                (
+                    "1",
+                    make_record(&[("name_a", "O'Brien & Associates (UK) Ltd.")]),
+                ),
+                ("2", make_record(&[("name_a", "Smith+Jones: Partners")])),
+            ],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         assert_eq!(idx.num_docs(), 2);
 
         // Should be able to query without crashing

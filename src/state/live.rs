@@ -1,14 +1,16 @@
 //! Live match state: concurrent data structures for the live HTTP server.
 //!
-//! Both A and B sides are fully symmetrical: each has a DashMap of records,
-//! a combined embedding index, a BlockingIndex, and an unmatched set.
+//! Both A and B sides are fully symmetrical: each has a combined embedding
+//! index and (optionally) a BM25 index. Records, blocking, unmatched sets,
+//! and common ID indices are held by the shared `RecordStore` on
+//! `LiveMatchState`.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 
 use crate::config::Config;
 use crate::crossmap::CrossMap;
@@ -16,22 +18,20 @@ use crate::data;
 use crate::encoder::EncoderPool;
 use crate::encoder::coordinator::EncoderCoordinator;
 use crate::error::MelderError;
-use crate::matching::blocking::BlockingIndex;
-use crate::models::{Record, Side};
+use crate::models::Side;
 use crate::state::upsert_log::{UpsertLog, WalEvent};
+use crate::store::RecordStore;
+use crate::store::memory::MemoryStore;
 use crate::vectordb::{self, VectorDB, combined_cache_path, spec_hash};
 
-/// Per-side live state: records, combined index, blocking, unmatched set.
+/// Per-side live state: combined embedding index and BM25 index.
+///
+/// Records, blocking, unmatched, and common_id are in the shared
+/// `RecordStore` on `LiveMatchState`.
 pub struct LiveSideState {
-    pub records: DashMap<String, Record>,
     /// Single combined embedding index for this side.
     /// `None` if no embedding fields are configured in the job config.
     pub combined_index: Option<Box<dyn VectorDB>>,
-    pub blocking_index: RwLock<BlockingIndex>,
-    pub unmatched: DashSet<String>,
-    /// Reverse index: common_id_value -> record_id. Only populated when
-    /// `common_id_field` is configured for this side.
-    pub common_id_index: DashMap<String, String>,
     /// BM25 full-text index for this side. Built from fuzzy/embedding
     /// text fields. `None` if BM25 not configured or feature not enabled.
     #[cfg(feature = "bm25")]
@@ -41,12 +41,10 @@ pub struct LiveSideState {
 impl std::fmt::Debug for LiveSideState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("LiveSideState");
-        s.field("records", &self.records.len())
-            .field(
-                "combined_index_len",
-                &self.combined_index.as_ref().map(|i| i.len()).unwrap_or(0),
-            )
-            .field("unmatched", &self.unmatched.len());
+        s.field(
+            "combined_index_len",
+            &self.combined_index.as_ref().map(|i| i.len()).unwrap_or(0),
+        );
         #[cfg(feature = "bm25")]
         s.field("bm25_index", &self.bm25_index.is_some());
         s.finish()
@@ -74,6 +72,7 @@ pub struct ReviewEntry {
 /// Composite live match state with both sides + shared resources.
 pub struct LiveMatchState {
     pub config: Config,
+    pub store: Arc<MemoryStore>,
     pub a: LiveSideState,
     pub b: LiveSideState,
     pub crossmap: CrossMap,
@@ -108,13 +107,13 @@ impl LiveMatchState {
     /// 3. Load B dataset
     /// 4. Build/load A-side combined embedding index
     /// 5. Build/load B-side combined embedding index
-    /// 6. Build BlockingIndex for A
-    /// 7. Build BlockingIndex for B
-    /// 8. Load CrossMap
-    /// 9. Build unmatched sets
-    /// 10. Open WAL, replay events
-    /// 11. Rebuild unmatched sets after WAL replay
-    /// 12. Build common_id_index
+    /// 6. Build MemoryStore with records + blocking
+    /// 7. Load CrossMap
+    /// 8. Build unmatched sets
+    /// 9. Open WAL, replay events
+    /// 10. Rebuild unmatched sets after WAL replay
+    /// 11. Build common_id_index
+    /// 12. Build BM25 indices
     /// 13. Log startup summary
     pub fn load(config: Config) -> Result<Arc<Self>, MelderError> {
         let start = Instant::now();
@@ -196,22 +195,18 @@ impl LiveMatchState {
             true,
         )?;
 
-        // 6 & 7. Build BlockingIndex for A and B
-        let bi_start = Instant::now();
-        let mut blocking_a = BlockingIndex::from_config(&config.blocking);
-        for (id, record) in &records_a_map {
-            blocking_a.insert(id, record, Side::A);
-        }
-        let mut blocking_b = BlockingIndex::from_config(&config.blocking);
-        for (id, record) in &records_b_map {
-            blocking_b.insert(id, record, Side::B);
-        }
+        // 6. Build MemoryStore from loaded records (includes blocking indices)
+        let store = Arc::new(MemoryStore::from_records(
+            records_a_map,
+            records_b_map,
+            &config.blocking,
+        ));
         eprintln!(
             "Built blocking indices in {:.1}ms",
-            bi_start.elapsed().as_secs_f64() * 1000.0
+            start.elapsed().as_secs_f64() * 1000.0
         );
 
-        // 8. Load CrossMap
+        // 7. Load CrossMap
         let crossmap_path = config.cross_map.path.as_deref().unwrap_or("crossmap.csv");
         let crossmap = match CrossMap::load(
             Path::new(crossmap_path),
@@ -230,31 +225,19 @@ impl LiveMatchState {
             }
         };
 
-        // Move records into DashMaps
-        let records_a: DashMap<String, Record> = DashMap::with_capacity(records_a_map.len());
-        for (id, rec) in &records_a_map {
-            records_a.insert(id.clone(), rec.clone());
-        }
-        let records_b: DashMap<String, Record> = DashMap::with_capacity(records_b_map.len());
-        for (id, rec) in &records_b_map {
-            records_b.insert(id.clone(), rec.clone());
-        }
-
-        // 9. Build unmatched sets
-        let unmatched_a = DashSet::new();
-        let unmatched_b = DashSet::new();
-        for entry in records_a.iter() {
-            if !crossmap.has_a(entry.key()) {
-                unmatched_a.insert(entry.key().clone());
+        // 8. Build unmatched sets
+        for id in store.ids(Side::A) {
+            if !crossmap.has_a(&id) {
+                store.mark_unmatched(Side::A, &id);
             }
         }
-        for entry in records_b.iter() {
-            if !crossmap.has_b(entry.key()) {
-                unmatched_b.insert(entry.key().clone());
+        for id in store.ids(Side::B) {
+            if !crossmap.has_b(&id) {
+                store.mark_unmatched(Side::B, &id);
             }
         }
 
-        // 10. Open WAL and replay events
+        // 9. Open WAL and replay events
         let wal_path = config
             .live
             .upsert_log
@@ -276,30 +259,24 @@ impl LiveMatchState {
                 match event {
                     WalEvent::UpsertRecord { side, record } => {
                         let is_a = *side == Side::A;
-                        let (id_field, side_records, side_idx, blocking) = match side {
-                            Side::A => (
-                                &config.datasets.a.id_field,
-                                &records_a,
-                                combined_index_a.as_deref(),
-                                &mut blocking_a,
-                            ),
-                            Side::B => (
-                                &config.datasets.b.id_field,
-                                &records_b,
-                                combined_index_b.as_deref(),
-                                &mut blocking_b,
-                            ),
+                        let id_field = match side {
+                            Side::A => &config.datasets.a.id_field,
+                            Side::B => &config.datasets.b.id_field,
+                        };
+                        let side_idx = match side {
+                            Side::A => combined_index_a.as_deref(),
+                            Side::B => combined_index_b.as_deref(),
                         };
                         if let Some(id) = record.get(id_field) {
                             // Remove old record from blocking index before overwrite
-                            if let Some(old_rec) = side_records.get(id) {
-                                blocking.remove(id, &old_rec, *side);
+                            if let Some(old_rec) = store.get(*side, id) {
+                                store.blocking_remove(*side, id, &old_rec);
                             }
 
-                            side_records.insert(id.clone(), record.clone());
+                            store.insert(*side, id, record);
 
                             // Update blocking index with new record
-                            blocking.insert(id, record, *side);
+                            store.blocking_insert(*side, id, record);
 
                             // Re-encode combined vector only if not already
                             // present in the cached index (saved at shutdown).
@@ -330,15 +307,15 @@ impl LiveMatchState {
                         crossmap.remove(a_id, b_id);
                     }
                     WalEvent::RemoveRecord { side, id } => {
-                        let (side_records, side_idx, blocking) = match side {
-                            Side::A => (&records_a, combined_index_a.as_deref(), &mut blocking_a),
-                            Side::B => (&records_b, combined_index_b.as_deref(), &mut blocking_b),
+                        let side_idx = match side {
+                            Side::A => combined_index_a.as_deref(),
+                            Side::B => combined_index_b.as_deref(),
                         };
                         // Remove from blocking index (needs record data)
-                        if let Some(entry) = side_records.get(id) {
-                            blocking.remove(id, &entry, *side);
+                        if let Some(rec) = store.get(*side, id) {
+                            store.blocking_remove(*side, id, &rec);
                         }
-                        side_records.remove(id);
+                        store.remove(*side, id);
                         // Remove from combined index
                         if let Some(idx) = side_idx {
                             let _ = idx.remove(id);
@@ -366,60 +343,73 @@ impl LiveMatchState {
                 );
             }
 
-            // 11. Rebuild unmatched sets after WAL replay
-            unmatched_a.clear();
-            unmatched_b.clear();
-            for entry in records_a.iter() {
-                if !crossmap.has_a(entry.key()) {
-                    unmatched_a.insert(entry.key().clone());
+            // 10. Rebuild unmatched sets after WAL replay
+            // Clear and rebuild from current records vs crossmap
+            for id in store.unmatched_ids(Side::A) {
+                store.mark_matched(Side::A, &id);
+            }
+            for id in store.unmatched_ids(Side::B) {
+                store.mark_matched(Side::B, &id);
+            }
+            for id in store.ids(Side::A) {
+                if !crossmap.has_a(&id) {
+                    store.mark_unmatched(Side::A, &id);
                 }
             }
-            for entry in records_b.iter() {
-                if !crossmap.has_b(entry.key()) {
-                    unmatched_b.insert(entry.key().clone());
+            for id in store.ids(Side::B) {
+                if !crossmap.has_b(&id) {
+                    store.mark_unmatched(Side::B, &id);
                 }
             }
             eprintln!("WAL replay complete");
         }
 
-        // 12. Build common_id_index for each side if configured
-        let common_id_a = DashMap::new();
+        // 11. Build common_id_index for each side if configured
         if let Some(ref cid_field) = config.datasets.a.common_id_field {
-            for entry in records_a.iter() {
-                if let Some(val) = entry.value().get(cid_field) {
+            for id in store.ids(Side::A) {
+                if let Some(rec) = store.get(Side::A, &id)
+                    && let Some(val) = rec.get(cid_field)
+                {
                     let val = val.trim();
                     if !val.is_empty() {
-                        common_id_a.insert(val.to_string(), entry.key().clone());
+                        store.common_id_insert(Side::A, val, &id);
                     }
                 }
             }
         }
-        let common_id_b = DashMap::new();
         if let Some(ref cid_field) = config.datasets.b.common_id_field {
-            for entry in records_b.iter() {
-                if let Some(val) = entry.value().get(cid_field) {
+            for id in store.ids(Side::B) {
+                if let Some(rec) = store.get(Side::B, &id)
+                    && let Some(val) = rec.get(cid_field)
+                {
                     let val = val.trim();
                     if !val.is_empty() {
-                        common_id_b.insert(val.to_string(), entry.key().clone());
+                        store.common_id_insert(Side::B, val, &id);
                     }
                 }
             }
         }
 
-        // Build BM25 indices if configured
+        // 12. Build BM25 indices if configured
         #[cfg(feature = "bm25")]
         let (bm25_index_a, bm25_index_b) = {
             let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
             if has_bm25 && !config.bm25_fields.is_empty() {
                 let bm25_start = Instant::now();
-                let idx_a =
-                    crate::bm25::index::BM25Index::build(&records_a, &config.bm25_fields, Side::A)?;
-                let idx_b =
-                    crate::bm25::index::BM25Index::build(&records_b, &config.bm25_fields, Side::B)?;
+                let idx_a = crate::bm25::index::BM25Index::build(
+                    store.as_ref(),
+                    Side::A,
+                    &config.bm25_fields,
+                )?;
+                let idx_b = crate::bm25::index::BM25Index::build(
+                    store.as_ref(),
+                    Side::B,
+                    &config.bm25_fields,
+                )?;
                 eprintln!(
                     "Built BM25 indices (A: {}, B: {}) in {:.1}ms",
-                    records_a.len(),
-                    records_b.len(),
+                    store.len(Side::A),
+                    store.len(Side::B),
                     bm25_start.elapsed().as_secs_f64() * 1000.0
                 );
                 (
@@ -432,21 +422,13 @@ impl LiveMatchState {
         };
 
         let a_side = LiveSideState {
-            records: records_a,
             combined_index: combined_index_a,
-            blocking_index: RwLock::new(blocking_a),
-            unmatched: unmatched_a,
-            common_id_index: common_id_a,
             #[cfg(feature = "bm25")]
             bm25_index: bm25_index_a,
         };
 
         let b_side = LiveSideState {
-            records: records_b,
             combined_index: combined_index_b,
-            blocking_index: RwLock::new(blocking_b),
-            unmatched: unmatched_b,
-            common_id_index: common_id_b,
             #[cfg(feature = "bm25")]
             bm25_index: bm25_index_b,
         };
@@ -455,14 +437,14 @@ impl LiveMatchState {
         eprintln!(
             "Live state loaded in {:.1}s (A: {} records/{} unmatched, B: {} records/{} unmatched, crossmap: {} pairs)",
             total.as_secs_f64(),
-            a_side.records.len(),
-            a_side.unmatched.len(),
-            b_side.records.len(),
-            b_side.unmatched.len(),
+            store.len(Side::A),
+            store.unmatched_count(Side::A),
+            store.len(Side::B),
+            store.unmatched_count(Side::B),
             crossmap.len(),
         );
 
-        // 14. Build review queue from WAL replay
+        // 13. Build review queue from WAL replay
         let review_queue: DashMap<String, ReviewEntry> = DashMap::new();
         for event in &wal_events {
             match event {
@@ -507,6 +489,7 @@ impl LiveMatchState {
 
         Ok(Arc::new(Self {
             config,
+            store,
             a: a_side,
             b: b_side,
             crossmap,

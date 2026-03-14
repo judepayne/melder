@@ -29,12 +29,11 @@
 
 use std::collections::HashMap;
 
-use dashmap::DashMap;
-
 use crate::config::Config;
 use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::scoring;
+use crate::store::RecordStore;
 use crate::vectordb::VectorDB;
 
 /// Optional BM25 context passed into the pipeline.
@@ -79,7 +78,8 @@ impl Bm25Ctx {
 /// - `query_side`:           which side the query belongs to (A or B)
 /// - `query_combined_vec`: pre-encoded combined embedding vector for the query
 ///   (empty slice if no embedding fields configured)
-/// - `pool_records`: opposite-side records (DashMap)
+/// - `pool_store`: record store for looking up pool-side records
+/// - `pool_side`: which side of the store the pool records are on
 /// - `pool_combined_index`: combined embedding index for the pool side
 ///   (`None` if no embedding fields configured)
 /// - `blocked_ids`: IDs pre-selected by the caller's blocking query;
@@ -98,7 +98,8 @@ pub fn score_pool(
     query_record: &Record,
     query_side: Side,
     query_combined_vec: &[f32],
-    pool_records: &DashMap<String, Record>,
+    pool_store: &dyn RecordStore,
+    pool_side: Side,
     pool_combined_index: Option<&dyn VectorDB>,
     blocked_ids: &[String],
     config: &Config,
@@ -120,7 +121,8 @@ pub fn score_pool(
         ann_candidates,
         pool_combined_index,
         blocked_ids,
-        pool_records,
+        pool_store,
+        pool_side,
         query_record,
         query_side,
         &config.vector_backend,

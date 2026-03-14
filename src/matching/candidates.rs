@@ -17,10 +17,10 @@
 //! paths return all blocked records with `combined_dot = 0.0` (no ANN
 //! filtering possible).
 
-use dashmap::DashMap;
 use rayon::prelude::*;
 
 use crate::models::{Record, Side};
+use crate::store::RecordStore;
 use crate::vectordb::VectorDB;
 
 /// A candidate record from the opposite pool, with its combined embedding
@@ -48,7 +48,8 @@ pub struct Candidate {
 ///   `None` if no embedding fields are configured.
 /// - `blocked_ids`: IDs pre-selected by the blocking filter. Used by the
 ///   flat path. Ignored by the usearch path (blocking is internal).
-/// - `pool_records`: full pool of opposite-side records.
+/// - `pool_store`: record store for looking up pool-side records.
+/// - `pool_side`: which side of the store the pool records are on.
 /// - `query_record`: query record, used by usearch for block routing.
 /// - `query_side`: query side, used by usearch for block routing.
 /// - `backend`: "usearch" or "flat".
@@ -58,7 +59,8 @@ pub fn select_candidates(
     top_n: usize,
     pool_combined_index: Option<&dyn VectorDB>,
     blocked_ids: &[String],
-    pool_records: &DashMap<String, Record>,
+    pool_store: &dyn RecordStore,
+    pool_side: Side,
     query_record: &Record,
     query_side: Side,
     backend: &str,
@@ -76,9 +78,9 @@ pub fn select_candidates(
             return results
                 .into_iter()
                 .filter_map(|r| {
-                    pool_records.get(&r.id).map(|entry| Candidate {
+                    pool_store.get(pool_side, &r.id).map(|record| Candidate {
                         id: r.id.clone(),
-                        record: entry.value().clone(),
+                        record,
                         combined_dot: r.score as f64,
                     })
                 })
@@ -95,9 +97,9 @@ pub fn select_candidates(
         return blocked_ids
             .par_iter()
             .filter_map(|id| {
-                pool_records.get(id).map(|entry| Candidate {
+                pool_store.get(pool_side, id).map(|record| Candidate {
                     id: id.clone(),
-                    record: entry.value().clone(),
+                    record,
                     combined_dot: 0.0,
                 })
             })
@@ -109,7 +111,7 @@ pub fn select_candidates(
     let mut scored: Vec<Candidate> = blocked_ids
         .par_iter()
         .filter_map(|id| {
-            let entry = pool_records.get(id)?;
+            let record = pool_store.get(pool_side, id)?;
             let pool_vec = idx.get(id).ok().flatten().unwrap_or_default();
             let dot: f32 = if pool_vec.len() == query_combined_vec.len() {
                 query_combined_vec
@@ -122,7 +124,7 @@ pub fn select_candidates(
             };
             Some(Candidate {
                 id: id.clone(),
-                record: entry.value().clone(),
+                record,
                 combined_dot: dot as f64,
             })
         })
@@ -144,12 +146,18 @@ pub fn select_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::BlockingConfig;
+    use crate::store::memory::MemoryStore;
     use crate::vectordb::flat::FlatVectorDB;
 
     fn make_record(id: &str) -> Record {
         let mut r = Record::new();
         r.insert("id".into(), id.into());
         r
+    }
+
+    fn make_store() -> MemoryStore {
+        MemoryStore::new(&BlockingConfig::default())
     }
 
     fn unit_vec(dim: usize, seed: u64) -> Vec<f32> {
@@ -173,10 +181,10 @@ mod tests {
 
     #[test]
     fn flat_path_no_embeddings_returns_all_blocked() {
-        let pool: DashMap<String, Record> = DashMap::new();
-        pool.insert("r1".into(), make_record("r1"));
-        pool.insert("r2".into(), make_record("r2"));
-        pool.insert("r3".into(), make_record("r3"));
+        let store = make_store();
+        store.insert(Side::A, "r1", &make_record("r1"));
+        store.insert(Side::A, "r2", &make_record("r2"));
+        store.insert(Side::A, "r3", &make_record("r3"));
 
         let blocked_ids = vec!["r1".to_string(), "r2".to_string()];
         let query_record = make_record("query");
@@ -186,7 +194,8 @@ mod tests {
             5,
             None,
             &blocked_ids,
-            &pool,
+            &store,
+            Side::A,
             &query_record,
             Side::B,
             "flat",
@@ -216,10 +225,10 @@ mod tests {
         idx.upsert("r1", &v1, &dummy, Side::A).unwrap();
         idx.upsert("r2", &v2, &dummy, Side::A).unwrap();
 
-        let pool: DashMap<String, Record> = DashMap::new();
-        pool.insert("r0".into(), make_record("r0"));
-        pool.insert("r1".into(), make_record("r1"));
-        pool.insert("r2".into(), make_record("r2"));
+        let store = make_store();
+        store.insert(Side::A, "r0", &make_record("r0"));
+        store.insert(Side::A, "r1", &make_record("r1"));
+        store.insert(Side::A, "r2", &make_record("r2"));
 
         let blocked_ids = vec!["r0".to_string(), "r1".to_string(), "r2".to_string()];
         let query_record = make_record("query");
@@ -229,7 +238,8 @@ mod tests {
             2,
             Some(&idx as &dyn VectorDB),
             &blocked_ids,
-            &pool,
+            &store,
+            Side::A,
             &query_record,
             Side::B,
             "flat",
@@ -250,14 +260,14 @@ mod tests {
         let dim = 16usize;
         let idx = FlatVectorDB::new(dim);
         let dummy = make_record("x");
-        let pool: DashMap<String, Record> = DashMap::new();
+        let store = make_store();
         let mut blocked_ids = Vec::new();
 
         for i in 0..10 {
             let id = format!("r{}", i);
             let v = unit_vec(dim, i as u64);
             idx.upsert(&id, &v, &dummy, Side::A).unwrap();
-            pool.insert(id.clone(), make_record(&id));
+            store.insert(Side::A, &id, &make_record(&id));
             blocked_ids.push(id);
         }
 
@@ -269,7 +279,8 @@ mod tests {
             0, // no limit
             Some(&idx as &dyn VectorDB),
             &blocked_ids,
-            &pool,
+            &store,
+            Side::A,
             &query_record,
             Side::B,
             "flat",
