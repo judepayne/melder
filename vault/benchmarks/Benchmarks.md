@@ -8,7 +8,7 @@ related_code: [bench/, testdata/configs/]
 
 # Benchmarks
 
-Copied from README.md. Last updated: 2026-03-12
+Copied from README.md. Last updated: 2026-03-14
 
 ---
 
@@ -29,11 +29,11 @@ Apple Silicon M3 Macbook Air
 
 | | flat 10k × 10k | usearch 10k × 10k | flat 100k × 100k | usearch 100k × 100k |
 |---|---:|---:|---:|---:|
-| Index build time (no cache) | ~16s | ~18s | ~3m | ~3m 24s |
-| Index load time (pre-existing cache) | ~25ms | ~50ms | ~650ms | ~700ms |
-| Scoring throughput | 4,877 rec/s | **22,464 rec/s** | 363 rec/s | **9,886 rec/s** |
-| Wall time (cold) | — | — | — | 3m 36s |
-| Wall time (warm) | 1.6s | 0.85s | 4m 37s | **12s** |
+| Index build time (no cache) | ~16s | ~17s | ~3m | ~3m 21s |
+| Index load time (pre-existing cache) | ~25ms | ~50ms | ~650ms | ~600ms |
+| Scoring throughput | 4,877 rec/s | **28,937 rec/s** | 363 rec/s | **10,275 rec/s** |
+| Wall time (cold) | — | — | — | 3m 34s |
+| Wall time (warm) | 1.6s | 0.69s | 4m 37s | **11s** |
 
 **Observations**
 
@@ -81,9 +81,9 @@ Halving the encoding load has little impact; we're already encoding as fast as w
 
 | Metric | flat (c=1) | usearch (c=1) | flat (c=10) | usearch (c=10) |
 |--------|----------:|-------------:|------------:|---------------:|
-| Throughput | 160 req/s | 546 req/s | 251 req/s | **1,448 req/s** |
-| p50 latency | 5.6ms | 0.9ms | 30.5ms | 5.1ms |
-| p95 latency | 8.1ms | 3.5ms | 94.4ms | 19.8ms |
+| Throughput | 160 req/s | 546 req/s | 251 req/s | **1,505 req/s** |
+| p50 latency | 5.6ms | 0.9ms | 30.5ms | 5.4ms |
+| p95 latency | 8.1ms | 3.5ms | 94.4ms | 16.6ms |
 
 Similar to batch, at larger index sizes, usearch degrades more gracefully than flat.
 The usearch c=10 result includes the text-hash skip optimisation: the 20% of
