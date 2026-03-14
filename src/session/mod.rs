@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use crate::crossmap::CrossMapOps;
 use crate::error::SessionError;
 use crate::matching::pipeline;
 #[cfg(feature = "bm25")]
@@ -16,7 +15,6 @@ use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::live::{LiveMatchState, ReviewEntry, review_queue_key};
 use crate::state::upsert_log::WalEvent;
-use crate::store::RecordStore;
 
 /// Response types for API serialization.
 pub mod response {

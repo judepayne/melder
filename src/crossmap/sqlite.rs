@@ -36,6 +36,10 @@ impl SqliteCrossMap {
 }
 
 impl CrossMapOps for SqliteCrossMap {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn add(&self, a_id: &str, b_id: &str) {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // Remove any existing entries for either side first, then insert

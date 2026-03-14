@@ -169,6 +169,15 @@ pub struct LiveConfig {
     /// How often dirty CrossMap state is flushed to disk (seconds). Default 5.
     #[serde(default)]
     pub crossmap_flush_secs: Option<u64>,
+    /// Path to the SQLite database file for durable live-mode storage.
+    ///
+    /// When set, live mode uses `SqliteStore` + `SqliteCrossMap` instead of
+    /// in-memory `MemoryStore` + `MemoryCrossMap`. The database is created
+    /// on first run (cold start) and reused on subsequent runs (warm start).
+    ///
+    /// Default: `None` (use in-memory storage, current behavior).
+    #[serde(default)]
+    pub db_path: Option<String>,
 }
 
 /// Performance tuning — applies to both batch and live modes.

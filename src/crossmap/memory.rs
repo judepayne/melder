@@ -154,6 +154,10 @@ impl Default for MemoryCrossMap {
 // ── CrossMapOps implementation ───────────────────────────────────────────────
 
 impl CrossMapOps for MemoryCrossMap {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn add(&self, a_id: &str, b_id: &str) {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         g.a_to_b.insert(a_id.to_string(), b_id.to_string());

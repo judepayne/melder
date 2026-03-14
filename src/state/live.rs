@@ -22,6 +22,7 @@ use crate::models::Side;
 use crate::state::upsert_log::{UpsertLog, WalEvent};
 use crate::store::RecordStore;
 use crate::store::memory::MemoryStore;
+use crate::store::sqlite::open_sqlite;
 use crate::vectordb::{self, VectorDB, combined_cache_path, spec_hash};
 
 /// Per-side live state: combined embedding index and BM25 index.
@@ -72,16 +73,18 @@ pub struct ReviewEntry {
 /// Composite live match state with both sides + shared resources.
 pub struct LiveMatchState {
     pub config: Config,
-    pub store: Arc<MemoryStore>,
+    pub store: Arc<dyn RecordStore>,
     pub a: LiveSideState,
     pub b: LiveSideState,
-    pub crossmap: MemoryCrossMap,
+    pub crossmap: Box<dyn CrossMapOps>,
     pub encoder_pool: Arc<EncoderPool>,
     /// Optional batching coordinator for concurrent encoding.
     /// Created when `performance.encoder_batch_wait_ms > 0`.
     pub coordinator: Option<EncoderCoordinator>,
     pub wal: UpsertLog,
     pub crossmap_dirty: AtomicBool,
+    /// True when using SQLite-backed storage (crossmap flush is a no-op).
+    pub uses_sqlite: bool,
     /// Pending review-band matches. Keyed by `"{side}:{id}:{candidate_id}"`.
     /// Populated on `ReviewMatch` WAL events, drained on crossmap
     /// confirm/break and record re-upsert.
@@ -102,19 +105,18 @@ impl std::fmt::Debug for LiveMatchState {
 impl LiveMatchState {
     /// Load live match state from config: full startup sequence.
     ///
-    /// 1. Init encoder pool
-    /// 2. Load A dataset
-    /// 3. Load B dataset
-    /// 4. Build/load A-side combined embedding index
-    /// 5. Build/load B-side combined embedding index
-    /// 6. Build MemoryStore with records + blocking
-    /// 7. Load CrossMap
-    /// 8. Build unmatched sets
-    /// 9. Open WAL, replay events
-    /// 10. Rebuild unmatched sets after WAL replay
-    /// 11. Build common_id_index
-    /// 12. Build BM25 indices
-    /// 13. Log startup summary
+    /// Two startup paths depending on `live.db_path`:
+    ///
+    /// **Memory path** (no `db_path`): Load datasets from CSV, build
+    /// MemoryStore, load MemoryCrossMap from CSV, replay WAL. Current
+    /// behavior — backward compatible.
+    ///
+    /// **SQLite path** (`db_path` set):
+    /// - Cold start (no DB file): create DB, load datasets from CSV,
+    ///   populate SqliteStore + SqliteCrossMap.
+    /// - Warm start (DB file exists): open existing DB. Records, blocking,
+    ///   unmatched, common_id, and crossmap are already populated. Skip CSV
+    ///   loading and WAL replay.
     pub fn load(config: Config) -> Result<Arc<Self>, MelderError> {
         let start = Instant::now();
 
@@ -139,6 +141,22 @@ impl LiveMatchState {
             start.elapsed().as_secs_f64()
         );
 
+        // Determine startup mode
+        if let Some(db_path) = config.live.db_path.clone() {
+            Self::load_sqlite(config, &db_path, start, encoder_pool)
+        } else {
+            Self::load_memory(config, start, encoder_pool)
+        }
+    }
+
+    /// Memory-backed startup: load datasets, MemoryStore, WAL replay.
+    ///
+    /// This is the original startup path, preserved for backward compatibility.
+    fn load_memory(
+        config: Config,
+        start: Instant,
+        encoder_pool: Arc<EncoderPool>,
+    ) -> Result<Arc<Self>, MelderError> {
         // 2. Load A dataset
         let a_start = Instant::now();
         let (records_a_map, ids_a) = data::load_dataset(
@@ -196,7 +214,7 @@ impl LiveMatchState {
         )?;
 
         // 6. Build MemoryStore from loaded records (includes blocking indices)
-        let store = Arc::new(MemoryStore::from_records(
+        let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::from_records(
             records_a_map,
             records_b_map,
             &config.blocking,
@@ -208,7 +226,7 @@ impl LiveMatchState {
 
         // 7. Load CrossMap
         let crossmap_path = config.cross_map.path.as_deref().unwrap_or("crossmap.csv");
-        let crossmap = match MemoryCrossMap::load(
+        let crossmap: Box<dyn CrossMapOps> = match MemoryCrossMap::load(
             Path::new(crossmap_path),
             &config.cross_map.a_id_field,
             &config.cross_map.b_id_field,
@@ -217,11 +235,11 @@ impl LiveMatchState {
                 if !cm.is_empty() {
                     eprintln!("Loaded crossmap: {} pairs", cm.len());
                 }
-                cm
+                Box::new(cm)
             }
             Err(e) => {
                 eprintln!("Warning: failed to load crossmap ({}), starting fresh", e);
-                MemoryCrossMap::new()
+                Box::new(MemoryCrossMap::new())
             }
         };
 
@@ -365,61 +383,11 @@ impl LiveMatchState {
         }
 
         // 11. Build common_id_index for each side if configured
-        if let Some(ref cid_field) = config.datasets.a.common_id_field {
-            for id in store.ids(Side::A) {
-                if let Some(rec) = store.get(Side::A, &id)
-                    && let Some(val) = rec.get(cid_field)
-                {
-                    let val = val.trim();
-                    if !val.is_empty() {
-                        store.common_id_insert(Side::A, val, &id);
-                    }
-                }
-            }
-        }
-        if let Some(ref cid_field) = config.datasets.b.common_id_field {
-            for id in store.ids(Side::B) {
-                if let Some(rec) = store.get(Side::B, &id)
-                    && let Some(val) = rec.get(cid_field)
-                {
-                    let val = val.trim();
-                    if !val.is_empty() {
-                        store.common_id_insert(Side::B, val, &id);
-                    }
-                }
-            }
-        }
+        Self::build_common_id_index(&store, &config);
 
         // 12. Build BM25 indices if configured
         #[cfg(feature = "bm25")]
-        let (bm25_index_a, bm25_index_b) = {
-            let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
-            if has_bm25 && !config.bm25_fields.is_empty() {
-                let bm25_start = Instant::now();
-                let idx_a = crate::bm25::index::BM25Index::build(
-                    store.as_ref(),
-                    Side::A,
-                    &config.bm25_fields,
-                )?;
-                let idx_b = crate::bm25::index::BM25Index::build(
-                    store.as_ref(),
-                    Side::B,
-                    &config.bm25_fields,
-                )?;
-                eprintln!(
-                    "Built BM25 indices (A: {}, B: {}) in {:.1}ms",
-                    store.len(Side::A),
-                    store.len(Side::B),
-                    bm25_start.elapsed().as_secs_f64() * 1000.0
-                );
-                (
-                    Some(std::sync::Mutex::new(idx_a)),
-                    Some(std::sync::Mutex::new(idx_b)),
-                )
-            } else {
-                (None, None)
-            }
-        };
+        let (bm25_index_a, bm25_index_b) = Self::build_bm25_indices(&store, &config, start)?;
 
         let a_side = LiveSideState {
             combined_index: combined_index_a,
@@ -497,8 +465,273 @@ impl LiveMatchState {
             coordinator: None,
             wal,
             crossmap_dirty: AtomicBool::new(false),
+            uses_sqlite: false,
             review_queue,
         }))
+    }
+
+    /// SQLite-backed startup: cold start (create + populate) or warm start
+    /// (open existing DB).
+    fn load_sqlite(
+        config: Config,
+        db_path: &str,
+        start: Instant,
+        encoder_pool: Arc<EncoderPool>,
+    ) -> Result<Arc<Self>, MelderError> {
+        let db_exists = Path::new(db_path).exists();
+        let mode = if db_exists { "warm" } else { "cold" };
+        eprintln!("SQLite {} start: {}", mode, db_path);
+
+        let (sqlite_store, sqlite_crossmap) = open_sqlite(Path::new(db_path), &config.blocking)
+            .map_err(|e| MelderError::Other(anyhow::anyhow!("SQLite open failed: {}", e)))?;
+
+        let store: Arc<dyn RecordStore> = Arc::new(sqlite_store);
+        let crossmap: Box<dyn CrossMapOps> = Box::new(sqlite_crossmap);
+
+        if !db_exists {
+            // --- Cold start: load datasets from CSV into SQLite ---
+            let a_start = Instant::now();
+            let (records_a_map, _ids_a) = data::load_dataset(
+                Path::new(&config.datasets.a.path),
+                &config.datasets.a.id_field,
+                &config.required_fields_a,
+                config.datasets.a.format.as_deref(),
+            )
+            .map_err(MelderError::Data)?;
+            eprintln!(
+                "Loaded dataset A: {} records in {:.1}s",
+                records_a_map.len(),
+                a_start.elapsed().as_secs_f64()
+            );
+
+            let b_start = Instant::now();
+            let (records_b_map, _ids_b) = data::load_dataset(
+                Path::new(&config.datasets.b.path),
+                &config.datasets.b.id_field,
+                &config.required_fields_b,
+                config.datasets.b.format.as_deref(),
+            )
+            .map_err(MelderError::Data)?;
+            eprintln!(
+                "Loaded dataset B: {} records in {:.1}s",
+                records_b_map.len(),
+                b_start.elapsed().as_secs_f64()
+            );
+
+            // Populate SqliteStore with records + blocking
+            let pop_start = Instant::now();
+            for (id, record) in &records_a_map {
+                store.insert(Side::A, id, record);
+                store.blocking_insert(Side::A, id, record);
+            }
+            for (id, record) in &records_b_map {
+                store.insert(Side::B, id, record);
+                store.blocking_insert(Side::B, id, record);
+            }
+            eprintln!(
+                "Populated SQLite store in {:.1}s",
+                pop_start.elapsed().as_secs_f64()
+            );
+
+            // Load existing crossmap from CSV into SQLite
+            let crossmap_path = config.cross_map.path.as_deref().unwrap_or("crossmap.csv");
+            if let Ok(mem_cm) = MemoryCrossMap::load(
+                Path::new(crossmap_path),
+                &config.cross_map.a_id_field,
+                &config.cross_map.b_id_field,
+            ) && !mem_cm.is_empty()
+            {
+                let pairs = mem_cm.pairs();
+                for (a_id, b_id) in &pairs {
+                    crossmap.add(a_id, b_id);
+                }
+                eprintln!("Imported crossmap: {} pairs into SQLite", pairs.len());
+            }
+
+            // Build unmatched sets
+            for id in store.ids(Side::A) {
+                if crossmap.has_a(&id) {
+                    store.mark_matched(Side::A, &id);
+                } else {
+                    store.mark_unmatched(Side::A, &id);
+                }
+            }
+            for id in store.ids(Side::B) {
+                if crossmap.has_b(&id) {
+                    store.mark_matched(Side::B, &id);
+                } else {
+                    store.mark_unmatched(Side::B, &id);
+                }
+            }
+
+            // Build common_id_index
+            Self::build_common_id_index(&store, &config);
+        } else {
+            // --- Warm start: everything is already in SQLite ---
+            eprintln!(
+                "SQLite warm start: A={} records, B={} records, crossmap={} pairs",
+                store.len(Side::A),
+                store.len(Side::B),
+                crossmap.len(),
+            );
+        }
+
+        // Build embedding indices from the store (both cold and warm).
+        // For warm starts we need the record maps for the vector cache;
+        // assemble them from the store.
+        let ids_a = store.ids(Side::A);
+        let ids_b = store.ids(Side::B);
+
+        // build_or_load_combined_index needs &HashMap<String, Record>.
+        // Collect from the store for the vector cache builder.
+        let records_a_map: std::collections::HashMap<String, crate::models::Record> = ids_a
+            .iter()
+            .filter_map(|id| store.get(Side::A, id).map(|r| (id.clone(), r)))
+            .collect();
+        let records_b_map: std::collections::HashMap<String, crate::models::Record> = ids_b
+            .iter()
+            .filter_map(|id| store.get(Side::B, id).map(|r| (id.clone(), r)))
+            .collect();
+
+        let combined_index_a = vectordb::build_or_load_combined_index(
+            &config.vector_backend,
+            Some(&config.embeddings.a_cache_dir),
+            &records_a_map,
+            &ids_a,
+            &config,
+            true,
+            &encoder_pool,
+            true,
+        )?;
+
+        let combined_index_b = vectordb::build_or_load_combined_index(
+            &config.vector_backend,
+            config.embeddings.b_cache_dir.as_deref(),
+            &records_b_map,
+            &ids_b,
+            &config,
+            false,
+            &encoder_pool,
+            true,
+        )?;
+
+        // Build BM25 indices if configured
+        #[cfg(feature = "bm25")]
+        let (bm25_index_a, bm25_index_b) = Self::build_bm25_indices(&store, &config, start)?;
+
+        let a_side = LiveSideState {
+            combined_index: combined_index_a,
+            #[cfg(feature = "bm25")]
+            bm25_index: bm25_index_a,
+        };
+
+        let b_side = LiveSideState {
+            combined_index: combined_index_b,
+            #[cfg(feature = "bm25")]
+            bm25_index: bm25_index_b,
+        };
+
+        // Open WAL for append-only writes (no replay for SQLite path)
+        let wal_path = config
+            .live
+            .upsert_log
+            .as_deref()
+            .unwrap_or("bench/upsert.wal");
+        let wal = UpsertLog::open(Path::new(wal_path))
+            .map_err(|e| MelderError::Other(anyhow::anyhow!("WAL open failed: {}", e)))?;
+
+        let total = start.elapsed();
+        eprintln!(
+            "Live state loaded in {:.1}s (SQLite, A: {} records/{} unmatched, B: {} records/{} unmatched, crossmap: {} pairs)",
+            total.as_secs_f64(),
+            store.len(Side::A),
+            store.unmatched_count(Side::A),
+            store.len(Side::B),
+            store.unmatched_count(Side::B),
+            crossmap.len(),
+        );
+
+        // Review queue: empty for now (Step 5 will load from SQLite)
+        let review_queue: DashMap<String, ReviewEntry> = DashMap::new();
+
+        Ok(Arc::new(Self {
+            config,
+            store,
+            a: a_side,
+            b: b_side,
+            crossmap,
+            encoder_pool,
+            coordinator: None,
+            wal,
+            crossmap_dirty: AtomicBool::new(false),
+            uses_sqlite: true,
+            review_queue,
+        }))
+    }
+
+    /// Build common_id_index from the store for each side (if configured).
+    fn build_common_id_index(store: &Arc<dyn RecordStore>, config: &Config) {
+        if let Some(ref cid_field) = config.datasets.a.common_id_field {
+            for id in store.ids(Side::A) {
+                if let Some(rec) = store.get(Side::A, &id)
+                    && let Some(val) = rec.get(cid_field)
+                {
+                    let val = val.trim();
+                    if !val.is_empty() {
+                        store.common_id_insert(Side::A, val, &id);
+                    }
+                }
+            }
+        }
+        if let Some(ref cid_field) = config.datasets.b.common_id_field {
+            for id in store.ids(Side::B) {
+                if let Some(rec) = store.get(Side::B, &id)
+                    && let Some(val) = rec.get(cid_field)
+                {
+                    let val = val.trim();
+                    if !val.is_empty() {
+                        store.common_id_insert(Side::B, val, &id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build BM25 indices from the store (if BM25 is configured and enabled).
+    #[cfg(feature = "bm25")]
+    #[allow(clippy::type_complexity)]
+    fn build_bm25_indices(
+        store: &Arc<dyn RecordStore>,
+        config: &Config,
+        start: Instant,
+    ) -> Result<
+        (
+            Option<std::sync::Mutex<crate::bm25::index::BM25Index>>,
+            Option<std::sync::Mutex<crate::bm25::index::BM25Index>>,
+        ),
+        MelderError,
+    > {
+        let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
+        if has_bm25 && !config.bm25_fields.is_empty() {
+            let bm25_start = Instant::now();
+            let idx_a =
+                crate::bm25::index::BM25Index::build(store.as_ref(), Side::A, &config.bm25_fields)?;
+            let idx_b =
+                crate::bm25::index::BM25Index::build(store.as_ref(), Side::B, &config.bm25_fields)?;
+            eprintln!(
+                "Built BM25 indices (A: {}, B: {}) in {:.1}ms",
+                store.len(Side::A),
+                store.len(Side::B),
+                bm25_start.elapsed().as_secs_f64() * 1000.0
+            );
+            let _ = start; // suppress unused warning when bm25 timing is used
+            Ok((
+                Some(std::sync::Mutex::new(idx_a)),
+                Some(std::sync::Mutex::new(idx_b)),
+            ))
+        } else {
+            Ok((None, None))
+        }
     }
 
     /// Initialise the encoding coordinator if `encoder_batch_wait_ms > 0`.
@@ -553,17 +786,26 @@ impl LiveMatchState {
     }
 
     /// Flush crossmap to disk if dirty.
+    ///
+    /// No-op when using SQLite (auto-durable). For MemoryCrossMap, saves
+    /// to CSV via downcast to the concrete type.
     pub fn flush_crossmap(&self) -> Result<(), MelderError> {
+        if self.uses_sqlite {
+            return Ok(());
+        }
         if !self.take_crossmap_dirty() {
             return Ok(());
         }
-        self.crossmap
-            .save(
-                Path::new(self.crossmap_path()),
-                &self.config.cross_map.a_id_field,
-                &self.config.cross_map.b_id_field,
-            )
-            .map_err(MelderError::CrossMap)?;
+        // Downcast to MemoryCrossMap to call the inherent save() method.
+        if let Some(mem_cm) = self.crossmap.as_any().downcast_ref::<MemoryCrossMap>() {
+            mem_cm
+                .save(
+                    Path::new(self.crossmap_path()),
+                    &self.config.cross_map.a_id_field,
+                    &self.config.cross_map.b_id_field,
+                )
+                .map_err(MelderError::CrossMap)?;
+        }
         Ok(())
     }
 

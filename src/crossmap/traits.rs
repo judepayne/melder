@@ -4,10 +4,14 @@
 //! constructor/serialization concerns that differ between backends
 //! (CSV for `MemoryCrossMap`, no-op for `SqliteCrossMap`).
 
+use std::any::Any;
+
 /// Runtime operations on a bidirectional A↔B record-pair mapping.
 ///
 /// Thread-safe: all methods take `&self`. Implementations must be `Send + Sync`.
 pub trait CrossMapOps: Send + Sync {
+    /// Downcast support for accessing backend-specific methods.
+    fn as_any(&self) -> &dyn Any;
     /// Insert a pair unconditionally in both directions.
     fn add(&self, a_id: &str, b_id: &str);
 
