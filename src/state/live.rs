@@ -13,7 +13,7 @@ use std::time::Instant;
 use dashmap::DashMap;
 
 use crate::config::Config;
-use crate::crossmap::CrossMap;
+use crate::crossmap::{CrossMapOps, MemoryCrossMap};
 use crate::data;
 use crate::encoder::EncoderPool;
 use crate::encoder::coordinator::EncoderCoordinator;
@@ -75,7 +75,7 @@ pub struct LiveMatchState {
     pub store: Arc<MemoryStore>,
     pub a: LiveSideState,
     pub b: LiveSideState,
-    pub crossmap: CrossMap,
+    pub crossmap: MemoryCrossMap,
     pub encoder_pool: Arc<EncoderPool>,
     /// Optional batching coordinator for concurrent encoding.
     /// Created when `performance.encoder_batch_wait_ms > 0`.
@@ -208,7 +208,7 @@ impl LiveMatchState {
 
         // 7. Load CrossMap
         let crossmap_path = config.cross_map.path.as_deref().unwrap_or("crossmap.csv");
-        let crossmap = match CrossMap::load(
+        let crossmap = match MemoryCrossMap::load(
             Path::new(crossmap_path),
             &config.cross_map.a_id_field,
             &config.cross_map.b_id_field,
@@ -221,7 +221,7 @@ impl LiveMatchState {
             }
             Err(e) => {
                 eprintln!("Warning: failed to load crossmap ({}), starting fresh", e);
-                CrossMap::new()
+                MemoryCrossMap::new()
             }
         };
 

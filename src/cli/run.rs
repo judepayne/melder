@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::process;
 
+use crate::crossmap::CrossMapOps;
 use crate::store::RecordStore;
 
 /// Run a batch matching job.
@@ -49,7 +50,7 @@ pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<u
         .path
         .as_deref()
         .unwrap_or("crossmap.csv");
-    let crossmap = match crate::crossmap::CrossMap::load(
+    let crossmap = match crate::crossmap::MemoryCrossMap::load(
         Path::new(crossmap_path),
         &state.config.cross_map.a_id_field,
         &state.config.cross_map.b_id_field,
@@ -62,7 +63,7 @@ pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<u
         }
         Err(e) => {
             eprintln!("Warning: failed to load crossmap ({}), starting fresh", e);
-            crate::crossmap::CrossMap::new()
+            crate::crossmap::MemoryCrossMap::new()
         }
     };
 

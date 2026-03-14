@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process;
 
+use crate::crossmap::CrossMapOps;
+
 /// Show cross-map statistics.
 pub fn cmd_crossmap_stats(config_path: &Path) {
     let cfg = match crate::config::load_config(config_path) {
@@ -15,7 +17,7 @@ pub fn cmd_crossmap_stats(config_path: &Path) {
 
     // Load crossmap
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");
-    let crossmap = match crate::crossmap::CrossMap::load(
+    let crossmap = match crate::crossmap::MemoryCrossMap::load(
         Path::new(crossmap_path),
         &cfg.cross_map.a_id_field,
         &cfg.cross_map.b_id_field,
@@ -94,7 +96,7 @@ pub fn cmd_crossmap_export(config_path: &Path, out_path: &Path) {
     };
 
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");
-    let crossmap = match crate::crossmap::CrossMap::load(
+    let crossmap = match crate::crossmap::MemoryCrossMap::load(
         Path::new(crossmap_path),
         &cfg.cross_map.a_id_field,
         &cfg.cross_map.b_id_field,
@@ -135,7 +137,7 @@ pub fn cmd_crossmap_import(config_path: &Path, import_path: &Path) {
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");
 
     // Load existing crossmap
-    let crossmap = match crate::crossmap::CrossMap::load(
+    let crossmap = match crate::crossmap::MemoryCrossMap::load(
         Path::new(crossmap_path),
         &cfg.cross_map.a_id_field,
         &cfg.cross_map.b_id_field,
@@ -149,7 +151,7 @@ pub fn cmd_crossmap_import(config_path: &Path, import_path: &Path) {
     let initial_count = crossmap.len();
 
     // Load import file
-    let import_cm = match crate::crossmap::CrossMap::load(
+    let import_cm = match crate::crossmap::MemoryCrossMap::load(
         import_path,
         &cfg.cross_map.a_id_field,
         &cfg.cross_map.b_id_field,

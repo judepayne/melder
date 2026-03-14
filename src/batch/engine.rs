@@ -14,7 +14,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::config::Config;
-use crate::crossmap::CrossMap;
+use crate::crossmap::CrossMapOps;
 use crate::data;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
@@ -60,7 +60,7 @@ pub fn run_batch(
     store: &dyn RecordStore,
     combined_index_a: Option<&dyn VectorDB>,
     encoder_pool: &EncoderPool,
-    crossmap: &CrossMap,
+    crossmap: &dyn CrossMapOps,
     limit: Option<usize>,
 ) -> Result<BatchResult, MelderError> {
     let start = Instant::now();

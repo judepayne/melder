@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use crate::crossmap::CrossMapOps;
 use crate::error::SessionError;
 use crate::matching::pipeline;
 #[cfg(feature = "bm25")]

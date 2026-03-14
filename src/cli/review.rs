@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process;
 
+use crate::crossmap::CrossMapOps;
+
 /// List pending reviews.
 pub fn cmd_review_list(config_path: &Path) {
     let cfg = match crate::config::load_config(config_path) {
@@ -112,7 +114,7 @@ pub fn cmd_review_import(config_path: &Path, decisions_path: &Path) {
 
     // Load crossmap
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");
-    let crossmap = match crate::crossmap::CrossMap::load(
+    let crossmap = match crate::crossmap::MemoryCrossMap::load(
         Path::new(crossmap_path),
         &cfg.cross_map.a_id_field,
         &cfg.cross_map.b_id_field,

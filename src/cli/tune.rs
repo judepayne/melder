@@ -39,7 +39,7 @@ pub fn cmd_tune(config_path: &Path, verbose: bool) {
     };
 
     // 3. Run batch engine with a throwaway crossmap (no persistence)
-    let crossmap = crate::crossmap::CrossMap::new();
+    let crossmap = crate::crossmap::MemoryCrossMap::new();
     eprintln!("Running batch matching for score analysis...");
     let result = match crate::batch::run_batch(
         &state.config,
