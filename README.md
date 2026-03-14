@@ -1505,11 +1505,11 @@ crossmappings.
 
 | | flat 10k x 10k | usearch 10k x 10k | flat 100k x 100k | usearch 100k x 100k |
 |---|---:|---:|---:|---:|
-| Index build time (no cache) | ~16s | ~18s | ~3m | ~3m 24s |
-| Index load time (cached) | ~25ms | ~50ms | ~650ms | ~700ms |
-| Scoring throughput | 4,877 rec/s | **22,464 rec/s** | 363 rec/s | **9,886 rec/s** |
-| Wall time (cold) | — | — | — | 3m 36s |
-| Wall time (warm) | 1.6s | 0.85s | 4m 37s | **12s** |
+| Index build time (no cache) | ~16s | ~17s | ~3m | ~3m 21s |
+| Index load time (cached) | ~25ms | ~50ms | ~650ms | ~600ms |
+| Scoring throughput | 4,877 rec/s | **28,937 rec/s** | 363 rec/s | **10,275 rec/s** |
+| Wall time (cold) | — | — | — | 3m 34s |
+| Wall time (warm) | 1.6s | 0.69s | 4m 37s | **11s** |
 
 > [!TIP]
 > The first build of cached indices for large datasets can be slow —
@@ -1538,8 +1538,8 @@ the model entirely.
 | p95 latency | 4.4ms | 2.9ms | 39.9ms | 21.8ms |
 | p99 latency | 9.7ms | 3.3ms | 64.4ms | 35.4ms |
 
-At 100k x 100k (80% encoding, c=10), usearch reaches **1,448 req/s**
-with p50 latency of 5.1ms — 5.8x faster than the flat backend.
+At 100k x 100k (80% encoding, c=10), usearch reaches **1,505 req/s**
+with p50 latency of 5.4ms and p95 of 16.6ms — 5.8x faster than the flat backend.
 
 When fewer requests require encoding (40% instead of 80%), throughput
 improves further: the text-hash skip optimisation means non-encoding
