@@ -27,16 +27,27 @@ pub struct Config {
     /// (per-block HNSW, requires building with `--features usearch`).
     #[serde(default = "default_vector_backend")]
     pub vector_backend: String,
-    /// Maximum candidates to return from ANN search and to return in live
-    /// match responses. Defaults to 5. Set higher for better recall at the
-    /// cost of more full-scoring work.
+    /// Maximum final results to return per record. Defaults to 5.
     #[serde(default)]
     pub top_n: Option<usize>,
+    /// How many candidates ANN retrieves from the full block. Defaults to 50.
+    /// Must be >= bm25_candidates >= top_n when both ANN and BM25 are enabled.
+    #[serde(default)]
+    pub ann_candidates: Option<usize>,
+    /// How many candidates BM25 keeps after re-ranking ANN's shortlist (when
+    /// both are enabled), or retrieves directly from the full block (when BM25
+    /// is the sole filter). Defaults to 10.
+    #[serde(default)]
+    pub bm25_candidates: Option<usize>,
     // Derived at load time (not in YAML). Populated by `compute_required_fields`.
     #[serde(skip)]
     pub required_fields_a: Vec<String>,
     #[serde(skip)]
     pub required_fields_b: Vec<String>,
+    /// Derived at load time: (field_a, field_b) pairs from fuzzy/embedding
+    /// match fields, used to determine which fields BM25 indexes.
+    #[serde(skip)]
+    pub bm25_fields: Vec<(String, String)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,9 +129,13 @@ pub struct BlockingFieldPair {
 
 #[derive(Debug, Deserialize)]
 pub struct MatchField {
+    /// Empty for `method: bm25` (operates across all text fields).
+    #[serde(default)]
     pub field_a: String,
+    /// Empty for `method: bm25` (operates across all text fields).
+    #[serde(default)]
     pub field_b: String,
-    /// "exact" | "fuzzy" | "embedding" | "numeric"
+    /// "exact" | "fuzzy" | "embedding" | "numeric" | "bm25"
     pub method: String,
     /// For fuzzy: "wratio" | "partial_ratio" | "token_sort_ratio" | "ratio"
     #[serde(default)]

@@ -28,7 +28,7 @@ impl Side {
 pub struct FieldScore {
     pub field_a: String,
     pub field_b: String,
-    pub method: String, // "exact" | "fuzzy" | "embedding" | "numeric"
+    pub method: String, // "exact" | "fuzzy" | "embedding" | "numeric" | "bm25"
     pub score: f64,     // 0.0..=1.0
     pub weight: f64,
 }

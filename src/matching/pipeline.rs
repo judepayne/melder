@@ -1,13 +1,23 @@
 //! Unified scoring pipeline shared by batch and live modes.
 //!
-//! Three stages:
-//!   1. Blocking filter — now done by the *caller* before invoking score_pool;
+//! Four stages:
+//!   1. Blocking filter — done by the *caller* before invoking score_pool;
 //!      `blocked_ids` is passed in as a pre-queried slice.
-//!   2. Candidate selection — ANN search (usearch) or flat scan to get top_n
-//!   3. Full scoring — score candidates on all match_fields, classify, sort
+//!   2. ANN candidate selection — ANN search to get `ann_candidates`
+//!   3. BM25 re-rank/filter — narrow to `bm25_candidates` (optional)
+//!   4. Full scoring — score candidates on all match_fields, classify, sort,
+//!      truncate to `top_n`
 //!
 //! Both batch and live call `score_pool()` with the same arguments; the only
 //! difference is where the data comes from (MatchState vs LiveSideState).
+//!
+//! ## Sequential pipeline modes
+//!
+//! Depending on which methods are configured, the pipeline degrades gracefully:
+//! - ANN+BM25: block → ANN(ann_candidates) → BM25(bm25_candidates) → score(top_n)
+//! - ANN only: block → ANN(ann_candidates) → score(top_n)
+//! - BM25 only: block → BM25(bm25_candidates) → score(top_n)
+//! - Neither:   block → score all → truncate(top_n)
 //!
 //! ## Why blocked_ids is passed in rather than BlockingIndex
 //!
@@ -27,6 +37,36 @@ use crate::models::{Classification, MatchResult, Record, Side};
 use crate::scoring;
 use crate::vectordb::VectorDB;
 
+/// Optional BM25 context passed into the pipeline.
+///
+/// When the `bm25` feature is enabled, this carries a mutable reference to
+/// the pool-side BM25 index and the concatenated query text. When disabled,
+/// this is a zero-size unit struct.
+#[cfg(feature = "bm25")]
+pub struct Bm25Ctx<'a> {
+    pub index: &'a mut crate::bm25::index::BM25Index,
+    pub query_text: String,
+}
+
+#[cfg(not(feature = "bm25"))]
+pub struct Bm25Ctx;
+
+#[cfg(feature = "bm25")]
+impl<'a> Bm25Ctx<'a> {
+    /// Create a new BM25 context.
+    pub fn new(index: &'a mut crate::bm25::index::BM25Index, query_text: String) -> Self {
+        Self { index, query_text }
+    }
+}
+
+#[cfg(not(feature = "bm25"))]
+impl Bm25Ctx {
+    /// No-op constructor for when BM25 is not compiled in.
+    pub fn none() -> Self {
+        Self
+    }
+}
+
 /// Score a single query record against the opposite-side pool.
 ///
 /// Returns a sorted `Vec<MatchResult>` (descending by score), truncated to
@@ -45,8 +85,13 @@ use crate::vectordb::VectorDB;
 /// - `blocked_ids`: IDs pre-selected by the caller's blocking query;
 ///   pass all pool IDs if blocking is disabled
 /// - `config`: job config
-/// - `top_n`: max candidates from ANN search and max results to
-///   return (0 = no limit, flat path only)
+/// - `ann_candidates`: how many candidates ANN retrieves from the full block
+/// - `bm25_candidates`: how many candidates BM25 keeps after re-ranking
+/// - `top_n`: max results to return (0 = no limit)
+/// - `pool_bm25_index`: pool-side BM25 index for candidate filtering and
+///   scoring (`None` if BM25 not configured or feature not enabled)
+/// - `query_bm25_text`: concatenated query text for BM25 queries (empty if
+///   no BM25)
 #[allow(clippy::too_many_arguments)]
 pub fn score_pool(
     query_id: &str,
@@ -57,16 +102,22 @@ pub fn score_pool(
     pool_combined_index: Option<&dyn VectorDB>,
     blocked_ids: &[String],
     config: &Config,
+    ann_candidates: usize,
+    bm25_candidates: usize,
     top_n: usize,
+    bm25_ctx: Option<Bm25Ctx>,
 ) -> Vec<MatchResult> {
     if blocked_ids.is_empty() {
         return Vec::new();
     }
 
-    // --- Stage 2: Candidate selection (ANN or flat scan) ---
+    let has_embeddings = !query_combined_vec.is_empty();
+    let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
+
+    // --- Stage 2: ANN candidate selection ---
     let cands = candidates::select_candidates(
         query_combined_vec,
-        top_n,
+        ann_candidates,
         pool_combined_index,
         blocked_ids,
         pool_records,
@@ -79,15 +130,59 @@ pub fn score_pool(
         return Vec::new();
     }
 
-    // --- Stage 3: Full scoring with per-field decomposition ---
-    let emb_specs = crate::vectordb::embedding_field_specs(config);
-    let has_embeddings = !query_combined_vec.is_empty() && !emb_specs.is_empty();
+    // --- Stage 3: BM25 re-rank / filter ---
+    // Collect candidate IDs after ANN; BM25 may narrow this list.
+    #[cfg(feature = "bm25")]
+    let (cand_ids_after_bm25, bm25_scores_map) = if has_bm25 {
+        if let Some(ctx) = bm25_ctx {
+            bm25_filter_stage(
+                &cands,
+                Some(ctx.index),
+                &ctx.query_text,
+                has_embeddings,
+                bm25_candidates,
+                blocked_ids,
+            )
+        } else {
+            (
+                cands.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+                HashMap::new(),
+            )
+        }
+    } else {
+        (
+            cands.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+            HashMap::new(),
+        )
+    };
 
-    let mut results: Vec<MatchResult> = cands
+    #[cfg(not(feature = "bm25"))]
+    let (cand_ids_after_bm25, bm25_scores_map): (Vec<String>, HashMap<String, f64>) = {
+        let _ = has_bm25;
+        let _ = bm25_candidates;
+        let _ = bm25_ctx;
+        (cands.iter().map(|c| c.id.clone()).collect(), HashMap::new())
+    };
+
+    // Filter candidates to those that survived BM25 (or all if no BM25)
+    let final_cands: Vec<&candidates::Candidate> = cands
+        .iter()
+        .filter(|c| cand_ids_after_bm25.contains(&c.id))
+        .collect();
+
+    if final_cands.is_empty() {
+        return Vec::new();
+    }
+
+    // --- Stage 4: Full scoring with per-field decomposition ---
+    let emb_specs = crate::vectordb::embedding_field_specs(config);
+    let has_emb_specs = has_embeddings && !emb_specs.is_empty();
+
+    let mut results: Vec<MatchResult> = final_cands
         .iter()
         .map(|cand| {
             // Decompose combined vecs → per-field cosine similarities.
-            let emb_scores: Option<HashMap<String, f64>> = if has_embeddings {
+            let emb_scores: Option<HashMap<String, f64>> = if has_emb_specs {
                 pool_combined_index
                     .and_then(|idx| idx.get(&cand.id).ok().flatten())
                     .map(|pool_vec| decompose_emb_scores(query_combined_vec, &pool_vec, &emb_specs))
@@ -95,11 +190,14 @@ pub fn score_pool(
                 None
             };
 
+            let precomputed_bm25 = bm25_scores_map.get(&cand.id).copied();
+
             let score_result = scoring::score_pair(
                 query_record,
                 &cand.record,
                 &config.match_fields,
                 emb_scores.as_ref(),
+                precomputed_bm25,
             );
 
             scoring::build_match_result(
@@ -135,6 +233,84 @@ pub fn score_pool(
     }
 
     results
+}
+
+/// BM25 filtering stage. When ANN produced candidates, re-rank them by BM25
+/// and keep the top `bm25_candidates`. When no ANN (no embeddings), query
+/// the BM25 index directly.
+///
+/// Returns `(surviving_ids, id→normalised_bm25_score)`.
+#[cfg(feature = "bm25")]
+fn bm25_filter_stage(
+    ann_cands: &[candidates::Candidate],
+    pool_bm25_index: Option<&mut crate::bm25::index::BM25Index>,
+    query_bm25_text: &str,
+    has_embeddings: bool,
+    bm25_candidates: usize,
+    blocked_ids: &[String],
+) -> (Vec<String>, HashMap<String, f64>) {
+    use crate::bm25::scorer::normalise_bm25;
+
+    let bm25_idx = match pool_bm25_index {
+        Some(idx) => idx,
+        None => {
+            return (
+                ann_cands.iter().map(|c| c.id.clone()).collect(),
+                HashMap::new(),
+            );
+        }
+    };
+
+    if query_bm25_text.is_empty() {
+        return (
+            ann_cands.iter().map(|c| c.id.clone()).collect(),
+            HashMap::new(),
+        );
+    }
+
+    // Compute self-score for normalisation
+    let self_score = bm25_idx.self_score(query_bm25_text);
+
+    if has_embeddings {
+        // ANN+BM25 mode: re-rank ANN candidates by BM25
+        let mut scored: Vec<(String, f64)> = ann_cands
+            .iter()
+            .map(|c| {
+                let raw = bm25_idx.score_one(query_bm25_text, &c.id).unwrap_or(0.0);
+                let norm = normalise_bm25(raw, self_score);
+                (c.id.clone(), norm)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(bm25_candidates);
+
+        let ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
+        let map: HashMap<String, f64> = scored.into_iter().collect();
+        (ids, map)
+    } else {
+        // BM25-only mode: query the index directly
+        // Query more than bm25_candidates to account for blocked_ids filtering
+        let raw_results = bm25_idx.query(query_bm25_text, bm25_candidates * 3);
+        let blocked_set: std::collections::HashSet<&str> =
+            blocked_ids.iter().map(|s| s.as_str()).collect();
+
+        let mut scored: Vec<(String, f64)> = raw_results
+            .into_iter()
+            .filter(|(id, _)| blocked_set.contains(id.as_str()))
+            .map(|(id, raw)| {
+                let norm = normalise_bm25(raw, self_score);
+                (id, norm)
+            })
+            .take(bm25_candidates)
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
+        let map: HashMap<String, f64> = scored.into_iter().collect();
+        (ids, map)
+    }
 }
 
 /// Decompose two combined embedding vectors into per-field cosine similarities.

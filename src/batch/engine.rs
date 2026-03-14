@@ -21,6 +21,8 @@ use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::matching::blocking::BlockingIndex;
 use crate::matching::pipeline;
+#[cfg(feature = "bm25")]
+use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::vectordb::{self, VectorDB};
 
@@ -202,6 +204,25 @@ pub fn run_batch(
     // Precompute embedding specs once for combined-vec lookup during scoring.
     let emb_specs = vectordb::embedding_field_specs(config);
 
+    // Build A-side BM25 index if method: bm25 is configured.
+    #[cfg(feature = "bm25")]
+    let bm25_index_a: Option<std::sync::Mutex<crate::bm25::index::BM25Index>> = {
+        let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
+        if has_bm25 && !config.bm25_fields.is_empty() {
+            let bm25_start = Instant::now();
+            let idx =
+                crate::bm25::index::BM25Index::build(records_a, &config.bm25_fields, Side::A)?;
+            eprintln!(
+                "Built BM25 index for {} A records in {:.1}ms",
+                records_a.len(),
+                bm25_start.elapsed().as_secs_f64() * 1000.0
+            );
+            Some(std::sync::Mutex::new(idx))
+        } else {
+            None
+        }
+    };
+
     // Score all B records in a single parallel pass.
     let progress = AtomicUsize::new(0);
     let work_total = work_ids.len();
@@ -249,6 +270,47 @@ pub fn run_batch(
                 .unwrap_or_default();
 
             // Shared pipeline: candidate selection → full scoring
+            let ann_candidates = config.ann_candidates.unwrap_or(50);
+            let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
+
+            // Build BM25 context: lock the index, build query text, pass to pipeline.
+            #[cfg(feature = "bm25")]
+            let results = if let Some(ref mtx) = bm25_index_a {
+                let mut guard = mtx.lock().unwrap_or_else(|e| e.into_inner());
+                let query_text = guard.query_text_for(b_record.value(), Side::B);
+                let ctx = Bm25Ctx::new(&mut guard, query_text);
+                pipeline::score_pool(
+                    b_id,
+                    b_record.value(),
+                    Side::B,
+                    &query_combined_vec,
+                    records_a,
+                    combined_index_a,
+                    &blocked_ids,
+                    config,
+                    ann_candidates,
+                    bm25_candidates_n,
+                    top_n,
+                    Some(ctx),
+                )
+            } else {
+                pipeline::score_pool(
+                    b_id,
+                    b_record.value(),
+                    Side::B,
+                    &query_combined_vec,
+                    records_a,
+                    combined_index_a,
+                    &blocked_ids,
+                    config,
+                    ann_candidates,
+                    bm25_candidates_n,
+                    top_n,
+                    None,
+                )
+            };
+
+            #[cfg(not(feature = "bm25"))]
             let results = pipeline::score_pool(
                 b_id,
                 b_record.value(),
@@ -258,7 +320,10 @@ pub fn run_batch(
                 combined_index_a,
                 &blocked_ids,
                 config,
+                ann_candidates,
+                bm25_candidates_n,
                 top_n,
+                None,
             );
 
             // Claim loop: try each auto-match candidate in ranked order.

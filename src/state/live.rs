@@ -32,18 +32,24 @@ pub struct LiveSideState {
     /// Reverse index: common_id_value -> record_id. Only populated when
     /// `common_id_field` is configured for this side.
     pub common_id_index: DashMap<String, String>,
+    /// BM25 full-text index for this side. Built from fuzzy/embedding
+    /// text fields. `None` if BM25 not configured or feature not enabled.
+    #[cfg(feature = "bm25")]
+    pub bm25_index: Option<std::sync::Mutex<crate::bm25::index::BM25Index>>,
 }
 
 impl std::fmt::Debug for LiveSideState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LiveSideState")
-            .field("records", &self.records.len())
+        let mut s = f.debug_struct("LiveSideState");
+        s.field("records", &self.records.len())
             .field(
                 "combined_index_len",
                 &self.combined_index.as_ref().map(|i| i.len()).unwrap_or(0),
             )
-            .field("unmatched", &self.unmatched.len())
-            .finish()
+            .field("unmatched", &self.unmatched.len());
+        #[cfg(feature = "bm25")]
+        s.field("bm25_index", &self.bm25_index.is_some());
+        s.finish()
     }
 }
 
@@ -400,12 +406,39 @@ impl LiveMatchState {
             }
         }
 
+        // Build BM25 indices if configured
+        #[cfg(feature = "bm25")]
+        let (bm25_index_a, bm25_index_b) = {
+            let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
+            if has_bm25 && !config.bm25_fields.is_empty() {
+                let bm25_start = Instant::now();
+                let idx_a =
+                    crate::bm25::index::BM25Index::build(&records_a, &config.bm25_fields, Side::A)?;
+                let idx_b =
+                    crate::bm25::index::BM25Index::build(&records_b, &config.bm25_fields, Side::B)?;
+                eprintln!(
+                    "Built BM25 indices (A: {}, B: {}) in {:.1}ms",
+                    records_a.len(),
+                    records_b.len(),
+                    bm25_start.elapsed().as_secs_f64() * 1000.0
+                );
+                (
+                    Some(std::sync::Mutex::new(idx_a)),
+                    Some(std::sync::Mutex::new(idx_b)),
+                )
+            } else {
+                (None, None)
+            }
+        };
+
         let a_side = LiveSideState {
             records: records_a,
             combined_index: combined_index_a,
             blocking_index: RwLock::new(blocking_a),
             unmatched: unmatched_a,
             common_id_index: common_id_a,
+            #[cfg(feature = "bm25")]
+            bm25_index: bm25_index_a,
         };
 
         let b_side = LiveSideState {
@@ -414,6 +447,8 @@ impl LiveMatchState {
             blocking_index: RwLock::new(blocking_b),
             unmatched: unmatched_b,
             common_id_index: common_id_b,
+            #[cfg(feature = "bm25")]
+            bm25_index: bm25_index_b,
         };
 
         let total = start.elapsed();

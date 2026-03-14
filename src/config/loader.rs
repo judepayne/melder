@@ -8,7 +8,7 @@ use crate::error::ConfigError;
 use super::schema::{BlockingFieldPair, Config, DatasetConfig};
 
 /// Valid match methods.
-const VALID_METHODS: &[&str] = &["exact", "fuzzy", "embedding", "numeric"];
+const VALID_METHODS: &[&str] = &["exact", "fuzzy", "embedding", "numeric", "bm25"];
 
 /// Valid fuzzy scorers.
 const VALID_SCORERS: &[&str] = &["wratio", "partial_ratio", "token_sort", "ratio"];
@@ -33,6 +33,7 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     normalise_blocking(&mut cfg);
     apply_defaults(&mut cfg);
     validate(&cfg)?;
+    derive_bm25_fields(&mut cfg);
     derive_required_fields(&mut cfg);
 
     Ok(cfg)
@@ -61,6 +62,16 @@ fn apply_defaults(cfg: &mut Config) {
     // cross_map backend already has serde default, but belt-and-suspenders
     if cfg.cross_map.backend.is_empty() {
         cfg.cross_map.backend = "local".into();
+    }
+
+    // ann_candidates: default 50
+    if cfg.ann_candidates.is_none() || cfg.ann_candidates == Some(0) {
+        cfg.ann_candidates = Some(50);
+    }
+
+    // bm25_candidates: default 10
+    if cfg.bm25_candidates.is_none() || cfg.bm25_candidates == Some(0) {
+        cfg.bm25_candidates = Some(10);
     }
 
     // fuzzy scorer defaults
@@ -146,11 +157,33 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
 
     // 15-19. validate each match field + accumulate weight sum
     let mut weight_sum = 0.0_f64;
+    let mut bm25_count = 0usize;
     for (i, mf) in cfg.match_fields.iter().enumerate() {
         let prefix = format!("match_fields[{}]", i);
-        require_non_empty(&mf.field_a, &format!("{}.field_a", prefix))?;
-        require_non_empty(&mf.field_b, &format!("{}.field_b", prefix))?;
         require_one_of(&mf.method, VALID_METHODS, &format!("{}.method", prefix))?;
+
+        if mf.method == "bm25" {
+            // BM25 takes no field_a/field_b — reject if set.
+            if !mf.field_a.is_empty() || !mf.field_b.is_empty() {
+                return Err(ConfigError::InvalidValue {
+                    field: prefix.to_string(),
+                    message: "bm25 method operates across all text fields; field_a and field_b must be omitted".into(),
+                });
+            }
+            bm25_count += 1;
+
+            // Feature-flag gating
+            if !cfg!(feature = "bm25") {
+                return Err(ConfigError::InvalidValue {
+                    field: format!("{}.method", prefix),
+                    message: "bm25 method requires building with --features bm25".into(),
+                });
+            }
+        } else {
+            // Non-BM25 methods require field_a and field_b.
+            require_non_empty(&mf.field_a, &format!("{}.field_a", prefix))?;
+            require_non_empty(&mf.field_b, &format!("{}.field_b", prefix))?;
+        }
 
         if mf.method == "fuzzy"
             && let Some(ref scorer) = mf.scorer
@@ -166,6 +199,65 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
             });
         }
         weight_sum += mf.weight;
+    }
+
+    // At most one BM25 entry allowed.
+    if bm25_count > 1 {
+        return Err(ConfigError::InvalidValue {
+            field: "match_fields".into(),
+            message: format!("at most one bm25 entry allowed, found {}", bm25_count),
+        });
+    }
+
+    // Filter size constraints
+    let has_bm25 = bm25_count > 0;
+    let has_embedding = cfg.match_fields.iter().any(|mf| mf.method == "embedding");
+    let top_n = cfg.top_n.unwrap_or(5);
+    let ann_candidates = cfg.ann_candidates.unwrap_or(50);
+    let bm25_candidates = cfg.bm25_candidates.unwrap_or(10);
+
+    if has_embedding && has_bm25 {
+        // ann_candidates >= bm25_candidates >= top_n
+        if ann_candidates < bm25_candidates {
+            return Err(ConfigError::InvalidValue {
+                field: "ann_candidates".into(),
+                message: format!(
+                    "must be >= bm25_candidates ({}) when both ANN and BM25 are enabled, got {}",
+                    bm25_candidates, ann_candidates
+                ),
+            });
+        }
+        if bm25_candidates < top_n {
+            return Err(ConfigError::InvalidValue {
+                field: "bm25_candidates".into(),
+                message: format!(
+                    "must be >= top_n ({}) when BM25 is enabled, got {}",
+                    top_n, bm25_candidates
+                ),
+            });
+        }
+    } else if has_embedding {
+        // ann_candidates >= top_n
+        if ann_candidates < top_n {
+            return Err(ConfigError::InvalidValue {
+                field: "ann_candidates".into(),
+                message: format!(
+                    "must be >= top_n ({}) when ANN is enabled, got {}",
+                    top_n, ann_candidates
+                ),
+            });
+        }
+    } else if has_bm25 {
+        // bm25_candidates >= top_n
+        if bm25_candidates < top_n {
+            return Err(ConfigError::InvalidValue {
+                field: "bm25_candidates".into(),
+                message: format!(
+                    "must be >= top_n ({}) when BM25 is enabled, got {}",
+                    top_n, bm25_candidates
+                ),
+            });
+        }
     }
 
     // 20. weights sum to 1.0
@@ -326,6 +418,19 @@ pub fn infer_format(path: &str, field_prefix: &str) -> Result<String, ConfigErro
 // Derived fields
 // ---------------------------------------------------------------------------
 
+/// Derive `bm25_fields` from fuzzy/embedding match field entries.
+///
+/// BM25 auto-indexes only the text fields used by fuzzy and embedding
+/// methods — no exact-match field noise.
+fn derive_bm25_fields(cfg: &mut Config) {
+    cfg.bm25_fields = cfg
+        .match_fields
+        .iter()
+        .filter(|mf| mf.method == "fuzzy" || mf.method == "embedding")
+        .map(|mf| (mf.field_a.clone(), mf.field_b.clone()))
+        .collect();
+}
+
 fn derive_required_fields(cfg: &mut Config) {
     let mut seen_a = HashSet::new();
     let mut seen_b = HashSet::new();
@@ -346,8 +451,11 @@ fn derive_required_fields(cfg: &mut Config) {
         seen_b.insert(cid.clone());
     }
 
-    // match fields
+    // match fields (skip BM25 — no field_a/field_b)
     for mf in &cfg.match_fields {
+        if mf.method == "bm25" {
+            continue;
+        }
         seen_a.insert(mf.field_a.clone());
         seen_b.insert(mf.field_b.clone());
     }
@@ -804,6 +912,231 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
             "got: {}",
             err
         );
+    }
+
+    // --- BM25 validation tests ---
+
+    /// Helper: minimal valid YAML for tests that add BM25 match fields.
+    fn base_yaml_with_match_fields(match_fields_yaml: &str) -> String {
+        format!(
+            r#"
+job:
+  name: test
+datasets:
+  a: {{ path: "a.csv", id_field: id }}
+  b: {{ path: "b.csv", id_field: id }}
+cross_map: {{ backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }}
+embeddings: {{ model: m, a_cache_dir: i }}
+match_fields:
+{}
+thresholds: {{ auto_match: 0.85, review_floor: 0.6 }}
+output: {{ results_path: r, review_path: rv, unmatched_path: u }}
+"#,
+            match_fields_yaml
+        )
+    }
+
+    #[test]
+    fn bm25_accepted_without_fields() {
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 0.8 }\n  - { method: bm25, weight: 0.2 }",
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        if cfg!(feature = "bm25") {
+            validate(&cfg).unwrap();
+        } else {
+            // Without bm25 feature, method: bm25 should be rejected
+            let err = validate(&cfg).unwrap_err();
+            assert!(err.to_string().contains("--features bm25"), "got: {}", err);
+        }
+    }
+
+    #[test]
+    fn bm25_rejected_with_field_a() {
+        // Only testable when bm25 feature is enabled (otherwise rejected earlier for missing feature)
+        if !cfg!(feature = "bm25") {
+            return;
+        }
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 0.8 }\n  - { field_a: x, method: bm25, weight: 0.2 }",
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("must be omitted"), "got: {}", err);
+    }
+
+    #[test]
+    fn bm25_rejected_with_field_b() {
+        if !cfg!(feature = "bm25") {
+            return;
+        }
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 0.8 }\n  - { field_b: x, method: bm25, weight: 0.2 }",
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("must be omitted"), "got: {}", err);
+    }
+
+    #[test]
+    fn bm25_multiple_rejected() {
+        if !cfg!(feature = "bm25") {
+            return;
+        }
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 0.6 }\n  - { method: bm25, weight: 0.2 }\n  - { method: bm25, weight: 0.2 }",
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("at most one bm25"), "got: {}", err);
+    }
+
+    #[test]
+    fn bm25_ann_candidates_lt_bm25_candidates_rejected() {
+        if !cfg!(feature = "bm25") {
+            return;
+        }
+        let yaml = format!(
+            r#"
+job:
+  name: test
+datasets:
+  a: {{ path: "a.csv", id_field: id }}
+  b: {{ path: "b.csv", id_field: id }}
+cross_map: {{ backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }}
+embeddings: {{ model: m, a_cache_dir: i }}
+ann_candidates: 5
+bm25_candidates: 10
+match_fields:
+  - {{ field_a: f, field_b: f, method: embedding, weight: 0.8 }}
+  - {{ method: bm25, weight: 0.2 }}
+thresholds: {{ auto_match: 0.85, review_floor: 0.6 }}
+output: {{ results_path: r, review_path: rv, unmatched_path: u }}
+"#
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("ann_candidates"), "got: {}", err);
+    }
+
+    #[test]
+    fn bm25_candidates_lt_top_n_rejected() {
+        if !cfg!(feature = "bm25") {
+            return;
+        }
+        let yaml = format!(
+            r#"
+job:
+  name: test
+datasets:
+  a: {{ path: "a.csv", id_field: id }}
+  b: {{ path: "b.csv", id_field: id }}
+cross_map: {{ backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }}
+embeddings: {{ model: m, a_cache_dir: i }}
+bm25_candidates: 2
+top_n: 5
+match_fields:
+  - {{ field_a: f, field_b: f, method: exact, weight: 0.8 }}
+  - {{ method: bm25, weight: 0.2 }}
+thresholds: {{ auto_match: 0.85, review_floor: 0.6 }}
+output: {{ results_path: r, review_path: rv, unmatched_path: u }}
+"#
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(err.to_string().contains("bm25_candidates"), "got: {}", err);
+    }
+
+    #[test]
+    fn bm25_fields_derived_from_fuzzy_and_embedding() {
+        if !cfg!(feature = "bm25") {
+            return;
+        }
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: name_a, field_b: name_b, method: fuzzy, weight: 0.3 }\n  - { field_a: desc_a, field_b: desc_b, method: embedding, weight: 0.3 }\n  - { field_a: code_a, field_b: code_b, method: exact, weight: 0.2 }\n  - { method: bm25, weight: 0.2 }",
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        derive_bm25_fields(&mut cfg);
+        // Should contain fuzzy and embedding fields, NOT exact
+        assert_eq!(cfg.bm25_fields.len(), 2);
+        assert!(
+            cfg.bm25_fields
+                .contains(&("name_a".into(), "name_b".into()))
+        );
+        assert!(
+            cfg.bm25_fields
+                .contains(&("desc_a".into(), "desc_b".into()))
+        );
+    }
+
+    #[test]
+    fn bm25_feature_flag_gating() {
+        // Without the bm25 feature, method: bm25 should be rejected.
+        // With the bm25 feature, it should be accepted.
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 0.8 }\n  - { method: bm25, weight: 0.2 }",
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        if cfg!(feature = "bm25") {
+            validate(&cfg).unwrap();
+        } else {
+            let err = validate(&cfg).unwrap_err();
+            assert!(err.to_string().contains("--features bm25"), "got: {}", err);
+        }
+    }
+
+    #[test]
+    fn bm25_not_in_required_fields() {
+        if !cfg!(feature = "bm25") {
+            return;
+        }
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 0.8 }\n  - { method: bm25, weight: 0.2 }",
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        derive_bm25_fields(&mut cfg);
+        derive_required_fields(&mut cfg);
+        // BM25 has empty field_a/field_b — they should NOT appear in required fields
+        assert!(
+            !cfg.required_fields_a.contains(&String::new()),
+            "empty string should not be in required_fields_a"
+        );
+        assert!(
+            !cfg.required_fields_b.contains(&String::new()),
+            "empty string should not be in required_fields_b"
+        );
+    }
+
+    #[test]
+    fn ann_candidates_defaults() {
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }",
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        assert_eq!(cfg.ann_candidates, Some(50));
+        assert_eq!(cfg.bm25_candidates, Some(10));
     }
 
     #[test]

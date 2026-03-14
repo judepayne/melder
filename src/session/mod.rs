@@ -10,6 +10,8 @@ use std::time::Instant;
 
 use crate::error::SessionError;
 use crate::matching::pipeline;
+#[cfg(feature = "bm25")]
+use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::live::{LiveMatchState, ReviewEntry, review_queue_key};
 use crate::state::upsert_log::WalEvent;
@@ -434,6 +436,13 @@ impl Session {
             bi.insert(&id, &record, side);
         }
 
+        // 6b. Update BM25 index
+        #[cfg(feature = "bm25")]
+        if let Some(ref bm25_mtx) = this_side.bm25_index {
+            let mut idx = bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            idx.upsert(&id, &record);
+        }
+
         // 8. Update common_id_index and check for common ID match
         let this_cid_field = match side {
             Side::A => config.datasets.a.common_id_field.as_deref(),
@@ -533,6 +542,47 @@ impl Session {
             .as_ref()
             .and_then(|idx| idx.get(&id).ok().flatten())
             .unwrap_or_default();
+        let ann_candidates = config.ann_candidates.unwrap_or(50);
+        let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
+
+        // Build BM25 context from opposite side's index
+        #[cfg(feature = "bm25")]
+        let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
+            let mut guard = opp_bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            let query_text = guard.query_text_for(&record, side);
+            let ctx = Bm25Ctx::new(&mut guard, query_text);
+            pipeline::score_pool(
+                &id,
+                &record,
+                side,
+                &query_combined_vec,
+                &opp_side.records,
+                opp_side.combined_index.as_deref(),
+                &blocked_ids,
+                config,
+                ann_candidates,
+                bm25_candidates_n,
+                top_n,
+                Some(ctx),
+            )
+        } else {
+            pipeline::score_pool(
+                &id,
+                &record,
+                side,
+                &query_combined_vec,
+                &opp_side.records,
+                opp_side.combined_index.as_deref(),
+                &blocked_ids,
+                config,
+                ann_candidates,
+                bm25_candidates_n,
+                top_n,
+                None,
+            )
+        };
+
+        #[cfg(not(feature = "bm25"))]
         let results = pipeline::score_pool(
             &id,
             &record,
@@ -542,7 +592,10 @@ impl Session {
             opp_side.combined_index.as_deref(),
             &blocked_ids,
             config,
+            ann_candidates,
+            bm25_candidates_n,
             top_n,
+            None,
         );
 
         // 10. Claim loop: try candidates in ranked order.
@@ -667,6 +720,13 @@ impl Session {
         // Remove from combined index
         if let Some(ref idx) = this_side.combined_index {
             let _ = idx.remove(id);
+        }
+
+        // Remove from BM25 index
+        #[cfg(feature = "bm25")]
+        if let Some(ref bm25_mtx) = this_side.bm25_index {
+            let mut idx = bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            idx.remove(id);
         }
 
         // Remove from unmatched set
@@ -809,6 +869,47 @@ impl Session {
             .as_ref()
             .and_then(|idx| idx.get(id).ok().flatten())
             .unwrap_or_default();
+        let ann_candidates = config.ann_candidates.unwrap_or(50);
+        let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
+
+        // Build BM25 context from opposite side's index
+        #[cfg(feature = "bm25")]
+        let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
+            let mut guard = opp_bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            let query_text = guard.query_text_for(&record, side);
+            let ctx = Bm25Ctx::new(&mut guard, query_text);
+            pipeline::score_pool(
+                id,
+                &record,
+                side,
+                &query_combined_vec,
+                &opp_side.records,
+                opp_side.combined_index.as_deref(),
+                &blocked_ids,
+                config,
+                ann_candidates,
+                bm25_candidates_n,
+                top_n,
+                Some(ctx),
+            )
+        } else {
+            pipeline::score_pool(
+                id,
+                &record,
+                side,
+                &query_combined_vec,
+                &opp_side.records,
+                opp_side.combined_index.as_deref(),
+                &blocked_ids,
+                config,
+                ann_candidates,
+                bm25_candidates_n,
+                top_n,
+                None,
+            )
+        };
+
+        #[cfg(not(feature = "bm25"))]
         let results = pipeline::score_pool(
             id,
             &record,
@@ -818,7 +919,10 @@ impl Session {
             opp_side.combined_index.as_deref(),
             &blocked_ids,
             config,
+            ann_candidates,
+            bm25_candidates_n,
             top_n,
+            None,
         );
 
         let classification = results

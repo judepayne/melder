@@ -20,50 +20,69 @@ pub struct ScoreResult {
 /// - For `embedding` fields: uses pre-computed cosine similarity if provided,
 ///   otherwise scores 0.0 (embedding scorer injected at a higher level)
 /// - For `numeric` fields: 1.0 if both values parse as equal f64, else 0.0
+/// - For `bm25` fields: uses pre-computed normalised BM25 score if provided
 ///
 /// `precomputed_emb_scores`: optional per-field embedding cosine similarities
 /// keyed by "field_a/field_b". When present, used instead of computing.
+///
+/// `precomputed_bm25_score`: optional normalised BM25 score [0.0, 1.0],
+/// computed by the pipeline before full scoring.
 pub fn score_pair(
     query_record: &Record,
     candidate_record: &Record,
     match_fields: &[MatchField],
     precomputed_emb_scores: Option<&std::collections::HashMap<String, f64>>,
+    precomputed_bm25_score: Option<f64>,
 ) -> ScoreResult {
     let mut field_scores = Vec::with_capacity(match_fields.len());
     let mut weighted_sum = 0.0_f64;
     let mut total_weight = 0.0_f64;
 
     for mf in match_fields {
-        let a_val = candidate_record
-            .get(&mf.field_a)
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        let b_val = query_record
-            .get(&mf.field_b)
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        let score = if mf.method == "bm25" {
+            // BM25 score is precomputed by the pipeline, like embedding scores.
+            // No per-field record values — BM25 operates across all text fields.
+            precomputed_bm25_score.unwrap_or(0.0)
+        } else {
+            let a_val = candidate_record
+                .get(&mf.field_a)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let b_val = query_record
+                .get(&mf.field_b)
+                .map(|s| s.as_str())
+                .unwrap_or("");
 
-        let score = match mf.method.as_str() {
-            "exact" => exact::score(a_val, b_val),
-            "fuzzy" => {
-                let scorer = mf.scorer.as_deref().unwrap_or("wratio");
-                fuzzy::score(scorer, a_val, b_val)
+            match mf.method.as_str() {
+                "exact" => exact::score(a_val, b_val),
+                "fuzzy" => {
+                    let scorer = mf.scorer.as_deref().unwrap_or("wratio");
+                    fuzzy::score(scorer, a_val, b_val)
+                }
+                "embedding" => {
+                    // Use precomputed score if available
+                    let key = format!("{}/{}", mf.field_a, mf.field_b);
+                    precomputed_emb_scores
+                        .and_then(|m| m.get(&key))
+                        .copied()
+                        .unwrap_or(0.0)
+                }
+                "numeric" => numeric_score(a_val, b_val),
+                _ => 0.0,
             }
-            "embedding" => {
-                // Use precomputed score if available
-                let key = format!("{}/{}", mf.field_a, mf.field_b);
-                precomputed_emb_scores
-                    .and_then(|m| m.get(&key))
-                    .copied()
-                    .unwrap_or(0.0)
-            }
-            "numeric" => numeric_score(a_val, b_val),
-            _ => 0.0,
         };
 
         let fs = FieldScore {
-            field_a: mf.field_a.clone(),
-            field_b: mf.field_b.clone(),
+            field_a: if mf.method == "bm25" {
+                "bm25".to_string()
+            } else {
+                mf.field_a.clone()
+            },
+            field_b: if mf.method == "bm25" {
+                "bm25".to_string()
+            } else {
+                mf.field_b.clone()
+            },
             method: mf.method.clone(),
             score,
             weight: mf.weight,
@@ -185,7 +204,7 @@ mod tests {
             ("lei_code", "abc123"),
         ]);
         let fields = make_fields();
-        let result = score_pair(&b, &a, &fields, None);
+        let result = score_pair(&b, &a, &fields, None, None);
 
         // country_code: exact match → 1.0 * 0.20 = 0.20
         // short_name/counterparty_name: fuzzy partial_ratio identical → ~1.0 * 0.20 = 0.20
@@ -212,7 +231,7 @@ mod tests {
             ("lei_code", "ABC123"),
         ]);
         let fields = make_fields();
-        let result = score_pair(&b, &a, &fields, None);
+        let result = score_pair(&b, &a, &fields, None, None);
 
         // country_code: "US" vs "GB" → 0.0
         // short_name: "Alpha Corp" vs "Beta Inc" → low
@@ -290,7 +309,64 @@ mod tests {
         let mut emb = HashMap::new();
         emb.insert("legal_name/counterparty_name".to_string(), 0.92);
 
-        let result = score_pair(&b, &a, &fields, Some(&emb));
+        let result = score_pair(&b, &a, &fields, Some(&emb), None);
         assert!((result.total - 0.92).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn precomputed_bm25_score() {
+        let a = make_record(&[("country_code", "GB")]);
+        let b = make_record(&[("domicile", "GB")]);
+        let fields = vec![
+            MatchField {
+                field_a: "country_code".into(),
+                field_b: "domicile".into(),
+                method: "exact".into(),
+                scorer: None,
+                weight: 0.7,
+            },
+            MatchField {
+                field_a: String::new(),
+                field_b: String::new(),
+                method: "bm25".into(),
+                scorer: None,
+                weight: 0.3,
+            },
+        ];
+        let result = score_pair(&b, &a, &fields, None, Some(0.8));
+        // exact: 1.0 * 0.7 = 0.7
+        // bm25: 0.8 * 0.3 = 0.24
+        // total = 0.94
+        assert!(
+            (result.total - 0.94).abs() < 0.001,
+            "expected 0.94, got {}",
+            result.total
+        );
+        assert_eq!(result.field_scores.len(), 2);
+
+        let bm25_fs = &result.field_scores[1];
+        assert_eq!(bm25_fs.method, "bm25");
+        assert_eq!(bm25_fs.field_a, "bm25");
+        assert_eq!(bm25_fs.field_b, "bm25");
+        assert!((bm25_fs.score - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn bm25_score_defaults_to_zero_when_none() {
+        let a = make_record(&[]);
+        let b = make_record(&[]);
+        let fields = vec![MatchField {
+            field_a: String::new(),
+            field_b: String::new(),
+            method: "bm25".into(),
+            scorer: None,
+            weight: 1.0,
+        }];
+        let result = score_pair(&b, &a, &fields, None, None);
+        assert!(
+            result.total.abs() < f64::EPSILON,
+            "expected 0.0, got {}",
+            result.total
+        );
     }
 }
