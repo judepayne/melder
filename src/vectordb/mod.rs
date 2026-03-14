@@ -206,16 +206,22 @@ pub fn new_index(
 }
 
 /// Load a vector index from a cache file.
+///
+/// `vector_index_mode` controls whether the usearch backend loads the index
+/// fully into memory (`"load"`, default) or memory-maps it (`"mmap"`).
+/// The flat backend ignores this parameter.
 pub fn load_index(
     backend: &str,
     path: &Path,
     #[allow(unused_variables)] quantization: &str,
+    #[allow(unused_variables)] vector_index_mode: &str,
 ) -> Result<Box<dyn VectorDB>, VectorDBError> {
     match backend {
         #[cfg(feature = "usearch")]
         "usearch" => Ok(Box::new(usearch_backend::UsearchVectorDB::load(
             path,
             quantization,
+            vector_index_mode,
         )?)),
         _ => Ok(Box::new(flat::FlatVectorDB::load(path)?)),
     }
@@ -388,6 +394,11 @@ pub fn build_or_load_combined_index(
         .vector_quantization
         .as_deref()
         .unwrap_or("f32");
+    let vim = config
+        .performance
+        .vector_index_mode
+        .as_deref()
+        .unwrap_or("load");
     let current_spec_hash = spec_hash(&emb_specs, vq);
     let current_blocking_hash = blocking_hash(&config.blocking);
     let current_model = &config.embeddings.model;
@@ -429,7 +440,7 @@ pub fn build_or_load_combined_index(
         if proceed_to_load && cache_exists {
             // Step 2: Load existing index
             let load_start = Instant::now();
-            match load_index(backend, cache_path, vq) {
+            match load_index(backend, cache_path, vq, vim) {
                 Err(e) => {
                     eprintln!(
                         "Warning: {} combined index cache load failed ({}), rebuilding...",

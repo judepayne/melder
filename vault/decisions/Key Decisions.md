@@ -99,4 +99,112 @@ Architectural decisions made during Melder's development, with rationale.
 
 ---
 
+## RecordStore Trait for Storage Abstraction
+
+**Decision**: Introduce a `RecordStore` trait abstraction to decouple record storage operations from the concrete `DashMap` implementation.
+
+**Context**: Direct `DashMap` access was scattered across session, batch engine, pipeline, and BM25 index. This prevented swapping to alternative storage backends (e.g., SQLite-backed storage for million-record scale). The coupling made it difficult to reason about storage invariants and test different backends.
+
+**Choice**: Defined `RecordStore` trait with 18 methods across 4 categories:
+- **Records**: `insert`, `get`, `remove`, `contains`, `len`, `iter`
+- **Blocking**: `blocking_index`, `blocking_index_mut`, `add_to_blocking_index`, `remove_from_blocking_index`
+- **Unmatched**: `unmatched_a`, `unmatched_b`, `mark_matched`, `unmark_matched`
+- **Common ID**: `common_id_index`, `add_to_common_id_index`, `remove_from_common_id_index`
+
+Implemented `MemoryStore` as the DashMap-backed implementation. Both batch and live modes now take `&dyn RecordStore` instead of `&DashMap`. `LiveSideState` simplified from 6 fields to 2 (store + matched_ids).
+
+**Why**: Pure refactor with zero behavior change. Enables SqliteStore implementation in Phase 2 Step 3 without touching pipeline or matching logic. Centralises storage invariants in one trait. Improves testability by allowing mock implementations. See [[Scaling to Millions]] for the multi-step plan.
+
+**Commit**: `319dda8` (Mar 14)
+
+---
+
+## CrossMapOps Trait for CrossMap Abstraction
+
+**Decision**: Introduce a `CrossMapOps` trait abstraction to decouple CrossMap runtime operations from the concrete `RwLock<CrossMapInner>` implementation.
+
+**Context**: CrossMap's 13 runtime methods (add, remove, claim, break, get, has, pairs, stats, export, import, and 3 internal helpers) were tightly coupled to the `RwLock<HashMap>` implementation. This prevented swapping to alternative backends (e.g., SQLite-backed CrossMap for million-record scale). Persistence methods (load/save) differ fundamentally between backends (CSV for memory, no-op for SQLite), so they remain as inherent methods on `MemoryCrossMap`.
+
+**Choice**: Extracted 13 runtime methods into a `CrossMapOps` trait. Implemented `MemoryCrossMap` as the RwLock-backed implementation. Both batch and live modes now take `&dyn CrossMapOps` instead of `&MemoryCrossMap`. Persistence (load/save) stays as inherent methods on `MemoryCrossMap` since they are backend-specific.
+
+**Why**: Pure refactor with zero behavior change. Enables SqliteCrossMap implementation in Phase 2 Step 3 without touching batch engine, live session, or matching logic. Centralises CrossMap invariants in one trait. Improves testability by allowing mock implementations. The separation of runtime operations (trait) from persistence (inherent) reflects the fundamental difference in how backends handle durability.
+
+**Commit**: `de1ab3d` (Mar 14)
+
+---
+
+## SqliteStore + SqliteCrossMap for Durable Live Mode
+
+**Decision**: Implement SQLite-backed `SqliteStore` (RecordStore trait) and `SqliteCrossMap` (CrossMapOps trait) that share a single `Arc<Mutex<Connection>>`.
+
+**Context**: Phase 2 Steps 1 and 2 introduced the `RecordStore` and `CrossMapOps` trait abstractions. Step 3 delivers the SQLite implementations, enabling million-record scale without in-memory overhead. The `rusqlite` crate (with bundled SQLite C source) is always compiled — not feature-gated.
+
+**Choice**: 
+- Records stored as JSON (`serde_json`) in `a_records`/`b_records` tables.
+- Blocking keys in `a_blocking_keys`/`b_blocking_keys` with composite `(field_index, value)` index. AND mode uses `GROUP BY record_id HAVING COUNT(DISTINCT field_index) = N`; OR mode uses `SELECT DISTINCT`.
+- CrossMap uses `UNIQUE` constraints on both `a_id` and `b_id` columns. `add()` does DELETE-then-INSERT for bijection enforcement. `claim()` checks both sides before INSERT. `take_a()`/`take_b()` use `DELETE ... RETURNING`.
+- Factory function `open_sqlite(path, blocking_config)` creates both `SqliteStore` and `SqliteCrossMap` from a shared connection with WAL mode, 64MB cache, 8192-byte pages.
+
+**Why**: SQLite provides ACID durability at <200µs per operation — well within budget given 4-6ms ONNX encoding dominates. Sharing one connection via `Arc<Mutex<Connection>>` avoids multi-connection complexity and matches SQLite's single-writer model. 25 new tests (13 store + 12 crossmap) verify parity with Memory implementations. See [[Scaling to Millions]].
+
+**Commit**: `d4461bf` (Mar 14)
+
+---
+
+## Wiring SqliteStore into Live Startup
+
+**Decision**: `meld serve` supports two startup paths based on `live.db_path` config field: memory-backed (default, backward compatible) or SQLite-backed (durable).
+
+**Context**: Steps 1-3 established the `RecordStore`/`CrossMapOps` traits and their SQLite implementations. Step 4 wires them into the live server startup so that `meld serve` can use either backend transparently.
+
+**Choice**:
+- `LiveMatchState.store` changed from `Arc<MemoryStore>` to `Arc<dyn RecordStore>`.
+- `LiveMatchState.crossmap` changed from `MemoryCrossMap` to `Box<dyn CrossMapOps>`.
+- `LiveMatchState::load()` dispatches to `load_memory()` or `load_sqlite()` based on `config.live.db_path`.
+- SQLite cold start: create DB, load CSV datasets into SqliteStore, import crossmap CSV into SqliteCrossMap, build unmatched/common_id sets.
+- SQLite warm start: open existing DB (records, blocking, unmatched, crossmap already durable). Skip CSV loading and WAL replay.
+- `flush_crossmap()` is a no-op for SQLite (auto-durable). Uses `as_any()` downcast for MemoryCrossMap CSV save.
+- `CrossMapOps` trait gained `as_any(&self) -> &dyn Any` for safe downcasting.
+- `uses_sqlite: bool` flag on `LiveMatchState` controls flush behavior.
+
+**Why**: Trait objects with dynamic dispatch keep the session, pipeline, and API handler code completely unchanged. The startup path is the only code that differs between backends. Backward compatible — no `db_path` means memory mode (identical to pre-Step-4 behavior). See [[Scaling to Millions]].
+
+**Commit**: `70d9b5a` (Mar 14)
+
+---
+
+## Review Queue SQLite Write-Through + WAL Replay Skip
+
+**Decision**: Review queue mutations write through to SQLite's `reviews` table in real time. WAL replay is skipped entirely for SQLite-backed live mode.
+
+**Context**: Phase 2 Steps 1-4 established trait abstractions and the SQLite startup path. The review queue was still in-memory only (DashMap), with no durability for SQLite mode. WAL replay was already skipped in `load_sqlite()` but the review queue wasn't loaded from SQLite on warm start.
+
+**Choice**:
+- `DashMap<String, ReviewEntry>` remains as the in-memory hot cache for both modes.
+- Three write-through methods on `LiveMatchState`: `insert_review()`, `drain_reviews_for_id()`, `drain_reviews_for_pair()`. These update both the DashMap and SQLite atomically.
+- Session code uses these methods instead of direct DashMap access (5 mutation sites updated).
+- SQLite warm start loads reviews from the `reviews` table into the DashMap.
+- `open_sqlite()` now returns the shared `Arc<Mutex<Connection>>` as a third element for review queue write-through.
+- WAL replay was already skipped in Step 4's `load_sqlite()` — no additional changes needed.
+
+**Why**: Write-through keeps the code simple (DashMap is the read path, SQLite is the durable write path). No complex sync or eventual consistency. The session code is cleaner — it calls `state.insert_review()` instead of directly manipulating the DashMap. See [[Scaling to Millions]].
+
+**Commit**: `6d27dd8` (Mar 14)
+
+---
+
+## Memory-Mapped Vector Index
+
+**Decision**: Add `performance.vector_index_mode` config field (`"load"` | `"mmap"`) to control how the usearch HNSW index is loaded at cache load time.
+
+**Context**: At 100M+ records, the usearch HNSW index (75+ GB at f32, ~37.5 GB at f16) may exceed available RAM. The usearch v2 Rust crate exposes `index.view(path)` alongside `index.load(path)` — `view()` memory-maps the file so the OS pages in only traversed nodes during search, rather than loading the entire graph into RAM upfront.
+
+**Choice**: Single string config field in `PerformanceConfig` alongside `vector_quantization`. `UsearchVectorDB::load()` dispatches `load` vs `view` based on the mode. No cache size config added — usearch exposes no such API; the OS manages paging automatically. Warning in `meld serve` since `view()` is read-only and upserts would fail (vectors cannot be added to a memory-mapped index).
+
+**Why**: One-line change per block in the load path, zero impact on default behaviour (`"load"` is the default). Flat backend has no equivalent (reads into heap Vec always). Phase 4 (`on-the-fly embedding of BM25 shortlists`) will build on this by auto-selecting mmap when RAM pressure demands it. 6 new tests (4 config validation + 2 usearch parity tests) verify both modes work correctly.
+
+**Commit**: TBD
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

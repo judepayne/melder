@@ -14,6 +14,16 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
         }
     };
 
+    // Warn if mmap mode is configured — it is not safe for live mode because
+    // upserts write to the index and will fail on a read-only mmap'd index.
+    if cfg.performance.vector_index_mode.as_deref() == Some("mmap") {
+        eprintln!(
+            "Warning: performance.vector_index_mode=mmap is not suitable for \
+             meld serve. The mmap'd index is read-only; upserts will fail. \
+             Use mmap only with meld run."
+        );
+    }
+
     // 2. Load live match state
     let mut state = match crate::state::LiveMatchState::load(cfg) {
         Ok(s) => s,

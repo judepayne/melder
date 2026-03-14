@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process;
 
-use crate::store::RecordStore;
 use crate::vectordb::manifest::manifest_path;
 use crate::vectordb::texthash::texthash_sidecar_path;
 

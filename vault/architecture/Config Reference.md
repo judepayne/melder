@@ -239,6 +239,7 @@ performance:
   quantized: false
   encoder_batch_wait_ms: 0
   vector_quantization: "f32"
+  vector_index_mode: "load"
 ```
 
 | Field | Type | Default | Notes |
@@ -247,6 +248,7 @@ performance:
 | `quantized` | bool | `false` | INT8-quantized ONNX model — ~2× faster encoding, negligible quality loss. Recommended for datasets > 50k records. |
 | `encoder_batch_wait_ms` | Option\<u64\> | `0` | Coordinator batch window (ms). `0` = disabled. Only beneficial at concurrency ≥ 20 with large models. See [[Key Decisions#Encoding Coordinator Batched ONNX Inference]]. |
 | `vector_quantization` | Option\<String\> | `"f32"` | Cache precision: `"f32"` (default), `"f16"` (43% smaller, no measurable quality loss), `"bf16"`. usearch backend only. |
+| `vector_index_mode` | Option\<String\> | `"load"` | usearch backend only: `"load"` (load entire HNSW graph into RAM at startup) or `"mmap"` (memory-map the index file, let OS page in only traversed nodes). `"mmap"` reduces peak RAM for extreme-scale batch jobs but is read-only (not suitable for `meld serve`). See [[Key Decisions#Memory-Mapped Vector Index]]. |
 
 See [[Performance Baselines]] for the throughput impact of each setting.
 

@@ -90,9 +90,14 @@ CREATE TABLE IF NOT EXISTS reviews (
 /// Returns the `SqliteStore`, `SqliteCrossMap`, and the shared
 /// `Arc<Mutex<Connection>>` for use by other components (e.g., review
 /// queue write-through).
+///
+/// `cache_kb` overrides the default 64 MB page cache. Pass `None` to keep
+/// the default. For `memory_budget`-driven batch mode, pass the computed
+/// allocation (30% of the budget in kilobytes).
 pub fn open_sqlite(
     path: &Path,
     blocking_config: &BlockingConfig,
+    cache_kb: Option<u64>,
 ) -> Result<
     (
         SqliteStore,
@@ -103,14 +108,16 @@ pub fn open_sqlite(
 > {
     let conn = Connection::open(path)?;
 
-    // Performance pragmas
-    conn.execute_batch(
+    // Performance pragmas: cache_size is negative = kibibytes.
+    let cache_kb = cache_kb.unwrap_or(65536); // default 64 MB
+    let pragmas = format!(
         "PRAGMA journal_mode = WAL;
-         PRAGMA cache_size = -65536;
+         PRAGMA cache_size = -{cache_kb};
          PRAGMA page_size = 8192;
          PRAGMA foreign_keys = OFF;
-         PRAGMA synchronous = NORMAL;",
-    )?;
+         PRAGMA synchronous = NORMAL;"
+    );
+    conn.execute_batch(&pragmas)?;
 
     // Create schema
     conn.execute_batch(SCHEMA)?;
@@ -478,7 +485,7 @@ mod tests {
             field_a: None,
             field_b: None,
         };
-        let (store, _crossmap, _conn) = open_sqlite(&path, &bc).unwrap();
+        let (store, _crossmap, _conn) = open_sqlite(&path, &bc, None).unwrap();
         // Keep tempdir alive by leaking it — tests are short-lived
         std::mem::forget(dir);
         store
@@ -580,7 +587,7 @@ mod tests {
             field_a: None,
             field_b: None,
         };
-        let (store, _, _conn) = open_sqlite(&path, &bc).unwrap();
+        let (store, _, _conn) = open_sqlite(&path, &bc, None).unwrap();
 
         // Insert A-side records with blocking keys
         let r1 = make_record(&[("name", "Alice"), ("country_a", "US")]);
@@ -652,7 +659,7 @@ mod tests {
 
         // Insert data
         {
-            let (store, _, _conn) = open_sqlite(&path, &bc).unwrap();
+            let (store, _, _conn) = open_sqlite(&path, &bc, None).unwrap();
             let rec = make_record(&[("name", "Alice")]);
             store.insert(Side::A, "1", &rec);
             store.mark_unmatched(Side::A, "1");
@@ -661,7 +668,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let (store, _, _conn) = open_sqlite(&path, &bc).unwrap();
+            let (store, _, _conn) = open_sqlite(&path, &bc, None).unwrap();
             assert_eq!(store.len(Side::A), 1);
             assert_eq!(
                 store.get(Side::A, "1").unwrap().get("name").unwrap(),

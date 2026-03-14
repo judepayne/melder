@@ -53,6 +53,12 @@ tantivy = { version = "0.22", optional = true }
 # SQLite storage (live mode persistence)
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# System info for memory detection (memory_budget: auto)
+sysinfo = { version = "0.30", default-features = false, features = ["default"] }
+
+# Temporary directories (batch SQLite temp store)
+tempfile = "3"
+
 # Error handling
 anyhow = "1"
 thiserror = "2"
@@ -63,4 +69,3 @@ usearch = ["dep:usearch"]
 bm25 = ["dep:tantivy"]
 
 [dev-dependencies]
-tempfile = "3"

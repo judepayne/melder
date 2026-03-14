@@ -4,7 +4,6 @@ use std::path::Path;
 use std::process;
 
 use crate::crossmap::CrossMapOps;
-use crate::store::RecordStore;
 
 /// Run a batch matching job.
 pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<usize>) {

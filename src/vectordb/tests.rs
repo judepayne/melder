@@ -685,7 +685,7 @@ mod usearch_block_tests {
 
         db.save(&path).unwrap();
 
-        let loaded = UsearchVectorDB::load(&path, "f32").unwrap();
+        let loaded = UsearchVectorDB::load(&path, "f32", "load").unwrap();
 
         assert_eq!(loaded.len(), n);
         assert_eq!(loaded.dim(), DIM);
@@ -836,7 +836,7 @@ mod usearch_block_tests {
         let path = dir.path().join("test_f16.usearch");
         db.save(&path).unwrap();
 
-        let loaded = UsearchVectorDB::load(&path, "f16").unwrap();
+        let loaded = UsearchVectorDB::load(&path, "f16", "load").unwrap();
         assert_eq!(loaded.len(), 10);
 
         // Verify search still works after load.
@@ -847,6 +847,83 @@ mod usearch_block_tests {
             results[0].score > 0.98,
             "F16 round-trip self-similarity too low: {}",
             results[0].score
+        );
+    }
+
+    #[test]
+    fn mmap_load_same_results_as_in_memory_load() {
+        // Build a small index, save it, then load once with "load" and once
+        // with "mmap". Both must return identical search results.
+        let db = UsearchVectorDB::new(DIM, None);
+        let n = 20;
+        let vecs: Vec<Vec<f32>> = (0..n).map(|i| random_unit_vec(DIM, i as u64)).collect();
+        for (i, v) in vecs.iter().enumerate() {
+            db.upsert(&format!("id_{}", i), v, &dummy_record(), Side::A)
+                .unwrap();
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_mmap.usearch");
+        db.save(&path).unwrap();
+
+        let loaded = UsearchVectorDB::load(&path, "f32", "load").unwrap();
+        let mmaped = UsearchVectorDB::load(&path, "f32", "mmap").unwrap();
+
+        assert_eq!(mmaped.len(), n, "mmap load: wrong record count");
+        assert_eq!(mmaped.dim(), DIM, "mmap load: wrong dimension");
+
+        // Both backends must return the same top-5 IDs in the same order.
+        let query = random_unit_vec(DIM, 99);
+        let results_load = loaded.search(&query, 5, &dummy_record(), Side::A).unwrap();
+        let results_mmap = mmaped.search(&query, 5, &dummy_record(), Side::A).unwrap();
+
+        assert_eq!(
+            results_load.len(),
+            results_mmap.len(),
+            "mmap and load returned different result counts"
+        );
+        for (rl, rm) in results_load.iter().zip(results_mmap.iter()) {
+            assert_eq!(
+                rl.id, rm.id,
+                "mmap search result mismatch: load={:?} mmap={:?}",
+                rl.id, rm.id
+            );
+        }
+
+        // contains() must work on the mmap'd index.
+        for i in 0..n {
+            let id = format!("id_{}", i);
+            assert!(mmaped.contains(&id), "mmap: missing id {}", id);
+        }
+    }
+
+    #[test]
+    fn mmap_staleness_check_unaffected_by_mode() {
+        // is_stale() reads only the manifest JSON (before any load/view call)
+        // so vector_index_mode must have no effect on it.
+        let db = UsearchVectorDB::new(DIM, None);
+        for i in 0..5 {
+            db.upsert(
+                &format!("id_{}", i),
+                &random_unit_vec(DIM, i as u64),
+                &dummy_record(),
+                SIDE,
+            )
+            .unwrap();
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_stale_mmap.usearch");
+        db.save(&path).unwrap();
+
+        // Staleness is purely count-based — mode is irrelevant.
+        assert!(
+            !UsearchVectorDB::is_stale(&path, 5).unwrap(),
+            "fresh index should not be stale"
+        );
+        assert!(
+            UsearchVectorDB::is_stale(&path, 6).unwrap(),
+            "wrong count should be stale"
         );
     }
 }

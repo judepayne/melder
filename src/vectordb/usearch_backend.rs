@@ -665,8 +665,18 @@ impl UsearchVectorDB {
     /// usearch `IndexOptions`. It must match whatever was used when the index
     /// was originally built (the cache path already encodes the quantization
     /// via `spec_hash`, so mismatches are prevented at a higher level).
-    pub fn load(path: &Path, quantization: &str) -> Result<Self, VectorDBError> {
+    ///
+    /// `vector_index_mode` controls how each block index is loaded:
+    /// - `"load"` (default): full in-memory load via `index.load()`.
+    /// - `"mmap"`: memory-mapped via `index.view()`. Lower peak RAM but
+    ///   read-only — any subsequent `add()` call will return an error.
+    pub fn load(
+        path: &Path,
+        quantization: &str,
+        vector_index_mode: &str,
+    ) -> Result<Self, VectorDBError> {
         let scalar_kind = parse_scalar_kind(quantization);
+        let use_mmap = vector_index_mode == "mmap";
         let dir = path.with_extension("usearchdb");
         let manifest_path = dir.join("manifest.json");
         let data = std::fs::read_to_string(&manifest_path)?;
@@ -691,13 +701,18 @@ impl UsearchVectorDB {
             };
             let index = Index::new(&opts).map_err(|e| VectorDBError::Backend(e.to_string()))?;
             let index_path = dir.join(format!("block_{}.usearch", bm.id));
-            index
-                .load(
-                    index_path
-                        .to_str()
-                        .ok_or_else(|| VectorDBError::Backend("non-UTF8 path".to_string()))?,
-                )
-                .map_err(|e| VectorDBError::Backend(e.to_string()))?;
+            let index_path_str = index_path
+                .to_str()
+                .ok_or_else(|| VectorDBError::Backend("non-UTF8 path".to_string()))?;
+            if use_mmap {
+                index
+                    .view(index_path_str)
+                    .map_err(|e| VectorDBError::Backend(e.to_string()))?;
+            } else {
+                index
+                    .load(index_path_str)
+                    .map_err(|e| VectorDBError::Backend(e.to_string()))?;
+            }
 
             let id_to_side: HashMap<String, Side> = bm
                 .id_to_side

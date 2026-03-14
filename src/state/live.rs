@@ -121,7 +121,11 @@ impl LiveMatchState {
     /// - Warm start (DB file exists): open existing DB. Records, blocking,
     ///   unmatched, common_id, and crossmap are already populated. Skip CSV
     ///   loading and WAL replay.
-    pub fn load(config: Config) -> Result<Arc<Self>, MelderError> {
+    ///
+    /// When `memory_budget` is configured, the budget calculator runs after
+    /// encoder init and may auto-set `live.db_path` and/or
+    /// `performance.vector_index_mode` before dispatching to the startup path.
+    pub fn load(mut config: Config) -> Result<Arc<Self>, MelderError> {
         let start = Instant::now();
 
         // 1. Init encoder pool
@@ -145,9 +149,67 @@ impl LiveMatchState {
             start.elapsed().as_secs_f64()
         );
 
+        // 1b. Apply memory_budget auto-configuration (if set).
+        //
+        // Estimates dataset size from the A-side manifest or data file, then
+        // decides whether to use SQLite and/or mmap. Applied before the startup
+        // path dispatch so that both load_sqlite and load_memory see the updated
+        // config settings.
+        let mut sqlite_cache_kb: Option<u64> = None;
+        if let Some(ref budget_str) = config.memory_budget.clone() {
+            let budget_bytes = crate::budget::parse_budget(budget_str)
+                .unwrap_or_else(|_| crate::budget::available_ram());
+            let record_count = crate::budget::estimate_record_count(
+                &config.embeddings.a_cache_dir,
+                &config.datasets.a.path,
+                config.datasets.a.format.as_deref(),
+            );
+            let n_embedding_fields = config
+                .match_fields
+                .iter()
+                .filter(|mf| mf.method == "embedding")
+                .count();
+            let use_f16 = matches!(
+                config.performance.vector_quantization.as_deref(),
+                Some("f16") | Some("bf16")
+            );
+            let decision =
+                crate::budget::decide(budget_bytes, record_count, dim, n_embedding_fields, use_f16);
+            eprintln!(
+                "memory_budget: {} → record_store={}, vector_index={}{}",
+                budget_str,
+                if decision.use_sqlite {
+                    "sqlite"
+                } else {
+                    "memory"
+                },
+                if decision.use_mmap { "mmap" } else { "load" },
+                if decision.use_sqlite {
+                    format!(
+                        ", sqlite_cache={}MB",
+                        decision.sqlite_cache_bytes / (1024 * 1024)
+                    )
+                } else {
+                    String::new()
+                },
+            );
+            // Auto-set db_path when SQLite is needed and none is configured.
+            if decision.use_sqlite && config.live.db_path.is_none() {
+                let db_path = format!("{}/{}.db", config.embeddings.a_cache_dir, config.job.name);
+                config.live.db_path = Some(db_path);
+            }
+            // Auto-set mmap when the vector index won't fit and none is configured.
+            if decision.use_mmap && config.performance.vector_index_mode.is_none() {
+                config.performance.vector_index_mode = Some("mmap".into());
+            }
+            if decision.use_sqlite {
+                sqlite_cache_kb = Some(decision.sqlite_cache_bytes / 1024);
+            }
+        }
+
         // Determine startup mode
         if let Some(db_path) = config.live.db_path.clone() {
-            Self::load_sqlite(config, &db_path, start, encoder_pool)
+            Self::load_sqlite(config, &db_path, start, encoder_pool, sqlite_cache_kb)
         } else {
             Self::load_memory(config, start, encoder_pool)
         }
@@ -482,13 +544,14 @@ impl LiveMatchState {
         db_path: &str,
         start: Instant,
         encoder_pool: Arc<EncoderPool>,
+        cache_kb: Option<u64>,
     ) -> Result<Arc<Self>, MelderError> {
         let db_exists = Path::new(db_path).exists();
         let mode = if db_exists { "warm" } else { "cold" };
         eprintln!("SQLite {} start: {}", mode, db_path);
 
         let (sqlite_store, sqlite_crossmap, sqlite_conn) =
-            open_sqlite(Path::new(db_path), &config.blocking)
+            open_sqlite(Path::new(db_path), &config.blocking, cache_kb)
                 .map_err(|e| MelderError::Other(anyhow::anyhow!("SQLite open failed: {}", e)))?;
 
         let store: Arc<dyn RecordStore> = Arc::new(sqlite_store);

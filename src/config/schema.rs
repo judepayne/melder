@@ -39,6 +39,19 @@ pub struct Config {
     /// is the sole filter). Defaults to 10.
     #[serde(default)]
     pub bm25_candidates: Option<usize>,
+    /// Optional memory budget for auto-configuring record store and vector index
+    /// backends.
+    ///
+    /// - `"auto"`: detects available RAM at startup and uses 80% as the budget.
+    /// - `"24GB"`, `"512MB"`, etc.: explicit size strings (TB, GB, MB, KB, B).
+    ///
+    /// When the estimated record or vector index footprint exceeds the budget
+    /// thresholds (30% for records, 70% for vectors), melder automatically
+    /// selects SQLite for the record store and/or mmap for the vector index.
+    ///
+    /// Default: `None` (no budget limit — fully in-memory, current behaviour).
+    #[serde(default)]
+    pub memory_budget: Option<String>,
     // Derived at load time (not in YAML). Populated by `compute_required_fields`.
     #[serde(skip)]
     pub required_fields_a: Vec<String>,
@@ -214,6 +227,17 @@ pub struct PerformanceConfig {
     /// Changing this value invalidates the usearch index cache (forces rebuild).
     #[serde(default)]
     pub vector_quantization: Option<String>,
+    /// How the usearch HNSW index is loaded from the cache file.
+    ///
+    /// - `"load"` (default): full in-memory load. Consistent search latency,
+    ///   higher peak RAM. Safe for both `meld run` and `meld serve`.
+    /// - `"mmap"`: memory-mapped — OS pages in/out on demand. Lower peak RAM
+    ///   but unpredictable cold-cache latency. **Read-only: do not use with
+    ///   `meld serve`** (upserts write to the index and will fail).
+    ///
+    /// Has no effect when `vector_backend` is `flat`.
+    #[serde(default)]
+    pub vector_index_mode: Option<String>,
 }
 
 fn default_backend() -> String {
