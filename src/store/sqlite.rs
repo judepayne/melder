@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use crate::config::{BlockingConfig, BlockingFieldPair};
 use crate::models::{Record, Side};
@@ -92,8 +92,7 @@ CREATE TABLE IF NOT EXISTS reviews (
 /// queue write-through).
 ///
 /// `cache_kb` overrides the default 64 MB page cache. Pass `None` to keep
-/// the default. For `memory_budget`-driven batch mode, pass the computed
-/// allocation (30% of the budget in kilobytes).
+/// the default. In live mode, set via `live.sqlite_cache_mb` in config.
 pub fn open_sqlite(
     path: &Path,
     blocking_config: &BlockingConfig,
@@ -172,7 +171,11 @@ fn blocking_values(
                 .get(field)
                 .map(|s| s.trim().to_lowercase())
                 .unwrap_or_default();
-            if val.is_empty() { None } else { Some((i, val)) }
+            if val.is_empty() {
+                None
+            } else {
+                Some((i, val))
+            }
         })
         .collect()
 }
@@ -325,7 +328,11 @@ impl RecordStore for SqliteStore {
                     .get(field)
                     .map(|s| s.trim().to_lowercase())
                     .unwrap_or_default();
-                if val.is_empty() { None } else { Some((i, val)) }
+                if val.is_empty() {
+                    None
+                } else {
+                    Some((i, val))
+                }
             })
             .collect();
 
@@ -459,6 +466,55 @@ impl RecordStore for SqliteStore {
             params![common_id],
         )
         .expect("remove common id");
+    }
+
+    // --- Review persistence (write-through to SQLite) ---
+
+    fn persist_review(&self, key: &str, id: &str, side: Side, candidate_id: &str, score: f64) {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let side_str = match side {
+            Side::A => "a",
+            Side::B => "b",
+        };
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO reviews (key, id, side, candidate_id, score) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![key, id, side_str, candidate_id, score],
+        );
+    }
+
+    fn remove_reviews_for_id(&self, id: &str) {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = conn.execute(
+            "DELETE FROM reviews WHERE id = ?1 OR candidate_id = ?1",
+            params![id],
+        );
+    }
+
+    fn remove_reviews_for_pair(&self, a_id: &str, b_id: &str) {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = conn.execute(
+            "DELETE FROM reviews WHERE id = ?1 OR candidate_id = ?1 OR id = ?2 OR candidate_id = ?2",
+            params![a_id, b_id],
+        );
+    }
+
+    fn load_reviews(&self) -> Vec<(String, String, Side, String, f64)> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare("SELECT key, id, side, candidate_id, score FROM reviews")
+            .expect("prepare reviews query");
+        stmt.query_map([], |row| {
+            let key: String = row.get(0)?;
+            let id: String = row.get(1)?;
+            let side_str: String = row.get(2)?;
+            let candidate_id: String = row.get(3)?;
+            let score: f64 = row.get(4)?;
+            let side = if side_str == "a" { Side::A } else { Side::B };
+            Ok((key, id, side, candidate_id, score))
+        })
+        .expect("query reviews")
+        .filter_map(|r| r.ok())
+        .collect()
     }
 }
 

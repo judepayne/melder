@@ -517,12 +517,15 @@ impl Session {
         let ann_candidates = config.ann_candidates.unwrap_or(50);
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
-        // Build BM25 context from opposite side's index
+        // Build BM25 context from opposite side's index.
+        // Commit any buffered writes first — if the opposite side has
+        // pending upserts/removes they must be visible before we query.
         #[cfg(feature = "bm25")]
         let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
             let mut guard = opp_bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            guard.commit_if_dirty();
             let query_text = guard.query_text_for(&record, side);
-            let ctx = Bm25Ctx::new(&mut guard, query_text);
+            let ctx = Bm25Ctx::new(&*guard, query_text);
             pipeline::score_pool(
                 &id,
                 &record,
@@ -816,12 +819,15 @@ impl Session {
         let ann_candidates = config.ann_candidates.unwrap_or(50);
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
-        // Build BM25 context from opposite side's index
+        // Build BM25 context from opposite side's index.
+        // Commit any buffered writes first — if the opposite side has
+        // pending upserts/removes they must be visible before we query.
         #[cfg(feature = "bm25")]
         let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
             let mut guard = opp_bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            guard.commit_if_dirty();
             let query_text = guard.query_text_for(&record, side);
-            let ctx = Bm25Ctx::new(&mut guard, query_text);
+            let ctx = Bm25Ctx::new(&*guard, query_text);
             pipeline::score_pool(
                 id,
                 &record,

@@ -1,0 +1,72 @@
+job:
+  name: sqlite_cache_sweep_sqlite_256mb
+  description: "SQLite cache sweep — sqlite_256mb"
+
+datasets:
+  a:
+    path: benchmarks/data/dataset_a_10k.csv
+    id_field: entity_id
+    format: csv
+  b:
+    path: benchmarks/data/dataset_b_10k.csv
+    id_field: counterparty_id
+    format: csv
+
+cross_map:
+  backend: local
+  path: benchmarks/live/sqlite_cache_sweep/sqlite_256mb/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: benchmarks/live/sqlite_cache_sweep/sqlite_shared_cache
+  b_cache_dir: benchmarks/live/sqlite_cache_sweep/sqlite_shared_cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: embedding
+    weight: 0.55
+  - field_a: short_name
+    field_b: counterparty_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+  - field_a: country_code
+    field_b: domicile
+    method: exact
+    weight: 0.20
+  - field_a: lei
+    field_b: lei_code
+    method: exact
+    weight: 0.05
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+vector_backend: usearch
+top_n: 5
+ann_candidates: 5
+
+performance:
+  encoder_pool_size: 4
+  vector_index_mode: "load"
+
+live:
+  upsert_log: benchmarks/live/sqlite_cache_sweep/sqlite_256mb/wal/events.ndjson
+  db_path: benchmarks/live/sqlite_cache_sweep/sqlite_256mb/live.db
+  sqlite_cache_mb: 256
+
+output:
+  results_path:   benchmarks/live/sqlite_cache_sweep/sqlite_256mb/output/results.csv
+  review_path:    benchmarks/live/sqlite_cache_sweep/sqlite_256mb/output/review.csv
+  unmatched_path: benchmarks/live/sqlite_cache_sweep/sqlite_256mb/output/unmatched.csv

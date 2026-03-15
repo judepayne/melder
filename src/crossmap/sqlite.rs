@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use super::CrossMapOps;
 
@@ -36,8 +36,8 @@ impl SqliteCrossMap {
 }
 
 impl CrossMapOps for SqliteCrossMap {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(()) // Write-through: mutations are immediately durable.
     }
 
     fn add(&self, a_id: &str, b_id: &str) {

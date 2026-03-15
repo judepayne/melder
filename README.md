@@ -318,29 +318,29 @@ numeric identifiers. A future version may add tolerance-based comparison.
 ## Configuration
 
 All behaviour is driven by a single YAML config file. The annotated
-example below shows every field with its type, default, and purpose.
-Required fields are marked `[required]`; everything else is optional.
+example below shows every field with its purpose and default.
+Optional fields are marked `optional (default: ...)`. Fields with no
+such annotation are required.
 
 ```yaml
 # =============================================================================
 # MELDER — COMPLETE CONFIG REFERENCE
-# Every field is shown. Required fields are marked [required].
-# Defaults are shown in comments where they differ from the written value.
+# Every field is shown. Optional fields are marked with their default.
+# Fields with no annotation are required.
 # =============================================================================
 
 # --- Job metadata ------------------------------------------------------------
-# For your reference. Not used by the engine except job.name, which is used
-# as the filename stem when memory_budget auto-generates live.db_path.
+# For your reference. Not used by the engine.
 job:
-  name: counterparty_recon          # [required]
-  description: Match entities to counterparties
+  name: counterparty_recon
+  description: Match entities to counterparties  # optional (default: "")
 
 # --- Datasets ----------------------------------------------------------------
 # Field names in A and B do not need to match — the mapping is in match_fields.
 datasets:
   a:
-    path: data/entities.csv         # [required] path to CSV, JSONL, or Parquet
-    id_field: entity_id             # [required] column whose value is the unique record key
+    path: data/entities.csv         # path to CSV, JSONL, or Parquet
+    id_field: entity_id             # column whose value is the unique record key
     common_id_field: lei            # optional — stable shared identifier (LEI, ISIN, etc.).
                                     #   Records where both sides share the same value are
                                     #   matched immediately with score 1.0, before any scoring.
@@ -349,8 +349,8 @@ datasets:
                                     #   Inferred from file extension if omitted.
     encoding: utf-8                 # optional — character encoding for csv/jsonl. Default: utf-8.
   b:
-    path: data/counterparties.csv   # [required]
-    id_field: counterparty_id       # [required]
+    path: data/counterparties.csv
+    id_field: counterparty_id
     common_id_field: lei            # optional — must mirror datasets.a.common_id_field
     format: csv                     # optional
     encoding: utf-8                 # optional
@@ -359,26 +359,25 @@ datasets:
 # Persistent record of confirmed A↔B pairs. In batch mode this is a CSV file.
 # In live mode with live.db_path it is stored in SQLite instead.
 cross_map:
-  backend: local                    # "local" — the only supported backend
-  path: crossmap.csv                # [required] path to the cross-map CSV file
-  a_id_field: entity_id             # [required] A-side ID column written into the cross-map output
-  b_id_field: counterparty_id       # [required] B-side ID column written into the cross-map output
+  backend: local                    # optional (default: "local") — the only supported backend
+  path: crossmap.csv                # optional (default: "crossmap.csv")
+  a_id_field: entity_id             # A-side ID column written into the cross-map output
+  b_id_field: counterparty_id       # B-side ID column written into the cross-map output
 
 # --- Embedding model ---------------------------------------------------------
 # Used by any match field with method: embedding. Model weights (~90 MB) are
 # downloaded automatically from HuggingFace on first run.
 embeddings:
-  model: all-MiniLM-L6-v2          # [required] HuggingFace model name or local ONNX path.
+  model: all-MiniLM-L6-v2          # HuggingFace model name or local ONNX path.
                                     #   Supported models and their dimensions:
                                     #     all-MiniLM-L6-v2   — 384-dim, fast, good default
                                     #     all-MiniLM-L12-v2  — 384-dim, slightly better, ~2x slower
                                     #     bge-small-en-v1.5  — 384-dim, English-optimised
                                     #     bge-base-en-v1.5   — 768-dim, higher capacity
                                     #     bge-large-en-v1.5  — 1024-dim, highest quality, ~4x slower
-  a_cache_dir: cache/a             # [required] directory for the A-side combined embedding index.
+  a_cache_dir: cache/a             # directory for the A-side combined embedding index.
                                     #   Created automatically on first run; loaded on subsequent
-                                    #   runs to skip re-encoding. Also used by memory_budget to
-                                    #   locate the manifest for record count estimation.
+                                    #   runs to skip re-encoding.
   b_cache_dir: cache/b             # optional — same for B-side. Omit to skip B-side caching
                                     #   (B vectors are rebuilt from scratch on every run).
 
@@ -406,33 +405,6 @@ bm25_candidates: 50                 # Candidates BM25 keeps after re-ranking the
                                     #   Default: 10. Only used when method: bm25 is in match_fields.
                                     #   Requires: cargo build --release --features bm25
 
-# --- Memory budget (auto-configuration) -------------------------------------
-# Optional. When set, melder estimates the dataset's memory footprint from the
-# record count (read from the embedding cache manifest, or by counting lines in
-# the data file) and the configured embedding dimensions, then automatically
-# selects storage backends — no manual SQLite or mmap configuration needed.
-#
-#   "auto"  — detect available RAM at startup and use 80% as the budget.
-#   "24GB"  — explicit ceiling. Supports: TB, GB, MB, KB, B; decimals OK ("1.5GB").
-#
-# Decision thresholds (70/30 split):
-#   Estimated record store > 30% of budget  →  switch record store to SQLite.
-#   Estimated vector index > 70% of budget  →  switch vector index to mmap.
-#
-# In batch mode (meld run):
-#   Creates a temporary SQLite database in a system temp dir, populated with
-#   A-side records. Auto-deleted when the job finishes. SQLite cache = 30% of budget.
-#
-# In live mode (meld serve):
-#   Auto-generates live.db_path as "{a_cache_dir}/{job.name}.db" when SQLite
-#   is triggered. Equivalent to setting live.db_path explicitly.
-#
-# Explicit live.db_path or performance.vector_index_mode settings take
-# precedence; a note is printed at startup when this occurs.
-#
-# Default: not set — fully in-memory, current behaviour.
-memory_budget: auto                 # "auto" | "24GB" | "512MB" | etc. (default: not set)
-
 # --- Blocking (pre-filter) ---------------------------------------------------
 # Before candidate selection, blocking eliminates impossible candidates by
 # requiring cheap field equality. A record from France will never be compared
@@ -443,7 +415,7 @@ memory_budget: auto                 # "auto" | "24GB" | "512MB" | etc. (default:
 # field match is enough). Omit this section or set enabled: false to disable —
 # every record then becomes a candidate (thorough but slow on large datasets).
 blocking:
-  enabled: true
+  enabled: true                     # optional (default: false)
   operator: "and"                   # "and" (default) — all fields must match (intersection)
                                     # "or"            — any one field matching is enough (union)
   fields:
@@ -535,21 +507,21 @@ output:
 # --- Live mode (meld serve) --------------------------------------------------
 # Ignored by meld run. Omit this section for pure batch usage.
 live:
-  upsert_log: wal.ndjson            # path for the write-ahead log. Every record add/remove
+  upsert_log: wal.ndjson            # optional — path for the write-ahead log. Every record add/remove
                                     #   and crossmap change is appended here for crash recovery.
                                     #   Compacted on clean shutdown.
-  crossmap_flush_secs: 5            # how often to flush the in-memory crossmap to disk (seconds).
-                                    #   Default: 5. Ignored when using live.db_path (SQLite is
-                                    #   the durable store in that case).
+  crossmap_flush_secs: 5            # optional (default: 5) — how often to flush the in-memory
+                                    #   crossmap to disk (seconds). Ignored when using
+                                    #   live.db_path (SQLite writes through immediately).
   db_path: data/live.db             # optional — path to a SQLite database for durable live-mode
                                     #   storage. When set:
                                     #   • Cold start (no DB file): datasets loaded from CSV,
                                     #     records inserted into SQLite, crossmap stored in SQLite.
                                     #   • Warm start (DB exists): opens existing DB directly —
                                     #     no WAL replay needed; restarts are instant.
-                                    #   When memory_budget triggers SQLite, this path is
-                                    #   auto-generated as "{a_cache_dir}/{job.name}.db".
                                     #   Default: not set (in-memory MemoryStore + MemoryCrossMap).
+  sqlite_cache_mb: 64               # optional (default: 64) — SQLite page cache size in MB.
+                                    #   Controls PRAGMA cache_size. Only relevant when db_path is set.
 
 # --- Performance tuning ------------------------------------------------------
 # All fields are optional with sensible defaults. Omit the section if unsure.
@@ -583,7 +555,6 @@ performance:
                                     #   Lower peak RAM at extreme scale (100M+ records) but
                                     #   unpredictable cold-cache latency. READ-ONLY: do not use
                                     #   with meld serve (live upserts write to the index).
-                                    #   Set automatically by memory_budget when needed.
                                     #   No effect with the flat backend.
 ```
 
@@ -653,18 +624,7 @@ lets the OS page-cache decide what stays in RAM — useful at extreme
 scale (100M+ records) where the index does not fit in memory, but HNSW
 random-access traversal causes frequent page faults on a cold cache, so
 latency is unpredictable. Not suitable for `meld serve` because upserts
-write to the index. Set automatically when `memory_budget` triggers it.
-
-**`memory_budget`** — auto-configures record store and vector index
-backends based on estimated memory footprint. The estimator reads the
-`record_count` field from the embedding cache manifest (zero I/O) and
-falls back to counting lines in the data file. Decision thresholds:
-record footprint > 30% of budget → SQLite; vector footprint > 70% of
-budget → mmap. The 70/30 split follows from the 1.5× size ratio between
-the vector index and record store, and the much higher per-miss cost of
-HNSW graph traversal versus B-tree record lookups. In batch mode a
-temporary SQLite database is created and auto-deleted on completion. In
-live mode the db path is auto-generated as `{a_cache_dir}/{job.name}.db`.
+write to the index.
 
 Batch scoring thread count is controlled by the `RAYON_NUM_THREADS`
 environment variable (defaults to logical CPU count if unset).
@@ -704,7 +664,9 @@ Batch matching complete:
   Auto-matched: 712
   Review:       138
   No match:     150
-  Elapsed:      8.3s
+  Index build:  14.2s
+  Scoring time: 8.3s
+  Total elapsed:22.5s
   Throughput:   120 records/sec
 
 Output files:
@@ -722,17 +684,41 @@ B records (useful for quick sanity checks on large datasets).
 > For a hands-on walkthrough, see the
 > [live worked example](examples/live/README.md).
 
-Live mode starts an HTTP server that holds both datasets in memory and
-matches records on the fly as they arrive:
+Live mode starts an HTTP server that matches records on the fly as they
+arrive. It supports two storage backends:
+
+- **In-memory** (default) — records and crossmap held in RAM, persisted
+  via a write-ahead log (WAL) and crossmap CSV.
+- **SQLite** (set `live.db_path`) — records, crossmap, and review queue
+  stored in a SQLite database. Durable by default, instant warm restarts.
+
+SQLite throughput is ~10-15% lower than in-memory at the same scale
+(~1,300 vs ~1,530 req/s at 10k, c=10) due to Mutex serialization on the
+shared connection. Tail latencies (p95, p99) are actually better with
+SQLite. The `live.sqlite_cache_mb` setting controls the SQLite page cache
+(default 64 MB) but has negligible impact on throughput — the bottleneck
+is lock contention, not I/O.
 
 ```bash
 meld serve --config config.yaml --port 8090
 ```
 
-**Startup.** On launch, the melder loads both datasets, builds embedding
-indices and blocking indices, loads the cross-map, and replays the
-write-ahead log (WAL) to recover any records added since the last
-restart. Progress is logged to stderr. Once ready, it prints:
+**Startup.** What happens at launch depends on the storage backend:
+
+*In-memory (no `db_path`):* Both datasets are loaded from CSV, embedding
+and blocking indices are built, the crossmap CSV is loaded, and the WAL
+is replayed to recover any records added since the last restart.
+
+*SQLite — cold start (DB file does not exist):* Datasets are loaded from
+CSV and inserted into a new SQLite database. If a crossmap CSV exists,
+its pairs are imported into SQLite as a one-time migration. Embedding
+and blocking indices are built as normal.
+
+*SQLite — warm start (DB file exists):* The database is opened directly.
+No CSV loading, no WAL replay — the DB is the source of truth. Only
+embedding index caches are loaded from disk. This is fast.
+
+Once ready, the server prints:
 
 ```
 meld serve listening on port 8090
@@ -759,9 +745,11 @@ tail -f serve.log
 **Write-ahead log.** Every record addition and cross-map change is
 appended to the WAL file (configured via `live.upsert_log`, e.g.
 `wal.ndjson`). This is a newline-delimited JSON file — one event per
-line. The WAL exists for crash recovery: if the server is killed, the
-next startup replays these events to restore state. On clean shutdown the
-WAL is compacted (duplicate entries collapsed) and can be inspected with:
+line. In in-memory mode, the WAL is essential for crash recovery: if the
+server is killed, the next startup replays these events to restore
+state. In SQLite mode, the WAL is still written as a redundant safety
+net but is not needed for recovery. On clean shutdown the WAL is
+compacted (duplicate entries collapsed) and can be inspected with:
 
 ```bash
 # See recent WAL entries
@@ -771,20 +759,30 @@ tail -20 wal.ndjson
 jq -r .type wal.ndjson | sort | uniq -c
 ```
 
-**Cross-map persistence.** Confirmed matches are held in memory and
-flushed to the cross-map csv periodically (every `crossmap_flush_secs`,
-default 5 seconds) and on shutdown. The cross-map file is the durable
-record of which pairs have been matched.
+**Cross-map persistence.** How confirmed matches are persisted depends
+on the storage backend:
+
+- *In-memory:* The crossmap is held in RAM and flushed to the crossmap
+  CSV periodically (every `crossmap_flush_secs`, default 5 seconds) and
+  on shutdown. The CSV is the durable record of which pairs have been
+  matched.
+- *SQLite:* Every confirm/break is written to the database immediately.
+  The crossmap CSV is never updated. Use the `/crossmap/pairs` API
+  endpoint or query the `crossmap` table in the SQLite DB directly to
+  export pairs.
 
 **Shutdown.** Send Ctrl-C or SIGTERM. The melder will stop accepting new
 connections, drain in-flight requests, flush and compact the WAL, save
-the cross-map, and persist index caches. No data is lost.
+the cross-map (in-memory mode) or no-op (SQLite mode), and persist
+index caches. No data is lost.
 
 #### Persistence and restart
 
 Live mode is designed to survive restarts. The full state — records
 added via the API, confirmed crossmap pairs, and embedding vectors — is
 persisted to disk and restored on the next startup.
+
+##### In-memory mode (default)
 
 **What is persisted:**
 
@@ -838,6 +836,51 @@ configured base path are discovered and replayed in lexicographic
 files accumulate across runs; delete them manually if disk space is a
 concern (only the most recent compacted file is needed for full
 recovery).
+
+##### SQLite mode (`live.db_path` set)
+
+**What is persisted:**
+
+| Component | Mechanism | When |
+|-----------|-----------|------|
+| Records | SQLite `records` table | Immediately on every add/remove |
+| Crossmap pairs | SQLite `crossmap` table | Immediately on every confirm/break |
+| Review queue | SQLite `reviews` table | Immediately on every review-band match |
+| Embedding vectors | Index cache (`.usearchdb` or `.index`) | Shutdown |
+| WAL | Same as in-memory mode | Every API call (redundant safety net) |
+
+**Shutdown sequence:**
+
+1. WAL is flushed and compacted
+2. Combined embedding index caches are saved
+3. (No crossmap CSV flush — SQLite is already durable)
+
+**Startup sequence (warm — DB exists):**
+
+1. SQLite database is opened directly — records, crossmap, and reviews
+   are already there
+2. Embedding index caches are loaded from disk
+3. Blocking indices are rebuilt from the SQLite records
+4. A new WAL file is opened
+
+No CSV loading. No WAL replay. Restarts are fast.
+
+**Startup sequence (cold — no DB file):**
+
+1. A new SQLite database is created
+2. Dataset files (CSV/JSONL/Parquet) are loaded and inserted into SQLite
+3. If a crossmap CSV exists at `cross_map.path`, its pairs are imported
+   into SQLite (one-time migration — the CSV is not updated afterwards)
+4. Embedding indices are built or loaded from cache
+5. Blocking indices are built
+6. A new WAL file is opened
+
+**Migrating from in-memory to SQLite:** Add `live.db_path` to your
+config and restart. The first startup is a cold start — datasets are
+loaded from CSV, the crossmap CSV is imported into the database, and the
+WAL is written as a redundant log. From the second startup onwards, the
+database is the sole source of truth and restarts are instant. The
+crossmap CSV is never written to again.
 
 ### Live mode API
 
@@ -1505,11 +1548,11 @@ crossmappings.
 
 | | flat 10k x 10k | usearch 10k x 10k | flat 100k x 100k | usearch 100k x 100k |
 |---|---:|---:|---:|---:|
-| Index build time (no cache) | ~16s | ~17s | ~3m | ~3m 21s |
-| Index load time (cached) | ~25ms | ~50ms | ~650ms | ~600ms |
-| Scoring throughput | 4,877 rec/s | **28,937 rec/s** | 363 rec/s | **10,275 rec/s** |
-| Wall time (cold) | — | — | — | 3m 34s |
-| Wall time (warm) | 1.6s | 0.69s | 4m 37s | **11s** |
+| Index build time (no cache) | ~17s | ~17s | ~3m | ~3m 32s |
+| Index load time (cached) | ~47ms | ~78ms | ~650ms | ~640ms |
+| Scoring throughput | 5,507 rec/s | **31,366 rec/s** | — | **8,735 rec/s** |
+| Wall time (cold) | — | — | — | 3m 32s |
+| Wall time (warm) | 2.2s | 0.7s | — | **12.8s** |
 
 > [!TIP]
 > The first build of cached indices for large datasets can be slow —
@@ -1531,15 +1574,16 @@ clients each submitting 3,000 requests (30k total). 80% of requests
 require ONNX encoding; 20% modify only non-embedding fields and skip
 the model entirely.
 
-| Metric | flat (c=1) | usearch (c=1) | flat (c=10) | usearch (c=10) |
-|--------|----------:|-------------:|------------:|---------------:|
-| Throughput | 349 req/s | 673 req/s | 616 req/s | **1,624 req/s** |
-| p50 latency | 2.2ms | 0.7ms | 13.3ms | 3.9ms |
-| p95 latency | 4.4ms | 2.9ms | 39.9ms | 21.8ms |
-| p99 latency | 9.7ms | 3.3ms | 64.4ms | 35.4ms |
+| Metric | flat (c=10) cold | usearch (c=10) cold | flat (c=10) warm | usearch (c=10) warm |
+|--------|----------------:|--------------------:|-----------------:|--------------------:|
+| Throughput | 843 req/s | 1,045 req/s | 1,113 req/s | **1,558 req/s** |
+| p50 latency | 8.4ms | 5.5ms | 7.2ms | 3.5ms |
+| p95 latency | 30.4ms | 29.0ms | 21.2ms | 25.6ms |
 
-At 100k x 100k (80% encoding, c=10), usearch reaches **1,505 req/s**
-with p50 latency of 5.4ms and p95 of 16.6ms — 5.8x faster than the flat backend.
+Cold = fresh index build on startup. Warm = pre-built cache loaded from disk (~1.7s startup vs ~18s cold).
+
+At 100k x 100k (80% encoding, c=10, 10k events), usearch reaches **1,325 req/s** warm
+with p50 latency of 6.0ms and p95 of 19.0ms.
 
 When fewer requests require encoding (40% instead of 80%), throughput
 improves further: the text-hash skip optimisation means non-encoding
@@ -1553,19 +1597,59 @@ requests complete in under 1ms.
 
 ### Benchmarking
 
-Four Python scripts in `benchmarks/scripts/` exercise the live server. All four can
-start and stop the server automatically, or connect to one you already
-have running (`--no-serve`). They require only the Python standard
-library — no pip dependencies.
+Each benchmark is a self-contained directory with its own `config.yaml` and
+`run_test.py`. All scripts require only the Python standard library — no pip
+dependencies.
+
+#### Running individual tests
+
+```bash
+# Single batch test — run from the project root
+python3 benchmarks/batch/10kx10k_usearch/cold/run_test.py
+python3 benchmarks/batch/10kx10k_usearch/warm/run_test.py
+
+# Single live test
+python3 benchmarks/live/10kx10k_inject3k_usearch/cold/run_test.py
+python3 benchmarks/live/100kx100k_inject10k_usearch/warm/run_test.py
+```
+
+Cold tests wipe their cache and rebuild from scratch. Warm tests preserve the
+cache — run them twice if the cache is empty: the first run builds it, the
+second is the true warm measurement.
+
+#### Running the full suite
+
+> [!WARNING]
+> A full suite run takes a long time. The 100k cold tests alone encode
+> 200,000 records through the ONNX model (~3.5 minutes each). Expect
+> **45–60 minutes** for all batch tests and **60–90 minutes** for all live
+> tests on Apple Silicon. Budget accordingly.
+
+```bash
+# All batch benchmarks (cold then warm for each size/backend)
+python3 benchmarks/batch/run_all_tests.py
+
+# All live benchmarks (cold then warm for each size/backend)
+python3 benchmarks/live/run_all_tests.py
+```
+
+Both scripts stream each test's output to the terminal as it runs, then print
+a summary table at the end. Because cold tests build the embedding cache, the
+immediately following warm test needs only one pass — the cache is already hot.
+
+#### Helper scripts
+
+Four scripts in `benchmarks/scripts/` exercise the live server directly and
+can start/stop it automatically or connect to one you already have running
+(`--no-serve`):
 
 **`benchmarks/scripts/smoke_test.py`** — Quick sanity check. Starts the server,
 sends 10 upsert requests, prints each response with latency, and stops.
-Use this to verify the server comes up cleanly before running longer
-tests.
+Use this to verify the server comes up cleanly before running longer tests.
 
 ```bash
-python benchmarks/scripts/smoke_test.py --binary ./target/release/meld \
-    --config benchmarks/live/10kx10k_usearch/warm/config.yaml
+python3 benchmarks/scripts/smoke_test.py --binary ./target/release/meld \
+    --config benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml
 ```
 
 **`benchmarks/scripts/live_stress_test.py`** — Sequential throughput and latency.
@@ -1574,8 +1658,8 @@ A, 30% new B, 20% embedding updates, 20% non-embedding updates). Prints
 p50/p95/p99/max latency per operation type and overall throughput.
 
 ```bash
-python benchmarks/scripts/live_stress_test.py --binary ./target/release/meld \
-    --config benchmarks/live/10kx10k_usearch/warm/config.yaml \
+python3 benchmarks/scripts/live_stress_test.py --binary ./target/release/meld \
+    --config benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml \
     --iterations 3000
 ```
 
@@ -1584,8 +1668,8 @@ operation mix but distributed across N parallel workers. Use this to
 measure how throughput scales under load.
 
 ```bash
-python benchmarks/scripts/live_concurrent_test.py --binary ./target/release/meld \
-    --config benchmarks/live/10kx10k_usearch/warm/config.yaml \
+python3 benchmarks/scripts/live_concurrent_test.py --binary ./target/release/meld \
+    --config benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml \
     --iterations 3000 --concurrency 10
 ```
 
@@ -1595,8 +1679,8 @@ side-by-side comparison. Use `--batch-only` to skip the single-record
 baseline.
 
 ```bash
-python benchmarks/scripts/live_batch_test.py --binary ./target/release/meld \
-    --config benchmarks/live/10kx10k_usearch/warm/config.yaml \
+python3 benchmarks/scripts/live_batch_test.py --binary ./target/release/meld \
+    --config benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml \
     --records 3000 --batch-size 50
 ```
 
@@ -1604,10 +1688,10 @@ All four scripts accept `--no-serve` to skip starting the server:
 
 ```bash
 # Terminal 1: start the server manually
-meld serve --config benchmarks/live/10kx10k_usearch/warm/config.yaml --port 8090
+meld serve --config benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml --port 8090
 
 # Terminal 2: run the benchmark against it
-python benchmarks/scripts/live_concurrent_test.py --no-serve --port 8090 --iterations 3000
+python3 benchmarks/scripts/live_concurrent_test.py --no-serve --port 8090 --iterations 3000
 ```
 
 ## How Vector Caching Works

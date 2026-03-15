@@ -326,7 +326,7 @@ Two structural observations:
 | 32 GB | ~20M records | > ~20M | > ~20M |
 | 64 GB | ~40M records | > ~40M | > ~40M |
 
-Note: **both thresholds arrive at roughly the same record count** because the 1.5× ratio is fixed. The record store and vector index move to disk together, not independently. This informs the `memory_budget: auto` mode below.
+Note: **both thresholds arrive at roughly the same record count** because the 1.5× ratio is fixed. The record store and vector index move to disk together, not independently.
 
 ### SQLite as the Batch-Mode Record Store (Disk-Backed)
 
@@ -360,29 +360,6 @@ Given a fixed RAM budget B (either detected automatically or configured), the op
 
 **The ratio is ~70/30 vector/records, regardless of scale.** This follows from the 1.5× size ratio and the much higher access cost of HNSW cache misses versus B-tree record lookups.
 
-### The `memory_budget` Config Option
-
-A single top-level config key that drives all three decisions:
-
-```yaml
-# Auto mode: detect available RAM and configure automatically
-memory_budget: auto
-
-# Explicit mode: stay within this RAM envelope regardless of machine size
-memory_budget: 24GB
-```
-
-The auto-configuration algorithm at startup:
-
-1. Estimate record count from manifest or data file size heuristics.
-2. Compute `record_footprint = N × 500B` and `vector_footprint = N × dims × 2B` (f16).
-3. If `total_footprint < budget`: fully in-memory — current behaviour, no change.
-4. If `record_footprint > 0.3 × budget`: use SQLite for the record store with `cache_size` set to `0.3 × budget`. Set `page_size = 8192` for better B-tree efficiency.
-5. If `vector_footprint > 0.7 × budget`: use `index.view()` (mmap) for the vector index instead of `index.load()`.
-6. Steps 4 and 5 will typically trigger together (because the thresholds arrive at the same scale), resulting in a clean "disk-backed mode" transition.
-
-**This is a future feature.** None of this exists in the codebase yet. The current architecture is always fully in-memory for batch mode. The `memory_budget` option should not be built until the need is real — quantisation (already shipped) + BM25 (planned) covers workloads up to ~20–40M records on typical hardware without any disk-backed storage.
-
 ## Implementation Phases
 
 This doesn't need to be built all at once. A natural progression:
@@ -400,10 +377,6 @@ Abstract the record store and blocking index behind a trait. Implement an on-dis
 ### 3. Memory-mapped vector index (future escape hatch, small effort when needed)
 
 For 100M+ record workloads where RAM is genuinely exhausted even with f16 quantisation, switch `UsearchVectorDB::load()` from `index.load()` to `index.view()` on a per-block basis. This is a single-line change per block but trades consistent ANN search latency for lower peak RAM. Expose as a config option (`vector_index_mode: mmap`). Only meaningful for batch jobs tolerant of slower search; not suitable for live mode. Do not build this until the need is real — quantisation + BM25 covers the vast majority of realistic workloads comfortably.
-
-### 4. Memory budget auto-configuration (future, medium effort)
-
-Add a `memory_budget` config key (accepts `auto` or a size string like `24GB`). At startup, estimate the total memory footprint from record count and embedding dimensions. If the estimated footprint exceeds the budget, automatically switch the record store to SQLite (batch or live) with a page cache sized at ~30% of the budget, and switch the vector index to mmap mode. The 70/30 split follows from the 1.5× size ratio between vector index and record store and the higher per-miss cost of HNSW cache misses versus B-tree lookups. This makes melder self-tuning on large machines without requiring manual SQLite/mmap configuration. Build only when quantisation + BM25 are genuinely insufficient for the target scale.
 
 ## What This Doesn't Cover
 

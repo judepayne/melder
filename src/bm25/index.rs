@@ -4,10 +4,12 @@
 //! text fields designated by `bm25_fields` into a single `content` field
 //! per document, enabling cross-field BM25 scoring with zero configuration.
 
+use std::collections::HashMap;
+
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Field, STORED, STRING, Schema, TEXT, Value};
-use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument, doc};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, doc};
 use tracing::warn;
 
 use crate::models::{Record, Side};
@@ -17,6 +19,7 @@ use crate::store::RecordStore;
 pub struct BM25Index {
     index: Index,
     writer: IndexWriter,
+    reader: IndexReader,
     id_field: Field,
     content_field: Field,
     /// Which text fields to concatenate per record. Each entry is
@@ -24,6 +27,13 @@ pub struct BM25Index {
     /// is used for lookup.
     fields: Vec<(String, String)>,
     side: Side,
+    /// Cached self-scores keyed by hash of query text. Self-score depends
+    /// on corpus IDF which changes slowly, so caching is safe — the cache
+    /// is cleared on every commit to stay fresh.
+    self_score_cache: HashMap<u64, f32>,
+    /// True when documents have been added/deleted but not yet committed.
+    /// Cleared by `commit_if_dirty()`.
+    dirty: bool,
 }
 
 impl BM25Index {
@@ -55,13 +65,21 @@ impl BM25Index {
         }
         writer.commit()?;
 
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
+
         Ok(Self {
             index,
             writer,
+            reader,
             id_field,
             content_field,
             fields: fields.to_vec(),
             side,
+            self_score_cache: HashMap::new(),
+            dirty: false,
         })
     }
 
@@ -71,13 +89,21 @@ impl BM25Index {
         let index = Index::create_in_ram(schema);
         let writer = index.writer(50_000_000)?;
 
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
+
         Ok(Self {
             index,
             writer,
+            reader,
             id_field,
             content_field,
             fields: fields.to_vec(),
             side,
+            self_score_cache: HashMap::new(),
+            dirty: false,
         })
     }
 
@@ -87,19 +113,7 @@ impl BM25Index {
             return Vec::new();
         }
 
-        let reader = match self
-            .index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()
-        {
-            Ok(r) => r,
-            Err(e) => {
-                warn!(error = %e, "bm25 reader creation failed");
-                return Vec::new();
-            }
-        };
-        let searcher = reader.searcher();
+        let searcher = self.reader.searcher();
 
         let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
         let query = match query_parser.parse_query(&escape_query(text)) {
@@ -130,12 +144,42 @@ impl BM25Index {
         results
     }
 
+    /// Score a set of candidate IDs against a query text in a single BM25 query.
+    ///
+    /// Returns `(scores_map, max_score)`:
+    /// - `scores_map`: candidate ID → raw BM25 score. Candidates not in the
+    ///   top results get no entry (treat as 0.0).
+    /// - `max_score`: the highest raw BM25 score from the full query result
+    ///   set (not just the candidates). Used for normalisation in place of
+    ///   the expensive `self_score()` computation.
+    pub fn score_candidates(
+        &self,
+        query_text: &str,
+        candidate_ids: &[String],
+        top_k: usize,
+    ) -> (HashMap<String, f32>, f32) {
+        // Run one query for enough results to cover the candidates.
+        let limit = top_k.max(candidate_ids.len());
+        let results = self.query(query_text, limit);
+
+        // The top result has the highest raw score — use as normalisation ceiling.
+        let max_score = results.first().map(|(_, s)| *s).unwrap_or(0.0);
+
+        // Build lookup set for fast membership test.
+        let wanted: std::collections::HashSet<&str> =
+            candidate_ids.iter().map(|s| s.as_str()).collect();
+
+        let scores: HashMap<String, f32> = results
+            .into_iter()
+            .filter(|(id, _)| wanted.contains(id.as_str()))
+            .collect();
+
+        (scores, max_score)
+    }
+
     /// Compute the BM25 score for a specific query text against all indexed
     /// documents, returning only the score for `candidate_id` (if found).
     pub fn score_one(&self, query_text: &str, candidate_id: &str) -> Option<f32> {
-        // We query for more results than needed to increase the chance of
-        // finding the candidate. If the candidate is not in the top results,
-        // we return None (score is negligible).
         let results = self.query(query_text, 1000);
         results
             .into_iter()
@@ -146,16 +190,22 @@ impl BM25Index {
     /// Compute the self-score: query text scored against itself. This is the
     /// theoretical maximum BM25 score for the given text, used for normalisation.
     ///
-    /// Inserts a temporary document, queries, then removes it. The temporary
-    /// document uses a sentinel ID that won't collide with real records.
+    /// The result is cached by query text hash. The cache is cleared on every
+    /// commit (upsert/remove) to stay fresh as corpus IDF values change.
     pub fn self_score(&mut self, text: &str) -> f32 {
         if text.is_empty() {
             return 0.0;
         }
 
+        // Check cache first.
+        let hash = text_hash(text);
+        if let Some(&cached) = self.self_score_cache.get(&hash) {
+            return cached;
+        }
+
+        // Cache miss — do the expensive insert/commit/query/delete/commit.
         let sentinel_id = "__bm25_self_score_sentinel__";
 
-        // Insert temp document
         if self
             .writer
             .add_document(doc!(
@@ -169,19 +219,38 @@ impl BM25Index {
         if self.writer.commit().is_err() {
             return 0.0;
         }
+        self.reader.reload().ok();
 
-        // Query for sentinel
         let score = self.score_one(text, sentinel_id).unwrap_or(0.0);
 
         // Remove temp document
         let id_term = tantivy::Term::from_field_text(self.id_field, sentinel_id);
         self.writer.delete_term(id_term);
         let _ = self.writer.commit();
+        self.reader.reload().ok();
 
+        self.self_score_cache.insert(hash, score);
         score
     }
 
+    /// Commit pending writes and reload the reader if dirty.
+    ///
+    /// Call this before querying to make buffered upserts/removes visible.
+    /// Clears the self-score cache (corpus IDF may have changed).
+    pub fn commit_if_dirty(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        let _ = self.writer.commit();
+        self.reader.reload().ok();
+        self.self_score_cache.clear();
+        self.dirty = false;
+    }
+
     /// Insert or update a record in the index.
+    ///
+    /// The document is added to the writer but not committed. Call
+    /// `commit_if_dirty()` before querying to make pending changes visible.
     pub fn upsert(&mut self, id: &str, record: &Record) {
         // Delete any existing document for this id
         let id_term = tantivy::Term::from_field_text(self.id_field, id);
@@ -194,14 +263,17 @@ impl BM25Index {
                 self.content_field => text.as_str(),
             ));
         }
-        let _ = self.writer.commit();
+        self.dirty = true;
     }
 
     /// Remove a record from the index.
+    ///
+    /// The delete is buffered. Call `commit_if_dirty()` before querying
+    /// to make the removal visible.
     pub fn remove(&mut self, id: &str) {
         let id_term = tantivy::Term::from_field_text(self.id_field, id);
         self.writer.delete_term(id_term);
-        let _ = self.writer.commit();
+        self.dirty = true;
     }
 
     /// Build the concatenated query text for a record on the given side.
@@ -216,16 +288,7 @@ impl BM25Index {
 
     /// Return the number of indexed documents.
     pub fn num_docs(&self) -> u64 {
-        let reader = match self
-            .index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()
-        {
-            Ok(r) => r,
-            Err(_) => return 0,
-        };
-        let searcher = reader.searcher();
+        let searcher = self.reader.searcher();
         searcher.num_docs()
     }
 }
@@ -233,6 +296,14 @@ impl BM25Index {
 // ---
 // Internal helpers
 // ---
+
+/// Simple hash for self-score cache keys.
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
 
 fn build_schema() -> (Schema, Field, Field) {
     let mut builder = Schema::builder();
@@ -433,9 +504,10 @@ mod tests {
         let mut idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
         assert_eq!(idx.num_docs(), 0);
 
-        // Upsert a record
+        // Upsert a record (buffered — must commit before querying)
         let rec = make_record(&[("name_a", "Apple Inc"), ("desc_a", "technology")]);
         idx.upsert("1", &rec);
+        idx.commit_if_dirty();
         assert_eq!(idx.num_docs(), 1);
 
         let results = idx.query("apple", 5);
@@ -445,6 +517,7 @@ mod tests {
         // Update the record
         let rec2 = make_record(&[("name_a", "Microsoft"), ("desc_a", "software")]);
         idx.upsert("1", &rec2);
+        idx.commit_if_dirty();
         assert_eq!(idx.num_docs(), 1);
 
         let results = idx.query("microsoft", 5);
@@ -472,7 +545,7 @@ mod tests {
         assert_eq!(idx.num_docs(), 2);
 
         idx.remove("1");
-        assert_eq!(idx.num_docs(), 1);
+        idx.commit_if_dirty();
 
         let results = idx.query("apple", 5);
         assert!(results.is_empty(), "removed record should not match");

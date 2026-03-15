@@ -2,7 +2,6 @@ pub mod api;
 pub mod batch;
 #[cfg(feature = "bm25")]
 pub mod bm25;
-pub mod budget;
 pub mod cli;
 pub mod config;
 pub mod crossmap;

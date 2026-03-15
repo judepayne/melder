@@ -40,7 +40,10 @@ pub struct BatchStats {
     pub review_count: usize,
     pub no_match: usize,
     pub skipped: usize,
+    /// Total wall time for the entire run_batch() call (load + encode + score).
     pub elapsed_secs: f64,
+    /// Wall time for the scoring phase only (excludes B-side load and encoding).
+    pub scoring_elapsed_secs: f64,
 }
 
 /// Outcome for a single B record after scoring.
@@ -205,6 +208,7 @@ pub fn run_batch(
     };
 
     // Score all B records in a single parallel pass.
+    let scoring_start = Instant::now();
     let progress = AtomicUsize::new(0);
     let work_total = work_ids.len();
 
@@ -216,7 +220,7 @@ pub fn run_batch(
             // Progress reporting (atomic, lock-free)
             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
             if done.is_multiple_of(1000) || done == work_total {
-                let elapsed = start.elapsed().as_secs_f64();
+                let elapsed = scoring_start.elapsed().as_secs_f64();
                 let rate = done as f64 / elapsed;
                 let eta = if done < work_total {
                     (work_total - done) as f64 / rate
@@ -253,9 +257,9 @@ pub fn run_batch(
             // Build BM25 context: lock the index, build query text, pass to pipeline.
             #[cfg(feature = "bm25")]
             let results = if let Some(ref mtx) = bm25_index_a {
-                let mut guard = mtx.lock().unwrap_or_else(|e| e.into_inner());
+                let guard = mtx.lock().unwrap_or_else(|e| e.into_inner());
                 let query_text = guard.query_text_for(&b_record, Side::B);
-                let ctx = Bm25Ctx::new(&mut guard, query_text);
+                let ctx = Bm25Ctx::new(&*guard, query_text);
                 pipeline::score_pool(
                     b_id,
                     &b_record,
@@ -345,6 +349,7 @@ pub fn run_batch(
     }
 
     let elapsed = start.elapsed().as_secs_f64();
+    let scoring_elapsed = scoring_start.elapsed().as_secs_f64();
     let stats = BatchStats {
         total_b,
         auto_matched: matched.len(),
@@ -352,6 +357,7 @@ pub fn run_batch(
         no_match: unmatched.len(),
         skipped,
         elapsed_secs: elapsed,
+        scoring_elapsed_secs: scoring_elapsed,
     };
 
     let _ = emb_specs;

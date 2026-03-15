@@ -195,10 +195,10 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
             require_one_of(scorer, VALID_SCORERS, &format!("{}.scorer", prefix))?;
         }
 
-        if mf.weight <= 0.0 {
+        if mf.weight < 0.0 {
             return Err(ConfigError::InvalidValue {
                 field: format!("{}.weight", prefix),
-                message: "must be > 0".into(),
+                message: "must be >= 0".into(),
             });
         }
         weight_sum += mf.weight;
@@ -375,29 +375,6 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
             eprintln!(
                 "Note: vector_index_mode {:?} has no effect with flat backend",
                 vim
-            );
-        }
-    }
-
-    // 32. memory_budget
-    if let Some(ref budget_str) = cfg.memory_budget {
-        // Validate syntax only (parse_budget would call available_ram() for
-        // "auto", which is fine but unnecessary at validation time).
-        crate::budget::parse_budget(budget_str).map_err(|e| ConfigError::InvalidValue {
-            field: "memory_budget".into(),
-            message: e.to_string(),
-        })?;
-        // Warn when memory_budget interacts with explicit manual settings.
-        if cfg.live.db_path.is_some() {
-            eprintln!(
-                "Note: memory_budget is set alongside live.db_path; \
-                 the explicit db_path takes precedence for live mode storage"
-            );
-        }
-        if cfg.performance.vector_index_mode.is_some() {
-            eprintln!(
-                "Note: memory_budget is set alongside performance.vector_index_mode; \
-                 the explicit vector_index_mode takes precedence"
             );
         }
     }
@@ -1275,88 +1252,4 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
         );
     }
 
-    // --- memory_budget validation tests ---
-
-    #[test]
-    fn memory_budget_auto_accepted() {
-        let yaml = format!(
-            "{}\nmemory_budget: auto\n",
-            base_yaml_with_match_fields(
-                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
-            )
-        );
-        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
-        normalise_blocking(&mut cfg);
-        apply_defaults(&mut cfg);
-        validate(&cfg).unwrap();
-        assert_eq!(cfg.memory_budget.as_deref(), Some("auto"));
-    }
-
-    #[test]
-    fn memory_budget_explicit_gb_accepted() {
-        let yaml = format!(
-            "{}\nmemory_budget: 24GB\n",
-            base_yaml_with_match_fields(
-                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
-            )
-        );
-        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
-        normalise_blocking(&mut cfg);
-        apply_defaults(&mut cfg);
-        validate(&cfg).unwrap();
-        assert_eq!(cfg.memory_budget.as_deref(), Some("24GB"));
-    }
-
-    #[test]
-    fn memory_budget_none_is_valid() {
-        let yaml = base_yaml_with_match_fields(
-            "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }",
-        );
-        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
-        normalise_blocking(&mut cfg);
-        apply_defaults(&mut cfg);
-        validate(&cfg).unwrap();
-        assert_eq!(
-            cfg.memory_budget, None,
-            "memory_budget should default to None"
-        );
-    }
-
-    #[test]
-    fn memory_budget_invalid_unit_rejected() {
-        let yaml = format!(
-            "{}\nmemory_budget: 8PB\n",
-            base_yaml_with_match_fields(
-                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
-            )
-        );
-        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
-        normalise_blocking(&mut cfg);
-        apply_defaults(&mut cfg);
-        let err = validate(&cfg).unwrap_err();
-        assert!(
-            err.to_string().contains("memory_budget"),
-            "error should mention memory_budget, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn memory_budget_zero_rejected() {
-        let yaml = format!(
-            "{}\nmemory_budget: 0GB\n",
-            base_yaml_with_match_fields(
-                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
-            )
-        );
-        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
-        normalise_blocking(&mut cfg);
-        apply_defaults(&mut cfg);
-        let err = validate(&cfg).unwrap_err();
-        assert!(
-            err.to_string().contains("memory_budget"),
-            "error should mention memory_budget, got: {}",
-            err
-        );
-    }
 }

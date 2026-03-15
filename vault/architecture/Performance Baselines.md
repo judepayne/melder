@@ -12,32 +12,48 @@ Benchmarked on Apple Silicon M3 MacBook Air, `all-MiniLM-L6-v2`, `encoder_pool_s
 
 ## Batch Mode (flat vs usearch, top_n: 20, country_code blocking)
 
-| Metric | flat 10k x 10k | usearch 10k x 10k | flat 100k x 100k | usearch 100k x 100k |
-|---|---:|---:|---:|---:|
-| Index build (cold) | ~16s | ~18s | ~3m | ~3m 24s |
-| Index load (warm) | ~25ms | ~50ms | ~650ms | ~700ms |
-| Scoring throughput | 4,877 rec/s | 22,464 rec/s | 363 rec/s | 9,886 rec/s |
-| Wall time (warm) | 1.6s | 0.85s | 4m 37s | 12s |
+| Metric | flat 10k x 10k | usearch 10k x 10k | usearch 100k x 100k |
+|---|---:|---:|---:|
+| Index build (cold) | ~17s | ~17s | ~3m 32s |
+| Cache load (warm) | ~47ms | ~78ms | ~640ms |
+| Scoring throughput | 5,507 rec/s | 31,366 rec/s | 8,735 rec/s |
+| Wall time (warm) | 2.2s | 0.7s | 12.8s |
 
-Key insight: usearch is 4.6x faster at 10k and 27x faster at 100k due to O(log N) vs O(N) candidate selection.
+Key insight: usearch is 5.7x faster at 10k and 12.5x faster at 100k due to O(log N) vs O(N) candidate selection.
 
-## Live Mode (3,000 adds, 80% encoding, 10k x 10k warm caches)
+## Live Mode (80% encoding, 10k x 10k warm caches, c=10)
 
-| Metric | flat c=1 | usearch c=1 | flat c=10 | usearch c=10 |
-|---|---:|---:|---:|---:|
-| Throughput | 349 req/s | 673 req/s | 616 req/s | 1,624 req/s |
-| p50 latency | 2.2ms | 0.7ms | 13.3ms | 3.9ms |
-| p95 latency | 4.4ms | 2.9ms | 39.9ms | 21.8ms |
+| Metric | flat | usearch |
+|---|---:|---:|
+| Startup (cold) | ~17s | ~18s |
+| Startup (warm) | ~1.6s | ~1.7s |
+| Throughput (cold) | 843 req/s | 1,045 req/s |
+| Throughput (warm) | 1,113 req/s | 1,558 req/s |
+| p50 latency (warm) | 7.2ms | 3.5ms |
+| p95 latency (warm) | 21.2ms | 25.6ms |
 
-## Live Mode (3,000 adds, 80% encoding, 100k x 100k warm caches)
+## Live Mode (80% encoding, 100k x 100k warm caches, c=10)
 
-| Metric | flat c=1 | usearch c=1 | flat c=10 | usearch c=10 |
-|---|---:|---:|---:|---:|
-| Throughput | 160 req/s | 546 req/s | 251 req/s | 1,448 req/s |
-| p50 latency | 5.6ms | 0.9ms | 30.5ms | 5.1ms |
-| p95 latency | 8.1ms | 3.5ms | 94.4ms | 19.8ms |
+| Metric | usearch (10k events) |
+|---|---:|
+| Startup (cold) | ~3m 29s |
+| Startup (warm) | ~7.2s |
+| Throughput (cold) | 925 req/s |
+| Throughput (warm) | 1,325 req/s |
+| p50 latency (warm) | 6.0ms |
+| p95 latency (warm) | 19.0ms |
 
-usearch c=10 includes text-hash skip: 20% of requests skip ONNX encoding (~1ms vs ~7ms).
+usearch includes text-hash skip: 20% of requests skip ONNX encoding (~1ms vs ~7ms).
+
+## Live Mode — SQLite vs In-Memory (10k x 10k, usearch, c=10)
+
+| Metric | In-Memory | SQLite |
+|---|---:|---:|
+| Startup (warm) | ~1.9s | ~0.5s |
+| Throughput (warm) | 1,616 req/s | 1,183 req/s |
+| p95 latency (warm) | 20.7ms | 18.0ms |
+
+Key findings: SQLite warm start is ~4x faster (no CSV parsing or CrossMap load). Throughput is ~25% lower due to Mutex serialization on the shared connection. However, p95 latency is actually better with SQLite — the Mutex eliminates contention spikes from concurrent DashMap access.
 
 ## Batch Endpoint Throughput (Live Mode)
 

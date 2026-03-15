@@ -1,0 +1,59 @@
+job:
+  name: jude_play
+  description: "10k x 10k, usearch, embedding + BM25 only (no fuzzy/exact)"
+
+datasets:
+  a:
+    path: benchmarks/data/dataset_a_10k.csv
+    id_field: entity_id
+  b:
+    path: benchmarks/data/dataset_b_10k.csv
+    id_field: counterparty_id
+
+cross_map:
+  backend: local
+  path: benchmarks/live/jude_play/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: benchmarks/live/jude_play/cache
+  b_cache_dir: benchmarks/live/jude_play/cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: fuzzy
+    weight: 0.0
+  - method: bm25
+    weight: 1.0
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+vector_backend: usearch
+top_n: 5
+ann_candidates: 20
+bm25_candidates: 10
+
+performance:
+  encoder_pool_size: 6
+  encoder_batch_wait_ms: 0
+  vector_index_mode: "load"
+
+live:
+  upsert_log: benchmarks/live/jude_play/wal/events.ndjson
+
+output:
+  results_path:   benchmarks/live/jude_play/output/results.csv
+  review_path:    benchmarks/live/jude_play/output/review.csv
+  unmatched_path: benchmarks/live/jude_play/output/unmatched.csv

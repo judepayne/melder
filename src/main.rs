@@ -74,6 +74,15 @@ enum Commands {
         #[command(subcommand)]
         action: CrossmapAction,
     },
+    /// Export live-mode state to CSV files
+    Export {
+        /// Path to YAML config file
+        #[arg(short, long)]
+        config: PathBuf,
+        /// Output directory for exported CSV files
+        #[arg(short, long)]
+        out_dir: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -181,5 +190,6 @@ fn main() {
                 melder::cli::crossmap::cmd_crossmap_import(&config, &file)
             }
         },
+        Commands::Export { config, out_dir } => melder::cli::export::cmd_export(&config, &out_dir),
     }
 }

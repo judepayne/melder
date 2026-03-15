@@ -1,17 +1,19 @@
 //! `CrossMapOps` trait: runtime interface for bidirectional record-pair mapping.
 //!
-//! Persistence (`load`, `save`) is intentionally excluded — those are
-//! constructor/serialization concerns that differ between backends
-//! (CSV for `MemoryCrossMap`, no-op for `SqliteCrossMap`).
-
-use std::any::Any;
+//! Persistence details differ between backends: `MemoryCrossMap` flushes to
+//! CSV via `flush()`, while `SqliteCrossMap` is write-through (flush is a
+//! no-op). The trait's `flush()` method abstracts this.
 
 /// Runtime operations on a bidirectional A↔B record-pair mapping.
 ///
 /// Thread-safe: all methods take `&self`. Implementations must be `Send + Sync`.
 pub trait CrossMapOps: Send + Sync {
-    /// Downcast support for accessing backend-specific methods.
-    fn as_any(&self) -> &dyn Any;
+    /// Flush pending state to durable storage.
+    ///
+    /// For `MemoryCrossMap` this saves to CSV. For `SqliteCrossMap` this
+    /// is a no-op (mutations are immediately durable).
+    fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
     /// Insert a pair unconditionally in both directions.
     fn add(&self, a_id: &str, b_id: &str);
 

@@ -107,7 +107,9 @@ Compaction is not called automatically — invoke it manually when WAL file size
 
 The CrossMap is flushed to disk by a background task every `crossmap_flush_secs` seconds (default: 5) whenever the `crossmap_dirty` flag is set. The flag is set on every successful `claim()`, manual confirm, or break.
 
-**Save:** writes to `{path}.tmp`, then atomic rename to `{path}`.
+Flushing now goes through the `CrossMapOps::flush()` trait method:
+- `MemoryCrossMap::flush()` writes to CSV via temp file + atomic rename (same as before).
+- `SqliteCrossMap::flush()` is a no-op — writes are already durable (write-through to the `crossmap` table).
 
 **Load:** missing file → empty CrossMap (not an error, normal on first run). Header-only or missing expected columns → empty CrossMap (silent, not fatal).
 
@@ -143,6 +145,17 @@ This distinction ensures that during WAL replay, already-confirmed pairs are alw
 
 The `skip_deletes: true` flag at steps 4–5 is the key to fast restarts: vectors that were encoded during previous runs and saved to the cache file are retained in-place. WAL replay then adds only the delta (new records since last shutdown), with the `contains()` guard skipping re-encoding for anything already indexed.
 
+### Startup Path Selection: Memory vs. SQLite
+
+`LiveMatchState::load()` now dispatches to `load_memory()` or `load_sqlite()` based on `config.live.db_path`. Common logic is extracted into helper functions:
+- `load_datasets()` — shared CSV/JSONL/Parquet loading for both paths
+- `replay_wal()` — WAL replay with proper vector index encoding (encodes vectors for WAL-added records not in cache)
+- `finish()` — shared tail: BM25 build, WAL open, summary print, review load from store, struct assembly
+
+**Memory path** (`load_memory()`): Follows the 13-step sequence above. WAL replay is active and reconstructs state from the log.
+
+**SQLite path** (`load_sqlite()`): When `live.db_path` is set, startup follows the SQLite path: open existing DB (warm start) or create + populate from CSV (cold start). WAL replay is skipped — SQLite state is already durable. Common logic (dataset loading, BM25 build, WAL open, review load) is shared via extracted helpers.
+
 ---
 
 ## LiveSideState Structure
@@ -151,11 +164,14 @@ Each side (`a` and `b`) is a `LiveSideState`:
 
 | Field | Type | Notes |
 |---|---|---|
-| `records` | `DashMap<String, Record>` | The live record store |
+| `store` | `Arc<dyn RecordStore>` | Trait object encapsulating records, blocking index, unmatched set, and common_id_index. Implementations: `MemoryStore` (in-memory), `SqliteStore` (SQLite-backed). |
 | `combined_index` | `Option<Box<dyn VectorDB>>` | None if no embedding fields configured |
-| `blocking_index` | `RwLock<BlockingIndex>` | Write-locked during insert/remove |
-| `unmatched` | `DashSet<String>` | IDs not yet confirmed in CrossMap |
-| `common_id_index` | `DashMap<String, String>` | `common_id_value → record_id` reverse lookup |
+
+`LiveSideState` has been simplified to use a `RecordStore` trait object instead of individual `DashMap`/`RwLock`/`DashSet` fields. The store abstraction encapsulates:
+- Records (`DashMap<String, Record>` in memory, `records` table in SQLite)
+- Blocking index (`RwLock<BlockingIndex>`)
+- Unmatched set (`DashSet<String>`)
+- Common ID index (`DashMap<String, String>` reverse lookup)
 
 ---
 
@@ -171,7 +187,17 @@ Entries are **drained** (via `retain`) when:
 - A `remove_record` fires for either party — any review mentioning that ID is purged
 - A record is re-upserted — its stale reviews are cleared before re-scoring
 
-Entries are reconstructed from `review_match` WAL events at step 13 of startup, then filtered against the current CrossMap state.
+Review queue mutations now go through `RecordStore` trait methods:
+- `persist_review(side, id, candidate_id, score)` — add or update a review entry
+- `remove_reviews_for_id(side, id)` — purge all reviews mentioning an ID
+- `remove_reviews_for_pair(a_id, b_id)` — purge reviews for a specific pair
+- `load_reviews()` — load all reviews from persistent storage
+
+Implementations:
+- `MemoryStore` — these are no-ops (reviews live only in the in-memory `review_queue`)
+- `SqliteStore` — writes through to the `reviews` table (read-through on load)
+
+At startup, reviews are loaded via `store.load_reviews()` instead of raw SQL queries, then reconstructed from `review_match` WAL events at step 13, and filtered against the current CrossMap state.
 
 ---
 

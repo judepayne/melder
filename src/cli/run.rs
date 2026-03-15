@@ -167,12 +167,17 @@ pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<u
     println!("  Auto-matched: {}", stats.auto_matched);
     println!("  Review:       {}", stats.review_count);
     println!("  No match:     {}", stats.no_match);
-    println!("  Elapsed:      {:.1}s", stats.elapsed_secs);
-    if stats.elapsed_secs > 0.0 {
+    let index_build_secs = stats.elapsed_secs - stats.scoring_elapsed_secs;
+    if index_build_secs > 0.5 {
+        println!("  Index build:  {:.1}s", index_build_secs);
+    }
+    println!("  Scoring time: {:.1}s", stats.scoring_elapsed_secs);
+    println!("  Total elapsed:{:.1}s", stats.elapsed_secs);
+    if stats.scoring_elapsed_secs > 0.0 {
         let processed = stats.total_b - stats.skipped;
         println!(
             "  Throughput:   {:.0} records/sec",
-            processed as f64 / stats.elapsed_secs
+            processed as f64 / stats.scoring_elapsed_secs
         );
     }
     println!();

@@ -81,4 +81,18 @@ pub trait RecordStore: Send + Sync {
 
     /// Remove a common_id mapping.
     fn common_id_remove(&self, side: Side, common_id: &str);
+
+    // --- Review persistence ---
+
+    /// Persist a review entry (write-through for SQLite, no-op for memory).
+    fn persist_review(&self, key: &str, id: &str, side: Side, candidate_id: &str, score: f64);
+
+    /// Remove review entries where `id` or `candidate_id` equals the given ID.
+    fn remove_reviews_for_id(&self, id: &str);
+
+    /// Remove review entries involving either of the two IDs.
+    fn remove_reviews_for_pair(&self, a_id: &str, b_id: &str);
+
+    /// Load all persisted review entries as `(key, id, side, candidate_id, score)` tuples.
+    fn load_reviews(&self) -> Vec<(String, String, Side, String, f64)>;
 }

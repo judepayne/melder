@@ -39,19 +39,6 @@ pub struct Config {
     /// is the sole filter). Defaults to 10.
     #[serde(default)]
     pub bm25_candidates: Option<usize>,
-    /// Optional memory budget for auto-configuring record store and vector index
-    /// backends.
-    ///
-    /// - `"auto"`: detects available RAM at startup and uses 80% as the budget.
-    /// - `"24GB"`, `"512MB"`, etc.: explicit size strings (TB, GB, MB, KB, B).
-    ///
-    /// When the estimated record or vector index footprint exceeds the budget
-    /// thresholds (30% for records, 70% for vectors), melder automatically
-    /// selects SQLite for the record store and/or mmap for the vector index.
-    ///
-    /// Default: `None` (no budget limit — fully in-memory, current behaviour).
-    #[serde(default)]
-    pub memory_budget: Option<String>,
     // Derived at load time (not in YAML). Populated by `compute_required_fields`.
     #[serde(skip)]
     pub required_fields_a: Vec<String>,
@@ -191,6 +178,14 @@ pub struct LiveConfig {
     /// Default: `None` (use in-memory storage, current behavior).
     #[serde(default)]
     pub db_path: Option<String>,
+    /// SQLite page cache size in megabytes.
+    ///
+    /// Controls `PRAGMA cache_size` for the SQLite connection. Larger caches
+    /// keep more B-tree pages in memory, reducing disk I/O for record lookups.
+    ///
+    /// Default: 64 (MB).
+    #[serde(default)]
+    pub sqlite_cache_mb: Option<u64>,
 }
 
 /// Performance tuning — applies to both batch and live modes.

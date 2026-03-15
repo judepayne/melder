@@ -19,7 +19,7 @@
 //! `RwLock` has no measurable throughput impact.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use crate::error::CrossMapError;
@@ -66,9 +66,19 @@ impl Inner {
 ///
 /// Thread-safe: all methods take `&self`. No external lock needed.
 /// Persistence via `load()` / `save()` (CSV format).
+/// Persistence config for CSV flush. Set via `set_flush_path()` after
+/// construction. When `None`, `flush()` is a no-op (batch mode).
+#[derive(Debug, Clone)]
+struct FlushConfig {
+    path: PathBuf,
+    a_field: String,
+    b_field: String,
+}
+
 #[derive(Debug)]
 pub struct MemoryCrossMap {
     inner: RwLock<Inner>,
+    flush_config: RwLock<Option<FlushConfig>>,
 }
 
 impl MemoryCrossMap {
@@ -76,7 +86,21 @@ impl MemoryCrossMap {
     pub fn new() -> Self {
         Self {
             inner: RwLock::new(Inner::new()),
+            flush_config: RwLock::new(None),
         }
+    }
+
+    /// Configure the CSV flush path and field names.
+    ///
+    /// Must be called before `flush()` will write anything. This is set
+    /// by the live-mode startup code after loading or creating the crossmap.
+    pub fn set_flush_path(&self, path: &Path, a_field: &str, b_field: &str) {
+        let mut cfg = self.flush_config.write().unwrap_or_else(|e| e.into_inner());
+        *cfg = Some(FlushConfig {
+            path: path.to_path_buf(),
+            a_field: a_field.to_string(),
+            b_field: b_field.to_string(),
+        });
     }
 
     // ── persistence (inherent, not in trait) ──────────────────────────────────
@@ -154,8 +178,12 @@ impl Default for MemoryCrossMap {
 // ── CrossMapOps implementation ───────────────────────────────────────────────
 
 impl CrossMapOps for MemoryCrossMap {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let cfg = self.flush_config.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(ref fc) = *cfg {
+            self.save(&fc.path, &fc.a_field, &fc.b_field)?;
+        }
+        Ok(())
     }
 
     fn add(&self, a_id: &str, b_id: &str) {

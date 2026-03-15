@@ -43,7 +43,7 @@ use crate::vectordb::VectorDB;
 /// this is a zero-size unit struct.
 #[cfg(feature = "bm25")]
 pub struct Bm25Ctx<'a> {
-    pub index: &'a mut crate::bm25::index::BM25Index,
+    pub index: &'a crate::bm25::index::BM25Index,
     pub query_text: String,
 }
 
@@ -53,7 +53,7 @@ pub struct Bm25Ctx;
 #[cfg(feature = "bm25")]
 impl<'a> Bm25Ctx<'a> {
     /// Create a new BM25 context.
-    pub fn new(index: &'a mut crate::bm25::index::BM25Index, query_text: String) -> Self {
+    pub fn new(index: &'a crate::bm25::index::BM25Index, query_text: String) -> Self {
         Self { index, query_text }
     }
 }
@@ -245,7 +245,7 @@ pub fn score_pool(
 #[cfg(feature = "bm25")]
 fn bm25_filter_stage(
     ann_cands: &[candidates::Candidate],
-    pool_bm25_index: Option<&mut crate::bm25::index::BM25Index>,
+    pool_bm25_index: Option<&crate::bm25::index::BM25Index>,
     query_bm25_text: &str,
     has_embeddings: bool,
     bm25_candidates: usize,
@@ -270,17 +270,18 @@ fn bm25_filter_stage(
         );
     }
 
-    // Compute self-score for normalisation
-    let self_score = bm25_idx.self_score(query_bm25_text);
-
     if has_embeddings {
-        // ANN+BM25 mode: re-rank ANN candidates by BM25
-        let mut scored: Vec<(String, f64)> = ann_cands
-            .iter()
-            .map(|c| {
-                let raw = bm25_idx.score_one(query_bm25_text, &c.id).unwrap_or(0.0);
-                let norm = normalise_bm25(raw, self_score);
-                (c.id.clone(), norm)
+        // ANN+BM25 mode: re-rank ANN candidates by BM25.
+        // Single query scores all candidates and returns max_score for normalisation.
+        let candidate_ids: Vec<String> = ann_cands.iter().map(|c| c.id.clone()).collect();
+        let (raw_scores, max_score) = bm25_idx.score_candidates(query_bm25_text, &candidate_ids, bm25_candidates * 3);
+
+        let mut scored: Vec<(String, f64)> = candidate_ids
+            .into_iter()
+            .map(|id| {
+                let raw = raw_scores.get(&id).copied().unwrap_or(0.0);
+                let norm = normalise_bm25(raw, max_score);
+                (id, norm)
             })
             .collect();
 
@@ -294,6 +295,7 @@ fn bm25_filter_stage(
         // BM25-only mode: query the index directly
         // Query more than bm25_candidates to account for blocked_ids filtering
         let raw_results = bm25_idx.query(query_bm25_text, bm25_candidates * 3);
+        let max_score = raw_results.first().map(|(_, s)| *s).unwrap_or(0.0);
         let blocked_set: std::collections::HashSet<&str> =
             blocked_ids.iter().map(|s| s.as_str()).collect();
 
@@ -301,7 +303,7 @@ fn bm25_filter_stage(
             .into_iter()
             .filter(|(id, _)| blocked_set.contains(id.as_str()))
             .map(|(id, raw)| {
-                let norm = normalise_bm25(raw, self_score);
+                let norm = normalise_bm25(raw, max_score);
                 (id, norm)
             })
             .take(bm25_candidates)

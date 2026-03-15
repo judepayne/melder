@@ -213,6 +213,19 @@ impl RecordStore for MemoryStore {
     fn common_id_remove(&self, side: Side, common_id: &str) {
         self.common_ids(side).remove(common_id);
     }
+
+    // --- Review persistence (no-op for memory — DashMap is source of truth) ---
+
+    fn persist_review(&self, _key: &str, _id: &str, _side: Side, _candidate_id: &str, _score: f64) {
+    }
+
+    fn remove_reviews_for_id(&self, _id: &str) {}
+
+    fn remove_reviews_for_pair(&self, _a_id: &str, _b_id: &str) {}
+
+    fn load_reviews(&self) -> Vec<(String, String, Side, String, f64)> {
+        vec![]
+    }
 }
 
 // ---------------------------------------------------------------------------
