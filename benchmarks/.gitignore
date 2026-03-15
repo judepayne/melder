@@ -7,6 +7,20 @@
 !**/wal/.gitkeep
 **/crossmap.csv
 
+# SQLite databases (live mode artifacts)
+**/*.db
+
+# Embedding index artifacts (usearch, flat, manifests, texthash)
+**/*.usearch
+**/*.usearchdb/
+**/*.index
+**/*.index.manifest
+**/*.index.texthash
+**/manifest.json
+
+# Emacs lockfiles
+\#*\#
+
 # Datasets are large — not committed; regenerate with: python3 benchmarks/data/generate.py
 data/*.csv
 data/*.jsonl
