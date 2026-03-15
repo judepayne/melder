@@ -1,10 +1,7 @@
 # Generated outputs — never commit
-**/cache/*
-!**/cache/.gitkeep
-**/output/*
-!**/output/.gitkeep
+**/cache/
+**/output/
 **/wal/*.ndjson
-!**/wal/.gitkeep
 **/crossmap.csv
 
 # SQLite databases (live mode artifacts)
