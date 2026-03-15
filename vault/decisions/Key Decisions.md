@@ -241,4 +241,20 @@ Implemented `MemoryStore` as the DashMap-backed implementation. Both batch and l
 
 ---
 
+## Explicit bm25_fields Config Section
+
+**Decision**: Add an optional top-level `bm25_fields` config section. Each entry is a `{field_a, field_b}` pair specifying which text fields to index for BM25. When omitted, falls back to the existing derivation from fuzzy/embedding match_fields entries (backward compatible). When set explicitly, the user controls exactly which fields are indexed.
+
+**Context**: Previously, BM25 fields were derived implicitly from fuzzy and embedding match_fields entries. This was opaque — BM25-only configs required "ghost" fields with `weight: 0.0` just to feed the derivation. Users couldn't understand why zero-weight fields existed or control which fields BM25 indexed independently of the scoring pipeline.
+
+**Choice**: Add optional `bm25_fields` section to the top-level config schema. Structure mirrors `blocking.fields`: a list of `{field_a, field_b}` pairs. At config load time, if `bm25_fields` is present, use it directly. If absent, derive from fuzzy/embedding match_fields as before (backward compatible). The BM25 index builder consults the resolved field list at startup.
+
+**Why**: BM25-only configs no longer need ghost match_fields entries. Users can index different fields for BM25 than for fuzzy/embedding scoring. All existing configs continue to work unchanged — the fallback derivation preserves the old behavior. The explicit section makes the intent clear and gives users full control when needed.
+
+**Status**: Accepted
+
+**Commit**: `b3c4d5e` (Mar 15)
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

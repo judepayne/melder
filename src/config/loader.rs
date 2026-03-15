@@ -212,6 +212,13 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         });
     }
 
+    // Validate explicit bm25_fields entries (if provided).
+    for (i, pair) in cfg.bm25_fields.iter().enumerate() {
+        let prefix = format!("bm25_fields[{}]", i);
+        require_non_empty(&pair.field_a, &format!("{}.field_a", prefix))?;
+        require_non_empty(&pair.field_b, &format!("{}.field_b", prefix))?;
+    }
+
     // Filter size constraints
     let has_bm25 = bm25_count > 0;
     let has_embedding = cfg.match_fields.iter().any(|mf| mf.method == "embedding");
@@ -436,16 +443,25 @@ pub fn infer_format(path: &str, field_prefix: &str) -> Result<String, ConfigErro
 // Derived fields
 // ---------------------------------------------------------------------------
 
-/// Derive `bm25_fields` from fuzzy/embedding match field entries.
+/// Populate `bm25_fields` if not explicitly set in config.
 ///
-/// BM25 auto-indexes only the text fields used by fuzzy and embedding
-/// methods — no exact-match field noise.
+/// When the user omits `bm25_fields`, derive them from fuzzy/embedding
+/// match field entries (backward compatible). When set explicitly, the
+/// user controls exactly which fields are indexed.
 fn derive_bm25_fields(cfg: &mut Config) {
+    if !cfg.bm25_fields.is_empty() {
+        // User provided explicit bm25_fields — keep them.
+        return;
+    }
+    // Fallback: derive from fuzzy/embedding match fields.
     cfg.bm25_fields = cfg
         .match_fields
         .iter()
         .filter(|mf| mf.method == "fuzzy" || mf.method == "embedding")
-        .map(|mf| (mf.field_a.clone(), mf.field_b.clone()))
+        .map(|mf| super::schema::Bm25FieldPair {
+            field_a: mf.field_a.clone(),
+            field_b: mf.field_b.clone(),
+        })
         .collect();
 }
 
@@ -476,6 +492,12 @@ fn derive_required_fields(cfg: &mut Config) {
         }
         seen_a.insert(mf.field_a.clone());
         seen_b.insert(mf.field_b.clone());
+    }
+
+    // bm25_fields (explicit or derived — fields must be loadable from datasets)
+    for pair in &cfg.bm25_fields {
+        seen_a.insert(pair.field_a.clone());
+        seen_b.insert(pair.field_b.clone());
     }
 
     // output mapping (from side A)
@@ -1094,11 +1116,59 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
         assert_eq!(cfg.bm25_fields.len(), 2);
         assert!(
             cfg.bm25_fields
-                .contains(&("name_a".into(), "name_b".into()))
+                .iter()
+                .any(|p| p.field_a == "name_a" && p.field_b == "name_b"),
+            "should contain name_a/name_b"
         );
         assert!(
             cfg.bm25_fields
-                .contains(&("desc_a".into(), "desc_b".into()))
+                .iter()
+                .any(|p| p.field_a == "desc_a" && p.field_b == "desc_b"),
+            "should contain desc_a/desc_b"
+        );
+    }
+
+    #[test]
+    fn bm25_fields_explicit_overrides_derivation() {
+        if !cfg!(feature = "bm25") {
+            return;
+        }
+        let yaml = format!(
+            r#"
+job: {{ name: test }}
+datasets:
+  a: {{ path: "a.csv", id_field: id }}
+  b: {{ path: "b.csv", id_field: id }}
+cross_map: {{ backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }}
+embeddings: {{ model: m, a_cache_dir: i }}
+bm25_fields:
+  - {{ field_a: custom_a, field_b: custom_b }}
+match_fields:
+  - {{ field_a: name_a, field_b: name_b, method: fuzzy, weight: 0.8 }}
+  - {{ method: bm25, weight: 0.2 }}
+thresholds: {{ auto_match: 0.85, review_floor: 0.6 }}
+output: {{ results_path: r, review_path: rv, unmatched_path: u }}
+"#
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        derive_bm25_fields(&mut cfg);
+        // Explicit bm25_fields should NOT be overridden by derivation
+        assert_eq!(cfg.bm25_fields.len(), 1);
+        assert_eq!(cfg.bm25_fields[0].field_a, "custom_a");
+        assert_eq!(cfg.bm25_fields[0].field_b, "custom_b");
+
+        // And those fields should appear in required_fields
+        derive_required_fields(&mut cfg);
+        assert!(
+            cfg.required_fields_a.contains(&"custom_a".to_string()),
+            "explicit bm25 field_a should be in required_fields_a"
+        );
+        assert!(
+            cfg.required_fields_b.contains(&"custom_b".to_string()),
+            "explicit bm25 field_b should be in required_fields_b"
         );
     }
 

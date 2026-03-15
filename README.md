@@ -391,6 +391,19 @@ embeddings:
 #             cargo build --release --features usearch
 vector_backend: usearch             # "flat" | "usearch" (default: "flat")
 
+# --- BM25 fields (optional) --------------------------------------------------
+# Which text fields to index for BM25 scoring. Each entry is a field_a/field_b
+# pair — the text values are concatenated into a single document per record.
+#
+# When omitted, bm25_fields is derived automatically from fuzzy and embedding
+# match_fields entries (backward compatible). Set explicitly for BM25-only
+# configs or when you want BM25 to index different fields than fuzzy/embedding.
+bm25_fields:                        # optional — derived from fuzzy/embedding fields if omitted
+  - field_a: legal_name
+    field_b: counterparty_name
+  - field_a: short_name
+    field_b: counterparty_name
+
 # --- Candidate selection sizes -----------------------------------------------
 # Controls the progressive narrowing of candidates before full scoring.
 # Required relationship: ann_candidates >= bm25_candidates >= top_n.

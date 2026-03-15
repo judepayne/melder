@@ -44,10 +44,15 @@ pub struct Config {
     pub required_fields_a: Vec<String>,
     #[serde(skip)]
     pub required_fields_b: Vec<String>,
-    /// Derived at load time: (field_a, field_b) pairs from fuzzy/embedding
-    /// match fields, used to determine which fields BM25 indexes.
-    #[serde(skip)]
-    pub bm25_fields: Vec<(String, String)>,
+    /// Which text fields the BM25 index concatenates per document.
+    ///
+    /// Each entry is a `(field_a, field_b)` pair. When omitted, derived
+    /// automatically from fuzzy/embedding match field entries (backward
+    /// compatible). When set explicitly, the user controls exactly which
+    /// fields are indexed — useful for BM25-only configs that would
+    /// otherwise need ghost fields with `weight: 0.0`.
+    #[serde(default)]
+    pub bm25_fields: Vec<Bm25FieldPair>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +128,14 @@ pub struct BlockingConfig {
 
 #[derive(Debug, Deserialize, serde::Serialize, Clone)]
 pub struct BlockingFieldPair {
+    pub field_a: String,
+    pub field_b: String,
+}
+
+/// A field pair for BM25 indexing. The text values of `field_a` (on side A)
+/// and `field_b` (on side B) are concatenated into each document's content.
+#[derive(Debug, Deserialize, Clone)]
+pub struct Bm25FieldPair {
     pub field_a: String,
     pub field_b: String,
 }

@@ -130,6 +130,26 @@ Blocking is critical for performance at scale. With country blocking on a 100k Ã
 
 ---
 
+## `bm25_fields`
+
+```yaml
+bm25_fields:
+  - field_a: "name"
+    field_b: "company_name"
+  - field_a: "description"
+    field_b: "notes"
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Must be `true` to activate BM25 indexing |
+| `fields` | Vec\<BM25FieldPair\> | derived | List of `{field_a, field_b}` pairs to index for BM25 full-text search |
+| `field_a` / `field_b` | Option\<String\> | None | Field names on A and B sides respectively |
+
+**Optional section.** When omitted, BM25 fields are derived from the `fuzzy` and `embedding` entries in `match_fields` (backward compatible). When set explicitly, the user controls exactly which fields are indexed for BM25, independent of the scoring pipeline. This allows BM25-only configs without needing ghost match_fields entries with `weight: 0.0`. See [[Key Decisions#Explicit bm25_fields Config Section]].
+
+---
+
 ## `match_fields`
 
 ```yaml

@@ -12,6 +12,7 @@ use tantivy::schema::{Field, STORED, STRING, Schema, TEXT, Value};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, doc};
 use tracing::warn;
 
+use crate::config::schema::Bm25FieldPair;
 use crate::models::{Record, Side};
 use crate::store::RecordStore;
 
@@ -22,10 +23,9 @@ pub struct BM25Index {
     reader: IndexReader,
     id_field: Field,
     content_field: Field,
-    /// Which text fields to concatenate per record. Each entry is
-    /// `(field_a_name, field_b_name)` — the side determines which name
-    /// is used for lookup.
-    fields: Vec<(String, String)>,
+    /// Which text fields to concatenate per record. The side determines
+    /// whether `field_a` or `field_b` is used for lookup.
+    fields: Vec<Bm25FieldPair>,
     side: Side,
     /// Cached self-scores keyed by hash of query text. Self-score depends
     /// on corpus IDF which changes slowly, so caching is safe — the cache
@@ -39,13 +39,13 @@ pub struct BM25Index {
 impl BM25Index {
     /// Build a BM25 index from a record store.
     ///
-    /// `fields` are `(field_a, field_b)` pairs from fuzzy/embedding match
-    /// field entries. For each record, the text values of these fields are
-    /// concatenated (space-separated) into a single indexed document.
+    /// `fields` specifies which text fields to index. For each record, the
+    /// values of these fields are concatenated (space-separated) into a
+    /// single indexed document.
     pub fn build(
         store: &dyn RecordStore,
         side: Side,
-        fields: &[(String, String)],
+        fields: &[Bm25FieldPair],
     ) -> Result<Self, anyhow::Error> {
         let (schema, id_field, content_field) = build_schema();
         let index = Index::create_in_ram(schema);
@@ -84,7 +84,7 @@ impl BM25Index {
     }
 
     /// Build an empty BM25 index (for live mode startup with no initial data).
-    pub fn build_empty(fields: &[(String, String)], side: Side) -> Result<Self, anyhow::Error> {
+    pub fn build_empty(fields: &[Bm25FieldPair], side: Side) -> Result<Self, anyhow::Error> {
         let (schema, id_field, content_field) = build_schema();
         let index = Index::create_in_ram(schema);
         let writer = index.writer(50_000_000)?;
@@ -313,12 +313,12 @@ fn build_schema() -> (Schema, Field, Field) {
 }
 
 /// Concatenate the relevant text fields from a record into a single string.
-fn concat_fields(record: &Record, fields: &[(String, String)], side: Side) -> String {
+fn concat_fields(record: &Record, fields: &[Bm25FieldPair], side: Side) -> String {
     let mut parts = Vec::new();
-    for (fa, fb) in fields {
+    for pair in fields {
         let key = match side {
-            Side::A => fa.as_str(),
-            Side::B => fb.as_str(),
+            Side::A => pair.field_a.as_str(),
+            Side::B => pair.field_b.as_str(),
         };
         if let Some(val) = record.get(key) {
             let trimmed = val.trim();
@@ -370,10 +370,16 @@ mod tests {
         store
     }
 
-    fn test_fields() -> Vec<(String, String)> {
+    fn test_fields() -> Vec<Bm25FieldPair> {
         vec![
-            ("name_a".to_string(), "name_b".to_string()),
-            ("desc_a".to_string(), "desc_b".to_string()),
+            Bm25FieldPair {
+                field_a: "name_a".to_string(),
+                field_b: "name_b".to_string(),
+            },
+            Bm25FieldPair {
+                field_a: "desc_a".to_string(),
+                field_b: "desc_b".to_string(),
+            },
         ]
     }
 
@@ -553,7 +559,10 @@ mod tests {
 
     #[test]
     fn side_b_uses_field_b_names() {
-        let fields = vec![("name_a".to_string(), "name_b".to_string())];
+        let fields = vec![Bm25FieldPair {
+            field_a: "name_a".to_string(),
+            field_b: "name_b".to_string(),
+        }];
         let store = make_store(
             vec![
                 ("1", make_record(&[("name_b", "Apple Inc")])),
@@ -616,8 +625,14 @@ mod tests {
             ("other", "ignored"),
         ]);
         let fields = vec![
-            ("name_a".to_string(), "name_b".to_string()),
-            ("desc_a".to_string(), "desc_b".to_string()),
+            Bm25FieldPair {
+                field_a: "name_a".to_string(),
+                field_b: "name_b".to_string(),
+            },
+            Bm25FieldPair {
+                field_a: "desc_a".to_string(),
+                field_b: "desc_b".to_string(),
+            },
         ];
         let text = concat_fields(&rec, &fields, Side::A);
         assert_eq!(text, "Apple tech");
