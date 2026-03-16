@@ -518,12 +518,17 @@ impl Session {
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
         // Build BM25 context from opposite side's index.
-        // Commit any buffered writes first — if the opposite side has
-        // pending upserts/removes they must be visible before we query.
+        // Commit any buffered writes first (write lock, brief), then
+        // query under a read lock so concurrent requests can score in parallel.
         #[cfg(feature = "bm25")]
         let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
-            let mut guard = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
-            guard.commit_if_dirty();
+            // Brief write lock for commit only
+            {
+                let mut w = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
+                w.commit_if_dirty();
+            }
+            // Read lock for query — concurrent readers allowed
+            let guard = opp_bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
             let query_text = guard.query_text_for(&record, side);
             let ctx = Bm25Ctx::new(&*guard, query_text);
             pipeline::score_pool(
@@ -820,12 +825,15 @@ impl Session {
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
         // Build BM25 context from opposite side's index.
-        // Commit any buffered writes first — if the opposite side has
-        // pending upserts/removes they must be visible before we query.
+        // Commit any buffered writes first (write lock, brief), then
+        // query under a read lock so concurrent requests can score in parallel.
         #[cfg(feature = "bm25")]
         let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
-            let mut guard = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
-            guard.commit_if_dirty();
+            {
+                let mut w = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
+                w.commit_if_dirty();
+            }
+            let guard = opp_bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
             let query_text = guard.query_text_for(&record, side);
             let ctx = Bm25Ctx::new(&*guard, query_text);
             pipeline::score_pool(
