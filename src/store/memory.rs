@@ -143,6 +143,12 @@ impl RecordStore for MemoryStore {
         self.records(side).iter().map(|e| e.key().clone()).collect()
     }
 
+    fn for_each_record(&self, side: Side, f: &mut dyn FnMut(&str, &Record)) {
+        for entry in self.records(side).iter() {
+            f(entry.key(), entry.value());
+        }
+    }
+
     // --- Blocking ---
 
     fn blocking_insert(&self, side: Side, id: &str, record: &Record) {

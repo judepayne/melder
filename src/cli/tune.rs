@@ -38,14 +38,50 @@ pub fn cmd_tune(config_path: &Path, verbose: bool) {
         }
     };
 
-    // 3. Run batch engine with a throwaway crossmap (no persistence)
+    // 3. Load B records, build B embedding index, insert into store
+    let (b_records_map, b_ids) = match crate::data::load_dataset(
+        std::path::Path::new(&state.config.datasets.b.path),
+        &state.config.datasets.b.id_field,
+        &state.config.required_fields_b,
+        state.config.datasets.b.format.as_deref(),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to load B dataset: {}", e);
+            process::exit(1);
+        }
+    };
+
+    let combined_index_b = match crate::vectordb::build_or_load_combined_index(
+        &state.config.vector_backend,
+        state.config.embeddings.b_cache_dir.as_deref(),
+        &b_records_map,
+        &b_ids,
+        &state.config,
+        false,
+        &state.encoder_pool,
+        false,
+    ) {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("Failed to build B embedding index: {}", e);
+            process::exit(1);
+        }
+    };
+
+    for (id, rec) in &b_records_map {
+        state.store.insert(crate::models::Side::B, id, rec);
+    }
+    drop(b_records_map);
+
+    // 4. Run batch engine with a throwaway crossmap (no persistence)
     let crossmap = crate::crossmap::MemoryCrossMap::new();
     eprintln!("Running batch matching for score analysis...");
     let result = match crate::batch::run_batch(
         &state.config,
         state.store.as_ref(),
         state.combined_index_a.as_deref(),
-        &state.encoder_pool,
+        combined_index_b.as_deref(),
         &crossmap,
         None,
     ) {

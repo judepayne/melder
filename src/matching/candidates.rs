@@ -94,8 +94,11 @@ pub fn select_candidates(
 
     if !has_embeddings || pool_combined_index.is_none() {
         // No embedding filtering possible — return all blocked records.
+        // Sequential iteration: avoids nested par_iter deadlock when the
+        // outer par_iter (batch engine) already saturates the thread pool
+        // and store.get() contends on shared resources (e.g. SQLite reader pool).
         return blocked_ids
-            .par_iter()
+            .iter()
             .filter_map(|id| {
                 pool_store.get(pool_side, id).map(|record| Candidate {
                     id: id.clone(),

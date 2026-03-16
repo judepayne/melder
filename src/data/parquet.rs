@@ -114,6 +114,104 @@ pub fn load_parquet(
     Ok((records, ids))
 }
 
+/// Stream a Parquet file in chunks, calling `callback` with each chunk.
+///
+/// Parquet files are read in row groups. Records are accumulated until
+/// `chunk_size` is reached, then yielded to the callback.
+/// Returns the total number of records streamed.
+pub fn stream_parquet(
+    path: &Path,
+    id_field: &str,
+    required_fields: &[String],
+    chunk_size: usize,
+    callback: &mut dyn FnMut(Vec<(String, Record)>),
+) -> Result<usize, DataError> {
+    if !path.exists() {
+        return Err(DataError::NotFound {
+            path: path.display().to_string(),
+        });
+    }
+
+    let file = std::fs::File::open(path)?;
+    let path_str = path.display().to_string();
+
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| DataError::Parse(format!("{}: failed to read parquet: {}", path_str, e)))?;
+
+    let schema = builder.schema().clone();
+    let column_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+
+    if !column_names.contains(&id_field.to_string()) {
+        return Err(DataError::MissingIdField {
+            field: id_field.to_string(),
+            path: path_str,
+        });
+    }
+
+    for rf in required_fields {
+        if !column_names.contains(rf) {
+            eprintln!(
+                "warning: required field {:?} not found in parquet schema of {}",
+                rf, path_str
+            );
+        }
+    }
+
+    let id_col_idx = column_names.iter().position(|n| n == id_field).unwrap();
+
+    let reader = builder.build().map_err(|e| {
+        DataError::Parse(format!(
+            "{}: failed to build parquet reader: {}",
+            path_str, e
+        ))
+    })?;
+
+    let mut chunk = Vec::with_capacity(chunk_size);
+    let mut total = 0usize;
+
+    for batch_result in reader {
+        let batch = batch_result
+            .map_err(|e| DataError::Parse(format!("{}: error reading batch: {}", path_str, e)))?;
+
+        for row_idx in 0..batch.num_rows() {
+            let mut record = Record::new();
+            let mut id_value = String::new();
+
+            for (col_idx, col_name) in column_names.iter().enumerate() {
+                let col = batch.column(col_idx);
+                let value = column_value_to_string(col, row_idx);
+
+                if col_idx == id_col_idx {
+                    id_value = value.clone();
+                }
+                record.insert(col_name.clone(), value);
+            }
+
+            let id = id_value.trim().to_string();
+            if id.is_empty() {
+                return Err(DataError::MissingIdField {
+                    field: id_field.to_string(),
+                    path: format!("{}:row {}", path_str, row_idx),
+                });
+            }
+
+            chunk.push((id, record));
+            total += 1;
+
+            if chunk.len() >= chunk_size {
+                callback(std::mem::take(&mut chunk));
+                chunk = Vec::with_capacity(chunk_size);
+            }
+        }
+    }
+
+    if !chunk.is_empty() {
+        callback(chunk);
+    }
+
+    Ok(total)
+}
+
 /// Convert a single cell value from an Arrow array to a String.
 fn column_value_to_string(col: &dyn Array, row: usize) -> String {
     if col.is_null(row) {
@@ -249,9 +347,12 @@ mod tests {
     #[test]
     fn parquet_csv_parity() {
         // Load both formats and verify they produce the same records
-        let (csv_records, csv_ids) =
-            crate::data::load_csv(Path::new("benchmarks/data/dataset_a_10k.csv"), "entity_id", &[])
-                .unwrap();
+        let (csv_records, csv_ids) = crate::data::load_csv(
+            Path::new("benchmarks/data/dataset_a_10k.csv"),
+            "entity_id",
+            &[],
+        )
+        .unwrap();
 
         let (pq_records, pq_ids) = load_parquet(
             Path::new("benchmarks/data/dataset_a_10k.parquet"),

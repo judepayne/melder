@@ -87,6 +87,84 @@ pub fn load_csv(
     Ok((records, ids))
 }
 
+/// Stream a CSV file in chunks, calling `callback` with each chunk.
+///
+/// Records are yielded in file order (not sorted). Duplicate IDs are
+/// silently handled by the downstream store (`INSERT OR REPLACE`).
+/// Returns the total number of records streamed.
+pub fn stream_csv(
+    path: &Path,
+    id_field: &str,
+    required_fields: &[String],
+    chunk_size: usize,
+    callback: &mut dyn FnMut(Vec<(String, Record)>),
+) -> Result<usize, DataError> {
+    if !path.exists() {
+        return Err(DataError::NotFound {
+            path: path.display().to_string(),
+        });
+    }
+
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .trim(csv::Trim::Headers)
+        .from_path(path)?;
+
+    let headers: Vec<String> = rdr
+        .headers()?
+        .iter()
+        .map(|h| h.trim().to_string())
+        .collect();
+
+    let path_str = path.display().to_string();
+    if !headers.contains(&id_field.to_string()) {
+        return Err(DataError::MissingIdField {
+            field: id_field.to_string(),
+            path: path_str,
+        });
+    }
+
+    for rf in required_fields {
+        if !headers.contains(rf) {
+            eprintln!(
+                "warning: required field {:?} not found in headers of {}",
+                rf, path_str
+            );
+        }
+    }
+
+    let id_idx = headers.iter().position(|h| h == id_field).unwrap();
+
+    let mut chunk = Vec::with_capacity(chunk_size);
+    let mut total = 0usize;
+
+    for result in rdr.records() {
+        let row = result?;
+        let id = row.get(id_idx).unwrap_or("").trim().to_string();
+
+        let mut record = Record::new();
+        for (i, value) in row.iter().enumerate() {
+            if let Some(header) = headers.get(i) {
+                record.insert(header.clone(), value.to_string());
+            }
+        }
+
+        chunk.push((id, record));
+        total += 1;
+
+        if chunk.len() >= chunk_size {
+            callback(std::mem::take(&mut chunk));
+            chunk = Vec::with_capacity(chunk_size);
+        }
+    }
+
+    if !chunk.is_empty() {
+        callback(chunk);
+    }
+
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

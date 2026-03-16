@@ -51,17 +51,26 @@ impl BM25Index {
         let index = Index::create_in_ram(schema);
         let mut writer = index.writer(50_000_000)?;
 
-        for id in store.ids(side) {
-            if let Some(record) = store.get(side, &id) {
-                let text = concat_fields(&record, fields, side);
-                if text.is_empty() {
-                    continue;
-                }
-                writer.add_document(doc!(
-                    id_field => id.as_str(),
-                    content_field => text.as_str(),
-                ))?;
+        // Use for_each_record for efficient iteration (single table scan
+        // for SqliteStore, DashMap iteration for MemoryStore).
+        let mut add_err: Option<tantivy::TantivyError> = None;
+        store.for_each_record(side, &mut |id, record| {
+            if add_err.is_some() {
+                return;
             }
+            let text = concat_fields(record, fields, side);
+            if text.is_empty() {
+                return;
+            }
+            if let Err(e) = writer.add_document(doc!(
+                id_field => id,
+                content_field => text.as_str(),
+            )) {
+                add_err = Some(e);
+            }
+        });
+        if let Some(e) = add_err {
+            return Err(e.into());
         }
         writer.commit()?;
 

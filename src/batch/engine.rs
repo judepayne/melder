@@ -7,7 +7,6 @@
 //! 4. Classify top result; if auto_match → try to claim in CrossMap
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -15,15 +14,13 @@ use rayon::prelude::*;
 
 use crate::config::Config;
 use crate::crossmap::CrossMapOps;
-use crate::data;
-use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::matching::pipeline;
 #[cfg(feature = "bm25")]
 use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::store::RecordStore;
-use crate::vectordb::{self, VectorDB};
+use crate::vectordb::VectorDB;
 
 /// Result of a batch matching run.
 pub struct BatchResult {
@@ -55,56 +52,28 @@ enum RecordOutcome {
 
 /// Run the batch matching engine.
 ///
-/// Loads B records from csv, processes each against the pre-built A-side data.
-/// If `b_cache_dir` is configured, B combined index is cached to disk so
-/// subsequent runs (e.g. with different thresholds) skip ONNX encoding.
+/// Both A and B records must already be loaded into `store` before calling.
+/// The B-side combined embedding index, if needed, should be passed in via
+/// `combined_index_b`. This function handles scoring, classification, and
+/// crossmap claiming.
 pub fn run_batch(
     config: &Config,
     store: &dyn RecordStore,
     combined_index_a: Option<&dyn VectorDB>,
-    encoder_pool: &EncoderPool,
+    combined_index_b: Option<&dyn VectorDB>,
     crossmap: &dyn CrossMapOps,
     limit: Option<usize>,
 ) -> Result<BatchResult, MelderError> {
     let start = Instant::now();
 
-    // Load B records (into HashMap from data loaders)
-    let (b_records_map, b_ids) = data::load_dataset(
-        Path::new(&config.datasets.b.path),
-        &config.datasets.b.id_field,
-        &config.required_fields_b,
-        config.datasets.b.format.as_deref(),
-    )
-    .map_err(MelderError::Data)?;
-
-    eprintln!(
-        "Loaded {} B records for batch matching",
-        b_records_map.len()
-    );
+    // Get B IDs from the store (already loaded by caller).
+    let b_ids = store.ids(Side::B);
 
     let total_b = if let Some(lim) = limit {
         lim.min(b_ids.len())
     } else {
         b_ids.len()
     };
-
-    // Build or load B-side combined embedding index.
-    let combined_index_b_owned = vectordb::build_or_load_combined_index(
-        &config.vector_backend,
-        config.embeddings.b_cache_dir.as_deref(),
-        &b_records_map,
-        &b_ids,
-        config,
-        false,
-        encoder_pool,
-        false,
-    )?;
-    let combined_index_b: Option<&dyn VectorDB> = combined_index_b_owned.as_deref();
-
-    // Insert B records into the store (they go into the B side)
-    for (id, rec) in &b_records_map {
-        store.insert(Side::B, id, rec);
-    }
 
     let mut matched = Vec::new();
     let mut review = Vec::new();
@@ -185,9 +154,6 @@ pub fn run_batch(
 
     // Pre-compute top_n from config (0 = no limit in batch → best result only).
     let top_n = config.top_n.unwrap_or(5);
-
-    // Precompute embedding specs once for combined-vec lookup during scoring.
-    let emb_specs = vectordb::embedding_field_specs(config);
 
     // Build A-side BM25 index if method: bm25 is configured.
     #[cfg(feature = "bm25")]
@@ -359,8 +325,6 @@ pub fn run_batch(
         elapsed_secs: elapsed,
         scoring_elapsed_secs: scoring_elapsed,
     };
-
-    let _ = emb_specs;
 
     Ok(BatchResult {
         matched,

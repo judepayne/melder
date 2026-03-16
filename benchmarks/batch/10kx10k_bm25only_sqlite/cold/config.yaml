@@ -1,6 +1,6 @@
 job:
-  name: batch_10kx10k_bm25only_cold
-  description: Batch benchmark — 10k × 10k, BM25-only (no embedding, no vector index), cold run
+  name: batch_10kx10k_bm25only_sqlite_cold
+  description: Batch benchmark — 10k × 10k, BM25-only, SQLite-backed store
 
 datasets:
   a:
@@ -14,13 +14,16 @@ datasets:
 
 cross_map:
   backend: local
-  path: benchmarks/batch/10kx10k_bm25only/cold/crossmap.csv
+  path: benchmarks/batch/10kx10k_bm25only_sqlite/cold/crossmap.csv
   a_id_field: entity_id
   b_id_field: counterparty_id
 
 embeddings:
   model: all-MiniLM-L6-v2
-  a_cache_dir: benchmarks/batch/10kx10k_bm25only/cold/cache
+  a_cache_dir: benchmarks/batch/10kx10k_bm25only_sqlite/cold/cache
+
+batch:
+  db_path: benchmarks/batch/10kx10k_bm25only_sqlite/cold/batch.db
 
 blocking:
   enabled: true
@@ -51,13 +54,12 @@ thresholds:
   review_floor: 0.60
 
 output:
-  results_path:   benchmarks/batch/10kx10k_bm25only/cold/output/results.csv
-  review_path:    benchmarks/batch/10kx10k_bm25only/cold/output/review.csv
-  unmatched_path: benchmarks/batch/10kx10k_bm25only/cold/output/unmatched.csv
+  results_path:   benchmarks/batch/10kx10k_bm25only_sqlite/cold/output/results.csv
+  review_path:    benchmarks/batch/10kx10k_bm25only_sqlite/cold/output/review.csv
+  unmatched_path: benchmarks/batch/10kx10k_bm25only_sqlite/cold/output/unmatched.csv
 
 performance:
-  encoder_pool_size: 4
+  encoder_pool_size: 1
 
-# No vector_backend needed — BM25 queries the blocking index directly.
 top_n: 20
 bm25_candidates: 20

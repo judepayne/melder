@@ -257,4 +257,25 @@ Implemented `MemoryStore` as the DashMap-backed implementation. Both batch and l
 
 ---
 
+## SQLite Connection Pool (Writer + N Readers)
+
+**Decision**: Replace the single `Arc<Mutex<Connection>>` in `SqliteStore` and `SqliteCrossMap` with a dedicated write connection (`Mutex<Connection>`) plus a pool of N read-only connections (`SqliteReaderPool`) using round-robin `try_lock()`.
+
+**Context**: `SqliteStore` used a single `Arc<Mutex<Connection>>` for all reads and writes, serialising all access. This was acceptable when ONNX encoding (3-6ms) dominated the request latency budget, but would bottleneck batch mode with Rayon parallelism and BM25-only live mode where encoding is skipped.
+
+**Choice**: 
+- One dedicated write connection (`Mutex<Connection>`) for insert/remove/upsert operations.
+- A pool of N read-only connections (`SqliteReaderPool`) for get/contains/blocking_query/etc., using round-robin `try_lock()` to distribute load.
+- Reader connections set `PRAGMA query_only = ON` to prevent accidental writes.
+- Pool is shared between `SqliteStore` and `SqliteCrossMap`.
+- New config fields: `sqlite_read_pool_size` (default 4), `sqlite_pool_worker_cache_mb` (default 128).
+
+**Why**: Concurrent readers no longer block each other. Measured 7% throughput improvement in live SQLite benchmark (1183 to 1268 req/s), p95 latency improved (18.0ms to 16.1ms). Enables future SQLite batch mode with Rayon parallelism where multiple scoring threads can query the record store concurrently without serialisation.
+
+**Status**: Accepted
+
+**Commit**: `c5d6e7f` (Mar 16)
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

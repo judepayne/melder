@@ -348,6 +348,19 @@ impl RecordStore for SqliteStore {
             .collect()
     }
 
+    fn for_each_record(&self, side: Side, f: &mut dyn FnMut(&str, &Record)) {
+        let conn = self.reader_pool.acquire();
+        let sql = format!("SELECT id, record_json FROM {}_records", side_prefix(side));
+        let mut stmt = conn.prepare(&sql).expect("prepare for_each_record query");
+        let mut rows = stmt.query([]).expect("query for_each_record");
+        while let Some(row) = rows.next().expect("next row") {
+            let id: String = row.get(0).expect("get id");
+            let json: String = row.get(1).expect("get record_json");
+            let record = record_from_json(&json);
+            f(&id, &record);
+        }
+    }
+
     // --- Blocking (reads → reader pool, writes → writer) ---
 
     fn blocking_insert(&self, side: Side, id: &str, record: &Record) {
@@ -579,6 +592,91 @@ impl RecordStore for SqliteStore {
         .expect("query reviews")
         .filter_map(|r| r.ok())
         .collect()
+    }
+}
+
+// ── Bulk loading ─────────────────────────────────────────────────────────────
+
+impl SqliteStore {
+    /// Bulk-load records into SQLite by streaming from a data source.
+    ///
+    /// Calls `stream_fn` which should call `stream_dataset()`. Each chunk
+    /// is inserted immediately, so only one chunk (~10K records, ~15MB)
+    /// is in memory at any time. The entire load is wrapped in a single
+    /// transaction with deferred index creation.
+    ///
+    /// The writer lock is held for the entire operation (acceptable during
+    /// single-threaded startup). Progress is printed periodically.
+    pub fn bulk_load<F>(&self, side: Side, stream_fn: F) -> Result<usize, crate::error::DataError>
+    where
+        F: FnOnce(&mut dyn FnMut(Vec<(String, Record)>)) -> Result<usize, crate::error::DataError>,
+    {
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let prefix = side_prefix(side);
+
+        // Drop blocking index for faster inserts (recreated after)
+        let _ = conn.execute_batch(&format!("DROP INDEX IF EXISTS idx_{prefix}_blocking"));
+
+        // Begin single transaction for entire load
+        conn.execute_batch("BEGIN").expect("begin bulk transaction");
+
+        let rec_sql =
+            format!("INSERT OR REPLACE INTO {prefix}_records (id, record_json) VALUES (?1, ?2)");
+        let blk_sql = format!(
+            "INSERT INTO {prefix}_blocking_keys (record_id, field_index, value) VALUES (?1, ?2, ?3)"
+        );
+        let unm_sql = format!("INSERT OR IGNORE INTO {prefix}_unmatched (id) VALUES (?1)");
+
+        let blocking_fields = self.blocking_config.fields.clone();
+        let mut total = 0usize;
+        let load_start = std::time::Instant::now();
+
+        // Stream chunks via callback — only one chunk in memory at a time
+        let mut insert_chunk = |chunk: Vec<(String, Record)>| {
+            for (id, record) in &chunk {
+                let json = record_to_json(record);
+                conn.execute(&rec_sql, params![id, json])
+                    .expect("bulk insert record");
+
+                let values = blocking_values(record, &blocking_fields, side);
+                for (field_index, value) in values {
+                    conn.execute(&blk_sql, params![id, field_index as i64, value])
+                        .expect("bulk insert blocking key");
+                }
+
+                conn.execute(&unm_sql, params![id])
+                    .expect("bulk mark unmatched");
+            }
+
+            total += chunk.len();
+            if total % 100_000 == 0 || (total < 100_000 && total % 10_000 == 0) {
+                let elapsed = load_start.elapsed().as_secs_f64();
+                let rate = total as f64 / elapsed;
+                eprintln!(
+                    "  bulk_load {}: {} records ({:.0} rec/s)",
+                    prefix, total, rate
+                );
+            }
+        };
+
+        stream_fn(&mut insert_chunk)?;
+
+        conn.execute_batch("COMMIT")
+            .expect("commit bulk transaction");
+
+        // Recreate blocking index
+        let _ = conn.execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS idx_{prefix}_blocking ON {prefix}_blocking_keys(field_index, value)"
+        ));
+
+        eprintln!(
+            "  bulk_load {} complete: {} records in {:.1}s",
+            prefix,
+            total,
+            load_start.elapsed().as_secs_f64()
+        );
+
+        Ok(total)
     }
 }
 

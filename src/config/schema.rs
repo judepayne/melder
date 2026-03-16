@@ -20,6 +20,8 @@ pub struct Config {
     pub thresholds: ThresholdsConfig,
     pub output: OutputConfig,
     #[serde(default)]
+    pub batch: BatchConfig,
+    #[serde(default)]
     pub live: LiveConfig,
     #[serde(default)]
     pub performance: PerformanceConfig,
@@ -173,6 +175,33 @@ pub struct OutputConfig {
     pub results_path: String,
     pub review_path: String,
     pub unmatched_path: String,
+}
+
+/// Batch-mode SQLite configuration.
+///
+/// When `db_path` is set, `meld run` stores records in SQLite instead of
+/// in-memory DashMap. The database is created fresh each run and deleted
+/// on completion. This enables batch matching on datasets that exceed
+/// available RAM (e.g. 55M records).
+#[derive(Debug, Deserialize, Default)]
+pub struct BatchConfig {
+    /// Path to the SQLite database file for batch mode.
+    ///
+    /// When set, batch mode uses `SqliteStore` instead of `MemoryStore`.
+    /// The database is created fresh each run.
+    ///
+    /// Default: `None` (use in-memory storage).
+    #[serde(default)]
+    pub db_path: Option<String>,
+    /// Number of read-only SQLite connections. Default: num_cpus.
+    #[serde(default)]
+    pub sqlite_read_pool_size: Option<u32>,
+    /// SQLite page cache per read connection in megabytes. Default: 128.
+    #[serde(default)]
+    pub sqlite_pool_worker_cache_mb: Option<u64>,
+    /// SQLite page cache for the write connection in megabytes. Default: 64.
+    #[serde(default)]
+    pub sqlite_cache_mb: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]

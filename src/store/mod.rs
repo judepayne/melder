@@ -39,6 +39,12 @@ pub trait RecordStore: Send + Sync {
     /// Collect all record IDs on the given side.
     fn ids(&self, side: Side) -> Vec<String>;
 
+    /// Iterate all records on the given side, calling `f` for each.
+    ///
+    /// More efficient than `ids()` + `get()` for large datasets, especially
+    /// with SQLite (single table scan vs N individual queries).
+    fn for_each_record(&self, side: Side, f: &mut dyn FnMut(&str, &Record));
+
     // --- Blocking ---
 
     /// Insert a record's blocking keys into the index.

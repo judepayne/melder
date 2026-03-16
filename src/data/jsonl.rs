@@ -116,6 +116,107 @@ pub fn load_jsonl(
     Ok((records, ids))
 }
 
+/// Stream a JSONL file in chunks, calling `callback` with each chunk.
+///
+/// Returns the total number of records streamed.
+pub fn stream_jsonl(
+    path: &Path,
+    id_field: &str,
+    required_fields: &[String],
+    chunk_size: usize,
+    callback: &mut dyn FnMut(Vec<(String, Record)>),
+) -> Result<usize, DataError> {
+    if !path.exists() {
+        return Err(DataError::NotFound {
+            path: path.display().to_string(),
+        });
+    }
+
+    let file = std::fs::File::open(path)?;
+    let reader = std::io::BufReader::new(file);
+    let path_str = path.display().to_string();
+
+    let mut chunk = Vec::with_capacity(chunk_size);
+    let mut total = 0usize;
+    let mut warned_fields: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (line_num, line_result) in reader.lines().enumerate() {
+        let line = line_result?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let obj: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+            DataError::Parse(format!(
+                "{}:{}: invalid JSON: {}",
+                path_str,
+                line_num + 1,
+                e
+            ))
+        })?;
+
+        let map = match obj {
+            serde_json::Value::Object(m) => m,
+            _ => {
+                return Err(DataError::Parse(format!(
+                    "{}:{}: expected JSON object",
+                    path_str,
+                    line_num + 1
+                )));
+            }
+        };
+
+        let id = match map.get(id_field) {
+            Some(v) => json_value_to_string(v).trim().to_string(),
+            None => {
+                return Err(DataError::MissingIdField {
+                    field: id_field.to_string(),
+                    path: format!("{}:{}", path_str, line_num + 1),
+                });
+            }
+        };
+
+        if id.is_empty() {
+            return Err(DataError::MissingIdField {
+                field: id_field.to_string(),
+                path: format!("{}:{}", path_str, line_num + 1),
+            });
+        }
+
+        for rf in required_fields {
+            if !map.contains_key(rf.as_str()) && !warned_fields.contains(rf) {
+                eprintln!(
+                    "warning: required field {:?} not found in record at {}:{}",
+                    rf,
+                    path_str,
+                    line_num + 1
+                );
+                warned_fields.insert(rf.clone());
+            }
+        }
+
+        let mut record = Record::new();
+        for (key, value) in &map {
+            record.insert(key.clone(), json_value_to_string(value));
+        }
+
+        chunk.push((id, record));
+        total += 1;
+
+        if chunk.len() >= chunk_size {
+            callback(std::mem::take(&mut chunk));
+            chunk = Vec::with_capacity(chunk_size);
+        }
+    }
+
+    if !chunk.is_empty() {
+        callback(chunk);
+    }
+
+    Ok(total)
+}
+
 /// Convert a JSON value to a string representation.
 /// - Strings → the string itself
 /// - Numbers/booleans → their string form
