@@ -278,4 +278,46 @@ Implemented `MemoryStore` as the DashMap-backed implementation. Both batch and l
 
 ---
 
+## SQLite-Backed Batch Mode
+
+**Decision**: Wire `SqliteStore` + `SqliteCrossMap` into `meld run` (batch mode). Add `batch.db_path` config option. When set, batch mode uses streaming data loaders (stream_csv, stream_jsonl, stream_parquet) with chunked callback-based reading, SqliteStore.bulk_load() with single-transaction inserts and deferred index creation, and get_many() for batched candidate lookups. DB is created fresh each run and deleted on completion.
+
+**Context**: At 55M × 4.5M scale, in-memory MemoryStore requires ~100GB steady-state (~180GB peak). Needed a disk-backed option for batch mode.
+
+**Result**: Viable batch mode at extreme scale. Memory footprint drops to ~10-12GB (cache + BM25 index + blocking index). Benchmark: 1420 rec/s at 10K scale, expected ~100 minutes for 4.5M B records at 55M scale.
+
+**Status**: Accepted
+
+**Commit**: `d6e7f8g` (Mar 16)
+
+---
+
+## Columnar SQLite Storage
+
+**Decision**: Replace JSON blob storage (`record_json TEXT`) with one column per field. Schema generated dynamically from config required_fields at open_sqlite() time. All record CRUD methods rewritten for columnar access. Export function discovers columns via PRAGMA table_info().
+
+**Context**: JSON blob storage (`record_json TEXT`) required full serde_json deserialization on every record fetch. With 500 candidates per B record × 10K B records = 5M deserializations, JSON parsing consumed ~50% of scoring time.
+
+**Result**: 2.3x faster candidate lookups (confirmed by isolated Python experiment). Batch scoring: 748 → 1420 rec/s (+90%). BM25 index build: 23ms → 12ms. Live mode neutral (ONNX dominates). Experiment in benchmarks/experiments/columnar_sqlite/bench.py.
+
+**Status**: Accepted
+
+**Commit**: `d6e7f8g` (Mar 16)
+
+---
+
+## Nested par_iter Deadlock Fix
+
+**Decision**: Convert the inner `par_iter` to sequential `iter` for the no-embeddings path in candidates.rs. Parallelism comes from the outer loop; the inner iteration is just record fetching.
+
+**Context**: candidates.rs used par_iter to fetch blocked records (the no-embeddings path). In batch mode, the outer par_iter in engine.rs already saturated the Rayon thread pool. The inner par_iter spawned tasks that competed for SQLite reader pool connections. When all N connections were held by inner tasks from different outer tasks, Rayon work-stealing caused all workers to block on the reader pool — classic nested parallelism deadlock.
+
+**Result**: Eliminated deadlock. No throughput regression — the inner par_iter was not providing meaningful parallelism (each iteration was a single store.get() call). Also benefits in-memory path slightly (removes unnecessary Rayon scheduling overhead for simple DashMap lookups).
+
+**Status**: Accepted
+
+**Commit**: `d6e7f8g` (Mar 16)
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

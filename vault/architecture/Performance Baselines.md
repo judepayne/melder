@@ -45,15 +45,43 @@ Key insight: usearch is 5.7x faster at 10k and 12.5x faster at 100k due to O(log
 
 usearch includes text-hash skip: 20% of requests skip ONNX encoding (~1ms vs ~7ms).
 
+## Live Mode — BM25 (10k x 10k, usearch + BM25, inject 3K)
+
+| Metric | Value |
+|---|---:|
+| Throughput | 615 req/s |
+| p50 | ~9ms |
+| p95 | ~113ms |
+
+Config: usearch + BM25, explicit bm25_fields.
+
 ## Live Mode — SQLite vs In-Memory (10k x 10k, usearch, c=10)
 
-| Metric | In-Memory | SQLite |
+| Metric | In-Memory | SQLite (warm) |
 |---|---:|---:|
 | Startup (warm) | ~1.9s | ~0.5s |
 | Throughput (warm) | 1,616 req/s | 1,183 req/s |
 | p95 latency (warm) | 20.7ms | 18.0ms |
 
 Key findings: SQLite warm start is ~4x faster (no CSV parsing or CrossMap load). Throughput is ~25% lower due to Mutex serialization on the shared connection. However, p95 latency is actually better with SQLite — the Mutex eliminates contention spikes from concurrent DashMap access.
+
+## Live Mode — SQLite (post-connection-pool, 10k x 10k, usearch + embeddings, inject 10K)
+
+| Metric | In-Memory | SQLite (warm) |
+|---|---:|---:|
+| Throughput | 1,698 req/s | 1,395 req/s |
+| p50 | 3.4ms | 6.4ms |
+| p95 | 23.9ms | 13.6ms |
+| Gap | — | 18% slower throughput, better tail latency |
+
+## Batch Mode — SQLite (10k x 10k, BM25 + fuzzy + exact)
+
+| Metric | In-Memory | SQLite (columnar) |
+|---|---:|---:|
+| Bulk load | N/A | 160-200K rec/s |
+| Scoring | 2,289 rec/s | 1,420 rec/s |
+| Gap | — | 1.6x (inherent SQLite overhead) |
+| Memory | ~2GB | ~1.2GB (cache + BM25 + blocking) |
 
 ## Batch Endpoint Throughput (Live Mode)
 

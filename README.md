@@ -56,6 +56,7 @@ same thing regardless of how it was produced.
   - [Performance config](#performance-config)
 - [In Operation](#in-operation)
   - [Batch mode](#batch-mode)
+    - [SQLite batch mode (large datasets)](#sqlite-batch-mode-large-datasets)
   - [Live mode](#live-mode)
   - [Live mode API](#live-mode-api)
 - [CLI Reference](#cli-reference)
@@ -517,6 +518,23 @@ output:
   review_path: output/review.csv        # borderline pairs for human review
   unmatched_path: output/unmatched.csv  # B records with no match above review_floor
 
+# --- Batch mode SQLite (meld run) ---------------------------------------------
+# When batch.db_path is set, meld run stores records in SQLite instead of
+# in-memory DashMap. Use this for datasets that exceed available RAM.
+# The database is created fresh each run and deleted on completion.
+# Omit this section (or leave db_path unset) for the default in-memory path.
+batch:
+  db_path: batch.db                 # optional — triggers SQLite batch mode.
+                                    #   The file is created fresh and deleted after the run.
+                                    #   Default: not set (in-memory storage).
+  sqlite_read_pool_size: 8          # optional — read connection pool size.
+                                    #   Default: num_cpus (matches Rayon parallelism).
+  sqlite_pool_worker_cache_mb: 128  # optional — page cache per read connection in MB.
+                                    #   Total read cache = pool_size × this value.
+                                    #   Default: 128.
+  sqlite_cache_mb: 64               # optional — write connection page cache in MB.
+                                    #   Default: 64.
+
 # --- Live mode (meld serve) --------------------------------------------------
 # Ignored by meld run. Omit this section for pure batch usage.
 live:
@@ -533,8 +551,13 @@ live:
                                     #   • Warm start (DB exists): opens existing DB directly —
                                     #     no WAL replay needed; restarts are instant.
                                     #   Default: not set (in-memory MemoryStore + MemoryCrossMap).
-  sqlite_cache_mb: 64               # optional (default: 64) — SQLite page cache size in MB.
-                                    #   Controls PRAGMA cache_size. Only relevant when db_path is set.
+  sqlite_cache_mb: 64               # optional (default: 64) — SQLite page cache for the write
+                                    #   connection in MB. Only relevant when db_path is set.
+  sqlite_read_pool_size: 4          # optional (default: 4) — number of read-only SQLite connections.
+                                    #   Concurrent reads (get, blocking_query, etc.) are served from
+                                    #   this pool. Higher values reduce lock contention under load.
+  sqlite_pool_worker_cache_mb: 128  # optional (default: 128) — page cache per read connection in MB.
+                                    #   Total read cache memory = pool_size × this value.
 
 # --- Performance tuning ------------------------------------------------------
 # All fields are optional with sensible defaults. Omit the section if unsure.
@@ -656,6 +679,38 @@ a single pass. Run it with:
 meld run --config config.yaml
 ```
 
+#### SQLite batch mode (large datasets)
+
+For datasets that exceed available RAM (e.g. 55M A records would need
+~100 GB in memory), set `batch.db_path` to store records in SQLite
+instead:
+
+```yaml
+batch:
+  db_path: batch.db
+```
+
+The database is created fresh each run and deleted on completion — the
+source CSV files and crossmap.csv remain the only persistent state.
+Records are stored in columnar format (one column per field, no JSON
+serialization) for fast scoring. Data is loaded via streaming — only one
+10K-record chunk is in memory at a time, regardless of dataset size.
+
+**When to use SQLite batch mode:**
+- Datasets larger than ~50% of available RAM (to avoid swap pressure)
+- Any dataset where you want predictable, bounded memory usage
+- The memory footprint is approximately: `sqlite_cache_mb + pool_size ×
+  pool_worker_cache_mb + BM25 index + blocking index` (typically 10-12 GB
+  for a 55M-record dataset)
+
+**When to use in-memory batch mode (the default):**
+- Datasets that fit comfortably in RAM
+- Maximum scoring throughput is needed (in-memory is ~1.6× faster)
+
+**Note:** SQLite batch mode currently supports BM25 + fuzzy + exact
+scoring methods. Embedding-based scoring requires the in-memory path
+(embedding indices are held in RAM regardless of storage backend).
+
 When the job completes, the melder writes three output csvs (paths
 configured in the `output` section):
 
@@ -705,12 +760,19 @@ arrive. It supports two storage backends:
 - **SQLite** (set `live.db_path`) — records, crossmap, and review queue
   stored in a SQLite database. Durable by default, instant warm restarts.
 
-SQLite throughput is ~10-15% lower than in-memory at the same scale
-(~1,300 vs ~1,530 req/s at 10k, c=10) due to Mutex serialization on the
-shared connection. Tail latencies (p95, p99) are actually better with
-SQLite. The `live.sqlite_cache_mb` setting controls the SQLite page cache
-(default 64 MB) but has negligible impact on throughput — the bottleneck
-is lock contention, not I/O.
+SQLite throughput is ~18% lower than in-memory at the same scale
+(~1,395 vs ~1,698 req/s at 10k, c=10). The gap comes from B-tree
+traversal and per-connection page cache overhead vs DashMap hash lookups.
+Tail latencies (p95, p99) are actually better with SQLite — the
+connection pool smooths out contention spikes. Records are stored in
+columnar format (one column per field) for fast access with no JSON
+serialization overhead.
+
+SQLite uses a writer + reader pool architecture:
+`sqlite_read_pool_size` (default 4) read-only connections serve
+concurrent reads, while a single write connection handles all mutations.
+`sqlite_pool_worker_cache_mb` (default 128) controls the page cache per
+read connection.
 
 ```bash
 meld serve --config config.yaml --port 8090
@@ -1579,6 +1641,25 @@ crossmappings.
 - The `usearch` backend is an in-process HNSW vector database with
   O(log N) search. Use for any real-world workload.
 
+#### SQLite batch mode
+
+When `batch.db_path` is set, records are stored in SQLite with columnar
+storage (one column per field). This trades some scoring throughput for
+dramatically lower memory usage.
+
+10k x 10k, BM25 + fuzzy + exact scoring, `country_code` blocking:
+
+| Metric | In-memory | SQLite |
+|---|---:|---:|
+| Bulk load | — | 160–200K rec/s |
+| Scoring throughput | 2,289 rec/s | **1,420 rec/s** |
+| Total elapsed | 4.4s | 7.1s |
+| Peak memory | ~2 GB | ~1.2 GB |
+
+The 1.6× gap is inherent to SQLite (B-tree traversal + page cache
+overhead vs DashMap hash lookups). At 55M scale where in-memory is
+infeasible, SQLite batch mode is the only viable option.
+
 ### Live mode
 
 Pre-populated caches (10k x 10k). `c=1` means one HTTP client
@@ -1597,6 +1678,21 @@ Cold = fresh index build on startup. Warm = pre-built cache loaded from disk (~1
 
 At 100k x 100k (80% encoding, c=10, 10k events), usearch reaches **1,325 req/s** warm
 with p50 latency of 6.0ms and p95 of 19.0ms.
+
+#### SQLite live mode
+
+Pre-populated caches (10k x 10k), usearch, warm start, c=10, 10k events:
+
+| Metric | In-memory | SQLite |
+|--------|----------:|-------:|
+| Throughput | 1,698 req/s | **1,395 req/s** |
+| p50 latency | 3.4ms | 6.4ms |
+| p95 latency | 23.9ms | 13.6ms |
+| p99 latency | 37.3ms | 20.3ms |
+
+SQLite is ~18% slower on throughput but has better tail latency (p95/p99).
+The trade-off is durability and instant warm restarts (~0.4s vs ~18s for
+in-memory cold start).
 
 When fewer requests require encoding (40% instead of 80%), throughput
 improves further: the text-hash skip optimisation means non-encoding

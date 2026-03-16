@@ -149,13 +149,17 @@ Both hold their locks for sub-millisecond durations under normal load.
 | `AtomicBool` / `AtomicU64` | CrossMap dirty flag, upsert counter | Lock-free; no contention |
 | mpsc + oneshot channels | Encoding coordinator | Decouples handler tasks from ONNX inference; enables batching without shared mutable state |
 
-### SqliteStore: single `Arc<Mutex<Connection>>`
+### SqliteStore: Writer + Reader Pool
 
-When using the SQLite backend (`live.db_path`), a single `rusqlite::Connection` is wrapped in `Arc<Mutex<Connection>>` and shared by `SqliteStore`, `SqliteCrossMap`, and review write-through. All reads and writes serialise through this mutex.
+When using the SQLite backend, a single write connection (`Arc<Mutex<Connection>>`) handles all mutations, and a pool of N read-only connections (`SqliteReaderPool`) serves concurrent reads via round-robin `try_lock()`. The pool is shared between `SqliteStore` and `SqliteCrossMap`.
 
-**Why:** `rusqlite::Connection` is `Send` but not `Sync` -- the underlying C API is not thread-safe for concurrent calls on the same handle, even for reads. `RwLock` would not help because even read guards would share `&Connection`, which is unsound.
+**Why separate connections (not RwLock):** `rusqlite::Connection` is `Send` but not `Sync` — the underlying C API is not thread-safe for concurrent calls on the same handle, even for reads. Each connection must have exclusive access via `Mutex`. Concurrency comes from having multiple connections, not from sharing one.
 
-**Impact:** Acceptable for live mode where ONNX encoding (3-6ms) dominates and the mutex is held for < 200us per SQL operation. Would bottleneck batch mode with Rayon parallelism -- a connection pool (one read connection per thread) is the planned fix. See [[Key Decisions#SqliteStore SqliteCrossMap for Durable Live Mode]].
+**Reader pool sizing:** Default 4 for live mode (sufficient with ONNX staggering arrivals). Default `num_cpus` for batch mode (matches Rayon thread pool). Configurable via `sqlite_read_pool_size`.
+
+**Nested par_iter hazard:** The candidate selection path in `candidates.rs` originally used `par_iter` to fetch blocked records. With SQLite, this created nested parallelism (outer `par_iter` in `engine.rs` + inner `par_iter` in `candidates.rs`), causing deadlock when all reader pool connections were held by inner tasks. Fixed by converting the inner `par_iter` to sequential `iter` for the no-embeddings path.
+
+See [[Key Decisions#SQLite Connection Pool Writer N Readers]].
 
 ---
 
