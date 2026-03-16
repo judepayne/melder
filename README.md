@@ -1632,10 +1632,10 @@ crossmappings.
 | | flat 10k x 10k | usearch 10k x 10k | flat 100k x 100k | usearch 100k x 100k |
 |---|---:|---:|---:|---:|
 | Index build time (no cache) | ~17s | ~17s | ~3m | ~3m 32s |
-| Index load time (cached) | ~47ms | ~78ms | ~650ms | ~640ms |
-| Scoring throughput | 5,507 rec/s | **31,366 rec/s** | — | **8,735 rec/s** |
+| Index load time (cached) | ~47ms | ~78ms | ~650ms | ~235ms (A) + ~261ms (B) |
+| Scoring throughput | 5,507 rec/s | **33,738 rec/s** | — | **10,539 rec/s** |
 | Wall time (cold) | — | — | — | 3m 32s |
-| Wall time (warm) | 2.2s | 0.7s | — | **12.8s** |
+| Wall time (warm) | 2.2s | 0.3s | — | **9.5s** |
 
 > [!TIP]
 > The first build of cached indices for large datasets can be slow —
@@ -1649,24 +1649,33 @@ crossmappings.
 - The `usearch` backend is an in-process HNSW vector database with
   O(log N) search. Use for any real-world workload.
 
-#### SQLite batch mode
+#### BM25-only batch mode
 
-When `batch.db_path` is set, records are stored in SQLite with columnar
-storage (one column per field). This trades some scoring throughput for
-dramatically lower memory usage.
+BM25 + fuzzy + exact scoring, `country_code` blocking. The BM25-only
+fast path queries the Tantivy index directly with blocking filters,
+avoiding the need to fetch all blocked records.
 
-10k x 10k, BM25 + fuzzy + exact scoring, `country_code` blocking:
+10k × 10k:
 
 | Metric | In-memory | SQLite |
 |---|---:|---:|
-| Bulk load | — | 160–200K rec/s |
-| Scoring throughput | 2,289 rec/s | **1,420 rec/s** |
-| Total elapsed | 4.4s | 7.1s |
+| Bulk load | — | 170–194K rec/s |
+| Scoring throughput | **49,337 rec/s** | 2,099 rec/s |
+| Auto-matched | 7,824 | 7,931 |
 | Peak memory | ~2 GB | ~1.2 GB |
 
-The 1.6× gap is inherent to SQLite (B-tree traversal + page cache
-overhead vs DashMap hash lookups). At 55M scale where in-memory is
-infeasible, SQLite batch mode is the only viable option.
+1M × 1M (in-memory, `bm25_candidates: 10`):
+
+| Metric | Value |
+|---|---:|
+| Scoring throughput | **1,062 rec/s** |
+| Projected full run | ~16 minutes |
+
+The in-memory vs SQLite gap is larger for BM25-only than for embedding
+pipelines because the in-memory BM25 fast path queries Tantivy and
+fetches only the top survivors — no bulk record loading. SQLite batch
+mode trades throughput for bounded memory: at 55M scale where in-memory
+needs ~15-20 GB, SQLite keeps memory at ~10-12 GB.
 
 ### Live mode
 

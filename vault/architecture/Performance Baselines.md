@@ -10,16 +10,41 @@ related_code: [benchmarks/]
 
 Benchmarked on Apple Silicon M3 MacBook Air, `all-MiniLM-L6-v2`, `encoder_pool_size: 4`.
 
-## Batch Mode (flat vs usearch, top_n: 20, country_code blocking)
+## Batch Mode (10K × 10K, top_n: 20, country_code blocking)
 
-| Metric | flat 10k x 10k | usearch 10k x 10k | usearch 100k x 100k |
-|---|---:|---:|---:|
-| Index build (cold) | ~17s | ~17s | ~3m 32s |
-| Cache load (warm) | ~47ms | ~78ms | ~640ms |
-| Scoring throughput | 5,507 rec/s | 31,366 rec/s | 8,735 rec/s |
-| Wall time (warm) | 2.2s | 0.7s | 12.8s |
+| Metric | flat | usearch (warm) | BM25-only | usearch+BM25 |
+|---|---:|---:|---:|---:|
+| Scoring throughput | 5,507 rec/s | 33,738 rec/s | 49,337 rec/s | 19,034 rec/s |
+| Wall time (warm) | 2.2s | 0.3s | 0.2s | 0.5s |
+| Auto-matched | — | 5,252 | 7,824 | 5,534 |
 
-Key insight: usearch is 5.7x faster at 10k and 12.5x faster at 100k due to O(log N) vs O(N) candidate selection.
+Key insight: BM25-only is now the fastest pipeline (49K rec/s) thanks to the Tantivy blocking filter and RwLock concurrency. usearch+BM25 combines embedding recall with BM25 re-ranking.
+
+## Batch Mode (100K × 100K, usearch, warm, top_n: 20, country_code blocking)
+
+| Metric | usearch |
+|---|---:|
+| Cache load | ~235ms (A) + ~261ms (B) |
+| Scoring throughput | 10,539 rec/s |
+| Wall time (warm) | 9.5s |
+| Auto-matched | 53,369 |
+
+## Batch Mode — SQLite (10K × 10K, BM25 + fuzzy + exact, columnar)
+
+| Metric | In-Memory | SQLite |
+|---|---:|---:|
+| Bulk load | N/A | 170-194K rec/s |
+| Scoring | 49,337 rec/s | 2,099 rec/s |
+| Auto-matched | 7,824 | 7,931 |
+
+## Batch Mode (1M × 1M, BM25-only, in-memory, bm25_candidates: 10)
+
+| Metric | Value |
+|---|---:|
+| Data load | 1.0s (A) + 1.2s (B) |
+| BM25 index build | ~1.0s |
+| Scoring throughput | 1,062 rec/s |
+| Projected full run | ~16 minutes |
 
 ## Live Mode (80% encoding, 10k x 10k warm caches, c=10)
 
@@ -49,11 +74,11 @@ usearch includes text-hash skip: 20% of requests skip ONNX encoding (~1ms vs ~7m
 
 | Metric | Value |
 |---|---:|
-| Throughput | 615 req/s |
+| Throughput | 450 req/s |
 | p50 | ~9ms |
 | p95 | ~113ms |
 
-Config: usearch + BM25, explicit bm25_fields.
+Config: usearch + BM25, explicit bm25_fields. (Down from 615 req/s — the RwLock write path has slightly higher overhead for live mode's single-request pattern where every request writes.)
 
 ## Live Mode — SQLite vs In-Memory (10k x 10k, usearch, c=10)
 
