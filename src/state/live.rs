@@ -141,9 +141,13 @@ impl LiveMatchState {
         );
 
         // Determine startup mode
-        let sqlite_cache_kb = config.live.sqlite_cache_mb.map(|mb| mb * 1024);
+        let sqlite_pool_config = Some(crate::store::sqlite::SqlitePoolConfig {
+            writer_cache_kb: config.live.sqlite_cache_mb.unwrap_or(64) * 1024,
+            read_pool_size: config.live.sqlite_read_pool_size.unwrap_or(4),
+            reader_cache_kb: config.live.sqlite_pool_worker_cache_mb.unwrap_or(128) * 1024,
+        });
         if let Some(db_path) = config.live.db_path.clone() {
-            Self::load_sqlite(config, &db_path, start, encoder_pool, sqlite_cache_kb)
+            Self::load_sqlite(config, &db_path, start, encoder_pool, sqlite_pool_config)
         } else {
             Self::load_memory(config, start, encoder_pool)
         }
@@ -528,14 +532,14 @@ impl LiveMatchState {
         db_path: &str,
         start: Instant,
         encoder_pool: Arc<EncoderPool>,
-        cache_kb: Option<u64>,
+        pool_config: Option<crate::store::sqlite::SqlitePoolConfig>,
     ) -> Result<Arc<Self>, MelderError> {
         let db_exists = Path::new(db_path).exists();
         let mode = if db_exists { "warm" } else { "cold" };
         eprintln!("SQLite {} start: {}", mode, db_path);
 
         let (sqlite_store, sqlite_crossmap, _conn) =
-            open_sqlite(Path::new(db_path), &config.blocking, cache_kb)
+            open_sqlite(Path::new(db_path), &config.blocking, pool_config)
                 .map_err(|e| MelderError::Other(anyhow::anyhow!("SQLite open failed: {}", e)))?;
 
         let store: Arc<dyn RecordStore> = Arc::new(sqlite_store);

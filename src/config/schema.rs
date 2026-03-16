@@ -191,14 +191,31 @@ pub struct LiveConfig {
     /// Default: `None` (use in-memory storage, current behavior).
     #[serde(default)]
     pub db_path: Option<String>,
-    /// SQLite page cache size in megabytes.
+    /// SQLite page cache size in megabytes for the write connection.
     ///
-    /// Controls `PRAGMA cache_size` for the SQLite connection. Larger caches
-    /// keep more B-tree pages in memory, reducing disk I/O for record lookups.
+    /// Controls `PRAGMA cache_size` for the SQLite write connection. Larger
+    /// caches keep more B-tree pages in memory, reducing disk I/O.
     ///
     /// Default: 64 (MB).
     #[serde(default)]
     pub sqlite_cache_mb: Option<u64>,
+    /// Number of read-only SQLite connections in the pool.
+    ///
+    /// Read operations (get, contains, blocking_query, etc.) are served by
+    /// a pool of read-only connections, allowing concurrent reads from
+    /// multiple threads. Write operations use a single dedicated connection.
+    ///
+    /// Default: 4.
+    #[serde(default)]
+    pub sqlite_read_pool_size: Option<u32>,
+    /// SQLite page cache size in megabytes for each read pool connection.
+    ///
+    /// Each read connection maintains its own page cache. Total read cache
+    /// memory is `sqlite_read_pool_size × sqlite_pool_worker_cache_mb`.
+    ///
+    /// Default: 128 (MB).
+    #[serde(default)]
+    pub sqlite_pool_worker_cache_mb: Option<u64>,
 }
 
 /// Performance tuning — applies to both batch and live modes.

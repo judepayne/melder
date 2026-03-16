@@ -1,8 +1,9 @@
 //! SQLite-backed record store for durable live-mode persistence.
 //!
-//! Uses a single `Mutex<Connection>` for serialized access. SQLite WAL mode
-//! ensures writes don't block reads at the filesystem level. The page cache
-//! (`PRAGMA cache_size = -65536`) keeps hot index pages in memory.
+//! Uses a writer + reader pool architecture. One `Mutex<Connection>` handles
+//! all writes (SQLite allows only one writer). A pool of read-only connections
+//! serves concurrent reads via round-robin `try_lock`, matching the
+//! `EncoderPool` pattern. SQLite WAL mode enables concurrent readers.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -14,12 +15,41 @@ use crate::models::{Record, Side};
 
 use super::RecordStore;
 
+/// Pool of read-only SQLite connections with round-robin acquisition.
+///
+/// Each connection has its own `Mutex` (required because `rusqlite::Connection`
+/// is `Send` but not `Sync`). Concurrency comes from having multiple
+/// connections, not from sharing one. Shared between `SqliteStore` and
+/// `SqliteCrossMap`.
+pub struct SqliteReaderPool {
+    readers: Vec<Mutex<Connection>>,
+}
+
+impl SqliteReaderPool {
+    /// Acquire a reader connection via round-robin try_lock.
+    ///
+    /// Tries each slot in order; falls back to blocking on slot 0 if all
+    /// are busy. Same pattern as `EncoderPool`.
+    pub fn acquire(&self) -> std::sync::MutexGuard<'_, Connection> {
+        for reader in &self.readers {
+            if let Ok(guard) = reader.try_lock() {
+                return guard;
+            }
+        }
+        // All busy — block on slot 0
+        self.readers[0].lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// SQLite-backed record store.
 ///
 /// Both sides (A and B) live in the same database file with separate tables.
 /// Blocking keys are stored in indexed tables for fast candidate lookups.
+/// Reads are served by a shared `SqliteReaderPool`; writes go through a
+/// single dedicated connection.
 pub struct SqliteStore {
-    conn: Arc<Mutex<Connection>>,
+    writer: Arc<Mutex<Connection>>,
+    reader_pool: Arc<SqliteReaderPool>,
     blocking_config: BlockingConfig,
 }
 
@@ -28,6 +58,7 @@ impl std::fmt::Debug for SqliteStore {
         f.debug_struct("SqliteStore")
             .field("a_records", &self.len(Side::A))
             .field("b_records", &self.len(Side::B))
+            .field("reader_pool_size", &self.reader_pool.readers.len())
             .finish()
     }
 }
@@ -85,18 +116,55 @@ CREATE TABLE IF NOT EXISTS reviews (
 );
 ";
 
-/// Open a SQLite database and create all tables.
+/// Configuration for the SQLite connection pool.
+pub struct SqlitePoolConfig {
+    /// Page cache for the write connection in KiB. Default: 65536 (64 MB).
+    pub writer_cache_kb: u64,
+    /// Number of read-only connections. Default: 4.
+    pub read_pool_size: u32,
+    /// Page cache per read connection in KiB. Default: 131072 (128 MB).
+    pub reader_cache_kb: u64,
+}
+
+impl Default for SqlitePoolConfig {
+    fn default() -> Self {
+        Self {
+            writer_cache_kb: 65536, // 64 MB
+            read_pool_size: 4,
+            reader_cache_kb: 131072, // 128 MB
+        }
+    }
+}
+
+/// Apply performance pragmas to a connection.
+fn apply_pragmas(
+    conn: &Connection,
+    cache_kb: u64,
+    query_only: bool,
+) -> Result<(), rusqlite::Error> {
+    let mut pragmas = format!(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA cache_size = -{cache_kb};
+         PRAGMA page_size = 8192;
+         PRAGMA foreign_keys = OFF;
+         PRAGMA synchronous = NORMAL;"
+    );
+    if query_only {
+        pragmas.push_str("\nPRAGMA query_only = ON;");
+    }
+    conn.execute_batch(&pragmas)
+}
+
+/// Open a SQLite database with a writer + reader pool.
 ///
-/// Returns the `SqliteStore`, `SqliteCrossMap`, and the shared
-/// `Arc<Mutex<Connection>>` for use by other components (e.g., review
-/// queue write-through).
+/// Returns the `SqliteStore`, `SqliteCrossMap`, and the writer connection
+/// `Arc<Mutex<Connection>>` (for review write-through or other components).
 ///
-/// `cache_kb` overrides the default 64 MB page cache. Pass `None` to keep
-/// the default. In live mode, set via `live.sqlite_cache_mb` in config.
+/// Pass `None` for `pool_config` to use defaults.
 pub fn open_sqlite(
     path: &Path,
     blocking_config: &BlockingConfig,
-    cache_kb: Option<u64>,
+    pool_config: Option<SqlitePoolConfig>,
 ) -> Result<
     (
         SqliteStore,
@@ -105,32 +173,34 @@ pub fn open_sqlite(
     ),
     rusqlite::Error,
 > {
-    let conn = Connection::open(path)?;
+    let cfg = pool_config.unwrap_or_default();
 
-    // Performance pragmas: cache_size is negative = kibibytes.
-    let cache_kb = cache_kb.unwrap_or(65536); // default 64 MB
-    let pragmas = format!(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA cache_size = -{cache_kb};
-         PRAGMA page_size = 8192;
-         PRAGMA foreign_keys = OFF;
-         PRAGMA synchronous = NORMAL;"
-    );
-    conn.execute_batch(&pragmas)?;
+    // --- Writer connection ---
+    let writer_conn = Connection::open(path)?;
+    apply_pragmas(&writer_conn, cfg.writer_cache_kb, false)?;
+    writer_conn.execute_batch(SCHEMA)?;
 
-    // Create schema
-    conn.execute_batch(SCHEMA)?;
+    let writer = Arc::new(Mutex::new(writer_conn));
 
-    let conn = Arc::new(Mutex::new(conn));
+    // --- Reader pool ---
+    let mut readers = Vec::with_capacity(cfg.read_pool_size as usize);
+    for _ in 0..cfg.read_pool_size {
+        let rconn = Connection::open(path)?;
+        apply_pragmas(&rconn, cfg.reader_cache_kb, true)?;
+        readers.push(Mutex::new(rconn));
+    }
+    let reader_pool = Arc::new(SqliteReaderPool { readers });
 
     let store = SqliteStore {
-        conn: Arc::clone(&conn),
+        writer: Arc::clone(&writer),
+        reader_pool: Arc::clone(&reader_pool),
         blocking_config: blocking_config.clone(),
     };
 
-    let crossmap = crate::crossmap::sqlite::SqliteCrossMap::from_conn(Arc::clone(&conn));
+    let crossmap =
+        crate::crossmap::sqlite::SqliteCrossMap::new(Arc::clone(&writer), Arc::clone(&reader_pool));
 
-    Ok((store, crossmap, conn))
+    Ok((store, crossmap, writer))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -183,10 +253,10 @@ fn blocking_values(
 // ── RecordStore implementation ───────────────────────────────────────────────
 
 impl RecordStore for SqliteStore {
-    // --- Records ---
+    // --- Records (reads → reader pool, writes → writer) ---
 
     fn get(&self, side: Side, id: &str) -> Option<Record> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let sql = format!(
             "SELECT record_json FROM {}_records WHERE id = ?1",
             side_prefix(side)
@@ -199,10 +269,10 @@ impl RecordStore for SqliteStore {
     }
 
     fn insert(&self, side: Side, id: &str, record: &Record) -> Option<Record> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
 
-        // Fetch old record if it exists (for return value)
+        // Fetch old record via the writer (sees its own pending writes)
         let old: Option<Record> = conn
             .query_row(
                 &format!("SELECT record_json FROM {}_records WHERE id = ?1", prefix),
@@ -229,10 +299,10 @@ impl RecordStore for SqliteStore {
     }
 
     fn remove(&self, side: Side, id: &str) -> Option<Record> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
 
-        // Fetch old record
+        // Fetch old record via writer
         let old: Option<Record> = conn
             .query_row(
                 &format!("SELECT record_json FROM {}_records WHERE id = ?1", prefix),
@@ -256,20 +326,20 @@ impl RecordStore for SqliteStore {
     }
 
     fn contains(&self, side: Side, id: &str) -> bool {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let sql = format!("SELECT 1 FROM {}_records WHERE id = ?1", side_prefix(side));
         conn.query_row(&sql, params![id], |_| Ok(())).is_ok()
     }
 
     fn len(&self, side: Side) -> usize {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let sql = format!("SELECT COUNT(*) FROM {}_records", side_prefix(side));
         conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
             .unwrap_or(0) as usize
     }
 
     fn ids(&self, side: Side) -> Vec<String> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let sql = format!("SELECT id FROM {}_records", side_prefix(side));
         let mut stmt = conn.prepare(&sql).expect("prepare ids query");
         stmt.query_map([], |row| row.get(0))
@@ -278,10 +348,10 @@ impl RecordStore for SqliteStore {
             .collect()
     }
 
-    // --- Blocking ---
+    // --- Blocking (reads → reader pool, writes → writer) ---
 
     fn blocking_insert(&self, side: Side, id: &str, record: &Record) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         let values = blocking_values(record, &self.blocking_config.fields, side);
 
@@ -298,7 +368,7 @@ impl RecordStore for SqliteStore {
     }
 
     fn blocking_remove(&self, side: Side, id: &str, _record: &Record) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
             &format!("DELETE FROM {}_blocking_keys WHERE record_id = ?1", prefix),
@@ -308,14 +378,12 @@ impl RecordStore for SqliteStore {
     }
 
     fn blocking_query(&self, record: &Record, query_side: Side) -> Vec<String> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let fields = &self.blocking_config.fields;
         let opp = query_side.opposite();
         let prefix = side_prefix(opp);
         let is_and = self.blocking_config.operator.eq_ignore_ascii_case("and");
 
-        // Collect query values: for a B-side query, we use field_b from the
-        // query record and look up in the A-side blocking table.
         let query_values: Vec<(usize, String)> = fields
             .iter()
             .enumerate()
@@ -336,7 +404,6 @@ impl RecordStore for SqliteStore {
             })
             .collect();
 
-        // If no query values, return all IDs from the opposite side
         if query_values.is_empty() {
             let sql = format!("SELECT id FROM {}_records", prefix);
             let mut stmt = conn.prepare(&sql).expect("prepare all-ids query");
@@ -347,7 +414,6 @@ impl RecordStore for SqliteStore {
                 .collect();
         }
 
-        // Build the SQL query dynamically based on the number of non-empty fields
         let conditions: Vec<String> = query_values
             .iter()
             .map(|(i, _)| format!("(field_index = {} AND value = ?)", i))
@@ -355,7 +421,6 @@ impl RecordStore for SqliteStore {
         let where_clause = conditions.join(" OR ");
 
         let sql = if is_and {
-            // AND mode: all fields must match
             format!(
                 "SELECT record_id FROM {}_blocking_keys WHERE {} GROUP BY record_id HAVING COUNT(DISTINCT field_index) = {}",
                 prefix,
@@ -363,7 +428,6 @@ impl RecordStore for SqliteStore {
                 query_values.len()
             )
         } else {
-            // OR mode: any field match
             format!(
                 "SELECT DISTINCT record_id FROM {}_blocking_keys WHERE {}",
                 prefix, where_clause
@@ -382,10 +446,10 @@ impl RecordStore for SqliteStore {
             .collect()
     }
 
-    // --- Unmatched ---
+    // --- Unmatched (reads → reader pool, writes → writer) ---
 
     fn mark_unmatched(&self, side: Side, id: &str) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
             &format!(
@@ -398,7 +462,7 @@ impl RecordStore for SqliteStore {
     }
 
     fn mark_matched(&self, side: Side, id: &str) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
             &format!("DELETE FROM {}_unmatched WHERE id = ?1", prefix),
@@ -408,7 +472,7 @@ impl RecordStore for SqliteStore {
     }
 
     fn is_unmatched(&self, side: Side, id: &str) -> bool {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let sql = format!(
             "SELECT 1 FROM {}_unmatched WHERE id = ?1",
             side_prefix(side)
@@ -417,14 +481,14 @@ impl RecordStore for SqliteStore {
     }
 
     fn unmatched_count(&self, side: Side) -> usize {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let sql = format!("SELECT COUNT(*) FROM {}_unmatched", side_prefix(side));
         conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
             .unwrap_or(0) as usize
     }
 
     fn unmatched_ids(&self, side: Side) -> Vec<String> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let sql = format!("SELECT id FROM {}_unmatched ORDER BY id", side_prefix(side));
         let mut stmt = conn.prepare(&sql).expect("prepare unmatched query");
         stmt.query_map([], |row| row.get(0))
@@ -433,10 +497,10 @@ impl RecordStore for SqliteStore {
             .collect()
     }
 
-    // --- Common ID index ---
+    // --- Common ID index (reads → reader pool, writes → writer) ---
 
     fn common_id_insert(&self, side: Side, common_id: &str, record_id: &str) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
             &format!(
@@ -449,7 +513,7 @@ impl RecordStore for SqliteStore {
     }
 
     fn common_id_lookup(&self, side: Side, common_id: &str) -> Option<String> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let sql = format!(
             "SELECT record_id FROM {}_common_ids WHERE common_id = ?1",
             side_prefix(side)
@@ -459,7 +523,7 @@ impl RecordStore for SqliteStore {
     }
 
     fn common_id_remove(&self, side: Side, common_id: &str) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
             &format!("DELETE FROM {}_common_ids WHERE common_id = ?1", prefix),
@@ -468,10 +532,10 @@ impl RecordStore for SqliteStore {
         .expect("remove common id");
     }
 
-    // --- Review persistence (write-through to SQLite) ---
+    // --- Review persistence (reads → reader pool, writes → writer) ---
 
     fn persist_review(&self, key: &str, id: &str, side: Side, candidate_id: &str, score: f64) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let side_str = match side {
             Side::A => "a",
             Side::B => "b",
@@ -483,7 +547,7 @@ impl RecordStore for SqliteStore {
     }
 
     fn remove_reviews_for_id(&self, id: &str) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let _ = conn.execute(
             "DELETE FROM reviews WHERE id = ?1 OR candidate_id = ?1",
             params![id],
@@ -491,7 +555,7 @@ impl RecordStore for SqliteStore {
     }
 
     fn remove_reviews_for_pair(&self, a_id: &str, b_id: &str) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let _ = conn.execute(
             "DELETE FROM reviews WHERE id = ?1 OR candidate_id = ?1 OR id = ?2 OR candidate_id = ?2",
             params![a_id, b_id],
@@ -499,7 +563,7 @@ impl RecordStore for SqliteStore {
     }
 
     fn load_reviews(&self) -> Vec<(String, String, Side, String, f64)> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let mut stmt = conn
             .prepare("SELECT key, id, side, candidate_id, score FROM reviews")
             .expect("prepare reviews query");
@@ -541,7 +605,11 @@ mod tests {
             field_a: None,
             field_b: None,
         };
-        let (store, _crossmap, _conn) = open_sqlite(&path, &bc, None).unwrap();
+        let pool_cfg = SqlitePoolConfig {
+            read_pool_size: 2,
+            ..Default::default()
+        };
+        let (store, _crossmap, _conn) = open_sqlite(&path, &bc, Some(pool_cfg)).unwrap();
         // Keep tempdir alive by leaking it — tests are short-lived
         std::mem::forget(dir);
         store

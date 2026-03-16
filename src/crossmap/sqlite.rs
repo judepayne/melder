@@ -1,21 +1,24 @@
 //! `SqliteCrossMap`: SQLite-backed bidirectional record-pair mapping.
 //!
-//! Shares `Arc<Mutex<Connection>>` with `SqliteStore`. The `UNIQUE`
-//! constraints on both `a_id` and `b_id` enforce the bijection at the
-//! database level, replacing the in-memory `RwLock` approach.
+//! Uses the shared writer + reader pool architecture from `SqliteStore`.
+//! Writes (add, remove, claim, take) go through the writer connection.
+//! Reads (get, has, len, pairs) go through the reader pool.
 
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection};
 
 use super::CrossMapOps;
+use crate::store::sqlite::SqliteReaderPool;
 
 /// SQLite-backed bidirectional mapping between A and B record IDs.
 ///
-/// Thread-safe via `Mutex<Connection>`. Mutations are immediately durable
-/// (no explicit flush needed).
+/// Writes use a single `Mutex<Connection>`. Reads use the shared
+/// `SqliteReaderPool` for concurrent access. Mutations are immediately
+/// durable (no explicit flush needed).
 pub struct SqliteCrossMap {
-    conn: Arc<Mutex<Connection>>,
+    writer: Arc<Mutex<Connection>>,
+    reader_pool: Arc<SqliteReaderPool>,
 }
 
 impl std::fmt::Debug for SqliteCrossMap {
@@ -27,11 +30,14 @@ impl std::fmt::Debug for SqliteCrossMap {
 }
 
 impl SqliteCrossMap {
-    /// Create from an existing shared connection.
+    /// Create from a shared writer connection and reader pool.
     ///
     /// The `crossmap` table must already exist (created by `open_sqlite()`).
-    pub fn from_conn(conn: Arc<Mutex<Connection>>) -> Self {
-        Self { conn }
+    pub fn new(writer: Arc<Mutex<Connection>>, reader_pool: Arc<SqliteReaderPool>) -> Self {
+        Self {
+            writer,
+            reader_pool,
+        }
     }
 }
 
@@ -41,8 +47,7 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn add(&self, a_id: &str, b_id: &str) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        // Remove any existing entries for either side first, then insert
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM crossmap WHERE a_id = ?1", params![a_id])
             .expect("delete old a_id");
         conn.execute("DELETE FROM crossmap WHERE b_id = ?1", params![b_id])
@@ -55,7 +60,7 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn remove(&self, a_id: &str, b_id: &str) {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "DELETE FROM crossmap WHERE a_id = ?1 AND b_id = ?2",
             params![a_id, b_id],
@@ -64,7 +69,7 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn remove_if_exact(&self, a_id: &str, b_id: &str) -> bool {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let changed = conn
             .execute(
                 "DELETE FROM crossmap WHERE a_id = ?1 AND b_id = ?2",
@@ -75,8 +80,7 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn take_a(&self, a_id: &str) -> Option<String> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        // Read + delete atomically via RETURNING
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "DELETE FROM crossmap WHERE a_id = ?1 RETURNING b_id",
             params![a_id],
@@ -86,7 +90,7 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn take_b(&self, b_id: &str) -> Option<String> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "DELETE FROM crossmap WHERE b_id = ?1 RETURNING a_id",
             params![b_id],
@@ -96,8 +100,8 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn claim(&self, a_id: &str, b_id: &str) -> bool {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        // Check neither side is already mapped
+        // Must use writer: check-then-insert must be atomic on one connection.
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let a_taken: bool = conn
             .query_row(
                 "SELECT 1 FROM crossmap WHERE a_id = ?1",
@@ -127,27 +131,27 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn get_b(&self, a_id: &str) -> Option<String> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         conn.query_row(
             "SELECT b_id FROM crossmap WHERE a_id = ?1",
             params![a_id],
-            |row| row.get(0),
+            |row: &rusqlite::Row| row.get(0),
         )
         .ok()
     }
 
     fn get_a(&self, b_id: &str) -> Option<String> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         conn.query_row(
             "SELECT a_id FROM crossmap WHERE b_id = ?1",
             params![b_id],
-            |row| row.get(0),
+            |row: &rusqlite::Row| row.get(0),
         )
         .ok()
     }
 
     fn has_a(&self, a_id: &str) -> bool {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         conn.query_row(
             "SELECT 1 FROM crossmap WHERE a_id = ?1",
             params![a_id],
@@ -157,7 +161,7 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn has_b(&self, b_id: &str) -> bool {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         conn.query_row(
             "SELECT 1 FROM crossmap WHERE b_id = ?1",
             params![b_id],
@@ -167,10 +171,12 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn len(&self) -> usize {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.query_row("SELECT COUNT(*) FROM crossmap", [], |row| {
-            row.get::<_, i64>(0)
-        })
+        let conn = self.reader_pool.acquire();
+        conn.query_row(
+            "SELECT COUNT(*) FROM crossmap",
+            [],
+            |row: &rusqlite::Row| row.get::<_, i64>(0),
+        )
         .unwrap_or(0) as usize
     }
 
@@ -179,13 +185,13 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn pairs(&self) -> Vec<(String, String)> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.reader_pool.acquire();
         let mut stmt = conn
             .prepare("SELECT a_id, b_id FROM crossmap")
             .expect("prepare pairs query");
-        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        stmt.query_map([], |row: &rusqlite::Row| Ok((row.get(0)?, row.get(1)?)))
             .expect("query pairs")
-            .filter_map(|r| r.ok())
+            .filter_map(|r: Result<(String, String), _>| r.ok())
             .collect()
     }
 }
@@ -209,8 +215,12 @@ mod tests {
             field_a: None,
             field_b: None,
         };
+        let pool_cfg = crate::store::sqlite::SqlitePoolConfig {
+            read_pool_size: 2,
+            ..Default::default()
+        };
         let (_store, crossmap, _conn) =
-            crate::store::sqlite::open_sqlite(&path, &bc, None).unwrap();
+            crate::store::sqlite::open_sqlite(&path, &bc, Some(pool_cfg)).unwrap();
         std::mem::forget(dir);
         crossmap
     }
