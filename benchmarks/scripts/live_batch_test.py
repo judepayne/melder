@@ -458,11 +458,13 @@ def main() -> None:
     parser.add_argument(
         "--records", type=int, default=3000, help="Total records to process"
     )
-    parser.add_argument("--config", default="testdata/configs/bench_live.yaml")
+    parser.add_argument(
+        "--config", default="benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml"
+    )
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--binary", default="./target/release/meld")
-    parser.add_argument("--a-path", default="testdata/dataset_a_10k.csv")
-    parser.add_argument("--b-path", default="testdata/dataset_b_10k.csv")
+    parser.add_argument("--a-path", default="benchmarks/data/dataset_a_10k.csv")
+    parser.add_argument("--b-path", default="benchmarks/data/dataset_b_10k.csv")
     parser.add_argument("--a-id", default="entity_id")
     parser.add_argument("--b-id", default="counterparty_id")
     parser.add_argument("--seed", type=int, default=42)

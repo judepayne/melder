@@ -312,8 +312,9 @@ mod tests {
 
     #[test]
     fn deserialize_bench_live_yaml() {
-        let yaml = std::fs::read_to_string("benchmarks/live/10kx10k_usearch/warm/config.yaml")
-            .expect("failed to read bench_live.yaml");
+        let yaml =
+            std::fs::read_to_string("benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml")
+                .expect("failed to read bench_live.yaml");
         let config: Config =
             serde_yaml::from_str(&yaml).expect("failed to deserialize bench_live.yaml");
 

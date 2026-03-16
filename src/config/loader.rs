@@ -554,7 +554,10 @@ mod tests {
 
     #[test]
     fn load_bench_live() {
-        let cfg = load_config(Path::new("benchmarks/live/10kx10k_usearch/warm/config.yaml")).unwrap();
+        let cfg = load_config(Path::new(
+            "benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml",
+        ))
+        .unwrap();
         assert_eq!(cfg.job.name, "live_10kx10k_usearch_warm");
         assert_eq!(cfg.performance.encoder_pool_size, Some(4));
         assert_eq!(cfg.top_n, Some(5));
@@ -579,7 +582,10 @@ mod tests {
 
     #[test]
     fn derived_fields_bench_live() {
-        let cfg = load_config(Path::new("benchmarks/live/10kx10k_usearch/warm/config.yaml")).unwrap();
+        let cfg = load_config(Path::new(
+            "benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml",
+        ))
+        .unwrap();
         // A side should include: entity_id, legal_name, short_name, country_code, lei
         assert!(cfg.required_fields_a.contains(&"entity_id".to_string()));
         assert!(cfg.required_fields_a.contains(&"legal_name".to_string()));

@@ -183,8 +183,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--config",
-        default="bench/bench_live.yaml",
-        help="Config file for `match serve`",
+        default="benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml",
+        help="Config file for `meld serve`",
     )
     parser.add_argument(
         "--port", type=int, default=8090, help="TCP port for the server"
@@ -193,13 +193,17 @@ def main() -> None:
         "--iterations", type=int, default=3000, help="Number of API calls to make"
     )
     parser.add_argument(
-        "--binary", default="./match", help="Path to the `match` binary"
+        "--binary", default="./target/release/meld", help="Path to the `meld` binary"
     )
     parser.add_argument(
-        "--a-path", default="testdata/dataset_a_10k.csv", help="Dataset A CSV path"
+        "--a-path",
+        default="benchmarks/data/dataset_a_10k.csv",
+        help="Dataset A CSV path",
     )
     parser.add_argument(
-        "--b-path", default="testdata/dataset_b_10k.csv", help="Dataset B CSV path"
+        "--b-path",
+        default="benchmarks/data/dataset_b_10k.csv",
+        help="Dataset B CSV path",
     )
     parser.add_argument("--a-id", default="entity_id", help="A ID field name")
     parser.add_argument("--b-id", default="counterparty_id", help="B ID field name")

@@ -63,7 +63,9 @@ def post(path, payload):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-serve", action="store_true")
-    parser.add_argument("--config", default="testdata/configs/bench_live.yaml")
+    parser.add_argument(
+        "--config", default="benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml"
+    )
     parser.add_argument("--binary", default="./target/release/meld")
     parser.add_argument("--port", type=int, default=8090)
     args = parser.parse_args()

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""bench/live_concurrent_test.py — Concurrent live-mode throughput and latency test.
+"""benchmarks/scripts/live_concurrent_test.py — Concurrent live-mode throughput and latency test.
 
 Fires --iterations requests across --concurrency parallel workers to exercise
-opportunistic batching (the coordinator goroutine coalesces concurrent upserts
-into a single BatchUpsertAndQuery call). Run --concurrency 1 to get the
-sequential baseline; increase concurrency to measure batching gains.
+concurrent scoring. Run --concurrency 1 to get the sequential baseline;
+increase concurrency to measure scaling.
 
 Operation mix (same as live_stress_test.py):
   30%  POST /api/v1/a/add   new A record
@@ -15,15 +14,12 @@ Operation mix (same as live_stress_test.py):
   10%  POST /api/v1/b/add   update B record — non-embedding field only
 
 Usage:
-  python bench/live_concurrent_test.py [options]
+  python3 benchmarks/scripts/live_concurrent_test.py [options]
 
-  --config      Path to YAML config for `match serve`    (default: bench/bench_live.yaml)
-  --port        TCP port to use for the server            (default: 8090)
-  --iterations  Total number of API calls to make        (default: 3000)
-  --concurrency Number of parallel workers               (default: 10)
-  --binary      Path to the `match` binary               (default: ./match)
-  --a-path      Path to dataset A CSV                    (default: testdata/dataset_a_10k.csv)
-  --b-path      Path to dataset B CSV                    (default: testdata/dataset_b_10k.csv)
+  --config      Path to YAML config for `meld serve`
+  --binary      Path to the `meld` binary               (default: ./target/release/meld)
+  --a-path      Path to dataset A CSV                    (default: benchmarks/data/dataset_a_10k.csv)
+  --b-path      Path to dataset B CSV                    (default: benchmarks/data/dataset_b_10k.csv)
   --a-id        A ID field name                          (default: entity_id)
   --b-id        B ID field name                          (default: counterparty_id)
   --seed          Random seed for reproducibility          (default: 42)
@@ -195,7 +191,9 @@ def main() -> None:
         description="Concurrent live-mode throughput and latency test",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--config", default="bench/bench_live.yaml")
+    parser.add_argument(
+        "--config", default="benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml"
+    )
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--iterations", type=int, default=3000)
     parser.add_argument(
@@ -205,9 +203,9 @@ def main() -> None:
         default=10,
         help="Number of parallel HTTP workers",
     )
-    parser.add_argument("--binary", default="./match")
-    parser.add_argument("--a-path", default="testdata/dataset_a_10k.csv")
-    parser.add_argument("--b-path", default="testdata/dataset_b_10k.csv")
+    parser.add_argument("--binary", default="./target/release/meld")
+    parser.add_argument("--a-path", default="benchmarks/data/dataset_a_10k.csv")
+    parser.add_argument("--b-path", default="benchmarks/data/dataset_b_10k.csv")
     parser.add_argument("--a-id", default="entity_id")
     parser.add_argument("--b-id", default="counterparty_id")
     parser.add_argument("--seed", type=int, default=42)
