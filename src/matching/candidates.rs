@@ -64,6 +64,7 @@ pub fn select_candidates(
     query_record: &Record,
     query_side: Side,
     backend: &str,
+    scoring_fields: &[String],
 ) -> Vec<Candidate> {
     let has_embeddings = !query_combined_vec.is_empty();
 
@@ -94,17 +95,19 @@ pub fn select_candidates(
 
     if !has_embeddings || pool_combined_index.is_none() {
         // No embedding filtering possible — return all blocked records.
-        // Sequential iteration: avoids nested par_iter deadlock when the
-        // outer par_iter (batch engine) already saturates the thread pool
-        // and store.get() contends on shared resources (e.g. SQLite reader pool).
-        return blocked_ids
-            .iter()
-            .filter_map(|id| {
-                pool_store.get(pool_side, id).map(|record| Candidate {
-                    id: id.clone(),
-                    record,
-                    combined_dot: 0.0,
-                })
+        // Use get_many_fields() for efficiency: extracts only the fields
+        // needed for scoring, avoiding full JSON deserialization for SQLite.
+        let records = if scoring_fields.is_empty() {
+            pool_store.get_many(pool_side, blocked_ids)
+        } else {
+            pool_store.get_many_fields(pool_side, blocked_ids, scoring_fields)
+        };
+        return records
+            .into_iter()
+            .map(|(id, record)| Candidate {
+                id,
+                record,
+                combined_dot: 0.0,
             })
             .collect();
     }
@@ -202,6 +205,7 @@ mod tests {
             &query_record,
             Side::B,
             "flat",
+            &[],
         );
 
         assert_eq!(cands.len(), 2);
@@ -246,6 +250,7 @@ mod tests {
             &query_record,
             Side::B,
             "flat",
+            &[],
         );
 
         assert_eq!(cands.len(), 2);
@@ -287,6 +292,7 @@ mod tests {
             &query_record,
             Side::B,
             "flat",
+            &[],
         );
 
         assert_eq!(cands.len(), 10);

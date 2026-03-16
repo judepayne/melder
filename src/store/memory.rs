@@ -143,6 +143,16 @@ impl RecordStore for MemoryStore {
         self.records(side).iter().map(|e| e.key().clone()).collect()
     }
 
+    fn get_many_fields(
+        &self,
+        side: Side,
+        ids: &[String],
+        _fields: &[String],
+    ) -> Vec<(String, Record)> {
+        // In-memory: no deserialization cost, return full records.
+        self.get_many(side, ids)
+    }
+
     fn for_each_record(&self, side: Side, f: &mut dyn FnMut(&str, &Record)) {
         for entry in self.records(side).iter() {
             f(entry.key(), entry.value());

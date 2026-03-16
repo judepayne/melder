@@ -45,6 +45,39 @@ pub trait RecordStore: Send + Sync {
     /// with SQLite (single table scan vs N individual queries).
     fn for_each_record(&self, side: Side, f: &mut dyn FnMut(&str, &Record));
 
+    /// Fetch multiple records by ID in one call.
+    ///
+    /// More efficient than N individual `get()` calls for SQLite (single
+    /// `WHERE id IN (...)` query vs N individual queries). Default
+    /// implementation falls back to individual `get()` calls.
+    fn get_many(&self, side: Side, ids: &[String]) -> Vec<(String, Record)> {
+        ids.iter()
+            .filter_map(|id| self.get(side, id).map(|r| (id.clone(), r)))
+            .collect()
+    }
+
+    /// Fetch multiple records by ID, extracting only specific fields.
+    ///
+    /// For SQLite, uses `json_extract()` to pull individual fields from
+    /// the stored JSON without full deserialization — significantly faster
+    /// when only a few fields are needed (e.g. scoring). Default
+    /// implementation falls back to `get_many()` with post-filtering.
+    fn get_many_fields(
+        &self,
+        side: Side,
+        ids: &[String],
+        fields: &[String],
+    ) -> Vec<(String, Record)> {
+        // Default: get full records, keep only requested fields
+        self.get_many(side, ids)
+            .into_iter()
+            .map(|(id, mut rec)| {
+                rec.retain(|k, _| fields.contains(k));
+                (id, rec)
+            })
+            .collect()
+    }
+
     // --- Blocking ---
 
     /// Insert a record's blocking keys into the index.

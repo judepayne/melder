@@ -348,6 +348,89 @@ impl RecordStore for SqliteStore {
             .collect()
     }
 
+    fn get_many(&self, side: Side, ids: &[String]) -> Vec<(String, Record)> {
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let conn = self.reader_pool.acquire();
+        let prefix = side_prefix(side);
+        let mut results = Vec::with_capacity(ids.len());
+
+        // Chunk to stay within SQLite's variable limit (999 is the safe
+        // minimum across builds; most modern builds allow 32766).
+        for chunk in ids.chunks(900) {
+            let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+            let sql = format!(
+                "SELECT id, record_json FROM {}_records WHERE id IN ({})",
+                prefix,
+                placeholders.join(",")
+            );
+            let mut stmt = conn.prepare(&sql).expect("prepare get_many query");
+            let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+                .iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql)
+                .collect();
+            let mut rows = stmt.query(params.as_slice()).expect("execute get_many");
+            while let Some(row) = rows.next().expect("next row") {
+                let id: String = row.get(0).expect("get id");
+                let json: String = row.get(1).expect("get record_json");
+                results.push((id, record_from_json(&json)));
+            }
+        }
+        results
+    }
+
+    fn get_many_fields(
+        &self,
+        side: Side,
+        ids: &[String],
+        fields: &[String],
+    ) -> Vec<(String, Record)> {
+        if ids.is_empty() || fields.is_empty() {
+            return Vec::new();
+        }
+        let conn = self.reader_pool.acquire();
+        let prefix = side_prefix(side);
+        let mut results = Vec::with_capacity(ids.len());
+
+        // Build SELECT with json_extract() for each requested field.
+        // This avoids full JSON deserialization in Rust — SQLite's C-based
+        // JSON parser extracts only the needed fields.
+        let field_exprs: Vec<String> = fields
+            .iter()
+            .map(|f| format!("json_extract(record_json, '$.{}') AS \"{}\"", f, f))
+            .collect();
+        let field_list = field_exprs.join(", ");
+
+        for chunk in ids.chunks(900) {
+            let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+            let sql = format!(
+                "SELECT id, {} FROM {}_records WHERE id IN ({})",
+                field_list,
+                prefix,
+                placeholders.join(",")
+            );
+            let mut stmt = conn.prepare(&sql).expect("prepare get_many_fields query");
+            let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+                .iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql)
+                .collect();
+            let mut rows = stmt
+                .query(params.as_slice())
+                .expect("execute get_many_fields");
+            while let Some(row) = rows.next().expect("next row") {
+                let id: String = row.get(0).expect("get id");
+                let mut record = Record::new();
+                for (i, field_name) in fields.iter().enumerate() {
+                    let val: Option<String> = row.get(i + 1).unwrap_or(None);
+                    record.insert(field_name.clone(), val.unwrap_or_default());
+                }
+                results.push((id, record));
+            }
+        }
+        results
+    }
+
     fn for_each_record(&self, side: Side, f: &mut dyn FnMut(&str, &Record)) {
         let conn = self.reader_pool.acquire();
         let sql = format!("SELECT id, record_json FROM {}_records", side_prefix(side));

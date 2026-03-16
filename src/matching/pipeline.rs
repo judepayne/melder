@@ -115,6 +115,18 @@ pub fn score_pool(
     let has_embeddings = !query_combined_vec.is_empty();
     let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
 
+    // Compute the pool-side fields needed for scoring (used by get_many_fields
+    // to avoid full JSON deserialization in SQLite).
+    let scoring_fields: Vec<String> = config
+        .match_fields
+        .iter()
+        .filter(|mf| mf.method != "bm25" && mf.method != "embedding")
+        .map(|mf| match pool_side {
+            Side::A => mf.field_a.clone(),
+            Side::B => mf.field_b.clone(),
+        })
+        .collect();
+
     // --- Stage 2: ANN candidate selection ---
     let cands = candidates::select_candidates(
         query_combined_vec,
@@ -126,6 +138,7 @@ pub fn score_pool(
         query_record,
         query_side,
         &config.vector_backend,
+        &scoring_fields,
     );
 
     if cands.is_empty() {
