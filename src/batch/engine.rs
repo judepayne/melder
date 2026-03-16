@@ -157,17 +157,22 @@ pub fn run_batch(
 
     // Build A-side BM25 index if method: bm25 is configured.
     #[cfg(feature = "bm25")]
-    let bm25_index_a: Option<std::sync::Mutex<crate::bm25::index::BM25Index>> = {
+    let bm25_index_a: Option<std::sync::RwLock<crate::bm25::index::BM25Index>> = {
         let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
-            let idx = crate::bm25::index::BM25Index::build(store, Side::A, &config.bm25_fields)?;
+            let idx = crate::bm25::index::BM25Index::build(
+                store,
+                Side::A,
+                &config.bm25_fields,
+                &config.blocking.fields,
+            )?;
             eprintln!(
                 "Built BM25 index for {} A records in {:.1}ms",
                 store.len(Side::A),
                 bm25_start.elapsed().as_secs_f64() * 1000.0
             );
-            Some(std::sync::Mutex::new(idx))
+            Some(std::sync::RwLock::new(idx))
         } else {
             None
         }
@@ -223,7 +228,7 @@ pub fn run_batch(
             // Build BM25 context: lock the index, build query text, pass to pipeline.
             #[cfg(feature = "bm25")]
             let results = if let Some(ref mtx) = bm25_index_a {
-                let guard = mtx.lock().unwrap_or_else(|e| e.into_inner());
+                let guard = mtx.read().unwrap_or_else(|e| e.into_inner());
                 let query_text = guard.query_text_for(&b_record, Side::B);
                 let ctx = Bm25Ctx::new(&*guard, query_text);
                 pipeline::score_pool(

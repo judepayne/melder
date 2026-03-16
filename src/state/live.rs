@@ -36,7 +36,7 @@ pub struct LiveSideState {
     /// BM25 full-text index for this side. Built from fuzzy/embedding
     /// text fields. `None` if BM25 not configured or feature not enabled.
     #[cfg(feature = "bm25")]
-    pub bm25_index: Option<std::sync::Mutex<crate::bm25::index::BM25Index>>,
+    pub bm25_index: Option<std::sync::RwLock<crate::bm25::index::BM25Index>>,
 }
 
 impl std::fmt::Debug for LiveSideState {
@@ -696,18 +696,26 @@ impl LiveMatchState {
         start: Instant,
     ) -> Result<
         (
-            Option<std::sync::Mutex<crate::bm25::index::BM25Index>>,
-            Option<std::sync::Mutex<crate::bm25::index::BM25Index>>,
+            Option<std::sync::RwLock<crate::bm25::index::BM25Index>>,
+            Option<std::sync::RwLock<crate::bm25::index::BM25Index>>,
         ),
         MelderError,
     > {
         let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
-            let idx_a =
-                crate::bm25::index::BM25Index::build(store.as_ref(), Side::A, &config.bm25_fields)?;
-            let idx_b =
-                crate::bm25::index::BM25Index::build(store.as_ref(), Side::B, &config.bm25_fields)?;
+            let idx_a = crate::bm25::index::BM25Index::build(
+                store.as_ref(),
+                Side::A,
+                &config.bm25_fields,
+                &config.blocking.fields,
+            )?;
+            let idx_b = crate::bm25::index::BM25Index::build(
+                store.as_ref(),
+                Side::B,
+                &config.bm25_fields,
+                &config.blocking.fields,
+            )?;
             eprintln!(
                 "Built BM25 indices (A: {}, B: {}) in {:.1}ms",
                 store.len(Side::A),
@@ -716,8 +724,8 @@ impl LiveMatchState {
             );
             let _ = start; // suppress unused warning when bm25 timing is used
             Ok((
-                Some(std::sync::Mutex::new(idx_a)),
-                Some(std::sync::Mutex::new(idx_b)),
+                Some(std::sync::RwLock::new(idx_a)),
+                Some(std::sync::RwLock::new(idx_b)),
             ))
         } else {
             Ok((None, None))

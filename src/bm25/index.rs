@@ -13,6 +13,7 @@ use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, do
 use tracing::warn;
 
 use crate::config::schema::Bm25FieldPair;
+use crate::config::BlockingFieldPair;
 use crate::models::{Record, Side};
 use crate::store::RecordStore;
 
@@ -23,9 +24,15 @@ pub struct BM25Index {
     reader: IndexReader,
     id_field: Field,
     content_field: Field,
+    /// Tantivy fields for blocking key columns (one per blocking field pair).
+    /// Empty if blocking is not configured.
+    block_fields: Vec<Field>,
     /// Which text fields to concatenate per record. The side determines
     /// whether `field_a` or `field_b` is used for lookup.
     fields: Vec<Bm25FieldPair>,
+    /// Blocking field pairs — stored for extracting blocking values from
+    /// records at upsert time.
+    blocking_fields: Vec<BlockingFieldPair>,
     side: Side,
     /// Cached self-scores keyed by hash of query text. Self-score depends
     /// on corpus IDF which changes slowly, so caching is safe — the cache
@@ -46,13 +53,17 @@ impl BM25Index {
         store: &dyn RecordStore,
         side: Side,
         fields: &[Bm25FieldPair],
+        blocking_fields: &[BlockingFieldPair],
     ) -> Result<Self, anyhow::Error> {
-        let (schema, id_field, content_field) = build_schema();
+        let (schema, id_field, content_field, block_fields) =
+            build_schema(blocking_fields.len());
         let index = Index::create_in_ram(schema);
         let mut writer = index.writer(50_000_000)?;
 
         // Use for_each_record for efficient iteration (single table scan
         // for SqliteStore, DashMap iteration for MemoryStore).
+        let blk_fields = blocking_fields.to_vec();
+        let blk_tantivy = block_fields.clone();
         let mut add_err: Option<tantivy::TantivyError> = None;
         store.for_each_record(side, &mut |id, record| {
             if add_err.is_some() {
@@ -62,10 +73,24 @@ impl BM25Index {
             if text.is_empty() {
                 return;
             }
-            if let Err(e) = writer.add_document(doc!(
+            let mut doc = doc!(
                 id_field => id,
                 content_field => text.as_str(),
-            )) {
+            );
+            // Add blocking key values so Tantivy can filter internally.
+            for (i, bfp) in blk_fields.iter().enumerate() {
+                let key = match side {
+                    Side::A => &bfp.field_a,
+                    Side::B => &bfp.field_b,
+                };
+                if let Some(val) = record.get(key) {
+                    let normalised = val.trim().to_lowercase();
+                    if !normalised.is_empty() {
+                        doc.add_text(blk_tantivy[i], &normalised);
+                    }
+                }
+            }
+            if let Err(e) = writer.add_document(doc) {
                 add_err = Some(e);
             }
         });
@@ -85,7 +110,9 @@ impl BM25Index {
             reader,
             id_field,
             content_field,
+            block_fields,
             fields: fields.to_vec(),
+            blocking_fields: blocking_fields.to_vec(),
             side,
             self_score_cache: HashMap::new(),
             dirty: false,
@@ -93,8 +120,13 @@ impl BM25Index {
     }
 
     /// Build an empty BM25 index (for live mode startup with no initial data).
-    pub fn build_empty(fields: &[Bm25FieldPair], side: Side) -> Result<Self, anyhow::Error> {
-        let (schema, id_field, content_field) = build_schema();
+    pub fn build_empty(
+        fields: &[Bm25FieldPair],
+        blocking_fields: &[BlockingFieldPair],
+        side: Side,
+    ) -> Result<Self, anyhow::Error> {
+        let (schema, id_field, content_field, block_fields) =
+            build_schema(blocking_fields.len());
         let index = Index::create_in_ram(schema);
         let writer = index.writer(50_000_000)?;
 
@@ -109,7 +141,9 @@ impl BM25Index {
             reader,
             id_field,
             content_field,
+            block_fields,
             fields: fields.to_vec(),
+            blocking_fields: blocking_fields.to_vec(),
             side,
             self_score_cache: HashMap::new(),
             dirty: false,
@@ -141,6 +175,105 @@ impl BM25Index {
             }
         };
 
+        let mut results = Vec::with_capacity(top_docs.len());
+        for (score, doc_address) in top_docs {
+            if let Ok(doc) = searcher.doc::<TantivyDocument>(doc_address)
+                && let Some(id_val) = doc.get_first(self.id_field)
+                && let Some(id) = Value::as_str(&id_val)
+            {
+                results.push((id.to_string(), score));
+            }
+        }
+        results
+    }
+
+    /// Query the index with blocking filter, returning top-K results as
+    /// `(id, raw_bm25_score)`.
+    ///
+    /// Combines the BM25 text query with term filters on blocking key fields.
+    /// Only documents matching ALL blocking keys are scored — equivalent to
+    /// post-filtering by `blocked_ids`, but Tantivy skips non-matching
+    /// documents entirely (no BM25 scoring wasted on wrong blocks).
+    ///
+    /// `query_record` is the query-side record; `query_side` determines
+    /// which field names to use for extracting blocking values.
+    pub fn query_blocked(
+        &self,
+        text: &str,
+        top_k: usize,
+        query_record: &Record,
+        query_side: Side,
+    ) -> Vec<(String, f32)> {
+        use tantivy::query::{BooleanQuery, Occur, TermQuery};
+        use tantivy::schema::IndexRecordOption;
+
+        if text.is_empty() || top_k == 0 {
+            return Vec::new();
+        }
+
+        let searcher = self.reader.searcher();
+
+        let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
+        let bm25_query = match query_parser.parse_query(&escape_query(text)) {
+            Ok(q) => q,
+            Err(e) => {
+                warn!(error = %e, "bm25 query parse failed");
+                return Vec::new();
+            }
+        };
+
+        // If no blocking fields, fall back to plain BM25 query.
+        if self.block_fields.is_empty() || self.blocking_fields.is_empty() {
+            let top_docs = match searcher.search(&bm25_query, &TopDocs::with_limit(top_k)) {
+                Ok(docs) => docs,
+                Err(e) => {
+                    warn!(error = %e, "bm25 search failed");
+                    return Vec::new();
+                }
+            };
+            return self.extract_results(&searcher, top_docs);
+        }
+
+        // Build blocking term filters from the query record.
+        let mut block_clauses: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
+        for (i, bfp) in self.blocking_fields.iter().enumerate() {
+            let key = match query_side {
+                Side::A => &bfp.field_a,
+                Side::B => &bfp.field_b,
+            };
+            if let Some(val) = query_record.get(key) {
+                let normalised = val.trim().to_lowercase();
+                if !normalised.is_empty() {
+                    let term = tantivy::Term::from_field_text(self.block_fields[i], &normalised);
+                    block_clauses.push((
+                        Occur::Must,
+                        Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
+                    ));
+                }
+            }
+        }
+
+        // Combine: BM25 query MUST match, all blocking terms MUST match.
+        let mut clauses = vec![(Occur::Must, bm25_query)];
+        clauses.extend(block_clauses);
+        let combined = BooleanQuery::new(clauses);
+
+        let top_docs = match searcher.search(&combined, &TopDocs::with_limit(top_k)) {
+            Ok(docs) => docs,
+            Err(e) => {
+                warn!(error = %e, "bm25 blocked search failed");
+                return Vec::new();
+            }
+        };
+        self.extract_results(&searcher, top_docs)
+    }
+
+    /// Extract (id, score) pairs from Tantivy search results.
+    fn extract_results(
+        &self,
+        searcher: &tantivy::Searcher,
+        top_docs: Vec<(f32, tantivy::DocAddress)>,
+    ) -> Vec<(String, f32)> {
         let mut results = Vec::with_capacity(top_docs.len());
         for (score, doc_address) in top_docs {
             if let Ok(doc) = searcher.doc::<TantivyDocument>(doc_address)
@@ -267,10 +400,24 @@ impl BM25Index {
 
         let text = concat_fields(record, &self.fields, self.side);
         if !text.is_empty() {
-            let _ = self.writer.add_document(doc!(
+            let mut doc = doc!(
                 self.id_field => id,
                 self.content_field => text.as_str(),
-            ));
+            );
+            // Add blocking key values
+            for (i, bfp) in self.blocking_fields.iter().enumerate() {
+                let key = match self.side {
+                    Side::A => &bfp.field_a,
+                    Side::B => &bfp.field_b,
+                };
+                if let Some(val) = record.get(key) {
+                    let normalised = val.trim().to_lowercase();
+                    if !normalised.is_empty() {
+                        doc.add_text(self.block_fields[i], &normalised);
+                    }
+                }
+            }
+            let _ = self.writer.add_document(doc);
         }
         self.dirty = true;
     }
@@ -314,11 +461,20 @@ fn text_hash(text: &str) -> u64 {
     hasher.finish()
 }
 
-fn build_schema() -> (Schema, Field, Field) {
+fn build_schema(
+    num_block_fields: usize,
+) -> (Schema, Field, Field, Vec<Field>) {
     let mut builder = Schema::builder();
     let id_field = builder.add_text_field("id", STRING | STORED);
     let content_field = builder.add_text_field("content", TEXT);
-    (builder.build(), id_field, content_field)
+    let mut block_fields = Vec::with_capacity(num_block_fields);
+    for i in 0..num_block_fields {
+        // STRING (not TEXT): indexed as a single token for exact term filtering.
+        // Not STORED: we never retrieve the value, only filter on it.
+        let field = builder.add_text_field(&format!("block_{}", i), STRING);
+        block_fields.push(field);
+    }
+    (builder.build(), id_field, content_field, block_fields)
 }
 
 /// Concatenate the relevant text fields from a record into a single string.
@@ -420,7 +576,7 @@ mod tests {
             Side::A,
         );
 
-        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         assert_eq!(idx.num_docs(), 5);
 
         let results = idx.query("apple", 3);
@@ -437,7 +593,7 @@ mod tests {
             vec![("1", make_record(&[("name_a", "Apple Inc")]))],
             Side::A,
         );
-        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         let results = idx.query("", 5);
         assert!(results.is_empty());
     }
@@ -448,7 +604,7 @@ mod tests {
             vec![("1", make_record(&[("name_a", "Apple Inc")]))],
             Side::A,
         );
-        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         let results = idx.query("apple", 0);
         assert!(results.is_empty());
     }
@@ -468,7 +624,7 @@ mod tests {
             ],
             Side::A,
         );
-        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         let score = idx.score_one("apple technology", "1");
         assert!(score.is_some(), "should find candidate 1");
         assert!(score.unwrap() > 0.0, "score should be positive");
@@ -480,7 +636,7 @@ mod tests {
             vec![("1", make_record(&[("name_a", "Apple Inc")]))],
             Side::A,
         );
-        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         let score = idx.score_one("xyz zzz qqq", "1");
         // The query has no overlap with the document, so score should be None
         assert!(score.is_none(), "no-overlap query should return None");
@@ -495,7 +651,7 @@ mod tests {
             ],
             Side::A,
         );
-        let mut idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let mut idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         let ss = idx.self_score("apple inc technology");
         assert!(ss > 0.0, "self-score should be positive, got {}", ss);
         // After self-score, sentinel should be removed
@@ -505,7 +661,7 @@ mod tests {
     #[test]
     fn self_score_empty() {
         let store = MemoryStore::new(&BlockingConfig::default());
-        let mut idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let mut idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         let ss = idx.self_score("");
         assert!(
             (ss - 0.0).abs() < f32::EPSILON,
@@ -516,7 +672,7 @@ mod tests {
     #[test]
     fn upsert_and_query() {
         let store = MemoryStore::new(&BlockingConfig::default());
-        let mut idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let mut idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         assert_eq!(idx.num_docs(), 0);
 
         // Upsert a record (buffered — must commit before querying)
@@ -556,7 +712,7 @@ mod tests {
             ],
             Side::A,
         );
-        let mut idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let mut idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         assert_eq!(idx.num_docs(), 2);
 
         idx.remove("1");
@@ -579,7 +735,7 @@ mod tests {
             ],
             Side::B,
         );
-        let idx = BM25Index::build(&store, Side::B, &fields).unwrap();
+        let idx = BM25Index::build(&store, Side::B, &fields, &[]).unwrap();
         assert_eq!(idx.num_docs(), 2);
 
         let results = idx.query("apple", 5);
@@ -593,7 +749,7 @@ mod tests {
             vec![("1", make_record(&[("name_a", ""), ("desc_a", "")]))],
             Side::A,
         );
-        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         // Record with all empty fields should not be indexed
         assert_eq!(idx.num_docs(), 0);
     }
@@ -610,7 +766,7 @@ mod tests {
             ],
             Side::A,
         );
-        let idx = BM25Index::build(&store, Side::A, &test_fields()).unwrap();
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
         assert_eq!(idx.num_docs(), 2);
 
         // Should be able to query without crashing
@@ -620,7 +776,7 @@ mod tests {
 
     #[test]
     fn build_empty_index() {
-        let idx = BM25Index::build_empty(&test_fields(), Side::A).unwrap();
+        let idx = BM25Index::build_empty(&test_fields(), &[], Side::A).unwrap();
         assert_eq!(idx.num_docs(), 0);
         let results = idx.query("anything", 5);
         assert!(results.is_empty());

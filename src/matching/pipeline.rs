@@ -127,6 +127,97 @@ pub fn score_pool(
         })
         .collect();
 
+    // --- Fast path: BM25-only (no embeddings) ---
+    // When BM25 is the sole candidate filter, query the BM25 index directly
+    // and fetch only the survivors. This avoids loading all blocked records
+    // into memory (e.g. 50K records per country bucket at 1M scale) when
+    // only ~20 will be scored.
+    #[cfg(feature = "bm25")]
+    if has_bm25 && !has_embeddings {
+        if let Some(ctx) = bm25_ctx {
+            use crate::bm25::scorer::normalise_bm25;
+
+            // Query BM25 index with blocking filter — Tantivy skips
+            // documents from the wrong block entirely (no wasted scoring).
+            // Returns exactly the top bm25_candidates from the matching block.
+            let raw_results = ctx.index.query_blocked(
+                &ctx.query_text,
+                bm25_candidates,
+                query_record,
+                query_side,
+            );
+            let max_score = raw_results.first().map(|(_, s)| *s).unwrap_or(0.0);
+
+            let scored: Vec<(String, f64)> = raw_results
+                .into_iter()
+                .map(|(id, raw)| {
+                    let norm = normalise_bm25(raw, max_score);
+                    (id, norm)
+                })
+                .collect();
+
+            if scored.is_empty() {
+                return Vec::new();
+            }
+
+            // Fetch only the BM25 survivors (typically ~20 records)
+            let survivor_ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
+            let bm25_scores_map: HashMap<String, f64> = scored.into_iter().collect();
+            let survivor_records = if scoring_fields.is_empty() {
+                pool_store.get_many(pool_side, &survivor_ids)
+            } else {
+                pool_store.get_many_fields(pool_side, &survivor_ids, &scoring_fields)
+            };
+
+            let survivor_cands: Vec<candidates::Candidate> = survivor_records
+                .into_iter()
+                .map(|(id, record)| candidates::Candidate {
+                    id,
+                    record,
+                    combined_dot: 0.0,
+                })
+                .collect();
+
+            // Score the survivors using the same path as the standard pipeline
+            let mut results: Vec<MatchResult> = survivor_cands
+                .iter()
+                .map(|cand| {
+                    let bm25_score = bm25_scores_map.get(&cand.id).copied();
+                    let score_result = scoring::score_pair(
+                        query_record,
+                        &cand.record,
+                        &config.match_fields,
+                        None, // no embedding scores in BM25-only path
+                        bm25_score,
+                    );
+                    scoring::build_match_result(
+                        query_id,
+                        &cand.id,
+                        query_side,
+                        score_result,
+                        config.thresholds.auto_match,
+                        config.thresholds.review_floor,
+                        None,
+                        false,
+                    )
+                })
+                .collect();
+
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if top_n > 0 {
+                results.truncate(top_n);
+            }
+
+            return results;
+        }
+    }
+
+    // --- Standard path: ANN candidate selection → BM25 re-rank → full scoring ---
+
     // --- Stage 2: ANN candidate selection ---
     let cands = candidates::select_candidates(
         query_combined_vec,

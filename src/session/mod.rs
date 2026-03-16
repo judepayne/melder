@@ -425,7 +425,7 @@ impl Session {
         // 6b. Update BM25 index
         #[cfg(feature = "bm25")]
         if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
-            let mut idx = bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            let mut idx = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
             idx.upsert(&id, &record);
         }
 
@@ -522,7 +522,7 @@ impl Session {
         // pending upserts/removes they must be visible before we query.
         #[cfg(feature = "bm25")]
         let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
-            let mut guard = opp_bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
             guard.commit_if_dirty();
             let query_text = guard.query_text_for(&record, side);
             let ctx = Bm25Ctx::new(&*guard, query_text);
@@ -683,7 +683,7 @@ impl Session {
         // Remove from BM25 index
         #[cfg(feature = "bm25")]
         if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
-            let mut idx = bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            let mut idx = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
             idx.remove(id);
         }
 
@@ -824,7 +824,7 @@ impl Session {
         // pending upserts/removes they must be visible before we query.
         #[cfg(feature = "bm25")]
         let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
-            let mut guard = opp_bm25_mtx.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
             guard.commit_if_dirty();
             let query_text = guard.query_text_for(&record, side);
             let ctx = Bm25Ctx::new(&*guard, query_text);
