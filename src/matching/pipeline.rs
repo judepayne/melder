@@ -129,9 +129,9 @@ pub fn score_pool(
 
     // --- Fast path: BM25-only (no embeddings) ---
     // When BM25 is the sole candidate filter, query the BM25 index directly
-    // and fetch only the survivors. This avoids loading all blocked records
-    // into memory (e.g. 50K records per country bucket at 1M scale) when
-    // only ~20 will be scored.
+    // with blocking filters and fetch only the survivors. This avoids
+    // loading all blocked records into memory (e.g. 50K records per country
+    // bucket at 1M scale) when only ~20 will be scored.
     #[cfg(feature = "bm25")]
     if has_bm25 && !has_embeddings {
         if let Some(ctx) = bm25_ctx {
