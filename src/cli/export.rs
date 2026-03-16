@@ -140,25 +140,55 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
 }
 
 /// Query unmatched records for the given side ("a" or "b").
+///
+/// Reads the table schema dynamically (columnar storage — no JSON blob).
 fn query_unmatched(conn: &rusqlite::Connection, side: &str) -> Vec<(String, Record)> {
+    // Discover columns from the table schema (skip "id")
+    let columns: Vec<String> = {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({side}_records)"))
+            .expect("pragma table_info");
+        stmt.query_map([], |row| {
+            let name: String = row.get(1)?;
+            Ok(name)
+        })
+        .expect("query table_info")
+        .filter_map(|r| r.ok())
+        .filter(|name| name != "id")
+        .collect()
+    };
+
+    let col_list = if columns.is_empty() {
+        "r.id".to_string()
+    } else {
+        format!(
+            "r.id, {}",
+            columns
+                .iter()
+                .map(|c| format!("r.\"{}\"", c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
     let sql = format!(
-        "SELECT r.id, r.record_json \
-         FROM {side}_records r \
-         INNER JOIN {side}_unmatched u ON r.id = u.id \
-         ORDER BY r.id"
+        "SELECT {} FROM {}_records r \
+         INNER JOIN {}_unmatched u ON r.id = u.id \
+         ORDER BY r.id",
+        col_list, side, side
     );
     let mut stmt = conn.prepare(&sql).expect("prepare unmatched query");
     stmt.query_map([], |row| {
         let id: String = row.get(0)?;
-        let json: String = row.get(1)?;
-        Ok((id, json))
+        let mut record = Record::new();
+        for (i, col_name) in columns.iter().enumerate() {
+            let val: Option<String> = row.get(i + 1).unwrap_or(None);
+            record.insert(col_name.clone(), val.unwrap_or_default());
+        }
+        Ok((id, record))
     })
     .expect("query unmatched")
     .filter_map(|r| r.ok())
-    .map(|(id, json)| {
-        let record = serde_json::from_str::<Record>(&json).unwrap_or_default();
-        (id, record)
-    })
     .collect()
 }
 
@@ -531,7 +561,10 @@ live:
         // Populate the DB in a scoped block so connections are dropped
         // before we open it again inside export_sqlite.
         {
-            let (store, crossmap, conn) = open_sqlite(&db_path, &bc, None).unwrap();
+            let cols_a = vec!["entity_id".to_string(), "name".to_string()];
+            let cols_b = vec!["counterparty_id".to_string(), "cpty_name".to_string()];
+            let (store, crossmap, conn) =
+                open_sqlite(&db_path, &bc, None, &cols_a, &cols_b).unwrap();
 
             let rec_a1 = make_record(&[("entity_id", "A-1"), ("name", "Acme")]);
             let rec_a2 = make_record(&[("entity_id", "A-2"), ("name", "Globex")]);

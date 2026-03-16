@@ -538,9 +538,14 @@ impl LiveMatchState {
         let mode = if db_exists { "warm" } else { "cold" };
         eprintln!("SQLite {} start: {}", mode, db_path);
 
-        let (sqlite_store, sqlite_crossmap, _conn) =
-            open_sqlite(Path::new(db_path), &config.blocking, pool_config)
-                .map_err(|e| MelderError::Other(anyhow::anyhow!("SQLite open failed: {}", e)))?;
+        let (sqlite_store, sqlite_crossmap, _conn) = open_sqlite(
+            Path::new(db_path),
+            &config.blocking,
+            pool_config,
+            &config.required_fields_a,
+            &config.required_fields_b,
+        )
+        .map_err(|e| MelderError::Other(anyhow::anyhow!("SQLite open failed: {}", e)))?;
 
         let store: Arc<dyn RecordStore> = Arc::new(sqlite_store);
         let crossmap: Box<dyn CrossMapOps> = Box::new(sqlite_crossmap);

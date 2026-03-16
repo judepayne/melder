@@ -183,14 +183,19 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         pool_cfg.reader_cache_kb / 1024
     );
 
-    let (sqlite_store, sqlite_crossmap, _writer) =
-        match crate::store::sqlite::open_sqlite(db_path, &cfg.blocking, Some(pool_cfg)) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Failed to open SQLite: {}", e);
-                process::exit(1);
-            }
-        };
+    let (sqlite_store, sqlite_crossmap, _writer) = match crate::store::sqlite::open_sqlite(
+        db_path,
+        &cfg.blocking,
+        Some(pool_cfg),
+        &cfg.required_fields_a,
+        &cfg.required_fields_b,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to open SQLite: {}", e);
+            process::exit(1);
+        }
+    };
 
     // Stream + bulk-load A records (only one chunk in memory at a time)
     let a_path = cfg.datasets.a.path.clone();
