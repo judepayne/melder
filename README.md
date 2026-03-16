@@ -75,11 +75,14 @@ same thing regardless of how it was produced.
 ## Quick Start
 
 ```bash
-# macOS / Linux — build with HNSW vector index (strongly recommended; up to 5x faster at scale)
+# macOS / Linux — build with HNSW vector index + BM25 (recommended)
+cargo build --release --features usearch,bm25
+
+# Without BM25 (embeddings + fuzzy + exact only)
 cargo build --release --features usearch
 
 # Windows — usearch has a known MSVC build bug; build without it (flat backend)
-cargo build --release
+cargo build --release --features bm25
 
 # The binary is at ./target/release/meld  (Windows: .\target\release\meld.exe)
 # Either add it to your PATH or invoke it directly:
@@ -461,8 +464,10 @@ blocking:
 #   numeric   — numeric equality (parses both values as float). Returns 1.0 or 0.0.
 #               Use exact for numeric identifiers; this is a stub for now.
 #
-#   bm25      — IDF-weighted token overlap across all fuzzy/embedding text fields.
-#               Do NOT specify field_a or field_b — it operates automatically.
+#   bm25      — IDF-weighted token overlap across indexed text fields.
+#               Do NOT specify field_a or field_b on this entry — BM25 indexes
+#               the fields listed in bm25_fields (or derived from fuzzy/embedding
+#               entries if bm25_fields is omitted). See the bm25_fields section above.
 #               Suppresses common-token noise from untrained models (e.g. "Holdings",
 #               "International"). Use as a scoring term alongside embedding, or as
 #               the sole candidate filter when no embedding fields are configured
@@ -1352,10 +1357,11 @@ meld run --config config.yaml --limit 500 --verbose
 
 ### `meld serve`
 
-Start the live-mode HTTP server. Both datasets are loaded into memory,
-embedding and blocking indices are built, and the write-ahead log is
-replayed for crash recovery. Once ready, the server accepts requests on
-the configured port. See [Live mode API](#live-mode-api) for endpoint
+Start the live-mode HTTP server. Datasets are loaded (into memory or
+SQLite, depending on whether `live.db_path` is set), embedding and
+blocking indices are built, and the write-ahead log is replayed for
+crash recovery. Once ready, the server accepts requests on the
+configured port. See [Live mode API](#live-mode-api) for endpoint
 details.
 
 ```bash
@@ -1537,26 +1543,29 @@ Snappy-compressed Parquet files are supported.
 ```bash
 cargo build --release
 
-# With HNSW approximate nearest-neighbour index (recommended for production)
-cargo build --release --features usearch
+# With HNSW vector index + BM25 (recommended for production)
+cargo build --release --features usearch,bm25
 
 # With Parquet support
 cargo build --release --features parquet-format
 
-# Both features together
-cargo build --release --features usearch,parquet-format
+# All features together
+cargo build --release --features usearch,bm25,parquet-format
 ```
 
 > [!TIP]
-> On macOS and Linux, always build with `--features usearch`. The
+> On macOS and Linux, always build with `--features usearch,bm25`. The
 > usearch backend uses an HNSW graph index for O(log N) candidate
-> search instead of the flat backend's O(N) brute-force scan. At
-> 100k records this is the difference between a 12-second warm run and
-> a 4-minute one — see [Performance](#performance) for full numbers.
+> search instead of the flat backend's O(N) brute-force scan. BM25
+> adds IDF-weighted token matching that compensates for common-token
+> noise in untrained embedding models. At 100k records, usearch is the
+> difference between a 12-second warm run and a 4-minute one — see
+> [Performance](#performance) for full numbers.
 >
 > On Windows, `usearch` currently has a known MSVC build bug (AVX-512
 > FP16 intrinsics and a missing POSIX constant) and must be omitted.
-> The flat backend works correctly — just slower at scale.
+> The flat backend works correctly — just slower at scale. BM25 works
+> on all platforms.
 
 The ONNX model is downloaded automatically on first run to
 `~/.cache/fastembed/` on Linux/macOS or `%LOCALAPPDATA%\fastembed\` on
@@ -1965,17 +1974,20 @@ src/
   error.rs             Error types (Config, Data, Encoder, Index, CrossMap, Session)
   models.rs            Core types: Record, Side, MatchResult, Classification
   config/              YAML config loading and validation
-  data/                Dataset loaders (csv, JSONL, Parquet)
-  encoder/             ONNX encoder pool (fastembed)
+  data/                Dataset loaders + streaming (csv, JSONL, Parquet)
+  encoder/             ONNX encoder pool (fastembed) + batch coordinator
   vectordb/            Vector index abstraction (flat + usearch backends), combined index logic
   fuzzy/               Fuzzy string matchers (ratio, partial_ratio, token_sort, wratio)
   scoring/             Scoring dispatch (exact, fuzzy, embedding, numeric)
+  bm25/                Tantivy-backed BM25 index (feature-gated)
   matching/            Blocking filter, candidate selection, scoring pipeline
-  crossmap/            Bidirectional ID mapping with csv persistence
+  crossmap/            Bidirectional ID mapping (memory + SQLite backends)
+  store/               Record store abstraction (MemoryStore + SqliteStore with columnar storage)
   batch/               Batch matching engine and output writers
   state/               State management (batch + live), WAL
-  session/             Live session logic (add, match, crossmap ops)
+  session/             Live session logic (upsert, match, remove, crossmap ops)
   api/                 HTTP handlers and server (axum)
+  cli/                 One file per subcommand (run, serve, validate, tune, etc.)
 ```
 
 ## License
