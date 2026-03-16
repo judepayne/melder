@@ -52,7 +52,7 @@ same thing regardless of how it was produced.
   - [What happens under the hood](#what-happens-under-the-hood)
   - [Scoring methods in detail](#scoring-methods-in-detail)
 - [Configuration](#configuration)
-  - [Field reference](#field-reference)
+  - [Performance field reference](#performance-field-reference)
 - [In Operation](#in-operation)
   - [Batch mode](#batch-mode)
     - [SQLite batch mode (large datasets)](#sqlite-batch-mode-large-datasets)
@@ -593,7 +593,7 @@ performance:
                                     #   No effect with the flat backend.
 ```
 
-### Field reference
+### Performance field reference
 
 **`encoder_pool_size`** — number of ONNX inference sessions to run in
 parallel. Each session holds a copy of the model in memory (~50–100 MB
