@@ -157,7 +157,7 @@ impl BM25Index {
         let searcher = self.reader.searcher();
 
         let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
-        let query = match query_parser.parse_query(&escape_query(text)) {
+        let query = match query_parser.parse_query(&sanitize_query(text)) {
             Ok(q) => q,
             Err(e) => {
                 warn!(error = %e, "bm25 query parse failed");
@@ -212,7 +212,7 @@ impl BM25Index {
         let searcher = self.reader.searcher();
 
         let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
-        let bm25_query = match query_parser.parse_query(&escape_query(text)) {
+        let bm25_query = match query_parser.parse_query(&sanitize_query(text)) {
             Ok(q) => q,
             Err(e) => {
                 warn!(error = %e, "bm25 query parse failed");
@@ -388,6 +388,78 @@ impl BM25Index {
         self.self_score_cache.get(&hash).copied()
     }
 
+    /// Compute the BM25 self-score analytically using corpus statistics.
+    ///
+    /// Equivalent to inserting the query text as a document and scoring it
+    /// against itself, but without any index mutation. Uses Tantivy's public
+    /// BM25 API: `Bm25StatisticsProvider` for corpus stats, `Bm25Weight` for
+    /// per-term scoring, and the index's own tokenizer for tokenization.
+    ///
+    /// Cost: one tokenization pass + one `doc_freq()` lookup per unique token.
+    /// At 10–15 tokens per query this is ~5–20µs — suitable for the live
+    /// hot path.
+    ///
+    /// Terms not present in the corpus (`df=0`) are skipped — they cannot be
+    /// retrieved and would inflate the self-score ceiling artificially.
+    pub fn analytical_self_score(&self, text: &str) -> f32 {
+        use std::collections::HashMap;
+        use tantivy::fieldnorm::FieldNormReader;
+        use tantivy::query::{Bm25StatisticsProvider, Bm25Weight};
+        use tantivy::tokenizer::TokenStream;
+
+        if text.is_empty() {
+            return 0.0;
+        }
+
+        // Tokenize with the same analyzer the index uses for the content field.
+        let mut analyzer = match self.index.tokenizer_for_field(self.content_field) {
+            Ok(a) => a,
+            Err(_) => return 0.0,
+        };
+
+        let mut term_freqs: HashMap<String, u32> = HashMap::new();
+        let mut token_count: u32 = 0;
+        {
+            let mut stream = analyzer.token_stream(text);
+            while stream.advance() {
+                let tok = stream.token().text.clone();
+                *term_freqs.entry(tok).or_insert(0) += 1;
+                token_count += 1;
+            }
+        }
+
+        if term_freqs.is_empty() || token_count == 0 {
+            return 0.0;
+        }
+
+        let searcher = self.reader.searcher();
+
+        // total_num_docs() includes deleted docs — matches Tantivy's BM25 internals.
+        let total_num_docs = match searcher.total_num_docs() {
+            Ok(n) if n > 0 => n,
+            _ => return 0.0,
+        };
+        let total_num_tokens = searcher.total_num_tokens(self.content_field).unwrap_or(0);
+        let avg_fieldnorm = total_num_tokens as f32 / total_num_docs as f32;
+
+        // Fieldnorm compression: same lossy mapping Tantivy uses when indexing.
+        let fieldnorm_id = FieldNormReader::fieldnorm_to_id(token_count);
+
+        let mut score: f32 = 0.0;
+        for (token_text, tf) in &term_freqs {
+            let term = tantivy::Term::from_field_text(self.content_field, token_text);
+            let df = searcher.doc_freq(&term).unwrap_or(0);
+            if df == 0 {
+                continue; // token not in corpus — skip
+            }
+            let weight =
+                Bm25Weight::for_one_term_without_explain(df, total_num_docs, avg_fieldnorm);
+            score += weight.score(fieldnorm_id, *tf);
+        }
+
+        score
+    }
+
     /// Pre-compute self-scores for a batch of query texts.
     ///
     /// Uses batch insertion: all unique sentinel documents are inserted in a
@@ -440,7 +512,7 @@ impl BM25Index {
 
         for (i, (hash, text)) in unique.iter().enumerate() {
             let sentinel_id = format!("{sentinel_prefix}{i}__");
-            let escaped = escape_query(text);
+            let escaped = sanitize_query(text);
             let query = match query_parser.parse_query(&escaped) {
                 Ok(q) => q,
                 Err(_) => {
@@ -608,23 +680,35 @@ fn concat_fields(record: &Record, fields: &[Bm25FieldPair], side: Side) -> Strin
     parts.join(" ")
 }
 
-/// Escape special Tantivy query syntax characters.
+/// Sanitize text for use as a BM25 query.
 ///
 /// Tantivy's query parser treats characters like `:`, `(`, `)`, `+`, `-`,
-/// `"`, `*`, `~` as syntax. For BM25 scoring we want plain tokenised text,
-/// so we escape them.
-fn escape_query(text: &str) -> String {
-    let special = [
-        ':', '(', ')', '[', ']', '{', '}', '+', '-', '!', '"', '~', '*', '?', '\\', '^',
-    ];
-    let mut escaped = String::with_capacity(text.len() + 8);
-    for ch in text.chars() {
-        if special.contains(&ch) {
-            escaped.push('\\');
-        }
-        escaped.push(ch);
-    }
-    escaped
+/// `"`, `*`, `~`, `&` as syntax. For BM25 free-text scoring we want plain
+/// tokenised terms, so we replace all query-syntax and punctuation characters
+/// with spaces and collapse whitespace. "Rodriguez-Bailey & Co." becomes
+/// "Rodriguez Bailey Co".
+fn sanitize_query(text: &str) -> String {
+    let replaced: String = text
+        .chars()
+        .map(|ch| match ch {
+            // Tantivy query syntax operators
+            ':' | '(' | ')' | '[' | ']' | '{' | '}' | '+' | '!' | '"' | '~' | '*' | '?' | '\\'
+            | '^' | '&' | '|' => ' ',
+            // Punctuation with no retrieval value
+            ',' | '.' | ';' | '\'' | '`' | '#' | '@' | '$' | '%' | '/' => ' ',
+            // Hyphens: split into separate tokens (consistent with TEXT indexer)
+            '-' => ' ',
+            _ => ch,
+        })
+        .collect();
+    // Collapse whitespace and lowercase — Tantivy's query parser interprets
+    // uppercase AND, OR, NOT, IN, TO as boolean operators. Lowercasing
+    // neutralises state abbreviations like "IN" (Indiana) and "OR" (Oregon).
+    replaced
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 #[cfg(test)]
@@ -917,10 +1001,195 @@ mod tests {
     }
 
     #[test]
-    fn escape_query_fn() {
-        assert_eq!(escape_query("hello world"), "hello world");
-        assert_eq!(escape_query("a:b"), "a\\:b");
-        assert_eq!(escape_query("(test)"), "\\(test\\)");
-        assert_eq!(escape_query("a+b-c"), "a\\+b\\-c");
+    fn sanitize_query_fn() {
+        assert_eq!(sanitize_query("hello world"), "hello world");
+        assert_eq!(sanitize_query("a:b"), "a b");
+        assert_eq!(sanitize_query("(test)"), "test");
+        assert_eq!(sanitize_query("a+b-c"), "a b c");
+        // Characters that previously caused parse failures
+        assert_eq!(
+            sanitize_query("Guerrero, Lewis and Cole"),
+            "guerrero lewis and cole"
+        );
+        assert_eq!(
+            sanitize_query("Rodriguez-Bailey & Co."),
+            "rodriguez bailey co"
+        );
+        assert_eq!(sanitize_query("S.A.S"), "s a s");
+        // US state abbreviations that Tantivy interprets as boolean operators
+        assert_eq!(
+            sanitize_query("123 Main St IN 46720"),
+            "123 main st in 46720"
+        );
+        assert_eq!(sanitize_query("Portland OR 97201"), "portland or 97201");
+    }
+
+    #[test]
+    fn analytical_self_score_basic() {
+        let store = make_store(
+            vec![
+                (
+                    "1",
+                    make_record(&[("name_a", "Alpha Corp"), ("desc_a", "technology")]),
+                ),
+                (
+                    "2",
+                    make_record(&[("name_a", "Beta Holdings"), ("desc_a", "finance")]),
+                ),
+                (
+                    "3",
+                    make_record(&[("name_a", "Alpha Finance"), ("desc_a", "banking")]),
+                ),
+            ],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
+
+        // "Alpha Corp" appears in the index — should get a positive score.
+        let score = idx.analytical_self_score("Alpha Corp");
+        assert!(score > 0.0, "expected positive self-score, got {score}");
+    }
+
+    #[test]
+    fn analytical_self_score_empty() {
+        let store = make_store(
+            vec![("1", make_record(&[("name_a", "test"), ("desc_a", "data")]))],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
+        assert_eq!(idx.analytical_self_score(""), 0.0);
+    }
+
+    #[test]
+    fn analytical_self_score_no_corpus_tokens() {
+        let store = make_store(
+            vec![(
+                "1",
+                make_record(&[("name_a", "apple"), ("desc_a", "fruit")]),
+            )],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
+
+        // "zzzzxyzzy" has no indexed terms — should return 0.0
+        let score = idx.analytical_self_score("zzzzxyzzy");
+        assert_eq!(score, 0.0, "unknown tokens should give 0.0");
+    }
+
+    #[test]
+    fn analytical_vs_sentinel_parity() {
+        // Use a larger corpus to minimise the sentinel insertion effect
+        // (adding 1 doc to 50 shifts IDF/avgdl by ~2%, vs ~20% for 5 docs).
+        let mut data: Vec<(&str, Record)> = Vec::new();
+        let names = [
+            "Alpha Corp",
+            "Beta Holdings",
+            "Gamma Partners",
+            "Delta Group",
+            "Epsilon Limited",
+            "Zeta Capital",
+            "Eta Finance",
+            "Theta Bank",
+            "Iota Consulting",
+            "Kappa Energy",
+            "Lambda Retail",
+            "Mu Transport",
+            "Nu Healthcare",
+            "Xi Insurance",
+            "Omicron Tech",
+            "Pi Services",
+            "Rho Industries",
+            "Sigma Media",
+            "Tau Logistics",
+            "Upsilon Ventures",
+            "Phi Property",
+            "Chi Mining",
+            "Psi Telecom",
+            "Omega Trading",
+            "Alpha Holdings",
+            "Beta Corp",
+            "Gamma Group",
+            "Delta Partners",
+            "Epsilon Capital",
+            "Zeta Finance",
+            "Eta Bank",
+            "Theta Consulting",
+            "Iota Energy",
+            "Kappa Retail",
+            "Lambda Transport",
+            "Mu Healthcare",
+            "Nu Insurance",
+            "Xi Tech",
+            "Omicron Services",
+            "Pi Industries",
+            "Rho Media",
+            "Sigma Logistics",
+            "Tau Ventures",
+            "Upsilon Property",
+            "Phi Mining",
+            "Chi Telecom",
+            "Psi Trading",
+            "Omega Corp",
+            "Alpha Finance",
+            "Beta Group",
+        ];
+        for (i, name) in names.iter().enumerate() {
+            let id = format!("{}", i + 1);
+            data.push((
+                Box::leak(id.into_boxed_str()),
+                make_record(&[("name_a", name), ("desc_a", "business")]),
+            ));
+        }
+        let store = make_store(data, Side::A);
+        let mut idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
+
+        let texts = ["Alpha Corp", "Beta Holdings", "business finance", "Delta"];
+        for text in &texts {
+            let analytical = idx.analytical_self_score(text);
+            let sentinel = idx.self_score(text);
+            assert!(
+                analytical > 0.0 && sentinel > 0.0,
+                "both scores should be positive for '{text}': analytical={analytical}, sentinel={sentinel}"
+            );
+            // Allow 15% tolerance — the sentinel approach inserts a document
+            // which slightly shifts IDF and avgdl at small corpus sizes.
+            let ratio = analytical / sentinel;
+            assert!(
+                (0.85..=1.15).contains(&ratio),
+                "analytical/sentinel ratio out of range for '{text}': {ratio:.3} (analytical={analytical:.4}, sentinel={sentinel:.4})"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_then_score() {
+        // Previously-failing query texts (commas, &, .) should now return results.
+        let store = make_store(
+            vec![
+                (
+                    "1",
+                    make_record(&[("name_a", "Guerrero Lewis Cole"), ("desc_a", "")]),
+                ),
+                (
+                    "2",
+                    make_record(&[("name_a", "Rodriguez Bailey Co"), ("desc_a", "")]),
+                ),
+            ],
+            Side::A,
+        );
+        let idx = BM25Index::build(&store, Side::A, &test_fields(), &[]).unwrap();
+
+        // These would previously fail with "bm25 query parse failed"
+        let r1 = idx.query("Guerrero, Lewis and Cole", 5);
+        assert!(
+            !r1.is_empty(),
+            "comma-containing query should return results"
+        );
+
+        let r2 = idx.query("Rodriguez-Bailey & Co.", 5);
+        assert!(
+            !r2.is_empty(),
+            "ampersand-containing query should return results"
+        );
     }
 }

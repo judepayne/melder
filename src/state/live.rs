@@ -706,13 +706,13 @@ impl LiveMatchState {
         let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
-            let idx_a = crate::bm25::index::BM25Index::build(
+            let mut idx_a = crate::bm25::index::BM25Index::build(
                 store.as_ref(),
                 Side::A,
                 &config.bm25_fields,
                 &config.blocking.fields,
             )?;
-            let idx_b = crate::bm25::index::BM25Index::build(
+            let mut idx_b = crate::bm25::index::BM25Index::build(
                 store.as_ref(),
                 Side::B,
                 &config.bm25_fields,
@@ -724,6 +724,46 @@ impl LiveMatchState {
                 store.len(Side::B),
                 bm25_start.elapsed().as_secs_f64() * 1000.0
             );
+
+            // Pre-warm self-score caches for both sides.
+            // A-side index needs self-scores for B query texts (B queries A).
+            // B-side index needs self-scores for A query texts (A queries B).
+            let pw_start = Instant::now();
+            eprintln!("Pre-warming BM25 self-score caches...");
+
+            let mut b_query_texts: Vec<String> = Vec::new();
+            store.for_each_record(Side::B, &mut |_id, rec| {
+                let t = idx_a.query_text_for(rec, Side::B);
+                if !t.is_empty() {
+                    b_query_texts.push(t);
+                }
+            });
+            idx_a.precompute_self_scores(&b_query_texts);
+            eprintln!(
+                "  A-side: {} self-scores in {:.1}ms",
+                b_query_texts.len(),
+                pw_start.elapsed().as_secs_f64() * 1000.0
+            );
+
+            let pw_b_start = Instant::now();
+            let mut a_query_texts: Vec<String> = Vec::new();
+            store.for_each_record(Side::A, &mut |_id, rec| {
+                let t = idx_b.query_text_for(rec, Side::A);
+                if !t.is_empty() {
+                    a_query_texts.push(t);
+                }
+            });
+            idx_b.precompute_self_scores(&a_query_texts);
+            eprintln!(
+                "  B-side: {} self-scores in {:.1}ms",
+                a_query_texts.len(),
+                pw_b_start.elapsed().as_secs_f64() * 1000.0
+            );
+            eprintln!(
+                "BM25 self-score pre-warm complete ({:.1}ms total)",
+                pw_start.elapsed().as_secs_f64() * 1000.0
+            );
+
             let _ = start; // suppress unused warning when bm25 timing is used
             Ok((
                 Some(std::sync::RwLock::new(idx_a)),

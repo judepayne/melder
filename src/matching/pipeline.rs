@@ -38,13 +38,16 @@ use crate::vectordb::VectorDB;
 
 /// Optional BM25 context passed into the pipeline.
 ///
-/// When the `bm25` feature is enabled, this carries a mutable reference to
-/// the pool-side BM25 index and the concatenated query text. When disabled,
-/// this is a zero-size unit struct.
+/// When the `bm25` feature is enabled, this carries an immutable reference to
+/// the pool-side BM25 index, the concatenated query text, and a pre-computed
+/// self-score for normalisation. When disabled, this is a zero-size unit struct.
 #[cfg(feature = "bm25")]
 pub struct Bm25Ctx<'a> {
     pub index: &'a crate::bm25::index::BM25Index,
     pub query_text: String,
+    /// Pre-computed self-score for BM25 normalisation. Populated from cache
+    /// (batch pre-compute or prior event) or analytically on cache miss.
+    pub self_score: f32,
 }
 
 #[cfg(not(feature = "bm25"))]
@@ -53,8 +56,18 @@ pub struct Bm25Ctx;
 #[cfg(feature = "bm25")]
 impl<'a> Bm25Ctx<'a> {
     /// Create a new BM25 context.
+    ///
+    /// The self-score is resolved eagerly: cache hit → O(1), cache miss →
+    /// analytical computation → O(unique tokens), ~5–20µs.
     pub fn new(index: &'a crate::bm25::index::BM25Index, query_text: String) -> Self {
-        Self { index, query_text }
+        let self_score = index
+            .cached_self_score(&query_text)
+            .unwrap_or_else(|| index.analytical_self_score(&query_text));
+        Self {
+            index,
+            query_text,
+            self_score,
+        }
     }
 }
 
@@ -146,13 +159,9 @@ pub fn score_pool(
             ctx.index
                 .query_blocked(&ctx.query_text, bm25_candidates, query_record, query_side);
 
-        // Use pre-computed self-score for normalisation. Fall back to
-        // max-from-results if not available.
-        let fallback_max = raw_results.first().map(|(_, s)| *s).unwrap_or(0.0);
-        let norm_ceiling = ctx
-            .index
-            .cached_self_score(&ctx.query_text)
-            .unwrap_or(fallback_max);
+        // Use pre-computed self-score for normalisation (computed eagerly
+        // at Bm25Ctx construction — cache hit or analytical fallback).
+        let norm_ceiling = ctx.self_score;
 
         let scored: Vec<(String, f64)> = raw_results
             .into_iter()
@@ -250,6 +259,7 @@ pub fn score_pool(
                 &cands,
                 Some(ctx.index),
                 &ctx.query_text,
+                ctx.self_score,
                 has_embeddings,
                 bm25_candidates,
                 blocked_ids,
@@ -350,12 +360,15 @@ pub fn score_pool(
 /// and keep the top `bm25_candidates`. When no ANN (no embeddings), query
 /// the BM25 index directly.
 ///
+/// `self_score` is the pre-computed self-score from the `Bm25Ctx`.
+///
 /// Returns `(surviving_ids, id→normalised_bm25_score)`.
 #[cfg(feature = "bm25")]
 fn bm25_filter_stage(
     ann_cands: &[candidates::Candidate],
     pool_bm25_index: Option<&crate::bm25::index::BM25Index>,
     query_bm25_text: &str,
+    self_score: f32,
     has_embeddings: bool,
     bm25_candidates: usize,
     blocked_ids: &[String],
@@ -381,10 +394,12 @@ fn bm25_filter_stage(
 
     if has_embeddings {
         // ANN+BM25 mode: re-rank ANN candidates by BM25.
-        // score_candidates uses cached self-score for normalisation when available.
         let candidate_ids: Vec<String> = ann_cands.iter().map(|c| c.id.clone()).collect();
-        let (raw_scores, norm_ceiling) =
+        let (raw_scores, _index_norm) =
             bm25_idx.score_candidates(query_bm25_text, &candidate_ids, bm25_candidates * 3);
+
+        // Use the pre-computed self-score for normalisation.
+        let norm_ceiling = self_score;
 
         let mut scored: Vec<(String, f64)> = candidate_ids
             .into_iter()
@@ -403,12 +418,8 @@ fn bm25_filter_stage(
         (ids, map)
     } else {
         // BM25-only mode: query the index directly
-        // Query more than bm25_candidates to account for blocked_ids filtering
         let raw_results = bm25_idx.query(query_bm25_text, bm25_candidates * 3);
-        let fallback_max = raw_results.first().map(|(_, s)| *s).unwrap_or(0.0);
-        let norm_ceiling = bm25_idx
-            .cached_self_score(query_bm25_text)
-            .unwrap_or(fallback_max);
+        let norm_ceiling = self_score;
         let blocked_set: std::collections::HashSet<&str> =
             blocked_ids.iter().map(|s| s.as_str()).collect();
 
