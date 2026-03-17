@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "architecture/Scoring Algorithm.md",
+                "file": "architecture/Threading Model.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Scoring Algorithm"
+              "title": "Threading Model"
             }
           }
         ]
@@ -183,6 +183,11 @@
   },
   "active": "fc586a5f8286205d",
   "lastOpenFiles": [
+    "architecture/Scoring Algorithm.md",
+    "architecture/Threading Model.md",
+    "architecture/img/live_threading.svg",
+    "architecture/img/batch_threading.svg",
+    "architecture/img",
     "ideas/Scaling to Millions.md",
     "ideas/Dual Process LLM Architecture.md",
     "ideas/Fine Tuning Embeddings.md",
@@ -192,7 +197,6 @@
     "architecture/Config Reference.md",
     "architecture/Module Map.md",
     "architecture/State & Persistence.md",
-    "architecture/Scoring Algorithm.md",
     "architecture/API Reference.md",
     "decisions/Key Decisions.md",
     "architecture/Performance Baselines.md",
