@@ -84,6 +84,8 @@ def main():
             DATASET_A,
             "--dataset-b",
             DATASET_B,
+            "--config",
+            f"{TEST_DIR}/config.yaml",
         ]
     )
 

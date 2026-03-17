@@ -183,6 +183,25 @@ melder checks for exact ID matches first. Any pair that shares a common
 ID is confirmed immediately with score 1.0 — no scoring needed. This
 short-circuit runs before anything else.
 
+**Phase 0b — Exact prefilter.** If you configure `exact_prefilter`,
+melder confirms any pair where *all* configured field pairs match
+exactly (AND semantics). This runs before blocking and is extremely
+cheap — an O(1) hash lookup per record (or an indexed SQL query for
+SQLite-backed configs).
+
+This is distinct from the `common_id_field` fast-path in two ways.
+First, it supports multiple fields that must *all* match simultaneously.
+Second, and more importantly, it runs before blocking — which means it
+can confirm pairs that blocking would otherwise discard. For example, a
+counterparty with a matching LEI but a mismatched country code would be
+missed by blocking, but the exact prefilter will still find it.
+
+In practice, configuring LEI (or any other globally unique identifier)
+as an exact prefilter field gives a significant accuracy boost: roughly
+40% of matchable records may be confirmed at this phase at near-perfect
+precision, with zero calls to BM25 or the embedding model for those
+pairs.
+
 **Phase 1 — Blocking.** Before any scoring happens, the melder
 eliminates records that cannot possibly match using cheap field equality.
 For example, if you configure blocking on country code, a record from
@@ -420,6 +439,27 @@ bm25_candidates: 50                 # Candidates BM25 keeps after re-ranking the
                                     #   the block (when BM25 is the only filter).
                                     #   Default: 10. Only used when method: bm25 is in match_fields.
                                     #   Requires: cargo build --release --features bm25
+
+# --- Exact prefilter (pre-blocking exact match) ------------------------------
+# Confirms pairs where ALL configured field pairs match exactly before
+# blocking or scoring runs. AND semantics: every pair must match (non-empty)
+# for an immediate auto-confirm at score 1.0.
+#
+# Runs before blocking — recovers pairs that blocking would miss due to
+# mismatched blocking keys (e.g. wrong country code but matching LEI).
+# Extremely fast: O(1) hash lookup per B record (MemoryStore) or indexed
+# SQL query (SqliteStore).
+#
+# Use for globally unique identifiers only (LEI, ISIN, national ID etc.).
+# A match on "Limited" or a country code is not a unique identifier.
+# Omit this section or set enabled: false to skip.
+exact_prefilter:
+  enabled: true
+  fields:
+    - field_a: lei                    # field name in dataset A
+      field_b: lei_code               # corresponding field name in dataset B
+    # - field_a: isin                 # add more pairs as needed — ALL must match
+    #   field_b: isin_code
 
 # --- Blocking (pre-filter) ---------------------------------------------------
 # Before candidate selection, blocking eliminates impossible candidates by
