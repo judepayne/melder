@@ -329,7 +329,22 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         }
     }
 
-    // 28. performance + live constraints
+    // 28. exact_prefilter
+    if cfg.exact_prefilter.enabled {
+        if cfg.exact_prefilter.fields.is_empty() {
+            return Err(ConfigError::InvalidValue {
+                field: "exact_prefilter".into(),
+                message: "at least one field pair required when enabled".into(),
+            });
+        }
+        for (i, fp) in cfg.exact_prefilter.fields.iter().enumerate() {
+            let prefix = format!("exact_prefilter.fields[{}]", i);
+            require_non_empty(&fp.field_a, &format!("{}.field_a", prefix))?;
+            require_non_empty(&fp.field_b, &format!("{}.field_b", prefix))?;
+        }
+    }
+
+    // 29. performance + live constraints
     if let Some(pool) = cfg.performance.encoder_pool_size
         && pool < 1
     {

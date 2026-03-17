@@ -14,6 +14,13 @@ pub struct Config {
     pub embeddings: EmbeddingsConfig,
     #[serde(default)]
     pub blocking: BlockingConfig,
+    /// Pre-blocking exact-match phase. All configured field pairs must match
+    /// (AND semantics, all non-empty) for an immediate auto-confirm at 1.0.
+    /// Runs before blocking and scoring — recovers cross-block matches that
+    /// blocking would miss (e.g. records with wrong country but matching LEI).
+    #[serde(default)]
+    pub exact_prefilter: ExactPrefilterConfig,
+
     pub match_fields: Vec<MatchField>,
     #[serde(default)]
     pub output_mapping: Vec<FieldMapping>,
@@ -110,6 +117,22 @@ pub struct EmbeddingsConfig {
     /// to skip B-side caching (vectors rebuilt from scratch each run).
     #[serde(default)]
     pub b_cache_dir: Option<String>,
+}
+
+/// Pre-blocking exact-match configuration.
+///
+/// All field pairs are evaluated with AND semantics: every pair must match
+/// (both values non-empty and equal after trimming) for a record to be
+/// auto-confirmed. Analogous to `BlockingConfig` but for confirmation
+/// rather than candidate filtering.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ExactPrefilterConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Field pairs that must ALL match (AND). Reuses `BlockingFieldPair`
+    /// since the structure is identical.
+    #[serde(default)]
+    pub fields: Vec<BlockingFieldPair>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]

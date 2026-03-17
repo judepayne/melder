@@ -18,6 +18,12 @@ cross_map:
 embeddings:
   model: all-MiniLM-L6-v2
   a_cache_dir: benchmarks/accuracy/10kx10k_bm25/cache
+exact_prefilter:
+  enabled: true
+  fields:
+  - field_a: lei
+    field_b: lei_code
+
 blocking:
   enabled: true
   operator: and

@@ -141,6 +141,76 @@ pub fn run_batch(
     };
     let _ = common_id_matched;
 
+    // Exact prefilter phase: for each B record, check if all configured
+    // exact field pairs match an A record. If so, auto-confirm immediately
+    // at score 1.0 — no scoring required. Runs before blocking so cross-block
+    // exact matches (e.g. wrong country but matching LEI) are still found.
+    if config.exact_prefilter.enabled && !config.exact_prefilter.fields.is_empty() {
+        let ep_start = Instant::now();
+
+        // Extract A-side field names from the config pairs.
+        let a_field_names: Vec<String> = config
+            .exact_prefilter
+            .fields
+            .iter()
+            .map(|fp| fp.field_a.clone())
+            .collect();
+
+        // Build the A-side index (HashMap for MemoryStore, SQL index for SQLite).
+        store.build_exact_index(Side::A, &a_field_names);
+
+        let mut exact_count = 0usize;
+        for b_id in b_ids.iter().take(total_b) {
+            if crossmap.has_b(b_id) {
+                continue;
+            }
+            let b_rec = match store.get(Side::B, b_id) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            // Build (a_field, b_value) pairs for lookup — we query A using B's values.
+            let kvs: Vec<(String, String)> = config
+                .exact_prefilter
+                .fields
+                .iter()
+                .map(|fp| {
+                    let val = b_rec
+                        .get(&fp.field_b)
+                        .map(|v| v.trim().to_string())
+                        .unwrap_or_default();
+                    (fp.field_a.clone(), val)
+                })
+                .collect();
+
+            if let Some(a_id) = store.exact_lookup(Side::A, &kvs) {
+                if !crossmap.has_a(&a_id) {
+                    crossmap.add(&a_id, b_id);
+                    let a_rec = store.get(Side::A, &a_id);
+                    matched.push(MatchResult {
+                        query_id: b_id.clone(),
+                        matched_id: a_id,
+                        query_side: Side::B,
+                        score: 1.0,
+                        field_scores: vec![],
+                        classification: Classification::Auto,
+                        matched_record: a_rec,
+                        from_crossmap: false,
+                    });
+                    exact_count += 1;
+                }
+            }
+        }
+
+        if exact_count > 0 {
+            eprintln!(
+                "Exact prefilter: {} pairs matched in {:.1}ms",
+                exact_count,
+                ep_start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+
     // Partition: separate crossmapped (skip) from work items.
     let b_ids_slice = &b_ids[..total_b];
     let mut work_ids: Vec<&str> = Vec::with_capacity(total_b);

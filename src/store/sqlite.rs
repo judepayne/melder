@@ -716,6 +716,72 @@ impl RecordStore for SqliteStore {
         .expect("remove common id");
     }
 
+    // --- Exact prefilter ---
+
+    fn build_exact_index(&self, side: Side, field_names: &[String]) {
+        if field_names.is_empty() {
+            return;
+        }
+        let prefix = side_prefix(side);
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        // Create a composite index on the exact prefilter fields.
+        // Column names are quoted to handle any reserved words.
+        let cols: Vec<String> = field_names.iter().map(|f| format!("\"{}\"", f)).collect();
+        let idx_name = format!("idx_{}_exact_prefilter", prefix);
+        let sql = format!(
+            "CREATE INDEX IF NOT EXISTS {} ON {}_records ({})",
+            idx_name,
+            prefix,
+            cols.join(", ")
+        );
+        conn.execute_batch(&sql).ok();
+    }
+
+    fn exact_lookup(&self, side: Side, kvs: &[(String, String)]) -> Option<String> {
+        if kvs.is_empty() {
+            return None;
+        }
+        // Any empty value means no match (AND semantics).
+        let vals: Vec<&str> = kvs.iter().map(|(_, v)| v.trim()).collect();
+        if vals.iter().any(|v| v.is_empty()) {
+            return None;
+        }
+
+        let prefix = side_prefix(side);
+        let where_clauses: Vec<String> = kvs
+            .iter()
+            .map(|(f, _)| format!("lower(\"{}\") = lower(?)", f))
+            .collect();
+        let sql = format!(
+            "SELECT id FROM {}_records WHERE {} LIMIT 1",
+            prefix,
+            where_clauses.join(" AND ")
+        );
+
+        let conn = self.reader_pool.acquire();
+        let result = match kvs.len() {
+            1 => conn.query_row(&sql, params![vals[0]], |row| row.get::<_, String>(0)),
+            2 => conn.query_row(&sql, params![vals[0], vals[1]], |row| {
+                row.get::<_, String>(0)
+            }),
+            3 => conn.query_row(&sql, params![vals[0], vals[1], vals[2]], |row| {
+                row.get::<_, String>(0)
+            }),
+            _ => {
+                // Fallback for >3 fields: use rusqlite's params_from_iter
+                use rusqlite::types::ToSql;
+                let boxed: Vec<Box<dyn ToSql>> = vals
+                    .iter()
+                    .map(|v| Box::new(v.to_string()) as Box<dyn ToSql>)
+                    .collect();
+                conn.query_row(&sql, rusqlite::params_from_iter(boxed.iter()), |row| {
+                    row.get::<_, String>(0)
+                })
+            }
+        };
+        result.ok()
+    }
+
     // --- Review persistence (reads → reader pool, writes → writer) ---
 
     fn persist_review(&self, key: &str, id: &str, side: Side, candidate_id: &str, score: f64) {

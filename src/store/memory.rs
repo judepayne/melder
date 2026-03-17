@@ -25,6 +25,11 @@ pub struct MemoryStore {
     b_unmatched: DashSet<String>,
     a_common_ids: DashMap<String, String>,
     b_common_ids: DashMap<String, String>,
+    /// Exact prefilter index: composite key → record ID.
+    /// Built on demand by `build_exact_index()`. Key is field values joined
+    /// by `\0` (null byte separator, safe since field values are plain text).
+    a_exact: DashMap<String, String>,
+    b_exact: DashMap<String, String>,
 }
 
 impl MemoryStore {
@@ -40,6 +45,8 @@ impl MemoryStore {
             b_unmatched: DashSet::new(),
             a_common_ids: DashMap::new(),
             b_common_ids: DashMap::new(),
+            a_exact: DashMap::new(),
+            b_exact: DashMap::new(),
         }
     }
 
@@ -230,6 +237,46 @@ impl RecordStore for MemoryStore {
         self.common_ids(side).remove(common_id);
     }
 
+    // --- Exact prefilter ---
+
+    fn build_exact_index(&self, side: Side, field_names: &[String]) {
+        let exact = match side {
+            Side::A => &self.a_exact,
+            Side::B => &self.b_exact,
+        };
+        exact.clear();
+        self.records(side).iter().for_each(|entry| {
+            let id = entry.key();
+            let rec = entry.value();
+            let key = make_exact_key(rec, field_names);
+            if !key.is_empty() {
+                exact.insert(key, id.clone());
+            }
+        });
+    }
+
+    fn exact_lookup(&self, side: Side, kvs: &[(String, String)]) -> Option<String> {
+        if kvs.is_empty() {
+            return None;
+        }
+        // Build composite key from query values — same separator and lowercasing
+        // as make_exact_key used when building the index.
+        let mut parts = Vec::with_capacity(kvs.len());
+        for (_, v) in kvs {
+            let v = v.trim();
+            if v.is_empty() {
+                return None; // AND: any empty value → no match
+            }
+            parts.push(v.to_lowercase());
+        }
+        let key = parts.join("\0");
+        let exact = match side {
+            Side::A => &self.a_exact,
+            Side::B => &self.b_exact,
+        };
+        exact.get(&key).map(|e| e.value().clone())
+    }
+
     // --- Review persistence (no-op for memory — DashMap is source of truth) ---
 
     fn persist_review(&self, _key: &str, _id: &str, _side: Side, _candidate_id: &str, _score: f64) {
@@ -242,6 +289,26 @@ impl RecordStore for MemoryStore {
     fn load_reviews(&self) -> Vec<(String, String, Side, String, f64)> {
         vec![]
     }
+}
+
+// ---------------------------------------------------------------------------
+// Exact prefilter helpers
+// ---------------------------------------------------------------------------
+
+/// Build a composite key from a record's field values for exact prefilter indexing.
+///
+/// Fields are joined with `\0` (null byte). Returns an empty string if any
+/// field value is missing or empty — those records are not indexed.
+pub(crate) fn make_exact_key(record: &Record, field_names: &[String]) -> String {
+    let mut parts = Vec::with_capacity(field_names.len());
+    for name in field_names {
+        let val = record.get(name).map(|v| v.trim()).unwrap_or("");
+        if val.is_empty() {
+            return String::new(); // AND semantics: all fields must be present
+        }
+        parts.push(val.to_lowercase());
+    }
+    parts.join("\0")
 }
 
 // ---------------------------------------------------------------------------

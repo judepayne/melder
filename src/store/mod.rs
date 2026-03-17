@@ -110,6 +110,25 @@ pub trait RecordStore: Send + Sync {
     /// Collect all unmatched IDs on the given side.
     fn unmatched_ids(&self, side: Side) -> Vec<String>;
 
+    // --- Exact prefilter ---
+
+    /// Build an exact-prefilter index for the given side and field names.
+    ///
+    /// For `MemoryStore`: constructs an in-memory `HashMap<composite_key, id>`
+    /// from all records on the side. For `SqliteStore`: creates a composite
+    /// SQL index on the specified field columns.
+    ///
+    /// `fields_a` are the column/field names on side A that form the key.
+    /// Only called when `exact_prefilter.enabled` is true.
+    fn build_exact_index(&self, side: Side, field_names: &[String]);
+
+    /// Look up the ID of a record on `side` whose field values exactly match
+    /// all provided `(field_name, value)` pairs (AND semantics).
+    ///
+    /// Returns `None` if no match, any field is empty, or the index has not
+    /// been built.
+    fn exact_lookup(&self, side: Side, kvs: &[(String, String)]) -> Option<String>;
+
     // --- Common ID index ---
 
     /// Insert or replace a common_id → record_id mapping.
