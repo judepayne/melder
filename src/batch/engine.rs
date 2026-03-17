@@ -178,6 +178,29 @@ pub fn run_batch(
         }
     };
 
+    // Pre-compute BM25 self-scores for all B query texts. This fills the
+    // cache with a write lock so the scoring loop (read lock) can look up
+    // self-scores without mutable access. Gives principled normalisation
+    // instead of the max-from-results approximation.
+    #[cfg(feature = "bm25")]
+    if let Some(ref mtx) = bm25_index_a {
+        let self_score_start = Instant::now();
+        let mut guard = mtx.write().unwrap_or_else(|e| e.into_inner());
+        let query_texts: Vec<String> = work_ids
+            .iter()
+            .filter_map(|b_id| {
+                let b_rec = store.get(Side::B, b_id)?;
+                Some(guard.query_text_for(&b_rec, Side::B))
+            })
+            .collect();
+        guard.precompute_self_scores(&query_texts);
+        eprintln!(
+            "Pre-computed {} BM25 self-scores in {:.1}ms",
+            query_texts.len(),
+            self_score_start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
     // Score all B records in a single parallel pass.
     let scoring_start = Instant::now();
     let progress = AtomicUsize::new(0);

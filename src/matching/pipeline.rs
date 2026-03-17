@@ -145,12 +145,19 @@ pub fn score_pool(
         let raw_results =
             ctx.index
                 .query_blocked(&ctx.query_text, bm25_candidates, query_record, query_side);
-        let max_score = raw_results.first().map(|(_, s)| *s).unwrap_or(0.0);
+
+        // Use pre-computed self-score for normalisation. Fall back to
+        // max-from-results if not available.
+        let fallback_max = raw_results.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let norm_ceiling = ctx
+            .index
+            .cached_self_score(&ctx.query_text)
+            .unwrap_or(fallback_max);
 
         let scored: Vec<(String, f64)> = raw_results
             .into_iter()
             .map(|(id, raw)| {
-                let norm = normalise_bm25(raw, max_score);
+                let norm = normalise_bm25(raw, norm_ceiling);
                 (id, norm)
             })
             .collect();
@@ -374,16 +381,16 @@ fn bm25_filter_stage(
 
     if has_embeddings {
         // ANN+BM25 mode: re-rank ANN candidates by BM25.
-        // Single query scores all candidates and returns max_score for normalisation.
+        // score_candidates uses cached self-score for normalisation when available.
         let candidate_ids: Vec<String> = ann_cands.iter().map(|c| c.id.clone()).collect();
-        let (raw_scores, max_score) =
+        let (raw_scores, norm_ceiling) =
             bm25_idx.score_candidates(query_bm25_text, &candidate_ids, bm25_candidates * 3);
 
         let mut scored: Vec<(String, f64)> = candidate_ids
             .into_iter()
             .map(|id| {
                 let raw = raw_scores.get(&id).copied().unwrap_or(0.0);
-                let norm = normalise_bm25(raw, max_score);
+                let norm = normalise_bm25(raw, norm_ceiling);
                 (id, norm)
             })
             .collect();
@@ -398,7 +405,10 @@ fn bm25_filter_stage(
         // BM25-only mode: query the index directly
         // Query more than bm25_candidates to account for blocked_ids filtering
         let raw_results = bm25_idx.query(query_bm25_text, bm25_candidates * 3);
-        let max_score = raw_results.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let fallback_max = raw_results.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let norm_ceiling = bm25_idx
+            .cached_self_score(query_bm25_text)
+            .unwrap_or(fallback_max);
         let blocked_set: std::collections::HashSet<&str> =
             blocked_ids.iter().map(|s| s.as_str()).collect();
 
@@ -406,7 +416,7 @@ fn bm25_filter_stage(
             .into_iter()
             .filter(|(id, _)| blocked_set.contains(id.as_str()))
             .map(|(id, raw)| {
-                let norm = normalise_bm25(raw, max_score);
+                let norm = normalise_bm25(raw, norm_ceiling);
                 (id, norm)
             })
             .take(bm25_candidates)

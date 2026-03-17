@@ -1,7 +1,6 @@
 job:
   name: accuracy_10kx10k_bm25
-  description: Accuracy benchmark — 10k × 10k, BM25-only, no fuzzy/exact
-
+  description: "Accuracy benchmark \u2014 10k \xD7 10k, BM25-only, no fuzzy/exact"
 datasets:
   a:
     path: benchmarks/data/dataset_a_10k.csv
@@ -11,47 +10,38 @@ datasets:
     path: benchmarks/data/dataset_b_10k.csv
     id_field: counterparty_id
     format: csv
-
 cross_map:
   backend: local
   path: benchmarks/accuracy/10kx10k_bm25/crossmap.csv
   a_id_field: entity_id
   b_id_field: counterparty_id
-
 embeddings:
   model: all-MiniLM-L6-v2
   a_cache_dir: benchmarks/accuracy/10kx10k_bm25/cache
-
 blocking:
   enabled: true
   operator: and
   fields:
-    - field_a: country_code
-      field_b: domicile
-
+  - field_a: country_code
+    field_b: domicile
 bm25_fields:
-  - field_a: legal_name
-    field_b: counterparty_name
-  - field_a: short_name
-    field_b: counterparty_name
-  - field_a: registered_address
-    field_b: counterparty_address
-
+- field_a: legal_name
+  field_b: counterparty_name
+- field_a: short_name
+  field_b: counterparty_name
+- field_a: registered_address
+  field_b: counterparty_address
 match_fields:
-  - method: bm25
-    weight: 1.0
-
+- method: bm25
+  weight: 1.0
 thresholds:
   auto_match: 0.85
-  review_floor: 0.60
-
+  review_floor: 0.6
 output:
-  results_path:   benchmarks/accuracy/10kx10k_bm25/output/results.csv
-  review_path:    benchmarks/accuracy/10kx10k_bm25/output/review.csv
+  results_path: benchmarks/accuracy/10kx10k_bm25/output/results.csv
+  review_path: benchmarks/accuracy/10kx10k_bm25/output/review.csv
   unmatched_path: benchmarks/accuracy/10kx10k_bm25/output/unmatched.csv
-
 performance:
   encoder_pool_size: 4
-
 top_n: 20
 bm25_candidates: 20

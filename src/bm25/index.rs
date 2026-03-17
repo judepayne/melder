@@ -286,12 +286,11 @@ impl BM25Index {
 
     /// Score a set of candidate IDs against a query text in a single BM25 query.
     ///
-    /// Returns `(scores_map, max_score)`:
+    /// Returns `(scores_map, self_score)`:
     /// - `scores_map`: candidate ID → raw BM25 score. Candidates not in the
     ///   top results get no entry (treat as 0.0).
-    /// - `max_score`: the highest raw BM25 score from the full query result
-    ///   set (not just the candidates). Used for normalisation in place of
-    ///   the expensive `self_score()` computation.
+    /// - `self_score`: the cached self-score for normalisation. Falls back to
+    ///   the top result's raw score if no self-score was pre-computed.
     pub fn score_candidates(
         &self,
         query_text: &str,
@@ -302,8 +301,11 @@ impl BM25Index {
         let limit = top_k.max(candidate_ids.len());
         let results = self.query(query_text, limit);
 
-        // The top result has the highest raw score — use as normalisation ceiling.
-        let max_score = results.first().map(|(_, s)| *s).unwrap_or(0.0);
+        // Use pre-computed self-score for normalisation. Fall back to
+        // max-from-results if not available (e.g. live mode without
+        // pre-computation).
+        let fallback_max = results.first().map(|(_, s)| *s).unwrap_or(0.0);
+        let norm_score = self.cached_self_score(query_text).unwrap_or(fallback_max);
 
         // Build lookup set for fast membership test.
         let wanted: std::collections::HashSet<&str> =
@@ -314,7 +316,7 @@ impl BM25Index {
             .filter(|(id, _)| wanted.contains(id.as_str()))
             .collect();
 
-        (scores, max_score)
+        (scores, norm_score)
     }
 
     /// Compute the BM25 score for a specific query text against all indexed
@@ -371,6 +373,121 @@ impl BM25Index {
 
         self.self_score_cache.insert(hash, score);
         score
+    }
+
+    /// Look up a cached self-score for the given text (read-only).
+    ///
+    /// Returns `None` if the self-score hasn't been pre-computed.
+    /// Use `self_score()` or `precompute_self_scores()` to populate the cache
+    /// first, then call this from a read-only context during scoring.
+    pub fn cached_self_score(&self, text: &str) -> Option<f32> {
+        if text.is_empty() {
+            return Some(0.0);
+        }
+        let hash = text_hash(text);
+        self.self_score_cache.get(&hash).copied()
+    }
+
+    /// Pre-compute self-scores for a batch of query texts.
+    ///
+    /// Uses batch insertion: all unique sentinel documents are inserted in a
+    /// single commit, queried with a shared searcher, then deleted in a single
+    /// commit. Total cost: 2 commits + N queries (with shared searcher).
+    ///
+    /// Call this with a write lock before the scoring loop begins.
+    /// Subsequent calls to `cached_self_score()` will hit the cache without
+    /// needing mutable access.
+    pub fn precompute_self_scores(&mut self, texts: &[String]) {
+        // Deduplicate and filter: only compute for texts not already cached.
+        let mut unique: Vec<(u64, &str)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for text in texts {
+            if text.is_empty() {
+                continue;
+            }
+            let hash = text_hash(text);
+            if self.self_score_cache.contains_key(&hash) {
+                continue;
+            }
+            if seen.insert(hash) {
+                unique.push((hash, text.as_str()));
+            }
+        }
+
+        if unique.is_empty() {
+            return;
+        }
+
+        // Phase 1: Insert all sentinel documents with unique IDs, single commit.
+        let sentinel_prefix = "__bm25_self_";
+        for (i, (_, text)) in unique.iter().enumerate() {
+            let sentinel_id = format!("{sentinel_prefix}{i}__");
+            let _ = self.writer.add_document(doc!(
+                self.id_field => sentinel_id.as_str(),
+                self.content_field => *text,
+            ));
+        }
+        if self.writer.commit().is_err() {
+            return;
+        }
+        self.reader.reload().ok();
+
+        // Phase 2: Query each text with a shared searcher + query parser.
+        // Reusing the searcher avoids per-query overhead of opening segment
+        // readers. Each query finds its sentinel in the result set.
+        let searcher = self.reader.searcher();
+        let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
+
+        for (i, (hash, text)) in unique.iter().enumerate() {
+            let sentinel_id = format!("{sentinel_prefix}{i}__");
+            let escaped = escape_query(text);
+            let query = match query_parser.parse_query(&escaped) {
+                Ok(q) => q,
+                Err(_) => {
+                    self.self_score_cache.insert(*hash, 0.0);
+                    continue;
+                }
+            };
+
+            // Search with limit large enough to find the sentinel among
+            // real documents. The sentinel should score highest (exact
+            // text match) but use a generous limit just in case.
+            let top_docs = match searcher.search(&query, &TopDocs::with_limit(50)) {
+                Ok(docs) => docs,
+                Err(_) => {
+                    self.self_score_cache.insert(*hash, 0.0);
+                    continue;
+                }
+            };
+
+            // Find the sentinel's score in the results.
+            let mut found = false;
+            for (score, doc_address) in &top_docs {
+                if let Ok(doc) = searcher.doc::<TantivyDocument>(*doc_address)
+                    && let Some(id_val) = doc.get_first(self.id_field)
+                    && let Some(id) = Value::as_str(&id_val)
+                    && id == sentinel_id
+                {
+                    self.self_score_cache.insert(*hash, *score);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                // Sentinel not in top-50 — use top result as fallback.
+                let fallback = top_docs.first().map(|(s, _)| *s).unwrap_or(0.0);
+                self.self_score_cache.insert(*hash, fallback);
+            }
+        }
+
+        // Phase 3: Delete all sentinels, single commit.
+        for (i, _) in unique.iter().enumerate() {
+            let sentinel_id = format!("{sentinel_prefix}{i}__");
+            let id_term = tantivy::Term::from_field_text(self.id_field, &sentinel_id);
+            self.writer.delete_term(id_term);
+        }
+        let _ = self.writer.commit();
+        self.reader.reload().ok();
     }
 
     /// Commit pending writes and reload the reader if dirty.
