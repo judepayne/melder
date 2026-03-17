@@ -23,6 +23,9 @@ examples/*/output/*
 # Tufte document workspace (personal, not part of the project)
 tufte/
 
+# AI/editor tool config
+.opencode/
+
 # OS files
 .DS_Store
 
