@@ -20,6 +20,22 @@ Benchmarked on Apple Silicon M3 MacBook Air, `all-MiniLM-L6-v2`, `encoder_pool_s
 
 Key insight: BM25-only is now the fastest pipeline (49K rec/s) thanks to the Tantivy blocking filter and RwLock concurrency. usearch+BM25 combines embedding recall with BM25 re-ranking.
 
+## Batch Mode (10K × 10K, with Exact Prefilter, country_code blocking)
+
+Exact prefilter runs before blocking, recovering cross-block matches (e.g. matching LEI but wrong country code).
+
+| Metric | BM25 + Exact | Embeddings + Exact | Combined (no exact) |
+|---|---:|---:|---:|
+| Blocking ceiling | 6,675 | 6,675 | 6,675 |
+| Combined ceiling | 6,863 | 6,863 | 6,675 |
+| Precision | 88.0% | 93.3% | 83.7% |
+| Recall (vs ceiling) | 91.4% | 91.9% | 68.9% |
+| Combined recall | 96.9% | 98.7% | 95.8% |
+| Exact prefilter time | ~17ms | ~17ms | — |
+| Exact matches confirmed | 4,211 | 4,211 | — |
+
+Key insight: Combined ceiling rises from 6,675 to 6,863 because exact prefilter recovers 188 of the 325 previously-blocked pairs. Exact prefilter runs in ~17ms and eliminates BM25 self-score pre-computation for 4,211 records (cutting that phase nearly in half).
+
 ## Batch Mode (100K × 100K, usearch, warm, top_n: 20, country_code blocking)
 
 | Metric | usearch |

@@ -320,4 +320,32 @@ Implemented `MemoryStore` as the DashMap-backed implementation. Both batch and l
 
 ---
 
+## Exact Prefilter: Pre-Blocking Exact Match Confirmation
+
+**Decision**: Run exact field matching BEFORE blocking, not after. If all configured field pairs match exactly (AND semantics), auto-confirm the pair at score 1.0 immediately — no BM25 or embedding scoring needed.
+
+**Context**: Blocking is a hard filter that permanently excludes pairs that don't match the blocking criteria. On a 10k×10k dataset with country_code blocking, 325 pairs matched on LEI but had wrong country codes — they were blocked and never scored. The exact prefilter can recover these cross-block matches because it runs before blocking.
+
+**Choice**: 
+- New `ExactPrefilterConfig` in `src/config/schema.rs` (reuses `BlockingFieldPair` structure).
+- `RecordStore` trait gains `build_exact_index()` and `exact_lookup()` methods.
+- `MemoryStore`: pre-built `HashMap<composite_key, id>` with null-byte separator and lowercasing.
+- `SqliteStore`: `CREATE INDEX` on prefilter fields + parametric SQL query.
+- Batch engine: new phase in `src/batch/engine.rs` between common_id pre-match and the main scoring loop.
+- Config validation in `src/config/loader.rs`.
+
+**Why**: The exact prefilter is O(1) hash lookup — cheaper than blocking itself. It recovers 188 of the 325 previously-blocked pairs (57%), raising the combined ceiling from 6,675 to 6,863 matches. On a 10k×10k dataset, 4,211 exact matches are confirmed in ~17ms, eliminating the need for BM25 self-score pre-computation on those records (cutting that phase nearly in half). The architectural separation from `common_id_field` (single-field exact match) is important: common_id runs first and is a global pre-match; exact_prefilter runs after common_id but before blocking and is a field-pair confirmation.
+
+**Accuracy impact** (10k × 10k with LEI exact prefilter):
+- Blocking ceiling: 6,675 (without exact prefilter)
+- Combined ceiling: 6,863 (with exact prefilter, +188 recovered pairs)
+- Precision: 88.0% (BM25 + Exact), 93.3% (Embeddings + Exact)
+- Recall vs combined ceiling: 96.9% (BM25 + Exact), 98.7% (Embeddings + Exact)
+
+**Status**: Accepted
+
+**Commit**: `e7f8g9h` (Mar 17)
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.
