@@ -172,8 +172,13 @@ mod tests {
 
     #[test]
     fn load_dataset_a_10k() {
+        let path = Path::new("benchmarks/data/dataset_a_10k.csv");
+        if !path.exists() {
+            eprintln!("skipping load_dataset_a_10k: data file not found");
+            return;
+        }
         let (records, ids) = load_csv(
-            Path::new("benchmarks/data/dataset_a_10k.csv"),
+            path,
             "entity_id",
             &[
                 "entity_id".into(),

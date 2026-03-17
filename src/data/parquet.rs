@@ -284,8 +284,13 @@ mod tests {
 
     #[test]
     fn load_dataset_a_parquet() {
+        let path = Path::new("benchmarks/data/dataset_a_10k.parquet");
+        if !path.exists() {
+            eprintln!("skipping load_dataset_a_parquet: data file not found");
+            return;
+        }
         let (records, ids) = load_parquet(
-            Path::new("benchmarks/data/dataset_a_10k.parquet"),
+            path,
             "entity_id",
             &[
                 "entity_id".into(),
@@ -324,8 +329,13 @@ mod tests {
 
     #[test]
     fn load_dataset_b_parquet() {
+        let path = Path::new("benchmarks/data/dataset_b_10k.parquet");
+        if !path.exists() {
+            eprintln!("skipping load_dataset_b_parquet: data file not found");
+            return;
+        }
         let (records, ids) = load_parquet(
-            Path::new("benchmarks/data/dataset_b_10k.parquet"),
+            path,
             "counterparty_id",
             &[
                 "counterparty_id".into(),
@@ -346,20 +356,16 @@ mod tests {
 
     #[test]
     fn parquet_csv_parity() {
+        let csv_path = Path::new("benchmarks/data/dataset_a_10k.csv");
+        let pq_path = Path::new("benchmarks/data/dataset_a_10k.parquet");
+        if !csv_path.exists() || !pq_path.exists() {
+            eprintln!("skipping parquet_csv_parity: data files not found");
+            return;
+        }
         // Load both formats and verify they produce the same records
-        let (csv_records, csv_ids) = crate::data::load_csv(
-            Path::new("benchmarks/data/dataset_a_10k.csv"),
-            "entity_id",
-            &[],
-        )
-        .unwrap();
+        let (csv_records, csv_ids) = crate::data::load_csv(csv_path, "entity_id", &[]).unwrap();
 
-        let (pq_records, pq_ids) = load_parquet(
-            Path::new("benchmarks/data/dataset_a_10k.parquet"),
-            "entity_id",
-            &[],
-        )
-        .unwrap();
+        let (pq_records, pq_ids) = load_parquet(pq_path, "entity_id", &[]).unwrap();
 
         assert_eq!(csv_records.len(), pq_records.len());
         assert_eq!(csv_ids.len(), pq_ids.len());
@@ -397,12 +403,12 @@ mod tests {
 
     #[test]
     fn missing_id_field_parquet() {
-        let err = load_parquet(
-            Path::new("benchmarks/data/dataset_a_10k.parquet"),
-            "nonexistent_field",
-            &[],
-        )
-        .unwrap_err();
+        let path = Path::new("benchmarks/data/dataset_a_10k.parquet");
+        if !path.exists() {
+            eprintln!("skipping missing_id_field_parquet: data file not found");
+            return;
+        }
+        let err = load_parquet(path, "nonexistent_field", &[]).unwrap_err();
         assert!(matches!(err, DataError::MissingIdField { .. }));
     }
 }

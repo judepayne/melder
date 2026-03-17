@@ -1,13 +1,13 @@
-# Generated outputs — never commit
+# ---- Regenerable artifacts (never commit) ----
 **/cache/
 **/output/
 **/wal/*.ndjson
 **/crossmap.csv
 
-# SQLite databases (live mode artifacts)
+# SQLite databases
 **/*.db
 
-# Embedding index artifacts (usearch, flat, manifests, texthash)
+# Embedding / vector index artifacts
 **/*.usearch
 **/*.usearchdb/
 **/*.index
@@ -18,8 +18,23 @@
 # Emacs lockfiles
 \#*\#
 
-# Datasets are large — not committed; regenerate with: python3 benchmarks/data/generate.py
+# ---- Datasets ----
+# Only 10k datasets are committed (small, needed for unit tests).
+# Larger datasets must be regenerated: python3 benchmarks/data/generate.py --size N
+
+# Exclude all generated data by default
 data/*.csv
 data/*.jsonl
 data/*.parquet
+
+# Re-include 10k datasets and their ground truth (small enough to commit)
+!data/dataset_a_10k.csv
+!data/dataset_a_10k.jsonl
+!data/dataset_a_10k.parquet
+!data/dataset_b_10k.csv
+!data/dataset_b_10k.jsonl
+!data/dataset_b_10k.parquet
+!data/ground_truth_crossmap_10k.csv
+
+# Always include the generator script
 !data/generate.py
