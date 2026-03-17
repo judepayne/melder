@@ -12,8 +12,8 @@ use tantivy::schema::{Field, STORED, STRING, Schema, TEXT, Value};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, doc};
 use tracing::warn;
 
-use crate::config::schema::Bm25FieldPair;
 use crate::config::BlockingFieldPair;
+use crate::config::schema::Bm25FieldPair;
 use crate::models::{Record, Side};
 use crate::store::RecordStore;
 
@@ -55,8 +55,7 @@ impl BM25Index {
         fields: &[Bm25FieldPair],
         blocking_fields: &[BlockingFieldPair],
     ) -> Result<Self, anyhow::Error> {
-        let (schema, id_field, content_field, block_fields) =
-            build_schema(blocking_fields.len());
+        let (schema, id_field, content_field, block_fields) = build_schema(blocking_fields.len());
         let index = Index::create_in_ram(schema);
         let mut writer = index.writer(50_000_000)?;
 
@@ -125,8 +124,7 @@ impl BM25Index {
         blocking_fields: &[BlockingFieldPair],
         side: Side,
     ) -> Result<Self, anyhow::Error> {
-        let (schema, id_field, content_field, block_fields) =
-            build_schema(blocking_fields.len());
+        let (schema, id_field, content_field, block_fields) = build_schema(blocking_fields.len());
         let index = Index::create_in_ram(schema);
         let writer = index.writer(50_000_000)?;
 
@@ -461,9 +459,7 @@ fn text_hash(text: &str) -> u64 {
     hasher.finish()
 }
 
-fn build_schema(
-    num_block_fields: usize,
-) -> (Schema, Field, Field, Vec<Field>) {
+fn build_schema(num_block_fields: usize) -> (Schema, Field, Field, Vec<Field>) {
     let mut builder = Schema::builder();
     let id_field = builder.add_text_field("id", STRING | STORED);
     let content_field = builder.add_text_field("content", TEXT);

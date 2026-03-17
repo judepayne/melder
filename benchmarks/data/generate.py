@@ -19,6 +19,7 @@ import csv
 import json
 import os
 import random
+import re
 import sys
 from datetime import datetime, timedelta
 
@@ -141,6 +142,25 @@ NOISE_ABBREV = {
     "BV": ["B.V.", "bv"],
 }
 
+ADDRESS_ABBREV = {
+    "Street": ["St", "St.", "Str"],
+    "Avenue": ["Ave", "Ave.", "Av"],
+    "Road": ["Rd", "Rd."],
+    "Boulevard": ["Blvd", "Blvd."],
+    "Drive": ["Dr", "Dr."],
+    "Lane": ["Ln", "Ln."],
+    "Court": ["Ct", "Ct."],
+    "Place": ["Pl", "Pl."],
+    "Suite": ["Ste", "Ste.", "STE"],
+    "Floor": ["Fl", "Fl.", "FL"],
+    "Building": ["Bldg", "Bldg."],
+    "North": ["N", "N."],
+    "South": ["S", "S."],
+    "East": ["E", "E."],
+    "West": ["W", "W."],
+    "Apartment": ["Apt", "Apt.", "APT"],
+}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -242,12 +262,89 @@ def make_short_name(legal_name: str) -> str:
     return " ".join(words[:keep])
 
 
+def generate_address() -> str:
+    """Generate a realistic street address using Faker."""
+    return fake.address().replace("\n", ", ")
+
+
+def add_address_noise(address: str) -> str:
+    """
+    Add realistic noise to an address. Guarantees at least one mutation.
+
+    Randomly applies one or more of:
+      - Abbreviate a street type (Street -> St, Avenue -> Ave, etc.)
+      - Drop a secondary unit (Suite/Floor/Apt line)
+      - Change comma/spacing
+      - Swap to uppercase or lowercase
+      - Swap two adjacent digits in the street number
+      - Drop the zip/postal code
+    """
+    result = address
+    changed = False
+
+    # 1. Abbreviate a word (60% chance)
+    if rng.random() < 0.60:
+        for full, abbrevs in ADDRESS_ABBREV.items():
+            if full in result:
+                result = result.replace(full, rng.choice(abbrevs), 1)
+                changed = True
+                break
+
+    # 2. Drop secondary unit info — remove "Suite/Apt/Floor NNN" (30% chance)
+    if rng.random() < 0.30:
+        new = re.sub(
+            r",?\s*(Suite|Ste\.?|Apt\.?|Floor|Fl\.?|Unit)\s*#?\d+,?\s*",
+            " ",
+            result,
+            flags=re.IGNORECASE,
+        )
+        new = " ".join(new.split())
+        if new != result:
+            result = new
+            changed = True
+
+    # 3. Change comma to newline-style or remove comma (25% chance)
+    if rng.random() < 0.25:
+        if ", " in result:
+            result = result.replace(", ", " ", 1)
+            changed = True
+
+    # 4. Case change (20% chance)
+    if rng.random() < 0.20:
+        result = result.upper() if rng.random() < 0.5 else result.lower()
+        changed = True
+
+    # 5. Swap two adjacent digits in the street number (20% chance)
+    if rng.random() < 0.20:
+        m = re.match(r"^(\d{2,})", result)
+        if m:
+            num = list(m.group(1))
+            if len(num) >= 2:
+                i = rng.randint(0, len(num) - 2)
+                num[i], num[i + 1] = num[i + 1], num[i]
+                result = "".join(num) + result[m.end() :]
+                changed = True
+
+    # 6. Drop the zip/postal code at the end (15% chance)
+    if rng.random() < 0.15:
+        new = re.sub(r"\s+\d{5}(-\d{4})?$", "", result)
+        if new != result:
+            result = new
+            changed = True
+
+    # Fallback: if nothing changed, force a case change so noise is guaranteed
+    if not changed:
+        result = result.lower() if result[0].isupper() else result.upper()
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Dataset A — reference entity master
 # ---------------------------------------------------------------------------
 
 
-def generate_dataset_a(n: int) -> list[dict]:
+def generate_dataset_a(n: int, include_addresses: bool = False) -> list[dict]:
     records = []
     for i in range(n):
         country = rng.choice(COUNTRIES)
@@ -267,6 +364,8 @@ def generate_dataset_a(n: int) -> list[dict]:
             "num_employees": rng.randint(10, 500_000),
             "annual_revenue_usd": rng.randint(100_000, 50_000_000_000),
         }
+        if include_addresses:
+            rec["registered_address"] = generate_address()
         records.append(rec)
     return records
 
@@ -276,7 +375,9 @@ def generate_dataset_a(n: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def generate_dataset_b(records_a: list[dict]) -> list[dict]:
+def generate_dataset_b(
+    records_a: list[dict], include_addresses: bool = False
+) -> list[dict]:
     records = []
     b_idx = 0
 
@@ -306,6 +407,12 @@ def generate_dataset_b(records_a: list[dict]) -> list[dict]:
             "_true_a_id": a["entity_id"],
             "_match_type": "matched",
         }
+        if include_addresses:
+            addr = a.get("registered_address", "")
+            # 50% of the time add noise to the address
+            rec["counterparty_address"] = (
+                add_address_noise(addr) if rng.random() < 0.50 else addr
+            )
         records.append(rec)
         b_idx += 1
 
@@ -328,6 +435,10 @@ def generate_dataset_b(records_a: list[dict]) -> list[dict]:
             "_true_a_id": a["entity_id"],
             "_match_type": "ambiguous",
         }
+        if include_addresses:
+            addr = a.get("registered_address", "")
+            # Ambiguous: always noise the address
+            rec["counterparty_address"] = add_address_noise(addr)
         records.append(rec)
         b_idx += 1
 
@@ -348,6 +459,9 @@ def generate_dataset_b(records_a: list[dict]) -> list[dict]:
             "_true_a_id": "",
             "_match_type": "unmatched",
         }
+        if include_addresses:
+            # Completely independent address — no relation to any A record
+            rec["counterparty_address"] = generate_address()
         records.append(rec)
         b_idx += 1
 
@@ -412,6 +526,11 @@ def main() -> None:
         default=None,
         help="Generate datasets with exactly N records each (overrides --small)",
     )
+    parser.add_argument(
+        "--addresses",
+        action="store_true",
+        help="Include address fields (registered_address in A, counterparty_address in B)",
+    )
     args = parser.parse_args()
 
     out = args.out
@@ -439,10 +558,10 @@ def main() -> None:
         print(f"Generating FULL datasets ({N_A:,} × A, {N_B:,} × B) ...")
 
     print("Generating dataset A ...")
-    records_a = generate_dataset_a(N_A)
+    records_a = generate_dataset_a(N_A, include_addresses=args.addresses)
 
     print("Generating dataset B ...")
-    records_b = generate_dataset_b(records_a)
+    records_b = generate_dataset_b(records_a, include_addresses=args.addresses)
 
     # Dataset A — all three formats
     print("Writing dataset A ...")
@@ -458,7 +577,7 @@ def main() -> None:
 
     # Ground truth cross-map (only matched records, for seeding tests)
     print("Writing ground truth cross-map ...")
-    gt_path = os.path.join(out, "ground_truth_crossmap.csv")
+    gt_path = os.path.join(out, f"ground_truth_crossmap{suffix}.csv")
     with open(gt_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["entity_id", "counterparty_id"])

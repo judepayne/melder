@@ -9,8 +9,8 @@ use crate::data;
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::models::Side;
-use crate::store::memory::MemoryStore;
 use crate::store::RecordStore;
+use crate::store::memory::MemoryStore;
 use crate::vectordb::{self, VectorDB};
 
 /// Options controlling what to load.

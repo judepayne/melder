@@ -154,6 +154,7 @@ impl LiveMatchState {
     }
 
     /// Load both datasets from CSV files.
+    #[allow(clippy::type_complexity)]
     fn load_datasets(
         config: &Config,
     ) -> Result<
@@ -202,6 +203,7 @@ impl LiveMatchState {
     /// Shared by both `load_memory` and `load_sqlite`. Each caller builds
     /// the store, crossmap, and embedding indices its own way, then
     /// delegates to this method for the common tail.
+    #[allow(clippy::too_many_arguments)]
     fn finish(
         config: Config,
         start: Instant,
@@ -378,7 +380,7 @@ impl LiveMatchState {
                 &wal_events,
                 &config,
                 &store,
-                &crossmap,
+                crossmap.as_ref(),
                 &encoder_pool,
                 combined_index_a.as_deref(),
                 combined_index_b.as_deref(),
@@ -408,7 +410,7 @@ impl LiveMatchState {
         wal_events: &[WalEvent],
         config: &Config,
         store: &Arc<dyn RecordStore>,
-        crossmap: &Box<dyn CrossMapOps>,
+        crossmap: &dyn CrossMapOps,
         encoder_pool: &Arc<EncoderPool>,
         combined_index_a: Option<&dyn VectorDB>,
         combined_index_b: Option<&dyn VectorDB>,

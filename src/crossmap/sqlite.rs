@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use super::CrossMapOps;
 use crate::store::sqlite::SqliteReaderPool;

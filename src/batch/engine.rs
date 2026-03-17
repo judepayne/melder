@@ -230,7 +230,7 @@ pub fn run_batch(
             let results = if let Some(ref mtx) = bm25_index_a {
                 let guard = mtx.read().unwrap_or_else(|e| e.into_inner());
                 let query_text = guard.query_text_for(&b_record, Side::B);
-                let ctx = Bm25Ctx::new(&*guard, query_text);
+                let ctx = Bm25Ctx::new(&guard, query_text);
                 pipeline::score_pool(
                     b_id,
                     &b_record,

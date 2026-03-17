@@ -530,7 +530,7 @@ impl Session {
             // Read lock for query — concurrent readers allowed
             let guard = opp_bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
             let query_text = guard.query_text_for(&record, side);
-            let ctx = Bm25Ctx::new(&*guard, query_text);
+            let ctx = Bm25Ctx::new(&guard, query_text);
             pipeline::score_pool(
                 &id,
                 &record,
@@ -835,7 +835,7 @@ impl Session {
             }
             let guard = opp_bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
             let query_text = guard.query_text_for(&record, side);
-            let ctx = Bm25Ctx::new(&*guard, query_text);
+            let ctx = Bm25Ctx::new(&guard, query_text);
             pipeline::score_pool(
                 id,
                 &record,
