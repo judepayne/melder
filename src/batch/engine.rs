@@ -16,7 +16,6 @@ use crate::config::Config;
 use crate::crossmap::CrossMapOps;
 use crate::error::MelderError;
 use crate::matching::pipeline;
-#[cfg(feature = "bm25")]
 use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::store::RecordStore;
@@ -229,7 +228,6 @@ pub fn run_batch(
     let top_n = config.top_n.unwrap_or(5);
 
     // Build A-side BM25 index if method: bm25 is configured.
-    #[cfg(feature = "bm25")]
     let bm25_index_a: Option<std::sync::RwLock<crate::bm25::index::BM25Index>> = {
         let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
         if has_bm25 && !config.bm25_fields.is_empty() {
@@ -255,7 +253,6 @@ pub fn run_batch(
     // cache with a write lock so the scoring loop (read lock) can look up
     // self-scores without mutable access. Gives principled normalisation
     // instead of the max-from-results approximation.
-    #[cfg(feature = "bm25")]
     if let Some(ref mtx) = bm25_index_a {
         let self_score_start = Instant::now();
         let mut guard = mtx.write().unwrap_or_else(|e| e.into_inner());
@@ -322,7 +319,6 @@ pub fn run_batch(
             let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
             // Build BM25 context: lock the index, build query text, pass to pipeline.
-            #[cfg(feature = "bm25")]
             let results = if let Some(ref mtx) = bm25_index_a {
                 let guard = mtx.read().unwrap_or_else(|e| e.into_inner());
                 let query_text = guard.query_text_for(&b_record, Side::B);
@@ -360,23 +356,6 @@ pub fn run_batch(
                 )
             };
 
-            #[cfg(not(feature = "bm25"))]
-            let results = pipeline::score_pool(
-                b_id,
-                &b_record,
-                Side::B,
-                &query_combined_vec,
-                store,
-                Side::A,
-                combined_index_a,
-                &blocked_ids,
-                config,
-                ann_candidates,
-                bm25_candidates_n,
-                top_n,
-                None,
-            );
-
             // Claim loop: try each auto-match candidate in ranked order.
             // Uses crossmap.claim() so concurrent threads can't double-match.
             let mut outcome = None;
@@ -412,7 +391,13 @@ pub fn run_batch(
                 break;
             }
 
-            outcome.or_else(|| Some(RecordOutcome::NoMatch(b_id.to_string(), b_record, best_score)))
+            outcome.or_else(|| {
+                Some(RecordOutcome::NoMatch(
+                    b_id.to_string(),
+                    b_record,
+                    best_score,
+                ))
+            })
         })
         .collect();
 

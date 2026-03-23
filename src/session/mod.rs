@@ -10,7 +10,6 @@ use std::time::Instant;
 
 use crate::error::SessionError;
 use crate::matching::pipeline;
-#[cfg(feature = "bm25")]
 use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::live::{LiveMatchState, ReviewEntry, review_queue_key};
@@ -423,7 +422,6 @@ impl Session {
         store.blocking_insert(side, &id, &record);
 
         // 6b. Update BM25 index
-        #[cfg(feature = "bm25")]
         if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
             let mut idx = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
             idx.upsert(&id, &record);
@@ -520,7 +518,6 @@ impl Session {
         // Build BM25 context from opposite side's index.
         // Commit any buffered writes first (write lock, brief), then
         // query under a read lock so concurrent requests can score in parallel.
-        #[cfg(feature = "bm25")]
         let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
             // Brief write lock for commit only
             {
@@ -563,23 +560,6 @@ impl Session {
                 None,
             )
         };
-
-        #[cfg(not(feature = "bm25"))]
-        let results = pipeline::score_pool(
-            &id,
-            &record,
-            side,
-            &query_combined_vec,
-            store.as_ref(),
-            opp,
-            opp_side.combined_index.as_deref(),
-            &blocked_ids,
-            config,
-            ann_candidates,
-            bm25_candidates_n,
-            top_n,
-            None,
-        );
 
         // 10. Claim loop: try candidates in ranked order.
         let mut classification = "no_match".to_string();
@@ -686,7 +666,6 @@ impl Session {
         }
 
         // Remove from BM25 index
-        #[cfg(feature = "bm25")]
         if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
             let mut idx = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
             idx.remove(id);
@@ -827,7 +806,6 @@ impl Session {
         // Build BM25 context from opposite side's index.
         // Commit any buffered writes first (write lock, brief), then
         // query under a read lock so concurrent requests can score in parallel.
-        #[cfg(feature = "bm25")]
         let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
             {
                 let mut w = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
@@ -868,23 +846,6 @@ impl Session {
                 None,
             )
         };
-
-        #[cfg(not(feature = "bm25"))]
-        let results = pipeline::score_pool(
-            id,
-            &record,
-            side,
-            &query_combined_vec,
-            store.as_ref(),
-            opp,
-            opp_side.combined_index.as_deref(),
-            &blocked_ids,
-            config,
-            ann_candidates,
-            bm25_candidates_n,
-            top_n,
-            None,
-        );
 
         let classification = results
             .first()

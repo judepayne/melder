@@ -1,7 +1,9 @@
 //! Candidate generation: ANN search or flat-scan to select top-N pool records
 //! for full scoring.
 //!
-//! Pipeline: blocking filter → candidate selection (this module) → full scoring.
+//! This module is one of several independent candidate generators in the
+//! pipeline. ANN candidates are unioned with candidates from other sources
+//! (BM25, synonym, etc.) before full scoring.
 //!
 //! Two paths depending on backend:
 //!
@@ -13,9 +15,9 @@
 //!   Iterate `blocked_ids`, call `get` on the combined index, compute dot
 //!   products manually, sort descending, truncate to `top_n`.
 //!
-//! If there are no embedding fields (`query_combined_vec` is empty), both
-//! paths return all blocked records with `combined_dot = 0.0` (no ANN
-//! filtering possible).
+//! If there are no embedding fields (`query_combined_vec` is empty), returns
+//! an empty vec — other candidate generators (BM25, etc.) provide candidates
+//! independently.
 
 use rayon::prelude::*;
 
@@ -38,7 +40,11 @@ pub struct Candidate {
     pub combined_dot: f64,
 }
 
-/// Select the top-N candidates from the blocked pool.
+/// Select the top-N ANN candidates from the blocked pool.
+///
+/// Returns an empty vec when no embedding fields are configured — other
+/// candidate generators (BM25, synonym, etc.) provide candidates
+/// independently via the pipeline union.
 ///
 /// Parameters:
 /// - `query_combined_vec`: pre-encoded combined embedding vector for the
@@ -64,7 +70,6 @@ pub fn select_candidates(
     query_record: &Record,
     query_side: Side,
     backend: &str,
-    scoring_fields: &[String],
 ) -> Vec<Candidate> {
     let has_embeddings = !query_combined_vec.is_empty();
 
@@ -94,22 +99,10 @@ pub fn select_candidates(
     let _ = backend; // suppress unused warning in non-usearch builds
 
     if !has_embeddings || pool_combined_index.is_none() {
-        // No embedding filtering possible — return all blocked records.
-        // Use get_many_fields() for efficiency: extracts only the fields
-        // needed for scoring, avoiding full JSON deserialization for SQLite.
-        let records = if scoring_fields.is_empty() {
-            pool_store.get_many(pool_side, blocked_ids)
-        } else {
-            pool_store.get_many_fields(pool_side, blocked_ids, scoring_fields)
-        };
-        return records
-            .into_iter()
-            .map(|(id, record)| Candidate {
-                id,
-                record,
-                combined_dot: 0.0,
-            })
-            .collect();
+        // No embedding fields configured — return empty. Other candidate
+        // generators (BM25, synonym, etc.) provide candidates independently
+        // and are unioned by the pipeline.
+        return Vec::new();
     }
 
     let idx = pool_combined_index.unwrap();
@@ -186,11 +179,10 @@ mod tests {
     }
 
     #[test]
-    fn flat_path_no_embeddings_returns_all_blocked() {
+    fn no_embeddings_returns_empty() {
         let store = make_store();
         store.insert(Side::A, "r1", &make_record("r1"));
         store.insert(Side::A, "r2", &make_record("r2"));
-        store.insert(Side::A, "r3", &make_record("r3"));
 
         let blocked_ids = vec!["r1".to_string(), "r2".to_string()];
         let query_record = make_record("query");
@@ -205,16 +197,12 @@ mod tests {
             &query_record,
             Side::B,
             "flat",
-            &[],
         );
 
-        assert_eq!(cands.len(), 2);
-        let ids: Vec<&str> = cands.iter().map(|c| c.id.as_str()).collect();
-        assert!(ids.contains(&"r1"));
-        assert!(ids.contains(&"r2"));
-        for c in &cands {
-            assert_eq!(c.combined_dot, 0.0);
-        }
+        assert!(
+            cands.is_empty(),
+            "expected empty when no embeddings — other generators provide candidates"
+        );
     }
 
     #[test]
@@ -250,7 +238,6 @@ mod tests {
             &query_record,
             Side::B,
             "flat",
-            &[],
         );
 
         assert_eq!(cands.len(), 2);
@@ -292,7 +279,6 @@ mod tests {
             &query_record,
             Side::B,
             "flat",
-            &[],
         );
 
         assert_eq!(cands.len(), 10);

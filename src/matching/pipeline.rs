@@ -1,23 +1,24 @@
 //! Unified scoring pipeline shared by batch and live modes.
 //!
-//! Four stages:
+//! ## Pipeline stages
+//!
 //!   1. Blocking filter — done by the *caller* before invoking score_pool;
 //!      `blocked_ids` is passed in as a pre-queried slice.
-//!   2. ANN candidate selection — ANN search to get `ann_candidates`
-//!   3. BM25 re-rank/filter — narrow to `bm25_candidates` (optional)
+//!   2. Independent candidate generation — each method runs in parallel:
+//!      - ANN search (O(log N) HNSW, `ann_candidates`)
+//!      - BM25 search (O(log N) Tantivy, `bm25_candidates`)
+//!      - (Future: synonym lookup, etc.)
+//!   3. Union — deduplicate candidates by ID across all generators.
 //!   4. Full scoring — score candidates on all match_fields, classify, sort,
-//!      truncate to `top_n`
+//!      truncate to `top_n`.
+//!
+//! Each candidate generator runs independently against the blocked pool. No
+//! method filters another method's candidates — the union captures candidates
+//! found by ANY method. Full scoring is the single place where all signals
+//! combine.
 //!
 //! Both batch and live call `score_pool()` with the same arguments; the only
 //! difference is where the data comes from (MatchState vs LiveSideState).
-//!
-//! ## Sequential pipeline modes
-//!
-//! Depending on which methods are configured, the pipeline degrades gracefully:
-//! - ANN+BM25: block → ANN(ann_candidates) → BM25(bm25_candidates) → score(top_n)
-//! - ANN only: block → ANN(ann_candidates) → score(top_n)
-//! - BM25 only: block → BM25(bm25_candidates) → score(top_n)
-//! - Neither:   block → score all → truncate(top_n)
 //!
 //! ## Why blocked_ids is passed in rather than BlockingIndex
 //!
@@ -29,6 +30,7 @@
 
 use std::collections::HashMap;
 
+use crate::bm25::scorer::normalise_bm25;
 use crate::config::Config;
 use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
@@ -36,12 +38,10 @@ use crate::scoring;
 use crate::store::RecordStore;
 use crate::vectordb::VectorDB;
 
-/// Optional BM25 context passed into the pipeline.
+/// BM25 context passed into the pipeline.
 ///
-/// When the `bm25` feature is enabled, this carries an immutable reference to
-/// the pool-side BM25 index, the concatenated query text, and a pre-computed
-/// self-score for normalisation. When disabled, this is a zero-size unit struct.
-#[cfg(feature = "bm25")]
+/// Carries an immutable reference to the pool-side BM25 index, the
+/// concatenated query text, and a pre-computed self-score for normalisation.
 pub struct Bm25Ctx<'a> {
     pub index: &'a crate::bm25::index::BM25Index,
     pub query_text: String,
@@ -50,10 +50,6 @@ pub struct Bm25Ctx<'a> {
     pub self_score: f32,
 }
 
-#[cfg(not(feature = "bm25"))]
-pub struct Bm25Ctx;
-
-#[cfg(feature = "bm25")]
 impl<'a> Bm25Ctx<'a> {
     /// Create a new BM25 context.
     ///
@@ -71,40 +67,13 @@ impl<'a> Bm25Ctx<'a> {
     }
 }
 
-#[cfg(not(feature = "bm25"))]
-impl Bm25Ctx {
-    /// No-op constructor for when BM25 is not compiled in.
-    pub fn none() -> Self {
-        Self
-    }
-}
-
 /// Score a single query record against the opposite-side pool.
 ///
-/// Returns a sorted `Vec<MatchResult>` (descending by score), truncated to
-/// `top_n` entries. The top result carries an attached `matched_record` with
-/// output mapping applied.
-///
-/// Parameters:
-/// - `query_id`:             ID of the query record
-/// - `query_record`:         the query record itself
-/// - `query_side`:           which side the query belongs to (A or B)
-/// - `query_combined_vec`: pre-encoded combined embedding vector for the query
-///   (empty slice if no embedding fields configured)
-/// - `pool_store`: record store for looking up pool-side records
-/// - `pool_side`: which side of the store the pool records are on
-/// - `pool_combined_index`: combined embedding index for the pool side
-///   (`None` if no embedding fields configured)
-/// - `blocked_ids`: IDs pre-selected by the caller's blocking query;
-///   pass all pool IDs if blocking is disabled
-/// - `config`: job config
-/// - `ann_candidates`: how many candidates ANN retrieves from the full block
-/// - `bm25_candidates`: how many candidates BM25 keeps after re-ranking
-/// - `top_n`: max results to return (0 = no limit)
-/// - `pool_bm25_index`: pool-side BM25 index for candidate filtering and
-///   scoring (`None` if BM25 not configured or feature not enabled)
-/// - `query_bm25_text`: concatenated query text for BM25 queries (empty if
-///   no BM25)
+/// Runs independent candidate generators (ANN, BM25), unions their results,
+/// then scores all candidates on every configured match_field. Returns a
+/// sorted `Vec<MatchResult>` (descending by score), truncated to `top_n`
+/// entries. The top result carries an attached `matched_record` with output
+/// mapping applied.
 #[allow(clippy::too_many_arguments)]
 pub fn score_pool(
     query_id: &str,
@@ -126,10 +95,9 @@ pub fn score_pool(
     }
 
     let has_embeddings = !query_combined_vec.is_empty();
-    let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
 
-    // Compute the pool-side fields needed for scoring (used by get_many_fields
-    // to avoid full JSON deserialization in SQLite).
+    // Pool-side fields needed for scoring (used by get_many_fields to
+    // avoid full JSON deserialization in SQLite).
     let scoring_fields: Vec<String> = config
         .match_fields
         .iter()
@@ -140,103 +108,13 @@ pub fn score_pool(
         })
         .collect();
 
-    // --- Fast path: BM25-only (no embeddings) ---
-    // When BM25 is the sole candidate filter, query the BM25 index directly
-    // with blocking filters and fetch only the survivors. This avoids
-    // loading all blocked records into memory (e.g. 50K records per country
-    // bucket at 1M scale) when only ~20 will be scored.
-    #[cfg(feature = "bm25")]
-    if has_bm25
-        && !has_embeddings
-        && let Some(ctx) = bm25_ctx
-    {
-        use crate::bm25::scorer::normalise_bm25;
+    // --- Stage 2: Independent candidate generation ---
+    //
+    // Each generator runs independently against the blocked pool. The union
+    // of all candidate sets flows to full scoring.
 
-        // Query BM25 index with blocking filter — Tantivy skips
-        // documents from the wrong block entirely (no wasted scoring).
-        // Returns exactly the top bm25_candidates from the matching block.
-        let raw_results =
-            ctx.index
-                .query_blocked(&ctx.query_text, bm25_candidates, query_record, query_side);
-
-        // Use pre-computed self-score for normalisation (computed eagerly
-        // at Bm25Ctx construction — cache hit or analytical fallback).
-        let norm_ceiling = ctx.self_score;
-
-        let scored: Vec<(String, f64)> = raw_results
-            .into_iter()
-            .map(|(id, raw)| {
-                let norm = normalise_bm25(raw, norm_ceiling);
-                (id, norm)
-            })
-            .collect();
-
-        if scored.is_empty() {
-            return Vec::new();
-        }
-
-        // Fetch only the BM25 survivors (typically ~20 records)
-        let survivor_ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
-        let bm25_scores_map: HashMap<String, f64> = scored.into_iter().collect();
-        let survivor_records = if scoring_fields.is_empty() {
-            pool_store.get_many(pool_side, &survivor_ids)
-        } else {
-            pool_store.get_many_fields(pool_side, &survivor_ids, &scoring_fields)
-        };
-
-        let survivor_cands: Vec<candidates::Candidate> = survivor_records
-            .into_iter()
-            .map(|(id, record)| candidates::Candidate {
-                id,
-                record,
-                combined_dot: 0.0,
-            })
-            .collect();
-
-        // Score the survivors using the same path as the standard pipeline
-        let mut results: Vec<MatchResult> = survivor_cands
-            .iter()
-            .map(|cand| {
-                let bm25_score = bm25_scores_map.get(&cand.id).copied();
-                let score_result = scoring::score_pair(
-                    query_record,
-                    &cand.record,
-                    &config.match_fields,
-                    None, // no embedding scores in BM25-only path
-                    bm25_score,
-                );
-                scoring::build_match_result(
-                    query_id,
-                    &cand.id,
-                    query_side,
-                    score_result,
-                    config.thresholds.auto_match,
-                    config.thresholds.review_floor,
-                    None,
-                    false,
-                )
-            })
-            .collect();
-
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        if let Some(min_gap) = config.thresholds.min_score_gap {
-            apply_score_gap_check(&mut results, min_gap);
-        }
-        if top_n > 0 {
-            results.truncate(top_n);
-        }
-
-        return results;
-    }
-
-    // --- Standard path: ANN candidate selection → BM25 re-rank → full scoring ---
-
-    // --- Stage 2: ANN candidate selection ---
-    let cands = candidates::select_candidates(
+    // ANN candidates (empty if no embedding fields configured).
+    let ann_cands = candidates::select_candidates(
         query_combined_vec,
         ann_candidates,
         pool_combined_index,
@@ -246,55 +124,57 @@ pub fn score_pool(
         query_record,
         query_side,
         &config.vector_backend,
-        &scoring_fields,
     );
 
-    if cands.is_empty() {
-        return Vec::new();
-    }
-
-    // --- Stage 3: BM25 re-rank / filter ---
-    // Collect candidate IDs after ANN; BM25 may narrow this list.
-    #[cfg(feature = "bm25")]
-    let (cand_ids_after_bm25, bm25_scores_map) = if has_bm25 {
-        if let Some(ctx) = bm25_ctx {
-            bm25_filter_stage(
-                &cands,
-                Some(ctx.index),
-                &ctx.query_text,
-                ctx.self_score,
-                has_embeddings,
-                bm25_candidates,
-                blocked_ids,
-            )
+    // BM25 candidates (empty if no BM25 configured).
+    let (bm25_cand_ids, bm25_scores_map) = {
+        let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
+        if has_bm25 {
+            if let Some(ctx) = bm25_ctx {
+                bm25_candidate_stage(&ctx, bm25_candidates, query_record, query_side)
+            } else {
+                (Vec::new(), HashMap::new())
+            }
         } else {
-            (
-                cands.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
-                HashMap::new(),
-            )
+            (Vec::new(), HashMap::new())
         }
-    } else {
-        (
-            cands.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
-            HashMap::new(),
-        )
     };
 
-    #[cfg(not(feature = "bm25"))]
-    let (cand_ids_after_bm25, bm25_scores_map): (Vec<String>, HashMap<String, f64>) = {
-        let _ = has_bm25;
-        let _ = bm25_candidates;
-        let _ = bm25_ctx;
-        (cands.iter().map(|c| c.id.clone()).collect(), HashMap::new())
-    };
+    // --- Stage 3: Union candidates ---
+    //
+    // Merge ANN and BM25 candidate sets, deduplicating by ID. BM25-only
+    // candidates (not in ANN set) need their records fetched from the store.
+    let ann_id_set: std::collections::HashSet<&str> =
+        ann_cands.iter().map(|c| c.id.as_str()).collect();
 
-    // Filter candidates to those that survived BM25 (or all if no BM25)
-    let final_cands: Vec<&candidates::Candidate> = cands
+    let bm25_only_ids: Vec<String> = bm25_cand_ids
         .iter()
-        .filter(|c| cand_ids_after_bm25.contains(&c.id))
+        .filter(|id| !ann_id_set.contains(id.as_str()))
+        .cloned()
         .collect();
 
-    if final_cands.is_empty() {
+    // Fetch records for BM25-only candidates not already in the ANN set.
+    let bm25_only_cands: Vec<candidates::Candidate> = if bm25_only_ids.is_empty() {
+        Vec::new()
+    } else {
+        let records = if scoring_fields.is_empty() {
+            pool_store.get_many(pool_side, &bm25_only_ids)
+        } else {
+            pool_store.get_many_fields(pool_side, &bm25_only_ids, &scoring_fields)
+        };
+        records
+            .into_iter()
+            .map(|(id, record)| candidates::Candidate {
+                id,
+                record,
+                combined_dot: 0.0,
+            })
+            .collect()
+    };
+
+    // Build the full union: ANN candidates + BM25-only candidates.
+    let total_cands = ann_cands.len() + bm25_only_cands.len();
+    if total_cands == 0 {
         return Vec::new();
     }
 
@@ -302,42 +182,25 @@ pub fn score_pool(
     let emb_specs = crate::vectordb::embedding_field_specs(config);
     let has_emb_specs = has_embeddings && !emb_specs.is_empty();
 
-    let mut results: Vec<MatchResult> = final_cands
-        .iter()
-        .map(|cand| {
-            // Decompose combined vecs → per-field cosine similarities.
-            let emb_scores: Option<HashMap<String, f64>> = if has_emb_specs {
-                pool_combined_index
-                    .and_then(|idx| idx.get(&cand.id).ok().flatten())
-                    .map(|pool_vec| decompose_emb_scores(query_combined_vec, &pool_vec, &emb_specs))
-            } else {
-                None
-            };
+    let mut results: Vec<MatchResult> = Vec::with_capacity(ann_cands.len() + bm25_only_cands.len());
 
-            let precomputed_bm25 = bm25_scores_map.get(&cand.id).copied();
+    // Score all candidates (ANN then BM25-only) through the same path.
+    for cand in ann_cands.iter().chain(bm25_only_cands.iter()) {
+        results.push(score_candidate(
+            cand,
+            query_id,
+            query_record,
+            query_side,
+            query_combined_vec,
+            pool_combined_index,
+            config,
+            &bm25_scores_map,
+            &emb_specs,
+            has_emb_specs,
+        ));
+    }
 
-            let score_result = scoring::score_pair(
-                query_record,
-                &cand.record,
-                &config.match_fields,
-                emb_scores.as_ref(),
-                precomputed_bm25,
-            );
-
-            scoring::build_match_result(
-                query_id,
-                &cand.id,
-                query_side,
-                score_result,
-                config.thresholds.auto_match,
-                config.thresholds.review_floor,
-                None, // matched_record attached lazily below
-                false,
-            )
-        })
-        .collect();
-
-    // Sort by score descending
+    // Sort by score descending.
     results.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -349,104 +212,112 @@ pub fn score_pool(
         apply_score_gap_check(&mut results, min_gap);
     }
 
-    // Truncate to top_n if specified
+    // Truncate to top_n if specified.
     if top_n > 0 {
         results.truncate(top_n);
     }
 
     // Attach matched record (with output mapping) to the top result only.
-    if let Some(top) = results.first_mut()
-        && let Some(cand) = cands.iter().find(|c| c.id == top.matched_id)
-    {
-        top.matched_record = Some(apply_output_mapping(&cand.record, config));
+    if let Some(top) = results.first_mut() {
+        let matched = ann_cands
+            .iter()
+            .chain(bm25_only_cands.iter())
+            .find(|c| c.id == top.matched_id);
+        if let Some(cand) = matched {
+            top.matched_record = Some(apply_output_mapping(&cand.record, config));
+        }
     }
 
     results
 }
 
-/// BM25 filtering stage. When ANN produced candidates, re-rank them by BM25
-/// and keep the top `bm25_candidates`. When no ANN (no embeddings), query
-/// the BM25 index directly.
+/// Score a single candidate through full per-field scoring.
 ///
-/// `self_score` is the pre-computed self-score from the `Bm25Ctx`.
-///
-/// Returns `(surviving_ids, id→normalised_bm25_score)`.
-#[cfg(feature = "bm25")]
-fn bm25_filter_stage(
-    ann_cands: &[candidates::Candidate],
-    pool_bm25_index: Option<&crate::bm25::index::BM25Index>,
-    query_bm25_text: &str,
-    self_score: f32,
-    has_embeddings: bool,
-    bm25_candidates: usize,
-    blocked_ids: &[String],
-) -> (Vec<String>, HashMap<String, f64>) {
-    use crate::bm25::scorer::normalise_bm25;
-
-    let bm25_idx = match pool_bm25_index {
-        Some(idx) => idx,
-        None => {
-            return (
-                ann_cands.iter().map(|c| c.id.clone()).collect(),
-                HashMap::new(),
-            );
-        }
+/// Decomposes combined embedding vectors into per-field cosines, combines
+/// with precomputed BM25 scores (if any), and runs all non-embedding,
+/// non-BM25 scoring methods (exact, fuzzy, numeric).
+#[allow(clippy::too_many_arguments)]
+fn score_candidate(
+    cand: &candidates::Candidate,
+    query_id: &str,
+    query_record: &Record,
+    query_side: Side,
+    query_combined_vec: &[f32],
+    pool_combined_index: Option<&dyn VectorDB>,
+    config: &Config,
+    bm25_scores: &HashMap<String, f64>,
+    emb_specs: &[(String, String, f64)],
+    has_emb_specs: bool,
+) -> MatchResult {
+    // Decompose combined vecs → per-field cosine similarities.
+    let emb_scores: Option<HashMap<String, f64>> = if has_emb_specs {
+        pool_combined_index
+            .and_then(|idx| idx.get(&cand.id).ok().flatten())
+            .map(|pool_vec| decompose_emb_scores(query_combined_vec, &pool_vec, emb_specs))
+    } else {
+        None
     };
 
-    if query_bm25_text.is_empty() {
-        return (
-            ann_cands.iter().map(|c| c.id.clone()).collect(),
-            HashMap::new(),
-        );
+    let precomputed_bm25 = bm25_scores.get(&cand.id).copied();
+
+    let score_result = scoring::score_pair(
+        query_record,
+        &cand.record,
+        &config.match_fields,
+        emb_scores.as_ref(),
+        precomputed_bm25,
+    );
+
+    scoring::build_match_result(
+        query_id,
+        &cand.id,
+        query_side,
+        score_result,
+        config.thresholds.auto_match,
+        config.thresholds.review_floor,
+        None,
+        false,
+    )
+}
+
+/// Independent BM25 candidate generation stage.
+///
+/// Queries the Tantivy index directly with blocking filters to surface the
+/// top `bm25_candidates` records. Returns candidate IDs and their normalised
+/// BM25 scores.
+///
+/// This runs independently of ANN — it can find candidates that ANN missed
+/// entirely (e.g. records with shared distinctive tokens but low embedding
+/// similarity).
+fn bm25_candidate_stage(
+    ctx: &Bm25Ctx,
+    bm25_candidates: usize,
+    query_record: &Record,
+    query_side: Side,
+) -> (Vec<String>, HashMap<String, f64>) {
+    if ctx.query_text.is_empty() {
+        return (Vec::new(), HashMap::new());
     }
 
-    if has_embeddings {
-        // ANN+BM25 mode: re-rank ANN candidates by BM25.
-        let candidate_ids: Vec<String> = ann_cands.iter().map(|c| c.id.clone()).collect();
-        let (raw_scores, _index_norm) =
-            bm25_idx.score_candidates(query_bm25_text, &candidate_ids, bm25_candidates * 3);
+    // Query BM25 index with blocking filter — Tantivy skips documents
+    // from the wrong block entirely (no wasted scoring).
+    let raw_results =
+        ctx.index
+            .query_blocked(&ctx.query_text, bm25_candidates, query_record, query_side);
 
-        // Use the pre-computed self-score for normalisation.
-        let norm_ceiling = self_score;
+    let norm_ceiling = ctx.self_score;
 
-        let mut scored: Vec<(String, f64)> = candidate_ids
-            .into_iter()
-            .map(|id| {
-                let raw = raw_scores.get(&id).copied().unwrap_or(0.0);
-                let norm = normalise_bm25(raw, norm_ceiling);
-                (id, norm)
-            })
-            .collect();
+    let scored: Vec<(String, f64)> = raw_results
+        .into_iter()
+        .map(|(id, raw)| {
+            let norm = normalise_bm25(raw, norm_ceiling);
+            (id, norm)
+        })
+        .collect();
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(bm25_candidates);
-
-        let ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
-        let map: HashMap<String, f64> = scored.into_iter().collect();
-        (ids, map)
-    } else {
-        // BM25-only mode: query the index directly
-        let raw_results = bm25_idx.query(query_bm25_text, bm25_candidates * 3);
-        let norm_ceiling = self_score;
-        let blocked_set: std::collections::HashSet<&str> =
-            blocked_ids.iter().map(|s| s.as_str()).collect();
-
-        let mut scored: Vec<(String, f64)> = raw_results
-            .into_iter()
-            .filter(|(id, _)| blocked_set.contains(id.as_str()))
-            .map(|(id, raw)| {
-                let norm = normalise_bm25(raw, norm_ceiling);
-                (id, norm)
-            })
-            .take(bm25_candidates)
-            .collect();
-
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
-        let map: HashMap<String, f64> = scored.into_iter().collect();
-        (ids, map)
-    }
+    let ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
+    let map: HashMap<String, f64> = scored.into_iter().collect();
+    (ids, map)
 }
 
 /// Decompose two combined embedding vectors into per-field cosine similarities.
@@ -548,6 +419,9 @@ pub fn top_classification(results: &[MatchResult]) -> Classification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::BlockingConfig;
+    use crate::store::memory::MemoryStore;
+    use crate::vectordb::flat::FlatVectorDB;
 
     fn make_match_result(score: f64, classification: Classification) -> MatchResult {
         MatchResult {
@@ -689,5 +563,281 @@ mod tests {
             cos1
         );
         assert!(cos2.abs() < 0.001, "cos2 expected ~0.0, got {}", cos2);
+    }
+
+    // --- score_pool union tests ---
+
+    fn make_record(fields: &[(&str, &str)]) -> Record {
+        fields
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn make_store() -> MemoryStore {
+        MemoryStore::new(&BlockingConfig::default())
+    }
+
+    fn make_config_exact(field_a: &str, field_b: &str) -> Config {
+        let yaml = format!(
+            r#"
+job:
+  name: test
+datasets:
+  a: {{ path: x.csv, id_field: id, format: csv }}
+  b: {{ path: x.csv, id_field: id, format: csv }}
+cross_map:
+  path: /tmp/test/crossmap.csv
+  a_id_field: id
+  b_id_field: id
+embeddings:
+  model: test
+  a_cache_dir: /tmp/test
+match_fields:
+  - field_a: {field_a}
+    field_b: {field_b}
+    method: exact
+    weight: 1.0
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+output:
+  results_path: /tmp/test/results.csv
+  review_path: /tmp/test/review.csv
+  unmatched_path: /tmp/test/unmatched.csv
+"#
+        );
+        // Use load pipeline: parse → defaults → validate → derive.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), yaml).unwrap();
+        crate::config::load_config(tmp.path()).unwrap()
+    }
+
+    fn unit_vec(dim: usize, seed: u64) -> Vec<f32> {
+        let mut state = seed.wrapping_add(1);
+        let mut v: Vec<f32> = (0..dim)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((state >> 33) as i32 as f32) / (i32::MAX as f32)
+            })
+            .collect();
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > f32::EPSILON {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn score_pool_empty_blocked_ids_returns_empty() {
+        let store = make_store();
+        let config = make_config_exact("name", "name");
+        let query = make_record(&[("id", "q1"), ("name", "Foo")]);
+
+        let results = score_pool(
+            "q1",
+            &query,
+            Side::B,
+            &[],
+            &store,
+            Side::A,
+            None,
+            &[],
+            &config,
+            50,
+            10,
+            5,
+            None,
+        );
+
+        assert!(results.is_empty(), "empty blocked_ids → no results");
+    }
+
+    #[test]
+    fn score_pool_no_embeddings_no_bm25_returns_empty() {
+        let store = make_store();
+        store.insert(
+            Side::A,
+            "a1",
+            &make_record(&[("id", "a1"), ("name", "Foo Corp")]),
+        );
+
+        let config = make_config_exact("name", "name");
+        let query = make_record(&[("id", "q1"), ("name", "Foo Corp")]);
+        let blocked = vec!["a1".to_string()];
+
+        // No embeddings (empty vec), no BM25 context → both generators
+        // return empty → union is empty → no results.
+        let results = score_pool(
+            "q1",
+            &query,
+            Side::B,
+            &[],
+            &store,
+            Side::A,
+            None,
+            &blocked,
+            &config,
+            50,
+            10,
+            5,
+            None,
+        );
+
+        assert!(
+            results.is_empty(),
+            "no candidate generators configured → no results"
+        );
+    }
+
+    #[test]
+    fn score_pool_ann_only_scores_candidates() {
+        let dim = 4usize;
+        let store = make_store();
+        let idx = FlatVectorDB::new(dim);
+
+        // Insert two A records with identical names to the query.
+        let a1 = make_record(&[("id", "a1"), ("name", "Foo Corp")]);
+        let a2 = make_record(&[("id", "a2"), ("name", "Bar Inc")]);
+        store.insert(Side::A, "a1", &a1);
+        store.insert(Side::A, "a2", &a2);
+
+        let v1 = unit_vec(dim, 1);
+        let v2 = unit_vec(dim, 2);
+        idx.upsert("a1", &v1, &a1, Side::A).unwrap();
+        idx.upsert("a2", &v2, &a2, Side::A).unwrap();
+
+        let config = make_config_exact("name", "name");
+        let query = make_record(&[("id", "q1"), ("name", "Foo Corp")]);
+        let blocked = vec!["a1".to_string(), "a2".to_string()];
+        let query_vec = unit_vec(dim, 1); // identical to a1
+
+        let results = score_pool(
+            "q1",
+            &query,
+            Side::B,
+            &query_vec,
+            &store,
+            Side::A,
+            Some(&idx as &dyn VectorDB),
+            &blocked,
+            &config,
+            50,
+            10,
+            5,
+            None,
+        );
+
+        assert!(
+            !results.is_empty(),
+            "ANN should surface candidates for scoring"
+        );
+
+        // a1 has exact name match → score 1.0. a2 doesn't match → score 0.0.
+        let top = &results[0];
+        assert_eq!(top.matched_id, "a1", "exact name match should rank first");
+        assert!(
+            (top.score - 1.0).abs() < 0.01,
+            "exact match score should be ~1.0, got {}",
+            top.score
+        );
+    }
+
+    #[test]
+    fn score_pool_results_sorted_descending() {
+        let dim = 4usize;
+        let store = make_store();
+        let idx = FlatVectorDB::new(dim);
+
+        // Three A records: one exact match, one partial, one no match.
+        let a1 = make_record(&[("id", "a1"), ("name", "Acme Corp")]);
+        let a2 = make_record(&[("id", "a2"), ("name", "Other Ltd")]);
+        let a3 = make_record(&[("id", "a3"), ("name", "Acme Corp")]);
+        store.insert(Side::A, "a1", &a1);
+        store.insert(Side::A, "a2", &a2);
+        store.insert(Side::A, "a3", &a3);
+
+        for (id, seed, rec) in [("a1", 1u64, &a1), ("a2", 2, &a2), ("a3", 3, &a3)] {
+            idx.upsert(id, &unit_vec(dim, seed), rec, Side::A).unwrap();
+        }
+
+        let config = make_config_exact("name", "name");
+        let query = make_record(&[("id", "q1"), ("name", "Acme Corp")]);
+        let blocked = vec!["a1".to_string(), "a2".to_string(), "a3".to_string()];
+        let query_vec = unit_vec(dim, 99);
+
+        let results = score_pool(
+            "q1",
+            &query,
+            Side::B,
+            &query_vec,
+            &store,
+            Side::A,
+            Some(&idx as &dyn VectorDB),
+            &blocked,
+            &config,
+            50,
+            10,
+            5,
+            None,
+        );
+
+        // Results must be sorted descending by score.
+        for w in results.windows(2) {
+            assert!(
+                w[0].score >= w[1].score,
+                "results not sorted: {} < {}",
+                w[0].score,
+                w[1].score
+            );
+        }
+    }
+
+    #[test]
+    fn score_pool_top_n_truncates() {
+        let dim = 4usize;
+        let store = make_store();
+        let idx = FlatVectorDB::new(dim);
+
+        // Insert 10 A records.
+        let mut blocked = Vec::new();
+        for i in 0..10 {
+            let id = format!("a{}", i);
+            let rec = make_record(&[("id", &id), ("name", &format!("Corp {}", i))]);
+            store.insert(Side::A, &id, &rec);
+            idx.upsert(&id, &unit_vec(dim, i as u64), &rec, Side::A)
+                .unwrap();
+            blocked.push(id);
+        }
+
+        let config = make_config_exact("name", "name");
+        let query = make_record(&[("id", "q1"), ("name", "Corp 0")]);
+        let query_vec = unit_vec(dim, 99);
+
+        let results = score_pool(
+            "q1",
+            &query,
+            Side::B,
+            &query_vec,
+            &store,
+            Side::A,
+            Some(&idx as &dyn VectorDB),
+            &blocked,
+            &config,
+            50, // ann_candidates
+            10, // bm25_candidates
+            3,  // top_n = 3
+            None,
+        );
+
+        assert!(
+            results.len() <= 3,
+            "top_n=3 should truncate, got {}",
+            results.len()
+        );
     }
 }

@@ -174,14 +174,6 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
                 });
             }
             bm25_count += 1;
-
-            // Feature-flag gating
-            if !cfg!(feature = "bm25") {
-                return Err(ConfigError::InvalidValue {
-                    field: format!("{}.method", prefix),
-                    message: "bm25 method requires building with --features bm25".into(),
-                });
-            }
         } else {
             // Non-BM25 methods require field_a and field_b.
             require_non_empty(&mf.field_a, &format!("{}.field_a", prefix))?;
@@ -219,55 +211,30 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         require_non_empty(&pair.field_b, &format!("{}.field_b", prefix))?;
     }
 
-    // Filter size constraints
+    // Candidate count constraints — each generator is independent.
     let has_bm25 = bm25_count > 0;
     let has_embedding = cfg.match_fields.iter().any(|mf| mf.method == "embedding");
     let top_n = cfg.top_n.unwrap_or(5);
     let ann_candidates = cfg.ann_candidates.unwrap_or(50);
     let bm25_candidates = cfg.bm25_candidates.unwrap_or(10);
 
-    if has_embedding && has_bm25 {
-        // ann_candidates >= bm25_candidates >= top_n
-        if ann_candidates < bm25_candidates {
-            return Err(ConfigError::InvalidValue {
-                field: "ann_candidates".into(),
-                message: format!(
-                    "must be >= bm25_candidates ({}) when both ANN and BM25 are enabled, got {}",
-                    bm25_candidates, ann_candidates
-                ),
-            });
-        }
-        if bm25_candidates < top_n {
-            return Err(ConfigError::InvalidValue {
-                field: "bm25_candidates".into(),
-                message: format!(
-                    "must be >= top_n ({}) when BM25 is enabled, got {}",
-                    top_n, bm25_candidates
-                ),
-            });
-        }
-    } else if has_embedding {
-        // ann_candidates >= top_n
-        if ann_candidates < top_n {
-            return Err(ConfigError::InvalidValue {
-                field: "ann_candidates".into(),
-                message: format!(
-                    "must be >= top_n ({}) when ANN is enabled, got {}",
-                    top_n, ann_candidates
-                ),
-            });
-        }
-    } else if has_bm25 {
-        // bm25_candidates >= top_n
-        if bm25_candidates < top_n {
-            return Err(ConfigError::InvalidValue {
-                field: "bm25_candidates".into(),
-                message: format!(
-                    "must be >= top_n ({}) when BM25 is enabled, got {}",
-                    top_n, bm25_candidates
-                ),
-            });
-        }
+    if has_embedding && ann_candidates < top_n {
+        return Err(ConfigError::InvalidValue {
+            field: "ann_candidates".into(),
+            message: format!(
+                "must be >= top_n ({}) when ANN is enabled, got {}",
+                top_n, ann_candidates
+            ),
+        });
+    }
+    if has_bm25 && bm25_candidates < top_n {
+        return Err(ConfigError::InvalidValue {
+            field: "bm25_candidates".into(),
+            message: format!(
+                "must be >= top_n ({}) when BM25 is enabled, got {}",
+                top_n, bm25_candidates
+            ),
+        });
     }
 
     // 20. weights sum to 1.0
@@ -1015,21 +982,11 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
         let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
         normalise_blocking(&mut cfg);
         apply_defaults(&mut cfg);
-        if cfg!(feature = "bm25") {
-            validate(&cfg).unwrap();
-        } else {
-            // Without bm25 feature, method: bm25 should be rejected
-            let err = validate(&cfg).unwrap_err();
-            assert!(err.to_string().contains("--features bm25"), "got: {}", err);
-        }
+        validate(&cfg).unwrap();
     }
 
     #[test]
     fn bm25_rejected_with_field_a() {
-        // Only testable when bm25 feature is enabled (otherwise rejected earlier for missing feature)
-        if !cfg!(feature = "bm25") {
-            return;
-        }
         let yaml = base_yaml_with_match_fields(
             "  - { field_a: f, field_b: f, method: exact, weight: 0.8 }\n  - { field_a: x, method: bm25, weight: 0.2 }",
         );
@@ -1042,9 +999,6 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
 
     #[test]
     fn bm25_rejected_with_field_b() {
-        if !cfg!(feature = "bm25") {
-            return;
-        }
         let yaml = base_yaml_with_match_fields(
             "  - { field_a: f, field_b: f, method: exact, weight: 0.8 }\n  - { field_b: x, method: bm25, weight: 0.2 }",
         );
@@ -1057,9 +1011,6 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
 
     #[test]
     fn bm25_multiple_rejected() {
-        if !cfg!(feature = "bm25") {
-            return;
-        }
         let yaml = base_yaml_with_match_fields(
             "  - { field_a: f, field_b: f, method: exact, weight: 0.6 }\n  - { method: bm25, weight: 0.2 }\n  - { method: bm25, weight: 0.2 }",
         );
@@ -1071,10 +1022,9 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
     }
 
     #[test]
-    fn bm25_ann_candidates_lt_bm25_candidates_rejected() {
-        if !cfg!(feature = "bm25") {
-            return;
-        }
+    #[test]
+    fn ann_and_bm25_candidates_independent() {
+        // ann_candidates < bm25_candidates is valid — generators are independent.
         let yaml = format!(
             r#"
 job:
@@ -1096,15 +1046,11 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
         let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
         normalise_blocking(&mut cfg);
         apply_defaults(&mut cfg);
-        let err = validate(&cfg).unwrap_err();
-        assert!(err.to_string().contains("ann_candidates"), "got: {}", err);
+        validate(&cfg).unwrap(); // should pass — independent constraints
     }
 
     #[test]
     fn bm25_candidates_lt_top_n_rejected() {
-        if !cfg!(feature = "bm25") {
-            return;
-        }
         let yaml = format!(
             r#"
 job:
@@ -1132,9 +1078,6 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
 
     #[test]
     fn bm25_fields_derived_from_fuzzy_and_embedding() {
-        if !cfg!(feature = "bm25") {
-            return;
-        }
         let yaml = base_yaml_with_match_fields(
             "  - { field_a: name_a, field_b: name_b, method: fuzzy, weight: 0.3 }\n  - { field_a: desc_a, field_b: desc_b, method: embedding, weight: 0.3 }\n  - { field_a: code_a, field_b: code_b, method: exact, weight: 0.2 }\n  - { method: bm25, weight: 0.2 }",
         );
@@ -1161,9 +1104,6 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
 
     #[test]
     fn bm25_fields_explicit_overrides_derivation() {
-        if !cfg!(feature = "bm25") {
-            return;
-        }
         let yaml = format!(
             r#"
 job: {{ name: test }}
@@ -1204,28 +1144,19 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
     }
 
     #[test]
-    fn bm25_feature_flag_gating() {
-        // Without the bm25 feature, method: bm25 should be rejected.
-        // With the bm25 feature, it should be accepted.
+    fn bm25_always_accepted() {
+        // BM25 is always compiled in — method: bm25 should always be accepted.
         let yaml = base_yaml_with_match_fields(
             "  - { field_a: f, field_b: f, method: exact, weight: 0.8 }\n  - { method: bm25, weight: 0.2 }",
         );
         let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
         normalise_blocking(&mut cfg);
         apply_defaults(&mut cfg);
-        if cfg!(feature = "bm25") {
-            validate(&cfg).unwrap();
-        } else {
-            let err = validate(&cfg).unwrap_err();
-            assert!(err.to_string().contains("--features bm25"), "got: {}", err);
-        }
+        validate(&cfg).unwrap();
     }
 
     #[test]
     fn bm25_not_in_required_fields() {
-        if !cfg!(feature = "bm25") {
-            return;
-        }
         let yaml = base_yaml_with_match_fields(
             "  - { field_a: f, field_b: f, method: exact, weight: 0.8 }\n  - { method: bm25, weight: 0.2 }",
         );
@@ -1397,11 +1328,7 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
         normalise_blocking(&mut cfg);
         apply_defaults(&mut cfg);
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            err.to_string().contains("min_score_gap"),
-            "got: {}",
-            err
-        );
+        assert!(err.to_string().contains("min_score_gap"), "got: {}", err);
     }
 
     #[test]
@@ -1423,11 +1350,7 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
         normalise_blocking(&mut cfg);
         apply_defaults(&mut cfg);
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            err.to_string().contains("min_score_gap"),
-            "got: {}",
-            err
-        );
+        assert!(err.to_string().contains("min_score_gap"), "got: {}", err);
     }
 
     #[test]

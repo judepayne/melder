@@ -128,7 +128,9 @@ fn detect_dim_from_config(config_path: impl AsRef<Path>) -> Option<usize> {
     let pos = text.find(key)?;
     let after = text[pos + key.len()..].trim_start();
     let after = after.strip_prefix(':')?.trim_start();
-    let end = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
+    let end = after
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after.len());
     after[..end].parse().ok()
 }
 
@@ -240,8 +242,8 @@ impl EncoderPool {
         // Detect output dim from config.json; default to 384 (MiniLM).
         let dim = detect_dim_from_config(dir.join("config.json")).unwrap_or(384);
 
-        let user_model = UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files)
-            .with_pooling(Pooling::Mean);
+        let user_model =
+            UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files).with_pooling(Pooling::Mean);
 
         let pool_size = pool_size.max(1);
         let mut encoders = Vec::with_capacity(pool_size);

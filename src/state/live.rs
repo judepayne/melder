@@ -34,8 +34,7 @@ pub struct LiveSideState {
     /// `None` if no embedding fields are configured in the job config.
     pub combined_index: Option<Box<dyn VectorDB>>,
     /// BM25 full-text index for this side. Built from fuzzy/embedding
-    /// text fields. `None` if BM25 not configured or feature not enabled.
-    #[cfg(feature = "bm25")]
+    /// text fields. `None` if BM25 not configured.
     pub bm25_index: Option<std::sync::RwLock<crate::bm25::index::BM25Index>>,
 }
 
@@ -46,7 +45,6 @@ impl std::fmt::Debug for LiveSideState {
             "combined_index_len",
             &self.combined_index.as_ref().map(|i| i.len()).unwrap_or(0),
         );
-        #[cfg(feature = "bm25")]
         s.field("bm25_index", &self.bm25_index.is_some());
         s.finish()
     }
@@ -215,18 +213,15 @@ impl LiveMatchState {
         label: &str,
     ) -> Result<Arc<Self>, MelderError> {
         // Build BM25 indices if configured
-        #[cfg(feature = "bm25")]
         let (bm25_index_a, bm25_index_b) = Self::build_bm25_indices(&store, &config, start)?;
 
         let a_side = LiveSideState {
             combined_index: combined_index_a,
-            #[cfg(feature = "bm25")]
             bm25_index: bm25_index_a,
         };
 
         let b_side = LiveSideState {
             combined_index: combined_index_b,
-            #[cfg(feature = "bm25")]
             bm25_index: bm25_index_b,
         };
 
@@ -690,7 +685,6 @@ impl LiveMatchState {
     }
 
     /// Build BM25 indices from the store (if BM25 is configured and enabled).
-    #[cfg(feature = "bm25")]
     #[allow(clippy::type_complexity)]
     fn build_bm25_indices(
         store: &Arc<dyn RecordStore>,

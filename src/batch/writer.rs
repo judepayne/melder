@@ -182,12 +182,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("unmatched.csv");
 
-        let records = vec![("B-1".into(), {
-            let mut r = Record::new();
-            r.insert("counterparty_id".into(), "B-1".into());
-            r.insert("counterparty_name".into(), "Test Corp".into());
-            r
-        }, Some(0.75_f64))];
+        let records = vec![(
+            "B-1".into(),
+            {
+                let mut r = Record::new();
+                r.insert("counterparty_id".into(), "B-1".into());
+                r.insert("counterparty_name".into(), "Test Corp".into());
+                r
+            },
+            Some(0.75_f64),
+        )];
 
         write_unmatched_csv(&path, &records, "counterparty_id").unwrap();
 

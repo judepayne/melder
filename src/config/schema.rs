@@ -40,12 +40,11 @@ pub struct Config {
     #[serde(default)]
     pub top_n: Option<usize>,
     /// How many candidates ANN retrieves from the full block. Defaults to 50.
-    /// Must be >= bm25_candidates >= top_n when both ANN and BM25 are enabled.
+    /// Must be >= top_n.
     #[serde(default)]
     pub ann_candidates: Option<usize>,
-    /// How many candidates BM25 keeps after re-ranking ANN's shortlist (when
-    /// both are enabled), or retrieves directly from the full block (when BM25
-    /// is the sole filter). Defaults to 10.
+    /// How many candidates BM25 retrieves independently from the full block.
+    /// Defaults to 10. Must be >= top_n.
     #[serde(default)]
     pub bm25_candidates: Option<usize>,
     // Derived at load time (not in YAML). Populated by `compute_required_fields`.
