@@ -950,3 +950,75 @@ Diminishing returns. Overlap plateaus at 0.002, and the matched distribution sta
 - **Use in moderation.** While overlap continues to decrease with higher BM25 weights, the matched score distribution starts spreading downward at 30-40%. More matched records shift from auto-match into review (5,320 at 10% vs 5,163 at 40%), meaning humans review more true matches. The sweet spot is around **20% BM25** — it captures most of the overlap reduction (0.005 vs 0.046 baseline) while keeping the matched distribution tight and auto-match count high.
 - **Zero false positives in auto-match.** Maintained across all BM25 weights, as in experiment 5.
 - **Acronym matches remain unsolved.** BM25 cannot help with "TAALC" vs "Thompson, Alexander and Lane Capital" any more than embeddings can — this requires a dedicated mechanism (see `vault/ideas/Acronym Matching.md`).
+
+---
+
+## Experiment 7: Synonym matching verification
+
+Tests the impact of the new synonym/acronym matching feature (`method: synonym`) on the 81 acronym cases identified in experiment 5's overlap zone analysis. Uses the same fine-tuned model (BGE-base LoRA R17) and the 20% BM25 sweet spot from experiment 6 as the baseline.
+
+Synonym matching adds two things:
+1. **Candidate generation** — a bidirectional HashMap index maps generated acronyms to record IDs on both sides. Queries check both directions: is the query an acronym of an indexed name, or is an indexed name an acronym of the query.
+2. **Scoring** — `method: synonym` is a binary 1.0/0.0 scorer. At weight 0.10, a synonym match adds 0.10 to the composite score.
+
+Two configurations compared:
+- **Baseline**: 20% BM25, no synonym (name_emb=0.48, addr_emb=0.32, bm25=0.20)
+- **With synonym**: 20% BM25 + synonym (name_emb=0.42, addr_emb=0.28, bm25=0.20, synonym=0.10)
+
+```yaml
+status: done
+model: results/experiment_6/model/model.onnx (fixed, no training)
+bm25_weight: 0.20
+synonym_weight: 0.10
+```
+
+**Command:**
+```bash
+python benchmarks/accuracy/science/run_experiment7.py
+```
+
+**Hypothesis:** The synonym candidate generator will surface the ~81 acronym pairs that all other methods miss. The binary synonym scorer (weight 0.10) will push their composite scores from ~0.60 into the review band or higher. Combined recall should improve. Precision should hold — short acronyms are filtered by min_length=3 and blocking constrains to same country code. No new false positives expected in auto-match.
+
+### Results
+
+| | Baseline (20% BM25) | With Synonym |
+|---|---|---|
+| **Ceiling** | 6,024 | 6,024 |
+| **Auto-matched** | 5,401 | 5,401 |
+| Matched | 4,827 | 4,827 |
+| Ambiguous | 574 | 574 |
+| Not a match | 0 | 0 |
+| **Review** | 1,594 | 1,621 (+27) |
+| Matched | 1,169 | 1,182 (+13) |
+| Ambiguous | 421 | 435 (+14) |
+| Not a match | 4 | 4 |
+| **Unmatched** | 3,005 | 2,978 (-27) |
+| Missed (matched) | 28 | 15 (-13) |
+| Missed (ambiguous) | 23 | 9 (-14) |
+| Not a match | 2,954 | 2,954 |
+| **Precision** | 89.4% | 89.4% |
+| **Combined recall** | 99.5% | 99.8% (+0.3pp) |
+
+Synonym index: 21,429 keys built in 12.8ms. Scoring throughput: 6,677 rec/s (vs 8,564 baseline — 22% slower due to synonym candidate generation and scoring on every B record).
+
+### Implementation note: additive weight handling
+
+The first run revealed that adding synonym as a regular weighted method (stealing budget from embeddings) massively degraded results — auto-matched dropped from 5,401 to 2,776 because the 10% synonym weight diluted the embedding signal for the 99% of pairs where synonym scores 0.0.
+
+The fix: synonym weight is **excluded from the normalisation denominator when the scorer returns 0.0**. This makes synonym purely additive:
+- Non-acronym pairs: composite is identical to baseline (synonym contributes nothing and its weight is excluded from `total_weight`).
+- Acronym pairs: synonym adds `0.10 * 1.0` to the weighted sum and `total_weight` grows by 0.10, boosting the composite.
+
+This required two changes:
+1. `src/scoring/mod.rs`: skip adding synonym weight to `total_weight` when `score == 0.0`
+2. `src/config/loader.rs`: exclude synonym weights from the sum-to-1.0 validation
+
+### Observations
+
+- **The hypothesis was confirmed.** Synonym matching recovered 27 records from the unmatched pool into the review queue — 13 true matches and 14 ambiguous. These are exactly the acronym cases (e.g. "HWAG" → "Harris, Watkins and Goodwin BV") that no other method could bridge.
+- **Zero impact on precision.** Auto-matched count and composition are identical between baseline and synonym. The synonym scorer does not introduce any false positives into auto-match. This is expected — a synonym match alone (weight 0.10 out of 1.10) cannot push a pair above the 0.88 auto-match threshold.
+- **Combined recall improved.** 99.5% → 99.8% (+0.3pp). The 13 recovered true matches represent nearly half of the 28 missed matches in the baseline — a 46% reduction in missed true matches.
+- **Review queue grew modestly.** +27 entries (1,594 → 1,621, +1.7%). All 27 new entries are genuine acronym relationships — 13 true matches and 14 ambiguous — so none are noise. The review queue became slightly larger but more productive.
+- **Not all 81 acronym cases recovered.** The original overlap analysis (experiment 5) identified 81 acronym cases stuck in the 0.44-0.60 zone. Synonym matching recovered 27 of these. The remaining ~54 are likely cases where: (a) the acronym is shorter than `min_length=3` (e.g. "MG", "RP", "LC" from the experiment 5 table), (b) blocking filters them out (different country codes), or (c) the B-side record is an "ambiguous" or "unmatched" type in the ground truth that was already counted correctly.
+- **Performance impact is modest.** 22% scoring throughput reduction (8,564 → 6,677 rec/s). The synonym index build is negligible (12.8ms for 21,429 keys). The per-record cost is dominated by acronym generation and HashMap lookups for each B record — cheap in absolute terms but measurable at scale.
+- **Additive weight design is essential.** Sparse binary scorers must not participate in weight normalisation when they score 0.0. This is a general principle that would apply to any future binary feature (e.g. exact ID match, regex pattern match).

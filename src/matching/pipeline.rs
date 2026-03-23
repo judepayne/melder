@@ -89,6 +89,7 @@ pub fn score_pool(
     bm25_candidates: usize,
     top_n: usize,
     bm25_ctx: Option<Bm25Ctx>,
+    synonym_index: Option<&crate::synonym::index::SynonymIndex>,
 ) -> Vec<MatchResult> {
     if blocked_ids.is_empty() {
         return Vec::new();
@@ -140,27 +141,41 @@ pub fn score_pool(
         }
     };
 
+    // Synonym candidates (empty if no synonym_fields configured).
+    let synonym_cand_ids = if !config.synonym_fields.is_empty() {
+        if let Some(idx) = synonym_index {
+            synonym_candidate_stage(idx, query_record, query_side, &config.synonym_fields)
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
     // --- Stage 3: Union candidates ---
     //
-    // Merge ANN and BM25 candidate sets, deduplicating by ID. BM25-only
-    // candidates (not in ANN set) need their records fetched from the store.
+    // Merge ANN, BM25, and synonym candidate sets, deduplicating by ID.
+    // Candidates not in the ANN set need their records fetched from the store.
     let ann_id_set: std::collections::HashSet<&str> =
         ann_cands.iter().map(|c| c.id.as_str()).collect();
 
-    let bm25_only_ids: Vec<String> = bm25_cand_ids
-        .iter()
-        .filter(|id| !ann_id_set.contains(id.as_str()))
-        .cloned()
-        .collect();
+    // Collect non-ANN candidate IDs (BM25 + synonym), deduplicated.
+    let mut extra_ids: Vec<String> = Vec::new();
+    let mut extra_id_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for id in bm25_cand_ids.iter().chain(synonym_cand_ids.iter()) {
+        if !ann_id_set.contains(id.as_str()) && extra_id_set.insert(id.clone()) {
+            extra_ids.push(id.clone());
+        }
+    }
 
-    // Fetch records for BM25-only candidates not already in the ANN set.
-    let bm25_only_cands: Vec<candidates::Candidate> = if bm25_only_ids.is_empty() {
+    // Fetch records for non-ANN candidates.
+    let extra_cands: Vec<candidates::Candidate> = if extra_ids.is_empty() {
         Vec::new()
     } else {
         let records = if scoring_fields.is_empty() {
-            pool_store.get_many(pool_side, &bm25_only_ids)
+            pool_store.get_many(pool_side, &extra_ids)
         } else {
-            pool_store.get_many_fields(pool_side, &bm25_only_ids, &scoring_fields)
+            pool_store.get_many_fields(pool_side, &extra_ids, &scoring_fields)
         };
         records
             .into_iter()
@@ -172,9 +187,8 @@ pub fn score_pool(
             .collect()
     };
 
-    // Build the full union: ANN candidates + BM25-only candidates.
-    let total_cands = ann_cands.len() + bm25_only_cands.len();
-    if total_cands == 0 {
+    // Build the full union: ANN candidates + extra candidates (BM25/synonym).
+    if ann_cands.is_empty() && extra_cands.is_empty() {
         return Vec::new();
     }
 
@@ -182,10 +196,10 @@ pub fn score_pool(
     let emb_specs = crate::vectordb::embedding_field_specs(config);
     let has_emb_specs = has_embeddings && !emb_specs.is_empty();
 
-    let mut results: Vec<MatchResult> = Vec::with_capacity(ann_cands.len() + bm25_only_cands.len());
+    let mut results: Vec<MatchResult> = Vec::with_capacity(ann_cands.len() + extra_cands.len());
 
-    // Score all candidates (ANN then BM25-only) through the same path.
-    for cand in ann_cands.iter().chain(bm25_only_cands.iter()) {
+    // Score all candidates through the same path.
+    for cand in ann_cands.iter().chain(extra_cands.iter()) {
         results.push(score_candidate(
             cand,
             query_id,
@@ -221,7 +235,7 @@ pub fn score_pool(
     if let Some(top) = results.first_mut() {
         let matched = ann_cands
             .iter()
-            .chain(bm25_only_cands.iter())
+            .chain(extra_cands.iter())
             .find(|c| c.id == top.matched_id);
         if let Some(cand) = matched {
             top.matched_record = Some(apply_output_mapping(&cand.record, config));
@@ -318,6 +332,48 @@ fn bm25_candidate_stage(
     let ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
     let map: HashMap<String, f64> = scored.into_iter().collect();
     (ids, map)
+}
+
+/// Independent synonym candidate generation stage.
+///
+/// For each configured synonym field, looks up the query record's field value
+/// in the opposite-side synonym index. Returns deduplicated candidate IDs.
+///
+/// Typically produces 0-2 candidates per query — synonym matches are rare
+/// but critical for acronym recovery.
+fn synonym_candidate_stage(
+    index: &crate::synonym::index::SynonymIndex,
+    query_record: &Record,
+    query_side: Side,
+    synonym_fields: &[crate::config::SynonymFieldConfig],
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for sf in synonym_fields {
+        let query_field = match query_side {
+            Side::A => &sf.field_a,
+            Side::B => &sf.field_b,
+        };
+        let query_value = query_record
+            .get(query_field)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        if query_value.trim().is_empty() {
+            continue;
+        }
+
+        let min_len = sf.generators.first().map(|g| g.min_length).unwrap_or(3);
+
+        let candidates = index.lookup(query_value, &sf.field_a, &sf.field_b, min_len);
+        for id in candidates {
+            if seen.insert(id.clone()) {
+                result.push(id);
+            }
+        }
+    }
+
+    result
 }
 
 /// Decompose two combined embedding vectors into per-field cosine similarities.
@@ -652,6 +708,7 @@ output:
             10,
             5,
             None,
+            None,
         );
 
         assert!(results.is_empty(), "empty blocked_ids → no results");
@@ -685,6 +742,7 @@ output:
             50,
             10,
             5,
+            None,
             None,
         );
 
@@ -729,6 +787,7 @@ output:
             50,
             10,
             5,
+            None,
             None,
         );
 
@@ -784,6 +843,7 @@ output:
             10,
             5,
             None,
+            None,
         );
 
         // Results must be sorted descending by score.
@@ -831,6 +891,7 @@ output:
             50, // ann_candidates
             10, // bm25_candidates
             3,  // top_n = 3
+            None,
             None,
         );
 

@@ -36,6 +36,9 @@ pub struct LiveSideState {
     /// BM25 full-text index for this side. Built from fuzzy/embedding
     /// text fields. `None` if BM25 not configured.
     pub bm25_index: Option<std::sync::RwLock<crate::bm25::index::BM25Index>>,
+    /// Synonym index for this side. Built from synonym_fields config.
+    /// `None` if no synonym matching configured.
+    pub synonym_index: Option<std::sync::RwLock<crate::synonym::index::SynonymIndex>>,
 }
 
 impl std::fmt::Debug for LiveSideState {
@@ -46,6 +49,7 @@ impl std::fmt::Debug for LiveSideState {
             &self.combined_index.as_ref().map(|i| i.len()).unwrap_or(0),
         );
         s.field("bm25_index", &self.bm25_index.is_some());
+        s.field("synonym_index", &self.synonym_index.is_some());
         s.finish()
     }
 }
@@ -215,14 +219,20 @@ impl LiveMatchState {
         // Build BM25 indices if configured
         let (bm25_index_a, bm25_index_b) = Self::build_bm25_indices(&store, &config, start)?;
 
+        // Build synonym indices if configured
+        let (synonym_index_a, synonym_index_b) =
+            Self::build_synonym_indices(&store, &config);
+
         let a_side = LiveSideState {
             combined_index: combined_index_a,
             bm25_index: bm25_index_a,
+            synonym_index: synonym_index_a,
         };
 
         let b_side = LiveSideState {
             combined_index: combined_index_b,
             bm25_index: bm25_index_b,
+            synonym_index: synonym_index_b,
         };
 
         // Open WAL for append-only writes
@@ -766,6 +776,40 @@ impl LiveMatchState {
         } else {
             Ok((None, None))
         }
+    }
+
+    /// Build synonym indices for both sides if `synonym_fields` is configured.
+    fn build_synonym_indices(
+        store: &Arc<dyn RecordStore>,
+        config: &Config,
+    ) -> (
+        Option<std::sync::RwLock<crate::synonym::index::SynonymIndex>>,
+        Option<std::sync::RwLock<crate::synonym::index::SynonymIndex>>,
+    ) {
+        if config.synonym_fields.is_empty() {
+            return (None, None);
+        }
+        let syn_start = std::time::Instant::now();
+        let idx_a = crate::synonym::index::SynonymIndex::build(
+            store.as_ref(),
+            Side::A,
+            &config.synonym_fields,
+        );
+        let idx_b = crate::synonym::index::SynonymIndex::build(
+            store.as_ref(),
+            Side::B,
+            &config.synonym_fields,
+        );
+        eprintln!(
+            "Built synonym indices (A: {} keys, B: {} keys) in {:.1}ms",
+            idx_a.len(),
+            idx_b.len(),
+            syn_start.elapsed().as_secs_f64() * 1000.0
+        );
+        (
+            Some(std::sync::RwLock::new(idx_a)),
+            Some(std::sync::RwLock::new(idx_b)),
+        )
     }
 
     /// Initialise the encoding coordinator if `encoder_batch_wait_ms > 0`.

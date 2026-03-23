@@ -1,0 +1,5 @@
+- [project_melder.md](project_melder.md) — Melder project: Rust record-matching engine with batch & live modes
+- [reference_vault.md](reference_vault.md) — Vault docs: project overview, decisions, architecture, discarded ideas
+- [feedback_table_format.md](feedback_table_format.md) — User's preferred holdout results table format
+- [project_training_state.md](project_training_state.md) — Current state of embedding fine-tuning experiments and science framework
+- [project_tune_enhancement.md](project_tune_enhancement.md) — Planned: meld tune ground-truth analysis using common_id_field

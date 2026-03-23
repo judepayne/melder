@@ -68,6 +68,7 @@ pub fn score_pair(
                         .unwrap_or(0.0)
                 }
                 "numeric" => numeric_score(a_val, b_val),
+                "synonym" => crate::synonym::scorer::score_default(a_val, b_val),
                 _ => 0.0,
             }
         };
@@ -89,16 +90,24 @@ pub fn score_pair(
         };
 
         weighted_sum += score * mf.weight;
-        total_weight += mf.weight;
+        // Synonym weight is never included in the denominator. This makes
+        // synonym a flat additive bonus: +weight when it fires (score=1.0),
+        // +0.0 when it doesn't. The other methods normalise among themselves
+        // as before, and synonym sits on top.
+        if mf.method != "synonym" {
+            total_weight += mf.weight;
+        }
         field_scores.push(fs);
     }
 
-    // Normalize if weights don't sum to 1.0
+    // Normalize if weights don't sum to 1.0, then clamp to [0, 1].
+    // Additive methods (synonym) can push the sum above 1.0.
     let total = if total_weight > 0.0 && (total_weight - 1.0).abs() > 0.001 {
         weighted_sum / total_weight
     } else {
         weighted_sum
-    };
+    }
+    .clamp(0.0, 1.0);
 
     ScoreResult {
         field_scores,

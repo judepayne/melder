@@ -427,6 +427,12 @@ impl Session {
             idx.upsert(&id, &record);
         }
 
+        // 6c. Update synonym index
+        if let Some(ref syn_mtx) = self.state.side(side).synonym_index {
+            let mut idx = syn_mtx.write().unwrap_or_else(|e| e.into_inner());
+            idx.upsert(&id, &record, side, &config.synonym_fields);
+        }
+
         // 8. Update common_id_index and check for common ID match
         let this_cid_field = match side {
             Side::A => config.datasets.a.common_id_field.as_deref(),
@@ -515,6 +521,11 @@ impl Session {
         let ann_candidates = config.ann_candidates.unwrap_or(50);
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
+        // Acquire opposite-side synonym index read lock (if configured).
+        let opp_syn_guard = opp_side.synonym_index.as_ref().map(|mtx| {
+            mtx.read().unwrap_or_else(|e| e.into_inner())
+        });
+
         // Build BM25 context from opposite side's index.
         // Commit any buffered writes first (write lock, brief), then
         // query under a read lock so concurrent requests can score in parallel.
@@ -542,6 +553,7 @@ impl Session {
                 bm25_candidates_n,
                 top_n,
                 Some(ctx),
+                opp_syn_guard.as_deref(),
             )
         } else {
             pipeline::score_pool(
@@ -558,6 +570,7 @@ impl Session {
                 bm25_candidates_n,
                 top_n,
                 None,
+                opp_syn_guard.as_deref(),
             )
         };
 
@@ -669,6 +682,12 @@ impl Session {
         if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
             let mut idx = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
             idx.remove(id);
+        }
+
+        // Remove from synonym index
+        if let Some(ref syn_mtx) = self.state.side(side).synonym_index {
+            let mut idx = syn_mtx.write().unwrap_or_else(|e| e.into_inner());
+            idx.remove(id, side);
         }
 
         // Remove from unmatched set
@@ -803,6 +822,11 @@ impl Session {
         let ann_candidates = config.ann_candidates.unwrap_or(50);
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
+        // Acquire opposite-side synonym index read lock (if configured).
+        let opp_syn_guard = opp_side.synonym_index.as_ref().map(|mtx| {
+            mtx.read().unwrap_or_else(|e| e.into_inner())
+        });
+
         // Build BM25 context from opposite side's index.
         // Commit any buffered writes first (write lock, brief), then
         // query under a read lock so concurrent requests can score in parallel.
@@ -828,6 +852,7 @@ impl Session {
                 bm25_candidates_n,
                 top_n,
                 Some(ctx),
+                opp_syn_guard.as_deref(),
             )
         } else {
             pipeline::score_pool(
@@ -844,6 +869,7 @@ impl Session {
                 bm25_candidates_n,
                 top_n,
                 None,
+                opp_syn_guard.as_deref(),
             )
         };
 

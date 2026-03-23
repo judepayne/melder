@@ -271,6 +271,25 @@ pub fn run_batch(
         );
     }
 
+    // Build A-side synonym index if method: synonym is configured.
+    let synonym_index_a: Option<crate::synonym::index::SynonymIndex> =
+        if !config.synonym_fields.is_empty() {
+            let syn_start = Instant::now();
+            let idx = crate::synonym::index::SynonymIndex::build(
+                store,
+                Side::A,
+                &config.synonym_fields,
+            );
+            eprintln!(
+                "Built synonym index for A records ({} keys) in {:.1}ms",
+                idx.len(),
+                syn_start.elapsed().as_secs_f64() * 1000.0
+            );
+            Some(idx)
+        } else {
+            None
+        };
+
     // Score all B records in a single parallel pass.
     let scoring_start = Instant::now();
     let progress = AtomicUsize::new(0);
@@ -337,6 +356,7 @@ pub fn run_batch(
                     bm25_candidates_n,
                     top_n,
                     Some(ctx),
+                    synonym_index_a.as_ref(),
                 )
             } else {
                 pipeline::score_pool(
@@ -353,6 +373,7 @@ pub fn run_batch(
                     bm25_candidates_n,
                     top_n,
                     None,
+                    synonym_index_a.as_ref(),
                 )
             };
 

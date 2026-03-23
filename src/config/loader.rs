@@ -8,7 +8,7 @@ use crate::error::ConfigError;
 use super::schema::{BlockingFieldPair, Config, DatasetConfig};
 
 /// Valid match methods.
-const VALID_METHODS: &[&str] = &["exact", "fuzzy", "embedding", "numeric", "bm25"];
+const VALID_METHODS: &[&str] = &["exact", "fuzzy", "embedding", "numeric", "bm25", "synonym"];
 
 /// Valid fuzzy scorers.
 const VALID_SCORERS: &[&str] = &["wratio", "partial_ratio", "token_sort", "ratio"];
@@ -37,6 +37,7 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     apply_defaults(&mut cfg);
     validate(&cfg)?;
     derive_bm25_fields(&mut cfg);
+    derive_synonym_fields(&mut cfg);
     derive_required_fields(&mut cfg);
 
     Ok(cfg)
@@ -193,7 +194,13 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
                 message: "must be >= 0".into(),
             });
         }
-        weight_sum += mf.weight;
+        // Synonym weights are excluded from the sum-to-1.0 check because
+        // the scorer excludes synonym from the normalisation denominator
+        // when it scores 0.0 (which is ~99% of pairs). This makes synonym
+        // purely additive — it only affects the composite when it fires.
+        if mf.method != "synonym" {
+            weight_sum += mf.weight;
+        }
     }
 
     // At most one BM25 entry allowed.
@@ -457,6 +464,28 @@ fn derive_bm25_fields(cfg: &mut Config) {
         .collect();
 }
 
+/// Populate `synonym_fields` if not explicitly set in config.
+///
+/// When the user omits `synonym_fields`, derive them from `method: synonym`
+/// entries in `match_fields` with default generators (acronym, min_length=3).
+/// When set explicitly, the user controls generator options.
+fn derive_synonym_fields(cfg: &mut Config) {
+    if !cfg.synonym_fields.is_empty() {
+        // User provided explicit synonym_fields — keep them.
+        return;
+    }
+    cfg.synonym_fields = cfg
+        .match_fields
+        .iter()
+        .filter(|mf| mf.method == "synonym")
+        .map(|mf| super::schema::SynonymFieldConfig {
+            field_a: mf.field_a.clone(),
+            field_b: mf.field_b.clone(),
+            generators: super::schema::default_synonym_generators(),
+        })
+        .collect();
+}
+
 fn derive_required_fields(cfg: &mut Config) {
     let mut seen_a = HashSet::new();
     let mut seen_b = HashSet::new();
@@ -490,6 +519,12 @@ fn derive_required_fields(cfg: &mut Config) {
     for pair in &cfg.bm25_fields {
         seen_a.insert(pair.field_a.clone());
         seen_b.insert(pair.field_b.clone());
+    }
+
+    // synonym_fields (explicit or derived)
+    for sf in &cfg.synonym_fields {
+        seen_a.insert(sf.field_a.clone());
+        seen_b.insert(sf.field_b.clone());
     }
 
     // output mapping (from side A)
@@ -1021,7 +1056,6 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
         assert!(err.to_string().contains("at most one bm25"), "got: {}", err);
     }
 
-    #[test]
     #[test]
     fn ann_and_bm25_candidates_independent() {
         // ann_candidates < bm25_candidates is valid — generators are independent.

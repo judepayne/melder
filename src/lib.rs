@@ -12,6 +12,7 @@ pub mod matching;
 pub mod models;
 pub mod scoring;
 pub mod session;
+pub mod synonym;
 pub mod state;
 pub mod store;
 pub mod vectordb;

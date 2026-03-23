@@ -478,7 +478,7 @@ mod tests {
     use crate::models::Side;
     use crate::state::upsert_log::UpsertLog;
     use crate::store::RecordStore;
-    use tempfile::{TempDir, tempdir};
+    use tempfile::{tempdir, TempDir};
 
     fn make_record(pairs: &[(&str, &str)]) -> Record {
         pairs
@@ -752,9 +752,9 @@ live:
         assert_eq!(review.trim(), "id,side,candidate_id,score");
 
         let ua = std::fs::read_to_string(out_dir.join("unmatched_a.csv")).unwrap();
-        assert_eq!(ua.trim(), "entity_id");
+        assert_eq!(ua.trim(), "entity_id,score");
 
         let ub = std::fs::read_to_string(out_dir.join("unmatched_b.csv")).unwrap();
-        assert_eq!(ub.trim(), "counterparty_id");
+        assert_eq!(ub.trim(), "counterparty_id,score");
     }
 }

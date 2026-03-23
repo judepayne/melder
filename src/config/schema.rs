@@ -61,6 +61,13 @@ pub struct Config {
     /// otherwise need ghost fields with `weight: 0.0`.
     #[serde(default)]
     pub bm25_fields: Vec<Bm25FieldPair>,
+    /// Which field pairs to build synonym indices for.
+    ///
+    /// When omitted, auto-derived from `method: synonym` entries in
+    /// `match_fields` with default generators (acronym, min_length=3).
+    /// When set explicitly, the user controls generator options.
+    #[serde(default)]
+    pub synonym_fields: Vec<SynonymFieldConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +171,42 @@ pub struct Bm25FieldPair {
     pub field_b: String,
 }
 
+/// Configuration for synonym generation on a field pair.
+///
+/// Controls which fields are indexed for synonym/acronym matching and which
+/// generators to use. In the common case this is auto-derived from
+/// `method: synonym` entries in `match_fields` — users only need to set this
+/// explicitly to override generator options.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct SynonymFieldConfig {
+    pub field_a: String,
+    pub field_b: String,
+    #[serde(default = "default_synonym_generators")]
+    pub generators: Vec<SynonymGenerator>,
+}
+
+/// A synonym generator configuration (e.g. acronym generation).
+#[derive(Debug, Deserialize, Clone)]
+pub struct SynonymGenerator {
+    /// Generator type: "acronym".
+    #[serde(rename = "type")]
+    pub gen_type: String,
+    /// Minimum acronym length to produce. Defaults to 3.
+    #[serde(default = "default_min_length")]
+    pub min_length: usize,
+}
+
+pub fn default_synonym_generators() -> Vec<SynonymGenerator> {
+    vec![SynonymGenerator {
+        gen_type: "acronym".to_string(),
+        min_length: 3,
+    }]
+}
+
+fn default_min_length() -> usize {
+    3
+}
+
 #[derive(Debug, Deserialize)]
 pub struct MatchField {
     /// Empty for `method: bm25` (operates across all text fields).
@@ -172,7 +215,7 @@ pub struct MatchField {
     /// Empty for `method: bm25` (operates across all text fields).
     #[serde(default)]
     pub field_b: String,
-    /// "exact" | "fuzzy" | "embedding" | "numeric" | "bm25"
+    /// "exact" | "fuzzy" | "embedding" | "numeric" | "bm25" | "synonym"
     pub method: String,
     /// For fuzzy: "wratio" | "partial_ratio" | "token_sort_ratio" | "ratio"
     #[serde(default)]

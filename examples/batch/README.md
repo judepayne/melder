@@ -294,7 +294,7 @@ Notice that more records are now auto-matched (lower bar) and fewer
 fall into review. The B index loads from cache -- no re-encoding.
 
 > **Tip:** Use `meld tune` on labelled data to find optimal thresholds
-> automatically. See [TUNE.md](../../TUNE.md) for details.
+> automatically. See [Accuracy & Tuning](../../docs/accuracy-and-tuning.md) for details.
 
 When you are done experimenting, change the thresholds back to 0.85 /
 0.60.
