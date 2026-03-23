@@ -1,6 +1,6 @@
 job:
-  name: accuracy_10kx10k_embeddings
-  description: Accuracy benchmark — 10k × 10k, embeddings-only (usearch), no fuzzy/exact
+  name: accuracy_10kx10k_embeddings_bge
+  description: Accuracy benchmark — 10k × 10k, embeddings-only (usearch), BAAI/bge-small-en-v1.5
 
 datasets:
   a:
@@ -14,14 +14,14 @@ datasets:
 
 cross_map:
   backend: local
-  path: benchmarks/accuracy/10kx10k_embeddings/crossmap.csv
+  path: benchmarks/accuracy/10kx10k_embeddings_bge/crossmap.csv
   a_id_field: entity_id
   b_id_field: counterparty_id
 
 embeddings:
-  model: all-MiniLM-L6-v2
-  a_cache_dir: benchmarks/accuracy/10kx10k_embeddings/cache
-  b_cache_dir: benchmarks/accuracy/10kx10k_embeddings/cache
+  model: BAAI/bge-small-en-v1.5
+  a_cache_dir: benchmarks/accuracy/10kx10k_embeddings_bge/cache
+  b_cache_dir: benchmarks/accuracy/10kx10k_embeddings_bge/cache
 
 exact_prefilter:
   enabled: true
@@ -47,13 +47,13 @@ match_fields:
     weight: 0.40
 
 thresholds:
-  auto_match: 0.85
-  review_floor: 0.72
+  auto_match: 0.88
+  review_floor: 0.80
 
 output:
-  results_path:   benchmarks/accuracy/10kx10k_embeddings/output/results.csv
-  review_path:    benchmarks/accuracy/10kx10k_embeddings/output/review.csv
-  unmatched_path: benchmarks/accuracy/10kx10k_embeddings/output/unmatched.csv
+  results_path:   benchmarks/accuracy/10kx10k_embeddings_bge/output/results.csv
+  review_path:    benchmarks/accuracy/10kx10k_embeddings_bge/output/review.csv
+  unmatched_path: benchmarks/accuracy/10kx10k_embeddings_bge/output/unmatched.csv
 
 performance:
   encoder_pool_size: 4

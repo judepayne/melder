@@ -223,6 +223,9 @@ pub fn score_pool(
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        if let Some(min_gap) = config.thresholds.min_score_gap {
+            apply_score_gap_check(&mut results, min_gap);
+        }
         if top_n > 0 {
             results.truncate(top_n);
         }
@@ -340,6 +343,11 @@ pub fn score_pool(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    // Apply score gap check before truncation so rank-2 is still present.
+    if let Some(min_gap) = config.thresholds.min_score_gap {
+        apply_score_gap_check(&mut results, min_gap);
+    }
 
     // Truncate to top_n if specified
     if top_n > 0 {
@@ -506,6 +514,29 @@ fn apply_output_mapping(record: &Record, config: &Config) -> Record {
     result
 }
 
+/// Downgrade the top result from Auto to Review when the score gap to rank-2
+/// is below `min_gap`.
+///
+/// A high composite score with a close second candidate indicates model
+/// uncertainty — the top match is more likely to be a false positive than
+/// when the winning margin is large. Downgrading to Review surfaces these
+/// borderline cases for human inspection rather than auto-confirming them.
+///
+/// Only applies when there are ≥ 2 results. Single-candidate results are
+/// left unchanged: no rank-2 exists, so there is no ambiguity signal.
+fn apply_score_gap_check(results: &mut Vec<MatchResult>, min_gap: f64) {
+    if results.len() < 2 {
+        return;
+    }
+    if results[0].classification != Classification::Auto {
+        return;
+    }
+    let gap = results[0].score - results[1].score;
+    if gap < min_gap {
+        results[0].classification = Classification::Review;
+    }
+}
+
 /// Classify the top match result.
 pub fn top_classification(results: &[MatchResult]) -> Classification {
     results
@@ -517,6 +548,81 @@ pub fn top_classification(results: &[MatchResult]) -> Classification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_match_result(score: f64, classification: Classification) -> MatchResult {
+        MatchResult {
+            query_id: "q".to_string(),
+            matched_id: "m".to_string(),
+            query_side: Side::B,
+            score,
+            field_scores: vec![],
+            classification,
+            matched_record: None,
+            from_crossmap: false,
+        }
+    }
+
+    // --- apply_score_gap_check ---
+
+    #[test]
+    fn score_gap_check_downgrades_auto_when_gap_too_small() {
+        let mut results = vec![
+            make_match_result(0.90, Classification::Auto),
+            make_match_result(0.87, Classification::Auto),
+        ];
+        apply_score_gap_check(&mut results, 0.10);
+        // gap = 0.03 < 0.10 → top result downgraded
+        assert_eq!(
+            results[0].classification,
+            Classification::Review,
+            "expected Review when gap < min_gap"
+        );
+        assert_eq!(
+            results[1].classification,
+            Classification::Auto,
+            "rank-2 must be untouched"
+        );
+    }
+
+    #[test]
+    fn score_gap_check_preserves_auto_when_gap_sufficient() {
+        let mut results = vec![
+            make_match_result(0.95, Classification::Auto),
+            make_match_result(0.80, Classification::Auto),
+        ];
+        apply_score_gap_check(&mut results, 0.10);
+        // gap = 0.15 >= 0.10 → no change
+        assert_eq!(
+            results[0].classification,
+            Classification::Auto,
+            "expected Auto when gap >= min_gap"
+        );
+    }
+
+    #[test]
+    fn score_gap_check_noop_with_single_result() {
+        let mut results = vec![make_match_result(0.90, Classification::Auto)];
+        apply_score_gap_check(&mut results, 0.10);
+        // only one result — no rank-2 to compare against
+        assert_eq!(results[0].classification, Classification::Auto);
+    }
+
+    #[test]
+    fn score_gap_check_noop_when_top_is_not_auto() {
+        let mut results = vec![
+            make_match_result(0.75, Classification::Review),
+            make_match_result(0.74, Classification::Review),
+        ];
+        apply_score_gap_check(&mut results, 0.10);
+        // top is Review, not Auto — nothing to downgrade
+        assert_eq!(results[0].classification, Classification::Review);
+    }
+
+    #[test]
+    fn score_gap_check_empty_results_is_noop() {
+        let mut results: Vec<MatchResult> = vec![];
+        apply_score_gap_check(&mut results, 0.10); // must not panic
+    }
 
     #[test]
     fn decompose_emb_scores_single_field() {

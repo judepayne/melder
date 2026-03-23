@@ -547,13 +547,20 @@ output_mapping:
     to: ref_sector                  # column name in the results/review CSV
 
 # --- Thresholds --------------------------------------------------------------
-# auto_match:   pairs scoring >= this are confirmed automatically → results CSV.
-# review_floor: pairs scoring between here and auto_match → review CSV for human decision.
-#               Pairs scoring below review_floor are discarded.
-# Constraint: 0 < review_floor < auto_match <= 1.0
+# auto_match:    pairs scoring >= this are confirmed automatically → results CSV.
+# review_floor:  pairs scoring between here and auto_match → review CSV for human decision.
+#                Pairs scoring below review_floor are discarded.
+# min_score_gap: (optional) minimum margin between rank-1 and rank-2 candidate
+#                required to auto-confirm. When set, a top candidate that clears
+#                auto_match but whose lead over rank-2 is less than min_score_gap
+#                is downgraded to review instead of auto-confirmed. Single-
+#                candidate results are never downgraded. Omit to disable (default).
+# Constraints: 0 < review_floor < auto_match <= 1.0
+#              0.0 <= min_score_gap < 1.0  (if set)
 thresholds:
   auto_match: 0.85
   review_floor: 0.60
+  # min_score_gap: 0.10   # uncomment to enable confidence-margin check
 
 # --- Output paths (batch mode) -----------------------------------------------
 # Paths for the three output CSVs written by meld run.

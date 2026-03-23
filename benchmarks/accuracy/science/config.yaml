@@ -1,0 +1,64 @@
+# Base melder configuration for the synthetic fine-tuning loop.
+#
+# run.py copies this file to each round's directory and substitutes the
+# per-round values (paths, model, cache dirs) before invoking meld run.
+# Edit this file to change matching behaviour across all rounds.
+
+job:
+  name: training_round_template
+  description: "Synthetic fine-tuning loop — embeddings-only (usearch)"
+
+datasets:
+  a:
+    path: PLACEHOLDER_DATASET_A
+    id_field: entity_id
+    format: csv
+  b:
+    path: PLACEHOLDER_DATASET_B
+    id_field: counterparty_id
+    format: csv
+
+cross_map:
+  backend: local
+  path: PLACEHOLDER_CROSSMAP
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+embeddings:
+  model: PLACEHOLDER_MODEL
+  a_cache_dir: PLACEHOLDER_CACHE_A
+  b_cache_dir: PLACEHOLDER_CACHE_B
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: embedding
+    weight: 0.60
+  - field_a: registered_address
+    field_b: counterparty_address
+    method: embedding
+    weight: 0.40
+
+thresholds:
+  auto_match: 0.88
+  review_floor: 0.60
+
+output:
+  results_path:   PLACEHOLDER_RESULTS
+  review_path:    PLACEHOLDER_REVIEW
+  unmatched_path: PLACEHOLDER_UNMATCHED
+
+performance:
+  encoder_pool_size: 4
+  vector_index_mode: load
+
+vector_backend: usearch
+top_n: 5
+ann_candidates: 50

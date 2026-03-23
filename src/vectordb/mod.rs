@@ -706,14 +706,18 @@ fn encode_and_upsert(
                 .map_err(|e| MelderError::Other(anyhow::anyhow!("{}", e)))?;
         }
 
-        let done = (batch_idx + 1) * batch_size;
-        if done % 2000 == 0 || done >= total {
-            eprintln!(
-                "  {} combined index: encoded {}/{}",
+        let done = ((batch_idx + 1) * batch_size).min(total);
+        if done % 1024 < batch_size || done >= total {
+            eprint!(
+                "\r  {} combined index: encoded {}/{} ({:.0}%)",
                 side_label,
-                done.min(total),
-                total
+                done,
+                total,
+                done as f64 / total as f64 * 100.0,
             );
+            if done >= total {
+                eprintln!();
+            }
         }
     }
 

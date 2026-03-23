@@ -302,6 +302,16 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         });
     }
 
+    // 23b. min_score_gap in [0.0, 1.0) if set
+    if let Some(gap) = cfg.thresholds.min_score_gap {
+        if gap < 0.0 || gap >= 1.0 {
+            return Err(ConfigError::InvalidValue {
+                field: "thresholds.min_score_gap".into(),
+                message: "must be in range [0.0, 1.0)".into(),
+            });
+        }
+    }
+
     // 24-26. output paths
     require_non_empty(&cfg.output.results_path, "output.results_path")?;
     require_non_empty(&cfg.output.review_path, "output.review_path")?;
@@ -1322,6 +1332,124 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
             Some("mmap"),
             "vector_index_mode: mmap should be accepted"
         );
+    }
+
+    #[test]
+    fn min_score_gap_accepted() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6, min_score_gap: 0.10 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(cfg.thresholds.min_score_gap, Some(0.10));
+    }
+
+    #[test]
+    fn min_score_gap_zero_accepted() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6, min_score_gap: 0.0 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(cfg.thresholds.min_score_gap, Some(0.0));
+    }
+
+    #[test]
+    fn min_score_gap_negative_rejected() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6, min_score_gap: -0.05 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("min_score_gap"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn min_score_gap_one_rejected() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6, min_score_gap: 1.0 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("min_score_gap"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn min_score_gap_absent_is_none() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(cfg.thresholds.min_score_gap, None);
     }
 
     #[test]

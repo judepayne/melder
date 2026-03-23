@@ -348,4 +348,22 @@ Implemented `MemoryStore` as the DashMap-backed implementation. Both batch and l
 
 ---
 
+## Encoder Supports Local ONNX Paths via UserDefinedEmbeddingModel
+
+**Date:** 2026-03-18
+**Status:** Implemented
+
+**Context:**
+The synthetic fine-tuning loop exports fine-tuned models as ONNX files. Melder's encoder previously only supported named fastembed models (e.g. `all-MiniLM-L6-v2`). The config docs said local paths were supported but the code did not implement this.
+
+**Decision:**
+Extended `src/encoder/mod.rs` to detect local paths (absolute, `./`, `../`, `.onnx` suffix, or any name that resolves on disk) and load them using fastembed's `UserDefinedEmbeddingModel` API. The directory must contain `model.onnx` plus the four standard HuggingFace tokenizer files (`tokenizer.json`, `config.json`, `special_tokens_map.json`, `tokenizer_config.json`). Mean pooling is applied (correct for all fine-tuned MiniLM/BERT-family models). Output dimension is auto-detected from `config.json`'s `hidden_size` field, defaulting to 384.
+
+**Consequences:**
+- Any fine-tuned ONNX model produced by `optimum-cli export onnx` can now be used directly in melder config by setting `embeddings.model` to the directory path.
+- The `quantized` flag is ignored for local paths — point directly to the desired `.onnx` file if you want quantized.
+- fastembed 5.12.0's `UserDefinedEmbeddingModel` API is used; this must remain compatible with future fastembed upgrades.
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

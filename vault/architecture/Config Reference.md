@@ -198,14 +198,16 @@ Fields with `method: "embedding"` are concatenated into the combined vector (eac
 thresholds:
   auto_match: 0.85
   review_floor: 0.60
+  min_score_gap: 0.10   # optional
 ```
 
 | Field | Notes |
 |---|---|
 | `auto_match` | Score >= this → `Classification::Auto` (confirmed, written to results.csv / CrossMap) |
 | `review_floor` | Score >= this but < auto_match → `Classification::Review` (borderline, written to review.csv / review queue) |
+| `min_score_gap` | Optional\<f64\> | `None` | Minimum margin between rank-1 and rank-2 candidates required to auto-confirm. When set, a top candidate that clears `auto_match` but whose gap over rank-2 is less than this value is downgraded to `review` instead of auto-confirmed. Single-candidate results are never downgraded. Default `None` (disabled). |
 
-Both thresholds are **inclusive** (≥). Below `review_floor` → `Classification::NoMatch`. Use `meld tune` to inspect the score distribution before setting production thresholds. See [[Scoring Algorithm#Classification]].
+Both thresholds are **inclusive** (≥). Below `review_floor` → `Classification::NoMatch`. Use `meld tune` to inspect the score distribution before setting production thresholds. See [[Scoring Algorithm#Classification]]. When `min_score_gap` is set, the gap check runs after sorting and before `top_n` truncation, so rank-2 is always available for comparison.
 
 ---
 

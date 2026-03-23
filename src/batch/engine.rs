@@ -26,7 +26,8 @@ use crate::vectordb::VectorDB;
 pub struct BatchResult {
     pub matched: Vec<MatchResult>,
     pub review: Vec<MatchResult>,
-    pub unmatched: Vec<(String, Record)>,
+    /// Unmatched B records with their best candidate score (None if no candidates found).
+    pub unmatched: Vec<(String, Record, Option<f64>)>,
     pub stats: BatchStats,
 }
 
@@ -47,7 +48,9 @@ pub struct BatchStats {
 enum RecordOutcome {
     Auto(MatchResult),
     Review(MatchResult),
-    NoMatch(String, Record),
+    /// B record that scored below review_floor. Best candidate score is preserved
+    /// (None if no candidates were found at all).
+    NoMatch(String, Record, Option<f64>),
 }
 
 /// Run the batch matching engine.
@@ -377,9 +380,18 @@ pub fn run_batch(
             // Claim loop: try each auto-match candidate in ranked order.
             // Uses crossmap.claim() so concurrent threads can't double-match.
             let mut outcome = None;
+            let mut best_score: Option<f64> = None;
             for mut result in results {
+                // Track the best score seen regardless of outcome.
+                if best_score.is_none() {
+                    best_score = Some(result.score);
+                }
                 if result.score < config.thresholds.review_floor {
-                    outcome = Some(RecordOutcome::NoMatch(b_id.to_string(), b_record.clone()));
+                    outcome = Some(RecordOutcome::NoMatch(
+                        b_id.to_string(),
+                        b_record.clone(),
+                        best_score,
+                    ));
                     break;
                 }
                 if result.score >= config.thresholds.auto_match {
@@ -400,7 +412,7 @@ pub fn run_batch(
                 break;
             }
 
-            outcome.or_else(|| Some(RecordOutcome::NoMatch(b_id.to_string(), b_record)))
+            outcome.or_else(|| Some(RecordOutcome::NoMatch(b_id.to_string(), b_record, best_score)))
         })
         .collect();
 
@@ -408,7 +420,7 @@ pub fn run_batch(
         match outcome {
             RecordOutcome::Auto(mr) => matched.push(mr),
             RecordOutcome::Review(mr) => review.push(mr),
-            RecordOutcome::NoMatch(id, rec) => unmatched.push((id, rec)),
+            RecordOutcome::NoMatch(id, rec, score) => unmatched.push((id, rec, score)),
         }
     }
 

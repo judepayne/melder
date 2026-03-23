@@ -72,10 +72,11 @@ pub fn write_review_csv(
 
 /// Write unmatched B records to a CSV file.
 ///
-/// All fields from unmatched B records, prefixed by the ID field.
+/// Columns: id_field, score (best candidate score or empty), then all other B-record fields.
+/// The score column allows threshold sweeping post-hoc without re-running the match.
 pub fn write_unmatched_csv(
     path: &Path,
-    records: &[(String, Record)],
+    records: &[(String, Record, Option<f64>)],
     id_field: &str,
 ) -> Result<(), DataError> {
     ensure_parent(path)?;
@@ -83,18 +84,18 @@ pub fn write_unmatched_csv(
     if records.is_empty() {
         // Write header-only file
         let mut wtr = csv::Writer::from_path(path)?;
-        wtr.write_record([id_field])?;
+        wtr.write_record([id_field, "score"])?;
         wtr.flush()?;
         return Ok(());
     }
 
     // Collect all unique field names across all records
     let mut all_fields: Vec<String> = Vec::new();
-    // ID field first
+    // ID field first, then score, then remaining fields sorted
     all_fields.push(id_field.to_string());
-    // Then remaining fields sorted
+    all_fields.push("score".to_string());
     let mut other_fields: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (_, rec) in records {
+    for (_, rec, _) in records {
         for key in rec.keys() {
             if key != id_field {
                 other_fields.insert(key.clone());
@@ -106,10 +107,17 @@ pub fn write_unmatched_csv(
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record(&all_fields)?;
 
-    for (_, rec) in records {
+    for (_, rec, score) in records {
+        let score_str = score.map(|s| format!("{:.4}", s)).unwrap_or_default();
         let row: Vec<String> = all_fields
             .iter()
-            .map(|f| rec.get(f).cloned().unwrap_or_default())
+            .map(|f| {
+                if f == "score" {
+                    score_str.clone()
+                } else {
+                    rec.get(f).cloned().unwrap_or_default()
+                }
+            })
             .collect();
         wtr.write_record(&row)?;
     }
@@ -179,7 +187,7 @@ mod tests {
             r.insert("counterparty_id".into(), "B-1".into());
             r.insert("counterparty_name".into(), "Test Corp".into());
             r
-        })];
+        }, Some(0.75_f64))];
 
         write_unmatched_csv(&path, &records, "counterparty_id").unwrap();
 

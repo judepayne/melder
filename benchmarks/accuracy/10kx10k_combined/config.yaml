@@ -23,6 +23,12 @@ embeddings:
   a_cache_dir: benchmarks/accuracy/10kx10k_combined/cache
   b_cache_dir: benchmarks/accuracy/10kx10k_combined/cache
 
+exact_prefilter:
+  enabled: true
+  fields:
+    - field_a: lei
+      field_b: lei_code
+
 blocking:
   enabled: true
   operator: and

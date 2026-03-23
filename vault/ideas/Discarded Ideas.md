@@ -50,4 +50,16 @@ Approaches that were considered and rejected. Recorded here to prevent re-attemp
 
 ---
 
+## Synthetic fine-tuning with independent random seeds
+
+**Tried:** 5-round training loop using seeds 0–4 for training datasets and seed 9999 for holdout. Full retrain from `all-MiniLM-L6-v2` each round on accumulated pairs (~9k pairs/round, labels 1.0/0.7/0.0, `CosineSimilarityLoss`).
+
+**Outcome:** Holdout collapsed to zero matches by round 3. Training recall reached 99% (memorisation signal). The model overfit to the specific Faker-generated entity names in seeds 0–4 and lost all generalisation ability.
+
+**Why it failed:** Different seeds produce non-overlapping entity name vocabularies. The model memorised training names rather than learning noise-invariant representations. This is a holdout design flaw, not a fundamental problem with fine-tuning.
+
+**Do not retry** with this exact design. The fix is to share the A-side entity pool between training and holdout (same A entities, different B noise draws). See [[Training Loop]] for full results and analysis.
+
+---
+
 See also: [[Constitution]] for the invariants that ruled out several of these approaches, [[Key Decisions]] for the alternatives that were chosen instead.

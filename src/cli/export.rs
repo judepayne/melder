@@ -397,7 +397,12 @@ fn write_review_or_exit(path: &Path, entries: &[ReviewRow]) {
 }
 
 fn write_unmatched_or_exit(path: &Path, records: &[(String, Record)], id_field: &str) {
-    if let Err(e) = crate::batch::writer::write_unmatched_csv(path, records, id_field) {
+    // Score is not available in the export path (no live scoring), so use None.
+    let with_scores: Vec<(String, Record, Option<f64>)> = records
+        .iter()
+        .map(|(id, rec)| (id.clone(), rec.clone(), None))
+        .collect();
+    if let Err(e) = crate::batch::writer::write_unmatched_csv(path, &with_scores, id_field) {
         eprintln!("Failed to write {}: {}", path.display(), e);
         process::exit(1);
     }

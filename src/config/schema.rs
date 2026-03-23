@@ -191,6 +191,20 @@ pub struct FieldMapping {
 pub struct ThresholdsConfig {
     pub auto_match: f64,
     pub review_floor: f64,
+    /// Minimum score gap between the top and second-best candidate required
+    /// to auto-confirm a match.
+    ///
+    /// When set, a top candidate that clears `auto_match` but whose margin
+    /// over rank-2 is less than `min_score_gap` is downgraded to `review`
+    /// instead of being auto-confirmed. Single-candidate results (no rank-2
+    /// exists) are never downgraded.
+    ///
+    /// Default: `None` (disabled — no gap requirement).
+    ///
+    /// Example: `min_score_gap: 0.10` requires the top match to score at
+    /// least 0.10 higher than the second-best candidate to auto-confirm.
+    #[serde(default)]
+    pub min_score_gap: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
