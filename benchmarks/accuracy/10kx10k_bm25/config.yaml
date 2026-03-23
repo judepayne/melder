@@ -1,6 +1,6 @@
 job:
   name: accuracy_10kx10k_bm25
-  description: "Accuracy benchmark \u2014 10k \xD7 10k, BM25-only, no fuzzy/exact"
+  description: Accuracy benchmark — 10k × 10k, BM25-only, no fuzzy/exact
 datasets:
   a:
     path: benchmarks/data/dataset_a_10k.csv
@@ -23,23 +23,22 @@ exact_prefilter:
   fields:
   - field_a: lei
     field_b: lei_code
-
 blocking:
   enabled: true
   operator: and
   fields:
   - field_a: country_code
     field_b: domicile
-bm25_fields:
-- field_a: legal_name
-  field_b: counterparty_name
-- field_a: short_name
-  field_b: counterparty_name
-- field_a: registered_address
-  field_b: counterparty_address
 match_fields:
 - method: bm25
   weight: 1.0
+  fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+  - field_a: short_name
+    field_b: counterparty_name
+  - field_a: registered_address
+    field_b: counterparty_address
 thresholds:
   auto_match: 0.85
   review_floor: 0.6

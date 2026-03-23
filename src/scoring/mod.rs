@@ -33,6 +33,7 @@ pub fn score_pair(
     match_fields: &[MatchField],
     precomputed_emb_scores: Option<&std::collections::HashMap<String, f64>>,
     precomputed_bm25_score: Option<f64>,
+    synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
 ) -> ScoreResult {
     let mut field_scores = Vec::with_capacity(match_fields.len());
     let mut weighted_sum = 0.0_f64;
@@ -68,7 +69,7 @@ pub fn score_pair(
                         .unwrap_or(0.0)
                 }
                 "numeric" => numeric_score(a_val, b_val),
-                "synonym" => crate::synonym::scorer::score_default(a_val, b_val),
+                "synonym" => crate::synonym::scorer::score(a_val, b_val, 3, synonym_dictionary),
                 _ => 0.0,
             }
         };
@@ -182,6 +183,7 @@ mod tests {
                 method: "exact".into(),
                 scorer: None,
                 weight: 0.20,
+                fields: None,
             },
             MatchField {
                 field_a: "short_name".into(),
@@ -189,6 +191,7 @@ mod tests {
                 method: "fuzzy".into(),
                 scorer: Some("partial_ratio".into()),
                 weight: 0.20,
+                fields: None,
             },
             MatchField {
                 field_a: "lei".into(),
@@ -196,6 +199,7 @@ mod tests {
                 method: "exact".into(),
                 scorer: None,
                 weight: 0.05,
+                fields: None,
             },
         ]
     }
@@ -213,7 +217,7 @@ mod tests {
             ("lei_code", "abc123"),
         ]);
         let fields = make_fields();
-        let result = score_pair(&b, &a, &fields, None, None);
+        let result = score_pair(&b, &a, &fields, None, None, None);
 
         // country_code: exact match → 1.0 * 0.20 = 0.20
         // short_name/counterparty_name: fuzzy partial_ratio identical → ~1.0 * 0.20 = 0.20
@@ -240,7 +244,7 @@ mod tests {
             ("lei_code", "ABC123"),
         ]);
         let fields = make_fields();
-        let result = score_pair(&b, &a, &fields, None, None);
+        let result = score_pair(&b, &a, &fields, None, None, None);
 
         // country_code: "US" vs "GB" → 0.0
         // short_name: "Alpha Corp" vs "Beta Inc" → low
@@ -314,11 +318,12 @@ mod tests {
             method: "embedding".into(),
             scorer: None,
             weight: 1.0,
+            fields: None,
         }];
         let mut emb = HashMap::new();
         emb.insert("legal_name/counterparty_name".to_string(), 0.92);
 
-        let result = score_pair(&b, &a, &fields, Some(&emb), None);
+        let result = score_pair(&b, &a, &fields, Some(&emb), None, None);
         assert!((result.total - 0.92).abs() < f64::EPSILON);
     }
 
@@ -333,6 +338,7 @@ mod tests {
                 method: "exact".into(),
                 scorer: None,
                 weight: 0.7,
+                fields: None,
             },
             MatchField {
                 field_a: String::new(),
@@ -340,9 +346,10 @@ mod tests {
                 method: "bm25".into(),
                 scorer: None,
                 weight: 0.3,
+                fields: None,
             },
         ];
-        let result = score_pair(&b, &a, &fields, None, Some(0.8));
+        let result = score_pair(&b, &a, &fields, None, Some(0.8), None);
         // exact: 1.0 * 0.7 = 0.7
         // bm25: 0.8 * 0.3 = 0.24
         // total = 0.94
@@ -370,8 +377,9 @@ mod tests {
             method: "bm25".into(),
             scorer: None,
             weight: 1.0,
+            fields: None,
         }];
-        let result = score_pair(&b, &a, &fields, None, None);
+        let result = score_pair(&b, &a, &fields, None, None, None);
         assert!(
             result.total.abs() < f64::EPSILON,
             "expected 0.0, got {}",

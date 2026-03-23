@@ -50,7 +50,7 @@ enum Commands {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
-    /// Tune thresholds on labelled data
+    /// Tune thresholds — score distribution, overlap analysis, and accuracy metrics
     Tune {
         /// Path to YAML config file
         #[arg(short, long)]
@@ -58,6 +58,24 @@ enum Commands {
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
+        /// Skip the scoring pipeline, re-analyse cached output files
+        #[arg(long)]
+        no_run: bool,
+        /// Histogram bucket width (default: 0.04)
+        #[arg(long, default_value_t = 0.04)]
+        bucket_width: f64,
+        /// Lower bound of display range (default: auto)
+        #[arg(long)]
+        min_score: Option<f64>,
+        /// Upper bound of display range (default: auto)
+        #[arg(long)]
+        max_score: Option<f64>,
+        /// Maximum bar width in characters (default: 50)
+        #[arg(long, default_value_t = 50)]
+        bar_width: usize,
+        /// Max records to show per population in overlap zone (default: 5)
+        #[arg(long, default_value_t = 5)]
+        overlap_limit: usize,
     },
     /// Cache management
     Cache {
@@ -169,7 +187,25 @@ fn main() {
             #[cfg(unix)]
                 socket: _socket,
         } => melder::cli::serve::cmd_serve(&config, port),
-        Commands::Tune { config, verbose } => melder::cli::tune::cmd_tune(&config, verbose),
+        Commands::Tune {
+            config,
+            verbose,
+            no_run,
+            bucket_width,
+            min_score,
+            max_score,
+            bar_width,
+            overlap_limit,
+        } => melder::cli::tune::cmd_tune(
+            &config,
+            verbose,
+            no_run,
+            bucket_width,
+            min_score,
+            max_score,
+            bar_width,
+            overlap_limit,
+        ),
         Commands::Cache { action } => match action {
             CacheAction::Build { config } => melder::cli::cache::cmd_cache_build(&config),
             CacheAction::Status { config } => melder::cli::cache::cmd_cache_status(&config),

@@ -79,11 +79,16 @@ records: *how similar are they?* The answer is a single number between
 You define a list of **match fields** in your config. Each entry pairs
 a field from dataset A with a field from dataset B, specifies a
 comparison method, and assigns a weight. The composite score is the
-weighted average:
+weighted average of all non-synonym fields (weights must sum to 1.0):
 
 ```
 composite = (score_1 x weight_1) + (score_2 x weight_2) + ... + (score_n x weight_n)
 ```
+
+Synonym matching, if configured, is a flat **additive boost** on top
+of this composite — it adds its weight (e.g. +0.20) when an acronym
+match is found, and nothing otherwise. See [Scoring Methods](docs/scoring.md#additive-weight-semantics)
+for details.
 
 That score is compared against two thresholds:
 

@@ -73,18 +73,17 @@ embeddings:
 #             cargo build --release --features usearch
 vector_backend: usearch             # "flat" | "usearch" (default: "flat")
 
-# --- BM25 fields (optional) --------------------------------------------------
-# Which text fields to index for BM25 scoring. Each entry is a field_a/field_b
-# pair — the text values are concatenated into a single document per record.
+# --- BM25 fields (optional) ---------------------------------------------------
+# Which text fields to index for BM25 scoring. Preferred: define fields inline
+# on the method: bm25 entry in match_fields (see below). Alternatively, set
+# them here as a top-level section. Cannot use both (error if both present).
 #
-# When omitted, bm25_fields is derived automatically from fuzzy and embedding
-# match_fields entries (backward compatible). Set explicitly for BM25-only
-# configs or when you want BM25 to index different fields than fuzzy/embedding.
-bm25_fields:                        # optional — derived from fuzzy/embedding fields if omitted
-  - field_a: legal_name
-    field_b: counterparty_name
-  - field_a: short_name
-    field_b: counterparty_name
+# When neither inline nor top-level fields are set, they are derived
+# automatically from fuzzy/embedding match_fields entries.
+#
+# bm25_fields:
+#   - field_a: legal_name
+#     field_b: counterparty_name
 
 # --- Candidate selection sizes -----------------------------------------------
 # Controls the progressive narrowing of candidates before full scoring.
@@ -166,14 +165,13 @@ blocking:
 #               Use exact for numeric identifiers; this is a stub for now.
 #
 #   bm25      — IDF-weighted token overlap across indexed text fields.
-#               Do NOT specify field_a or field_b on this entry — BM25 indexes
-#               the fields listed in bm25_fields (or derived from fuzzy/embedding
-#               entries if bm25_fields is omitted). See the bm25_fields section above.
+#               Specify which fields to index via the inline `fields` key (preferred)
+#               or the top-level `bm25_fields` section (legacy). When neither is set,
+#               fields are derived from fuzzy/embedding entries automatically.
 #               Suppresses common-token noise from untrained models (e.g. "Holdings",
 #               "International"). Use as a scoring term alongside embedding, or as
 #               the sole candidate filter when no embedding fields are configured
 #               (fast start, no ONNX model, no vector index).
-#               Requires: cargo build --release --features bm25
 #
 #   synonym   — acronym/abbreviation matching. Binary 1.0/0.0. Builds a bidirectional
 #               index of generated acronyms at startup. Weight is ADDITIVE — not
@@ -202,13 +200,27 @@ match_fields:
 
   # BM25 example (uncomment to enable; re-balance weights to sum to 1.0):
   # - method: bm25
-  #   weight: 0.10                  # no field_a / field_b — operates across all text fields
+  #   weight: 0.10
+  #   fields:                        # which text fields BM25 indexes
+  #     - field_a: legal_name
+  #       field_b: counterparty_name
+  #     - field_a: short_name
+  #       field_b: counterparty_name
 
   # Synonym example (uncomment to enable; weight is additive, not counted in 1.0):
   # - field_a: legal_name
   #   field_b: counterparty_name
   #   method: synonym
   #   weight: 0.20                  # flat +0.20 bonus when acronym match found
+
+# --- Synonym dictionary (optional) -------------------------------------------
+# Path to a CSV file of user-provided synonym equivalences. Each row lists
+# 2+ terms that should be treated as synonyms. Supplements the auto-generated
+# acronym index — useful for equivalences that cannot be derived algorithmically.
+# See docs/scoring.md#synonym-dictionary for format details.
+#
+# synonym_dictionary:
+#   path: data/synonyms.csv
 
 # --- Output mapping (optional) -----------------------------------------------
 # Copy fields from A-side records into the results CSV under a new column name.

@@ -211,7 +211,32 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         });
     }
 
-    // Validate explicit bm25_fields entries (if provided).
+    // Check for conflicting BM25 field definitions (inline + top-level).
+    let has_inline_bm25_fields = cfg
+        .match_fields
+        .iter()
+        .any(|mf| mf.method == "bm25" && mf.fields.is_some());
+    if has_inline_bm25_fields && !cfg.bm25_fields.is_empty() {
+        return Err(ConfigError::InvalidValue {
+            field: "bm25_fields".into(),
+            message: "BM25 fields defined both inline on the match_fields entry and as \
+                      a top-level bm25_fields section — use one or the other"
+                .into(),
+        });
+    }
+
+    // Validate inline BM25 fields (if provided on the match_fields entry).
+    if let Some(bm25_mf) = cfg.match_fields.iter().find(|mf| mf.method == "bm25") {
+        if let Some(ref fields) = bm25_mf.fields {
+            for (i, pair) in fields.iter().enumerate() {
+                let prefix = format!("match_fields[bm25].fields[{}]", i);
+                require_non_empty(&pair.field_a, &format!("{}.field_a", prefix))?;
+                require_non_empty(&pair.field_b, &format!("{}.field_b", prefix))?;
+            }
+        }
+    }
+
+    // Validate explicit top-level bm25_fields entries (if provided).
     for (i, pair) in cfg.bm25_fields.iter().enumerate() {
         let prefix = format!("bm25_fields[{}]", i);
         require_non_empty(&pair.field_a, &format!("{}.field_a", prefix))?;
@@ -370,6 +395,11 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         }
     }
 
+    // 30b. synonym_dictionary
+    if let Some(ref sd) = cfg.synonym_dictionary {
+        require_non_empty(&sd.path, "synonym_dictionary.path")?;
+    }
+
     // 31. vector_index_mode
     if let Some(ref vim) = cfg.performance.vector_index_mode {
         require_one_of(
@@ -442,16 +472,33 @@ pub fn infer_format(path: &str, field_prefix: &str) -> Result<String, ConfigErro
 // Derived fields
 // ---------------------------------------------------------------------------
 
-/// Populate `bm25_fields` if not explicitly set in config.
+/// Populate `bm25_fields` from the best available source.
 ///
-/// When the user omits `bm25_fields`, derive them from fuzzy/embedding
-/// match field entries (backward compatible). When set explicitly, the
-/// user controls exactly which fields are indexed.
+/// Priority:
+/// 1. Inline `fields` on the BM25 match_fields entry (preferred)
+/// 2. Top-level `bm25_fields` section (backward compatible)
+/// 3. Auto-derive from fuzzy/embedding match field entries
+///
+/// If both (1) and (2) are set, `validate()` will have already rejected
+/// the config. This function only resolves the winning source.
 fn derive_bm25_fields(cfg: &mut Config) {
-    if !cfg.bm25_fields.is_empty() {
-        // User provided explicit bm25_fields — keep them.
+    // Check for inline fields on the BM25 match_fields entry.
+    let inline_fields: Option<Vec<super::schema::Bm25FieldPair>> = cfg
+        .match_fields
+        .iter()
+        .find(|mf| mf.method == "bm25")
+        .and_then(|mf| mf.fields.clone());
+
+    if let Some(fields) = inline_fields {
+        cfg.bm25_fields = fields;
         return;
     }
+
+    if !cfg.bm25_fields.is_empty() {
+        // User provided top-level bm25_fields — keep them.
+        return;
+    }
+
     // Fallback: derive from fuzzy/embedding match fields.
     cfg.bm25_fields = cfg
         .match_fields
@@ -1209,6 +1256,133 @@ output: {{ results_path: r, review_path: rv, unmatched_path: u }}
             !cfg.required_fields_b.contains(&String::new()),
             "empty string should not be in required_fields_b"
         );
+    }
+
+    #[test]
+    fn bm25_inline_fields_parsed() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: name_a, field_b: name_b, method: embedding, weight: 0.8 }
+  - method: bm25
+    weight: 0.2
+    fields:
+      - { field_a: name_a, field_b: name_b }
+      - { field_a: addr_a, field_b: addr_b }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        derive_bm25_fields(&mut cfg);
+
+        assert_eq!(cfg.bm25_fields.len(), 2, "inline fields should be used");
+        assert_eq!(cfg.bm25_fields[0].field_a, "name_a");
+        assert_eq!(cfg.bm25_fields[1].field_a, "addr_a");
+    }
+
+    #[test]
+    fn bm25_inline_and_toplevel_errors() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+bm25_fields:
+  - { field_a: old_a, field_b: old_b }
+match_fields:
+  - { field_a: name_a, field_b: name_b, method: embedding, weight: 0.8 }
+  - method: bm25
+    weight: 0.2
+    fields:
+      - { field_a: new_a, field_b: new_b }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("both inline"),
+            "should reject both inline and top-level: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn bm25_toplevel_still_works() {
+        // Backward compatibility: top-level bm25_fields without inline fields
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+bm25_fields:
+  - { field_a: custom_a, field_b: custom_b }
+match_fields:
+  - { field_a: name_a, field_b: name_b, method: embedding, weight: 0.8 }
+  - { method: bm25, weight: 0.2 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        derive_bm25_fields(&mut cfg);
+
+        assert_eq!(cfg.bm25_fields.len(), 1, "top-level should still work");
+        assert_eq!(cfg.bm25_fields[0].field_a, "custom_a");
+    }
+
+    #[test]
+    fn bm25_inline_takes_priority_over_derivation() {
+        // Inline fields should be used even when fuzzy/embedding fields exist
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: name_a, field_b: name_b, method: embedding, weight: 0.5 }
+  - { field_a: desc_a, field_b: desc_b, method: fuzzy, weight: 0.3 }
+  - method: bm25
+    weight: 0.2
+    fields:
+      - { field_a: only_this_a, field_b: only_this_b }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        derive_bm25_fields(&mut cfg);
+
+        assert_eq!(
+            cfg.bm25_fields.len(),
+            1,
+            "inline should override auto-derivation"
+        );
+        assert_eq!(cfg.bm25_fields[0].field_a, "only_this_a");
     }
 
     #[test]

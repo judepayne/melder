@@ -122,7 +122,14 @@ def build_config(variant_dir, include_synonym):
             "method": "embedding",
             "weight": addr_emb,
         },
-        {"method": "bm25", "weight": bm25_weight},
+        {
+            "method": "bm25",
+            "weight": bm25_weight,
+            "fields": [
+                {"field_a": "legal_name", "field_b": "counterparty_name"},
+                {"field_a": "registered_address", "field_b": "counterparty_address"},
+            ],
+        },
     ]
 
     if include_synonym:
@@ -162,10 +169,6 @@ def build_config(variant_dir, include_synonym):
             "operator": "and",
             "fields": [{"field_a": "country_code", "field_b": "domicile"}],
         },
-        "bm25_fields": [
-            {"field_a": "legal_name", "field_b": "counterparty_name"},
-            {"field_a": "registered_address", "field_b": "counterparty_address"},
-        ],
         "match_fields": match_fields,
         "thresholds": {"auto_match": 0.64, "review_floor": 0.52},
         "output": {

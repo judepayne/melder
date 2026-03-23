@@ -141,6 +141,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         combined_index_b.as_deref(),
         &crossmap,
         limit,
+        false,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -274,6 +275,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         combined_index_b,
         &sqlite_crossmap,
         limit,
+        false,
     ) {
         Ok(r) => r,
         Err(e) => {

@@ -554,6 +554,7 @@ impl Session {
                 top_n,
                 Some(ctx),
                 opp_syn_guard.as_deref(),
+                self.state.synonym_dictionary.as_deref(),
             )
         } else {
             pipeline::score_pool(
@@ -571,6 +572,7 @@ impl Session {
                 top_n,
                 None,
                 opp_syn_guard.as_deref(),
+                self.state.synonym_dictionary.as_deref(),
             )
         };
 
@@ -853,6 +855,7 @@ impl Session {
                 top_n,
                 Some(ctx),
                 opp_syn_guard.as_deref(),
+                self.state.synonym_dictionary.as_deref(),
             )
         } else {
             pipeline::score_pool(
@@ -870,6 +873,7 @@ impl Session {
                 top_n,
                 None,
                 opp_syn_guard.as_deref(),
+                self.state.synonym_dictionary.as_deref(),
             )
         };
 

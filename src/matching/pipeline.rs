@@ -90,6 +90,7 @@ pub fn score_pool(
     top_n: usize,
     bm25_ctx: Option<Bm25Ctx>,
     synonym_index: Option<&crate::synonym::index::SynonymIndex>,
+    synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
 ) -> Vec<MatchResult> {
     if blocked_ids.is_empty() {
         return Vec::new();
@@ -211,6 +212,7 @@ pub fn score_pool(
             &bm25_scores_map,
             &emb_specs,
             has_emb_specs,
+            synonym_dictionary,
         ));
     }
 
@@ -262,6 +264,7 @@ fn score_candidate(
     bm25_scores: &HashMap<String, f64>,
     emb_specs: &[(String, String, f64)],
     has_emb_specs: bool,
+    synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
 ) -> MatchResult {
     // Decompose combined vecs → per-field cosine similarities.
     let emb_scores: Option<HashMap<String, f64>> = if has_emb_specs {
@@ -280,6 +283,7 @@ fn score_candidate(
         &config.match_fields,
         emb_scores.as_ref(),
         precomputed_bm25,
+        synonym_dictionary,
     );
 
     scoring::build_match_result(
@@ -709,6 +713,7 @@ output:
             5,
             None,
             None,
+            None,
         );
 
         assert!(results.is_empty(), "empty blocked_ids → no results");
@@ -742,6 +747,7 @@ output:
             50,
             10,
             5,
+            None,
             None,
             None,
         );
@@ -787,6 +793,7 @@ output:
             50,
             10,
             5,
+            None,
             None,
             None,
         );
@@ -844,6 +851,7 @@ output:
             5,
             None,
             None,
+            None,
         );
 
         // Results must be sorted descending by score.
@@ -891,6 +899,7 @@ output:
             50, // ann_candidates
             10, // bm25_candidates
             3,  // top_n = 3
+            None,
             None,
             None,
         );

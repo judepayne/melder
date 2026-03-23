@@ -1,21 +1,28 @@
 //! Binary synonym scorer.
 //!
-//! Returns 1.0 if the two values have an acronym relationship, 0.0 otherwise.
-//! Pure string computation — no index dependency at scoring time.
+//! Returns 1.0 if the two values have a synonym relationship (acronym match
+//! or dictionary equivalence), 0.0 otherwise.
 
+use super::dictionary::SynonymDictionary;
 use super::generator::generate_acronyms;
 
 /// Default minimum acronym length used by the scorer.
 const DEFAULT_MIN_LENGTH: usize = 3;
 
-/// Score a synonym/acronym relationship between two field values.
+/// Score a synonym relationship between two field values.
 ///
-/// Checks both directions:
-/// - Is `a_val` an acronym of `b_val`?
-/// - Is `b_val` an acronym of `a_val`?
+/// Checks three things:
+/// 1. Is `a_val` an acronym of `b_val`?
+/// 2. Is `b_val` an acronym of `a_val`?
+/// 3. Are `a_val` and `b_val` equivalent in the dictionary?
 ///
-/// Returns 1.0 if either direction matches, 0.0 otherwise.
-pub fn score(a_val: &str, b_val: &str, min_length: usize) -> f64 {
+/// Returns 1.0 if any check matches, 0.0 otherwise.
+pub fn score(
+    a_val: &str,
+    b_val: &str,
+    min_length: usize,
+    dictionary: Option<&SynonymDictionary>,
+) -> f64 {
     let a_trimmed = a_val.trim();
     let b_trimmed = b_val.trim();
 
@@ -38,12 +45,19 @@ pub fn score(a_val: &str, b_val: &str, min_length: usize) -> f64 {
         return 1.0;
     }
 
+    // Check: dictionary equivalence.
+    if let Some(dict) = dictionary {
+        if dict.is_equivalent(a_trimmed, b_trimmed) {
+            return 1.0;
+        }
+    }
+
     0.0
 }
 
-/// Score with default min_length.
+/// Score with default min_length and no dictionary.
 pub fn score_default(a_val: &str, b_val: &str) -> f64 {
-    score(a_val, b_val, DEFAULT_MIN_LENGTH)
+    score(a_val, b_val, DEFAULT_MIN_LENGTH, None)
 }
 
 #[cfg(test)]
@@ -53,7 +67,7 @@ mod tests {
     #[test]
     fn acronym_match_forward() {
         assert_eq!(
-            score("HWAG", "Harris, Watkins and Goodwin BV", 3),
+            score("HWAG", "Harris, Watkins and Goodwin BV", 3, None),
             1.0,
             "HWAG is an acronym of the full name"
         );
@@ -62,7 +76,7 @@ mod tests {
     #[test]
     fn acronym_match_reverse() {
         assert_eq!(
-            score("Harris, Watkins and Goodwin BV", "HWAG", 3),
+            score("Harris, Watkins and Goodwin BV", "HWAG", 3, None),
             1.0,
             "reverse direction should also match"
         );
@@ -71,7 +85,7 @@ mod tests {
     #[test]
     fn no_match() {
         assert_eq!(
-            score("Completely Different Corp", "HWAG", 3),
+            score("Completely Different Corp", "HWAG", 3, None),
             0.0,
             "unrelated strings → 0.0"
         );
@@ -80,7 +94,7 @@ mod tests {
     #[test]
     fn case_insensitive() {
         assert_eq!(
-            score("hwag", "Harris, Watkins and Goodwin BV", 3),
+            score("hwag", "Harris, Watkins and Goodwin BV", 3, None),
             1.0,
             "case should not matter"
         );
@@ -88,15 +102,15 @@ mod tests {
 
     #[test]
     fn empty_values() {
-        assert_eq!(score("", "something", 3), 0.0);
-        assert_eq!(score("something", "", 3), 0.0);
-        assert_eq!(score("", "", 3), 0.0);
+        assert_eq!(score("", "something", 3, None), 0.0);
+        assert_eq!(score("something", "", 3, None), 0.0);
+        assert_eq!(score("", "", 3, None), 0.0);
     }
 
     #[test]
     fn trms_example() {
         assert_eq!(
-            score("TRMS", "Taylor, Reeves and Mcdaniel SRL", 3),
+            score("TRMS", "Taylor, Reeves and Mcdaniel SRL", 3, None),
             1.0,
             "names + suffixes variant"
         );
@@ -105,7 +119,7 @@ mod tests {
     #[test]
     fn single_word_no_match() {
         assert_eq!(
-            score("KPMG", "KPMG", 3),
+            score("KPMG", "KPMG", 3, None),
             0.0,
             "identical single words are not an acronym relationship"
         );
@@ -113,6 +127,6 @@ mod tests {
 
     #[test]
     fn gsam() {
-        assert_eq!(score("GSAM", "Goldman Sachs Asset Management", 3), 1.0,);
+        assert_eq!(score("GSAM", "Goldman Sachs Asset Management", 3, None), 1.0,);
     }
 }

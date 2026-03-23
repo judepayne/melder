@@ -1,7 +1,6 @@
 job:
   name: batch_1Mx1M_bm25only_cold
   description: Batch benchmark — 1M × 1M, BM25-only, in-memory, cold start
-
 datasets:
   a:
     path: benchmarks/data/dataset_a_1000k.csv
@@ -11,58 +10,49 @@ datasets:
     path: benchmarks/data/dataset_b_1000k.csv
     id_field: counterparty_id
     format: csv
-
 cross_map:
   backend: local
   path: benchmarks/batch/1Mx1M_bm25only/cold/crossmap.csv
   a_id_field: entity_id
   b_id_field: counterparty_id
-
 embeddings:
   model: all-MiniLM-L6-v2
   a_cache_dir: benchmarks/batch/1Mx1M_bm25only/cold/cache
-
 blocking:
   enabled: true
   operator: and
   fields:
-    - field_a: country_code
-      field_b: domicile
-
-bm25_fields:
+  - field_a: country_code
+    field_b: domicile
+match_fields:
+- method: bm25
+  weight: 0.55
+  fields:
   - field_a: legal_name
     field_b: counterparty_name
   - field_a: short_name
     field_b: counterparty_name
-
-match_fields:
-  - method: bm25
-    weight: 0.55
-  - field_a: short_name
-    field_b: counterparty_name
-    method: fuzzy
-    scorer: partial_ratio
-    weight: 0.20
-  - field_a: country_code
-    field_b: domicile
-    method: exact
-    weight: 0.20
-  - field_a: lei
-    field_b: lei_code
-    method: exact
-    weight: 0.05
-
+- field_a: short_name
+  field_b: counterparty_name
+  method: fuzzy
+  scorer: partial_ratio
+  weight: 0.2
+- field_a: country_code
+  field_b: domicile
+  method: exact
+  weight: 0.2
+- field_a: lei
+  field_b: lei_code
+  method: exact
+  weight: 0.05
 thresholds:
   auto_match: 0.85
-  review_floor: 0.60
-
+  review_floor: 0.6
 output:
-  results_path:   benchmarks/batch/1Mx1M_bm25only/cold/output/results.csv
-  review_path:    benchmarks/batch/1Mx1M_bm25only/cold/output/review.csv
+  results_path: benchmarks/batch/1Mx1M_bm25only/cold/output/results.csv
+  review_path: benchmarks/batch/1Mx1M_bm25only/cold/output/review.csv
   unmatched_path: benchmarks/batch/1Mx1M_bm25only/cold/output/unmatched.csv
-
 performance:
   encoder_pool_size: 1
-
 top_n: 5
 bm25_candidates: 10

@@ -1,6 +1,6 @@
 job:
   name: experiment_6
-  description: "BM25 composite scoring \u2014 10% BM25 share"
+  description: BM25 composite scoring — 10% BM25 share
 datasets:
   a:
     path: benchmarks/accuracy/science/results/experiment_6/dataset_a.csv
@@ -25,11 +25,6 @@ blocking:
   fields:
   - field_a: country_code
     field_b: domicile
-bm25_fields:
-- field_a: legal_name
-  field_b: counterparty_name
-- field_a: registered_address
-  field_b: counterparty_address
 match_fields:
 - field_a: legal_name
   field_b: counterparty_name
@@ -41,6 +36,11 @@ match_fields:
   weight: 0.36
 - method: bm25
   weight: 0.1
+  fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+  - field_a: registered_address
+    field_b: counterparty_address
 thresholds:
   auto_match: 0.88
   review_floor: 0.6

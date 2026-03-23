@@ -87,16 +87,11 @@ words like "Holdings", "International", and "Group" contribute almost
 nothing; distinctive words like "Stellantis" or "Berkshire" contribute
 heavily.
 
-BM25 indexes the fields listed in `bm25_fields` (or derived
-automatically from your fuzzy/embedding match fields if `bm25_fields` is
-omitted). Do **not** specify `field_a` or `field_b` on the BM25 match
-field entry — it operates across all indexed text.
+Specify which fields BM25 indexes via the inline `fields` key on the
+BM25 match_fields entry. When omitted, fields are derived automatically
+from your fuzzy/embedding match fields.
 
 ```yaml
-bm25_fields:
-  - field_a: legal_name
-    field_b: counterparty_name
-
 match_fields:
   - field_a: legal_name
     field_b: counterparty_name
@@ -104,6 +99,11 @@ match_fields:
     weight: 0.80
   - method: bm25
     weight: 0.20
+    fields:
+      - field_a: legal_name
+        field_b: counterparty_name
+      - field_a: registered_address
+        field_b: counterparty_address
 ```
 
 **Best for:** suppressing common-word noise from untrained embedding
@@ -193,6 +193,42 @@ Corporation".
 for short, common acronyms. Blocking on country code or another
 categorical field helps constrain these. Minimum acronym length is 3
 characters.
+
+### Synonym dictionary
+
+The auto-generated acronym index covers many cases, but some equivalences
+cannot be derived algorithmically — "HSBC" is not an acronym of "Hongkong
+and Shanghai Banking Corporation" by initial-letter rules. For these, you
+can provide a **synonym dictionary**: a CSV file where each row lists
+terms that should be treated as equivalent.
+
+```yaml
+synonym_dictionary:
+  path: data/synonyms.csv
+```
+
+The CSV has no header row. Each row is an equivalence group:
+
+```csv
+HSBC,Hongkong and Shanghai Banking Corporation,Hong Kong Shanghai Bank
+JPM,JP Morgan,JPMorgan Chase,J.P. Morgan & Co
+IBM,International Business Machines
+DB,Deutsche Bank AG,Deutsche Bank
+```
+
+Rules:
+
+- **Variable columns.** Rows can have 2, 3, 4, or more terms.
+- **Minimum 2 terms per row.** Single-term rows are skipped with a warning.
+- **Case-insensitive.** All terms are normalised to uppercase internally.
+- **Whitespace trimmed.** Leading/trailing whitespace on each term is stripped.
+- **Transitive merging.** If row 1 has `A,B` and row 2 has `B,C`, then
+  A, B, and C are all treated as equivalent.
+- **Bidirectional.** Looking up any term in a group returns all other
+  terms. Both candidate generation and scoring use the dictionary.
+
+The dictionary supplements (not replaces) the acronym generator. A pair
+can match via acronym generation, dictionary equivalence, or both.
 
 ## Numeric
 

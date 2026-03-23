@@ -89,6 +89,8 @@ pub struct LiveMatchState {
     /// Populated on `ReviewMatch` WAL events, drained on crossmap
     /// confirm/break and record re-upsert.
     pub review_queue: DashMap<String, ReviewEntry>,
+    /// Optional user-provided synonym dictionary shared across both sides.
+    pub synonym_dictionary: Option<Arc<crate::synonym::dictionary::SynonymDictionary>>,
 }
 
 impl std::fmt::Debug for LiveMatchState {
@@ -219,9 +221,24 @@ impl LiveMatchState {
         // Build BM25 indices if configured
         let (bm25_index_a, bm25_index_b) = Self::build_bm25_indices(&store, &config, start)?;
 
+        // Load synonym dictionary if configured
+        let synonym_dict: Option<Arc<crate::synonym::dictionary::SynonymDictionary>> =
+            if let Some(ref sd_cfg) = config.synonym_dictionary {
+                let dict = crate::synonym::dictionary::SynonymDictionary::load(
+                    std::path::Path::new(&sd_cfg.path),
+                )?;
+                eprintln!(
+                    "Loaded synonym dictionary ({} groups)",
+                    dict.len(),
+                );
+                Some(Arc::new(dict))
+            } else {
+                None
+            };
+
         // Build synonym indices if configured
         let (synonym_index_a, synonym_index_b) =
-            Self::build_synonym_indices(&store, &config);
+            Self::build_synonym_indices(&store, &config, synonym_dict.clone());
 
         let a_side = LiveSideState {
             combined_index: combined_index_a,
@@ -283,6 +300,7 @@ impl LiveMatchState {
             wal,
             crossmap_dirty: AtomicBool::new(false),
             review_queue,
+            synonym_dictionary: synonym_dict,
         }))
     }
 
@@ -782,6 +800,7 @@ impl LiveMatchState {
     fn build_synonym_indices(
         store: &Arc<dyn RecordStore>,
         config: &Config,
+        dictionary: Option<std::sync::Arc<crate::synonym::dictionary::SynonymDictionary>>,
     ) -> (
         Option<std::sync::RwLock<crate::synonym::index::SynonymIndex>>,
         Option<std::sync::RwLock<crate::synonym::index::SynonymIndex>>,
@@ -794,11 +813,13 @@ impl LiveMatchState {
             store.as_ref(),
             Side::A,
             &config.synonym_fields,
+            dictionary.clone(),
         );
         let idx_b = crate::synonym::index::SynonymIndex::build(
             store.as_ref(),
             Side::B,
             &config.synonym_fields,
+            dictionary,
         );
         eprintln!(
             "Built synonym indices (A: {} keys, B: {} keys) in {:.1}ms",

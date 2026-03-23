@@ -68,6 +68,13 @@ pub struct Config {
     /// When set explicitly, the user controls generator options.
     #[serde(default)]
     pub synonym_fields: Vec<SynonymFieldConfig>,
+    /// Optional user-provided synonym dictionary CSV.
+    ///
+    /// Each row is an equivalence group of terms that should be treated as
+    /// synonyms. Supplements the auto-generated acronym index with explicit
+    /// term mappings (e.g. "HSBC" ↔ "Hongkong and Shanghai Banking Corporation").
+    #[serde(default)]
+    pub synonym_dictionary: Option<SynonymDictionaryConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +203,13 @@ pub struct SynonymGenerator {
     pub min_length: usize,
 }
 
+/// Optional user-provided synonym dictionary CSV path.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SynonymDictionaryConfig {
+    /// Path to the CSV file. Each row is an equivalence group of 2+ terms.
+    pub path: String,
+}
+
 pub fn default_synonym_generators() -> Vec<SynonymGenerator> {
     vec![SynonymGenerator {
         gen_type: "acronym".to_string(),
@@ -209,10 +223,10 @@ fn default_min_length() -> usize {
 
 #[derive(Debug, Deserialize)]
 pub struct MatchField {
-    /// Empty for `method: bm25` (operates across all text fields).
+    /// Empty for `method: bm25` when using inline `fields`.
     #[serde(default)]
     pub field_a: String,
-    /// Empty for `method: bm25` (operates across all text fields).
+    /// Empty for `method: bm25` when using inline `fields`.
     #[serde(default)]
     pub field_b: String,
     /// "exact" | "fuzzy" | "embedding" | "numeric" | "bm25" | "synonym"
@@ -221,6 +235,12 @@ pub struct MatchField {
     #[serde(default)]
     pub scorer: Option<String>,
     pub weight: f64,
+    /// For `method: bm25` only — which text fields the BM25 index covers.
+    /// Preferred over the top-level `bm25_fields` section. When set here,
+    /// the top-level `bm25_fields` must be absent (error if both present).
+    /// When neither is set, fields are auto-derived from fuzzy/embedding entries.
+    #[serde(default)]
+    pub fields: Option<Vec<Bm25FieldPair>>,
 }
 
 #[derive(Debug, Deserialize)]

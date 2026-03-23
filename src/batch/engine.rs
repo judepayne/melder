@@ -54,10 +54,10 @@ enum RecordOutcome {
 
 /// Run the batch matching engine.
 ///
-/// Both A and B records must already be loaded into `store` before calling.
-/// The B-side combined embedding index, if needed, should be passed in via
-/// `combined_index_b`. This function handles scoring, classification, and
-/// crossmap claiming.
+/// When `skip_prematch` is true, the common-ID pre-match and exact prefilter
+/// phases are skipped — all records go through full scoring. Used by `meld tune`
+/// so that ground-truth pairs receive real scores instead of being short-circuited
+/// at 1.0.
 pub fn run_batch(
     config: &Config,
     store: &dyn RecordStore,
@@ -65,6 +65,7 @@ pub fn run_batch(
     combined_index_b: Option<&dyn VectorDB>,
     crossmap: &dyn CrossMapOps,
     limit: Option<usize>,
+    skip_prematch: bool,
 ) -> Result<BatchResult, MelderError> {
     let start = Instant::now();
 
@@ -84,7 +85,10 @@ pub fn run_batch(
 
     // Common ID pre-match phase: if common_id_field is configured, match
     // records with identical common IDs before any scoring.
-    let common_id_matched = if let (Some(a_cid_field), Some(b_cid_field)) = (
+    // Skipped in tune mode so ground-truth pairs get real scores.
+    let common_id_matched = if skip_prematch {
+        0
+    } else if let (Some(a_cid_field), Some(b_cid_field)) = (
         &config.datasets.a.common_id_field,
         &config.datasets.b.common_id_field,
     ) {
@@ -147,7 +151,8 @@ pub fn run_batch(
     // exact field pairs match an A record. If so, auto-confirm immediately
     // at score 1.0 — no scoring required. Runs before blocking so cross-block
     // exact matches (e.g. wrong country but matching LEI) are still found.
-    if config.exact_prefilter.enabled && !config.exact_prefilter.fields.is_empty() {
+    // Skipped in tune mode so all records go through full scoring.
+    if !skip_prematch && config.exact_prefilter.enabled && !config.exact_prefilter.fields.is_empty() {
         let ep_start = Instant::now();
 
         // Extract A-side field names from the config pairs.
@@ -271,6 +276,24 @@ pub fn run_batch(
         );
     }
 
+    // Load synonym dictionary if configured.
+    let synonym_dict: Option<std::sync::Arc<crate::synonym::dictionary::SynonymDictionary>> =
+        if let Some(ref sd_cfg) = config.synonym_dictionary {
+            let dict_start = Instant::now();
+            let dict = crate::synonym::dictionary::SynonymDictionary::load(
+                std::path::Path::new(&sd_cfg.path),
+            )?;
+            eprintln!(
+                "Loaded synonym dictionary ({} groups, {} terms) in {:.1}ms",
+                dict.len(),
+                dict.len() * 2, // approximate
+                dict_start.elapsed().as_secs_f64() * 1000.0
+            );
+            Some(std::sync::Arc::new(dict))
+        } else {
+            None
+        };
+
     // Build A-side synonym index if method: synonym is configured.
     let synonym_index_a: Option<crate::synonym::index::SynonymIndex> =
         if !config.synonym_fields.is_empty() {
@@ -279,6 +302,7 @@ pub fn run_batch(
                 store,
                 Side::A,
                 &config.synonym_fields,
+                synonym_dict.clone(),
             );
             eprintln!(
                 "Built synonym index for A records ({} keys) in {:.1}ms",
@@ -357,6 +381,7 @@ pub fn run_batch(
                     top_n,
                     Some(ctx),
                     synonym_index_a.as_ref(),
+                    synonym_dict.as_deref(),
                 )
             } else {
                 pipeline::score_pool(
@@ -374,6 +399,7 @@ pub fn run_batch(
                     top_n,
                     None,
                     synonym_index_a.as_ref(),
+                    synonym_dict.as_deref(),
                 )
             };
 

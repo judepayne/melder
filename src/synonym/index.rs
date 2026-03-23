@@ -12,10 +12,12 @@
 //!   one of this name's acronyms (if such a record exists)
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::config::SynonymFieldConfig;
 use crate::models::{Record, Side};
 use crate::store::RecordStore;
+use crate::synonym::dictionary::SynonymDictionary;
 use crate::synonym::generator::generate_acronyms;
 
 // --- Types ---
@@ -36,6 +38,8 @@ pub struct SynonymEntry {
 pub struct SynonymIndex {
     /// Maps normalised lookup key → list of matching entries.
     index: HashMap<String, Vec<SynonymEntry>>,
+    /// Optional user-provided synonym dictionary for term expansion.
+    dictionary: Option<Arc<SynonymDictionary>>,
 }
 
 impl std::fmt::Debug for SynonymIndex {
@@ -70,15 +74,16 @@ fn min_length(config: &SynonymFieldConfig) -> usize {
 
 impl Default for SynonymIndex {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
 impl SynonymIndex {
-    /// Create an empty index.
-    pub fn new() -> Self {
+    /// Create an empty index, optionally with a dictionary.
+    pub fn new(dictionary: Option<Arc<SynonymDictionary>>) -> Self {
         Self {
             index: HashMap::new(),
+            dictionary,
         }
     }
 
@@ -86,12 +91,14 @@ impl SynonymIndex {
     ///
     /// For each record, generates acronyms from the configured fields and
     /// indexes both the acronyms and the raw field value as lookup keys.
+    /// If a dictionary is provided, also indexes under dictionary-expanded terms.
     pub fn build(
         store: &dyn RecordStore,
         side: Side,
         synonym_fields: &[SynonymFieldConfig],
+        dictionary: Option<Arc<SynonymDictionary>>,
     ) -> Self {
-        let mut idx = Self::new();
+        let mut idx = Self::new(dictionary);
         store.for_each_record(side, &mut |id, record| {
             idx.index_record(id, record, side, synonym_fields);
         });
@@ -136,7 +143,19 @@ impl SynonymIndex {
             // raw name field contains "HWAG", and that record can then be
             // matched against a full name on the other side.
             let raw_key = trimmed.to_uppercase();
-            self.index.entry(raw_key).or_default().push(entry);
+            self.index.entry(raw_key).or_default().push(entry.clone());
+
+            // Dictionary expansion: if the record's name matches a dictionary
+            // term, also index under all equivalent terms.
+            if let Some(ref dict) = self.dictionary {
+                let expanded = dict.expand(trimmed);
+                for equiv_term in expanded {
+                    self.index
+                        .entry(equiv_term.clone())
+                        .or_default()
+                        .push(entry.clone());
+                }
+            }
         }
     }
 
@@ -211,6 +230,17 @@ impl SynonymIndex {
             add_matches(acr);
         }
 
+        // Dictionary expansion: look up equivalent terms and their acronyms.
+        if let Some(ref dict) = self.dictionary {
+            for equiv_term in dict.expand(trimmed) {
+                add_matches(equiv_term);
+                // Also generate acronyms of each expanded term.
+                for acr in &generate_acronyms(equiv_term, min_len) {
+                    add_matches(acr);
+                }
+            }
+        }
+
         result
     }
 
@@ -262,7 +292,7 @@ mod tests {
             &make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]),
         );
 
-        let idx = SynonymIndex::build(&store, Side::A, &make_config());
+        let idx = SynonymIndex::build(&store, Side::A, &make_config(), None);
         assert!(!idx.is_empty(), "index should have entries");
 
         // Query with the acronym → finds the full name record
@@ -280,7 +310,7 @@ mod tests {
         // A record has the short name; query will be the full name
         store.insert(Side::A, "a1", &make_record(&[("legal_name", "HWAG")]));
 
-        let idx = SynonymIndex::build(&store, Side::A, &make_config());
+        let idx = SynonymIndex::build(&store, Side::A, &make_config(), None);
 
         // Query with the full name → generates acronyms → finds "HWAG" in index
         let result = idx.lookup(
@@ -305,7 +335,7 @@ mod tests {
             &make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]),
         );
 
-        let idx = SynonymIndex::build(&store, Side::A, &make_config());
+        let idx = SynonymIndex::build(&store, Side::A, &make_config(), None);
 
         // Wrong field pair → no results
         let result = idx.lookup("HWAG", "other_field", "other_field", 3);
@@ -321,7 +351,7 @@ mod tests {
         let _store = make_store();
         let config = make_config();
 
-        let mut idx = SynonymIndex::new();
+        let mut idx = SynonymIndex::new(None);
 
         // Insert initial record
         let rec1 = make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]);
@@ -355,7 +385,7 @@ mod tests {
     fn remove_clears_entries() {
         let config = make_config();
 
-        let mut idx = SynonymIndex::new();
+        let mut idx = SynonymIndex::new(None);
 
         // Add a record
         let rec = make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]);
@@ -381,7 +411,7 @@ mod tests {
             &make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]),
         );
 
-        let idx = SynonymIndex::build(&store, Side::A, &make_config());
+        let idx = SynonymIndex::build(&store, Side::A, &make_config(), None);
 
         // Even if multiple index keys map to the same record, result is deduped
         let result = idx.lookup("HWG", "legal_name", "counterparty_name", 3);
