@@ -259,6 +259,11 @@ impl EncoderPool {
         Ok(Self { encoders, dim })
     }
 
+    /// ONNX batch size for fastembed. Smaller batches improve CPU cache
+    /// locality on Apple Silicon and similar architectures. Benchmarked at
+    /// ~9% faster than fastembed's default of 256 on M3.
+    const ENCODE_BATCH_SIZE: usize = 64;
+
     /// Encode texts synchronously. Acquires the first available encoder slot.
     ///
     /// Tries each slot via `try_lock` (round-robin). If all busy, blocks on
@@ -275,7 +280,7 @@ impl EncoderPool {
         for encoder in &self.encoders {
             if let Ok(mut guard) = encoder.try_lock() {
                 return guard
-                    .embed(text_vec, None)
+                    .embed(text_vec, Some(Self::ENCODE_BATCH_SIZE))
                     .map_err(|e| EncoderError::Inference(e.to_string()));
             }
         }
@@ -285,7 +290,7 @@ impl EncoderPool {
             .lock()
             .map_err(|e| EncoderError::Inference(format!("mutex poisoned: {}", e)))?;
         guard
-            .embed(text_vec, None)
+            .embed(text_vec, Some(Self::ENCODE_BATCH_SIZE))
             .map_err(|e| EncoderError::Inference(e.to_string()))
     }
 

@@ -24,7 +24,10 @@ use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use manifest::{StaleReason, blocking_hash, check_manifest, make_manifest, write_manifest};
+use manifest::{
+    StaleReason, blocking_hash, check_manifest, file_fingerprint, make_manifest, read_manifest,
+    write_manifest,
+};
 use texthash::compute_text_hash;
 
 use crate::config::Config;
@@ -367,6 +370,7 @@ pub fn build_or_load_combined_index(
     is_a_side: bool,
     encoder_pool: &EncoderPool,
     skip_deletes: bool,
+    source_path: Option<&Path>,
 ) -> Result<Option<Box<dyn VectorDB>>, MelderError> {
     let emb_specs = embedding_field_specs(config);
     if emb_specs.is_empty() {
@@ -397,6 +401,7 @@ pub fn build_or_load_combined_index(
     let current_spec_hash = spec_hash(&emb_specs, vq);
     let current_blocking_hash = blocking_hash(&config.blocking);
     let current_model = &config.embeddings.model;
+    let current_fp = source_path.and_then(file_fingerprint);
 
     // -----------------------------------------------------------------------
     // Cache path
@@ -444,6 +449,25 @@ pub fn build_or_load_combined_index(
                     // fall through to cold build
                 }
                 Ok(index) => {
+                    // Fast path: if the source file hasn't changed at all,
+                    // skip the O(N) text-hash diff entirely.
+                    if let Some(ref manifest) = read_manifest(cache_path).ok().flatten()
+                        && let (Some(stored_fp), Some(cur_fp)) =
+                            (&manifest.source_fingerprint, &current_fp)
+                        && stored_fp == cur_fp
+                        && index.len() == ids.len()
+                    {
+                        let elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
+                        eprintln!(
+                            "Loaded {} combined embedding index from cache: {} vecs, \
+                             source unchanged in {:.1}ms",
+                            side,
+                            index.len(),
+                            elapsed_ms
+                        );
+                        return Ok(Some(index));
+                    }
+
                     // Step 3: Diff — O(N) with no ONNX calls
                     let stored = index.stored_text_hashes();
                     let current_ids_set: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
@@ -485,6 +509,7 @@ pub fn build_or_load_combined_index(
                             current_blocking_hash.clone(),
                             current_model.to_string(),
                             ids.len(),
+                            current_fp.clone(),
                         );
                         if let Err(e) = write_manifest(cache_path, &m) {
                             eprintln!("Warning: could not update {} manifest: {}", side, e);
@@ -554,6 +579,7 @@ pub fn build_or_load_combined_index(
                                 current_blocking_hash.clone(),
                                 current_model.to_string(),
                                 ids.len(),
+                                current_fp.clone(),
                             );
                             if let Err(e) = write_manifest(cache_path, &m) {
                                 eprintln!("Warning: could not write {} manifest: {}", side, e);
@@ -621,6 +647,7 @@ pub fn build_or_load_combined_index(
                 current_blocking_hash,
                 current_model.to_string(),
                 ids.len(),
+                current_fp,
             );
             if let Err(e) = write_manifest(cache_path, &m) {
                 eprintln!("Warning: could not write {} manifest: {}", side, e);

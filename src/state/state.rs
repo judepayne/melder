@@ -107,6 +107,7 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         true,
         &encoder_pool,
         false,
+        Some(Path::new(&config.datasets.a.path)),
     )?;
 
     // 4. Optionally load dataset B
@@ -135,6 +136,7 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
             false,
             &encoder_pool,
             false,
+            Some(Path::new(&config.datasets.b.path)),
         )?;
 
         (Some(recs), Some(ids), idx)

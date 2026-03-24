@@ -4,7 +4,7 @@
 //! string and computes `ratio` on that window. This matches the Python
 //! `rapidfuzz.fuzz.partial_ratio` semantics.
 
-use super::ratio::ratio_normalized;
+// ratio_normalized is no longer used directly — RatioBatchComparator handles it.
 
 /// Compute partial ratio similarity (0.0..=1.0).
 ///
@@ -46,6 +46,11 @@ pub(crate) fn partial_ratio_normalized(a: &str, b: &str) -> f64 {
 
     // Slide a window of `short_len` chars across `longer`.
     // Pre-compute char→byte offset map to avoid per-window String allocation.
+    // Use RatioBatchComparator to precompute state for the shorter string
+    // and score_cutoff to skip windows that can't beat the current best.
+    let short_chars: Vec<char> = shorter.chars().collect();
+    let scorer = rapidfuzz::fuzz::RatioBatchComparator::new(short_chars.iter().copied());
+
     let char_offsets: Vec<usize> = longer.char_indices().map(|(i, _)| i).collect();
     let long_len = char_offsets.len();
     let mut best = 0.0_f64;
@@ -59,12 +64,13 @@ pub(crate) fn partial_ratio_normalized(a: &str, b: &str) -> f64 {
             longer.len()
         };
         let window = &longer[byte_start..byte_end];
-        let r = ratio_normalized(shorter, window);
-        if r > best {
+        // Use score_cutoff to let rapidfuzz bail early on hopeless windows
+        let args = rapidfuzz::fuzz::Args::default().score_cutoff(best);
+        if let Some(r) = scorer.similarity_with_args(window.chars(), &args) {
             best = r;
-        }
-        if (best - 1.0).abs() < f64::EPSILON {
-            break;
+            if (best - 1.0).abs() < f64::EPSILON {
+                break;
+            }
         }
     }
 

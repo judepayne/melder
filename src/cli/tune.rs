@@ -658,6 +658,7 @@ fn run_pipeline(
         false,
         &state.encoder_pool,
         false,
+        Some(std::path::Path::new(&state.config.datasets.b.path)),
     ) {
         Ok(idx) => idx,
         Err(e) => {

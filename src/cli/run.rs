@@ -113,6 +113,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         false,
         &state.encoder_pool,
         false,
+        Some(std::path::Path::new(&state.config.datasets.b.path)),
     ) {
         Ok(idx) => idx,
         Err(e) => {

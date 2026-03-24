@@ -62,6 +62,11 @@ pub struct CacheManifest {
     pub record_count: usize,
     /// RFC3339 UTC timestamp of when the index was built (informational).
     pub built_at: String,
+    /// Source file fingerprint: "size:mtime_secs" for fast unchanged-file skip.
+    /// If present and matching the current file, the per-record text-hash diff
+    /// is skipped entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_fingerprint: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +176,7 @@ pub fn make_manifest(
     blocking_hash: String,
     model: String,
     record_count: usize,
+    source_fingerprint: Option<String>,
 ) -> CacheManifest {
     CacheManifest {
         spec_hash,
@@ -178,7 +184,24 @@ pub fn make_manifest(
         model,
         record_count,
         built_at: now_rfc3339(),
+        source_fingerprint,
     }
+}
+
+/// Compute a source file fingerprint from file metadata (size + mtime).
+///
+/// Returns `None` if the file doesn't exist or metadata can't be read.
+/// Format: `"{size}:{mtime_secs}"` — cheap to compute, no file reads.
+pub fn file_fingerprint(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let size = meta.len();
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(format!("{}:{}", size, mtime))
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +304,7 @@ mod tests {
             model: "all-MiniLM-L6-v2".to_string(),
             record_count: 1000,
             built_at: "2026-01-01T00:00:00Z".to_string(),
+            source_fingerprint: None,
         };
         write_manifest(&cache_path, &m).unwrap();
         let loaded = read_manifest(&cache_path).unwrap().unwrap();
@@ -309,6 +333,7 @@ mod tests {
                 model: "m".to_string(),
                 record_count: 1,
                 built_at: "2026-01-01T00:00:00Z".to_string(),
+                source_fingerprint: None,
             },
         )
         .unwrap();
@@ -327,6 +352,7 @@ mod tests {
                 model: "old".to_string(),
                 record_count: 1,
                 built_at: "2026-01-01T00:00:00Z".to_string(),
+                source_fingerprint: None,
             },
         )
         .unwrap();
@@ -348,6 +374,7 @@ mod tests {
                 model: "m".to_string(),
                 record_count: 1,
                 built_at: "2026-01-01T00:00:00Z".to_string(),
+                source_fingerprint: None,
             },
         )
         .unwrap();
@@ -369,6 +396,7 @@ mod tests {
                 model: "m".to_string(),
                 record_count: 1,
                 built_at: "2026-01-01T00:00:00Z".to_string(),
+                source_fingerprint: None,
             },
         )
         .unwrap();
@@ -390,6 +418,7 @@ mod tests {
                 model: "m".to_string(),
                 record_count: 1,
                 built_at: "2026-01-01T00:00:00Z".to_string(),
+                source_fingerprint: None,
             },
         )
         .unwrap();

@@ -320,6 +320,7 @@ impl LiveMatchState {
             true,
             &encoder_pool,
             true,
+            Some(Path::new(&config.datasets.a.path)),
         )?;
 
         let combined_index_b = vectordb::build_or_load_combined_index(
@@ -331,6 +332,7 @@ impl LiveMatchState {
             false,
             &encoder_pool,
             true,
+            Some(Path::new(&config.datasets.b.path)),
         )?;
 
         // Build MemoryStore from loaded records (includes blocking indices)
@@ -646,7 +648,7 @@ impl LiveMatchState {
             .filter_map(|id| store.get(Side::B, id).map(|r| (id.clone(), r)))
             .collect();
 
-        // Build embedding indices
+        // Build embedding indices (source is SQLite, not a file — no fingerprint)
         let combined_index_a = vectordb::build_or_load_combined_index(
             &config.vector_backend,
             Some(&config.embeddings.a_cache_dir),
@@ -656,6 +658,7 @@ impl LiveMatchState {
             true,
             &encoder_pool,
             true,
+            None,
         )?;
 
         let combined_index_b = vectordb::build_or_load_combined_index(
@@ -667,6 +670,7 @@ impl LiveMatchState {
             false,
             &encoder_pool,
             true,
+            None,
         )?;
 
         Self::finish(
