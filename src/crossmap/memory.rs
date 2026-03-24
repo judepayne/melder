@@ -26,22 +26,7 @@ use crate::error::CrossMapError;
 
 use super::CrossMapOps;
 
-/// Cross-platform rename that replaces the destination if it exists.
-///
-/// On Unix `fs::rename` atomically replaces the target.  On Windows it fails
-/// if the destination already exists, so we remove-then-rename (tiny window
-/// of non-atomicity, acceptable for crossmap flush).
-fn rename_replacing(from: &Path, to: &Path) -> Result<(), std::io::Error> {
-    #[cfg(unix)]
-    {
-        std::fs::rename(from, to)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = std::fs::remove_file(to);
-        std::fs::rename(from, to)
-    }
-}
+use crate::util::rename_replacing;
 
 // ── private inner state ──────────────────────────────────────────────────────
 

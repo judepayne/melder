@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{
-    RwLock,
+    LazyLock, RwLock,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -57,8 +57,10 @@ type BlockKey = Vec<String>;
 
 /// The default block key for records when blocking is disabled or
 /// all blocking field values are empty.
+static DEFAULT_BLOCK_KEY: LazyLock<BlockKey> = LazyLock::new(|| vec!["__default__".to_string()]);
+
 fn default_block_key() -> BlockKey {
-    vec!["__default__".to_string()]
+    DEFAULT_BLOCK_KEY.clone()
 }
 
 /// Compute the block key for a record given blocking field pairs and its side.
@@ -324,16 +326,17 @@ impl VectorDB for UsearchVectorDB {
             .add(usearch_key, vec)
             .map_err(|e| VectorDBError::Backend(e.to_string()))?;
 
-        state.id_to_key.insert(id.to_string(), usearch_key);
-        state.key_to_id.insert(usearch_key, id.to_string());
-        state.id_to_side.insert(id.to_string(), side);
+        let id_owned = id.to_string();
+        state.id_to_key.insert(id_owned.clone(), usearch_key);
+        state.key_to_id.insert(usearch_key, id_owned.clone());
+        state.id_to_side.insert(id_owned.clone(), side);
 
         drop(state);
         drop(blocks);
 
         // Update global record→block mapping.
         let mut rb = self.record_block.write().unwrap();
-        rb.insert(id.to_string(), block_idx);
+        rb.insert(id_owned, block_idx);
         drop(rb);
 
         // Update text hash (no-op if emb_specs is empty).

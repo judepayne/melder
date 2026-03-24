@@ -51,8 +51,8 @@ pub fn compute_text_hash(record: &Record, emb_specs: &[(String, String, f64)], s
             h ^= byte as u64;
             h = h.wrapping_mul(0x00000100000001b3);
         }
-        // NUL separator prevents "ab"+"c" colliding with "a"+"bc"
-        h ^= 0u64;
+        // Field separator prevents "ab"+"c" colliding with "a"+"bc"
+        h ^= 0xFFu64;
         h = h.wrapping_mul(0x00000100000001b3);
     }
     h

@@ -185,15 +185,8 @@ pub fn make_manifest(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// 8-character FNV-1a hex hash of a string (truncated to 32-bit display).
-pub(crate) fn fnv1a_8(s: &str) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for byte in s.bytes() {
-        h ^= byte as u64;
-        h = h.wrapping_mul(0x00000100000001b3);
-    }
-    format!("{:08x}", h as u32)
-}
+// Re-export shared FNV-1a hash from util.
+pub(crate) use crate::util::fnv1a_8;
 
 /// Simple RFC3339 UTC timestamp using only `std::time`.
 ///

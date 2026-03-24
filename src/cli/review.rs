@@ -257,11 +257,17 @@ pub fn cmd_review_import(config_path: &Path, decisions_path: &Path) {
 
                 // Rewrite review csv
                 if let Ok(mut wtr) = csv::Writer::from_path(review_path) {
-                    let _ = wtr.write_record(&review_headers);
-                    for row in &remaining_rows {
-                        let _ = wtr.write_record(row);
+                    if let Err(e) = wtr.write_record(&review_headers) {
+                        eprintln!("Warning: failed to write review header: {}", e);
                     }
-                    let _ = wtr.flush();
+                    for row in &remaining_rows {
+                        if let Err(e) = wtr.write_record(row) {
+                            eprintln!("Warning: failed to write review row: {}", e);
+                        }
+                    }
+                    if let Err(e) = wtr.flush() {
+                        eprintln!("Warning: failed to flush review file: {}", e);
+                    }
                 }
             }
         }

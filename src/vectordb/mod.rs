@@ -262,12 +262,7 @@ pub fn spec_hash(emb_specs: &[(String, String, f64)], vector_quantization: &str)
     // "f32" is the default; we always include it for consistency.
     s.push_str(";q=");
     s.push_str(vector_quantization);
-    let mut h: u64 = 0xcbf29ce484222325;
-    for byte in s.bytes() {
-        h ^= byte as u64;
-        h = h.wrapping_mul(0x00000100000001b3);
-    }
-    format!("{:08x}", h as u32)
+    crate::util::fnv1a_8(&s)
 }
 
 /// Returns `(field_a, field_b, weight)` for every `method: embedding` match

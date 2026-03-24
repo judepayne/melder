@@ -9,24 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-/// Cross-platform rename that replaces the destination if it exists.
-///
-/// On Unix `fs::rename` atomically replaces the target.  On Windows it fails
-/// if the destination already exists, so we remove-then-rename (tiny window
-/// of non-atomicity, acceptable for WAL compaction).
-fn rename_replacing(from: &Path, to: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        fs::rename(from, to)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = fs::remove_file(to);
-        fs::rename(from, to)
-    }
-}
-
 use serde::{Deserialize, Serialize};
+
+use crate::util::rename_replacing;
 
 use crate::models::{Record, Side};
 

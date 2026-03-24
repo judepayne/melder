@@ -48,6 +48,7 @@ impl CrossMapOps for SqliteCrossMap {
 
     fn add(&self, a_id: &str, b_id: &str) {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute_batch("BEGIN").expect("begin transaction");
         conn.execute("DELETE FROM crossmap WHERE a_id = ?1", params![a_id])
             .expect("delete old a_id");
         conn.execute("DELETE FROM crossmap WHERE b_id = ?1", params![b_id])
@@ -57,6 +58,7 @@ impl CrossMapOps for SqliteCrossMap {
             params![a_id, b_id],
         )
         .expect("insert crossmap pair");
+        conn.execute_batch("COMMIT").expect("commit transaction");
     }
 
     fn remove(&self, a_id: &str, b_id: &str) {

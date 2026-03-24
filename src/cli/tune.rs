@@ -489,9 +489,10 @@ fn print_overlap_record(
                 if !first {
                     print!("  |  ");
                 }
-                // Truncate long values
-                let display = if val.len() > 40 {
-                    format!("{}...", &val[..37])
+                // Truncate long values (char-boundary safe)
+                let display = if val.chars().count() > 40 {
+                    let truncated: String = val.chars().take(37).collect();
+                    format!("{}...", truncated)
                 } else {
                     val.to_string()
                 };
@@ -521,8 +522,9 @@ fn print_overlap_record(
                 if !first {
                     print!("  |  ");
                 }
-                let display = if val.len() > 40 {
-                    format!("{}...", &val[..37])
+                let display = if val.chars().count() > 40 {
+                    let truncated: String = val.chars().take(37).collect();
+                    format!("{}...", truncated)
                 } else {
                     val.to_string()
                 };

@@ -15,4 +15,5 @@ pub mod session;
 pub mod state;
 pub mod store;
 pub mod synonym;
+pub mod util;
 pub mod vectordb;
