@@ -46,10 +46,10 @@ pub fn score(
     }
 
     // Check: dictionary equivalence.
-    if let Some(dict) = dictionary {
-        if dict.is_equivalent(a_trimmed, b_trimmed) {
-            return 1.0;
-        }
+    if let Some(dict) = dictionary
+        && dict.is_equivalent(a_trimmed, b_trimmed)
+    {
+        return 1.0;
     }
 
     0.0
@@ -127,6 +127,9 @@ mod tests {
 
     #[test]
     fn gsam() {
-        assert_eq!(score("GSAM", "Goldman Sachs Asset Management", 3, None), 1.0,);
+        assert_eq!(
+            score("GSAM", "Goldman Sachs Asset Management", 3, None),
+            1.0,
+        );
     }
 }

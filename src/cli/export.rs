@@ -478,7 +478,7 @@ mod tests {
     use crate::models::Side;
     use crate::state::upsert_log::UpsertLog;
     use crate::store::RecordStore;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     fn make_record(pairs: &[(&str, &str)]) -> Record {
         pairs

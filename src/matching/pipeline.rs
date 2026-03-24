@@ -455,7 +455,7 @@ fn apply_output_mapping(record: &Record, config: &Config) -> Record {
 ///
 /// Only applies when there are ≥ 2 results. Single-candidate results are
 /// left unchanged: no rank-2 exists, so there is no ambiguity signal.
-fn apply_score_gap_check(results: &mut Vec<MatchResult>, min_gap: f64) {
+fn apply_score_gap_check(results: &mut [MatchResult], min_gap: f64) {
     if results.len() < 2 {
         return;
     }

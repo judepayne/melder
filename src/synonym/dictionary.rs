@@ -131,7 +131,7 @@ impl SynonymDictionary {
         let mut equivalences: HashMap<String, Vec<String>> = HashMap::new();
         let group_count = merged.len();
 
-        for (_root, members) in &merged {
+        for members in merged.values() {
             for term in members {
                 let others: Vec<String> = members.iter().filter(|m| *m != term).cloned().collect();
                 equivalences.insert(term.clone(), others);
@@ -164,7 +164,7 @@ impl SynonymDictionary {
         }
         self.equivalences
             .get(&a_key)
-            .map(|equivs| equivs.iter().any(|e| *e == b_key))
+            .map(|equivs| equivs.contains(&b_key))
             .unwrap_or(false)
     }
 

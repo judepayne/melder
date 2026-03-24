@@ -227,10 +227,7 @@ impl LiveMatchState {
                 let dict = crate::synonym::dictionary::SynonymDictionary::load(
                     std::path::Path::new(&sd_cfg.path),
                 )?;
-                eprintln!(
-                    "Loaded synonym dictionary ({} groups)",
-                    dict.len(),
-                );
+                eprintln!("Loaded synonym dictionary ({} groups)", dict.len(),);
                 Some(Arc::new(dict))
             } else {
                 None

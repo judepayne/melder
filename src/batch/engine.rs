@@ -152,7 +152,8 @@ pub fn run_batch(
     // at score 1.0 — no scoring required. Runs before blocking so cross-block
     // exact matches (e.g. wrong country but matching LEI) are still found.
     // Skipped in tune mode so all records go through full scoring.
-    if !skip_prematch && config.exact_prefilter.enabled && !config.exact_prefilter.fields.is_empty() {
+    if !skip_prematch && config.exact_prefilter.enabled && !config.exact_prefilter.fields.is_empty()
+    {
         let ep_start = Instant::now();
 
         // Extract A-side field names from the config pairs.
@@ -190,22 +191,22 @@ pub fn run_batch(
                 })
                 .collect();
 
-            if let Some(a_id) = store.exact_lookup(Side::A, &kvs) {
-                if !crossmap.has_a(&a_id) {
-                    crossmap.add(&a_id, b_id);
-                    let a_rec = store.get(Side::A, &a_id);
-                    matched.push(MatchResult {
-                        query_id: b_id.clone(),
-                        matched_id: a_id,
-                        query_side: Side::B,
-                        score: 1.0,
-                        field_scores: vec![],
-                        classification: Classification::Auto,
-                        matched_record: a_rec,
-                        from_crossmap: false,
-                    });
-                    exact_count += 1;
-                }
+            if let Some(a_id) = store.exact_lookup(Side::A, &kvs)
+                && !crossmap.has_a(&a_id)
+            {
+                crossmap.add(&a_id, b_id);
+                let a_rec = store.get(Side::A, &a_id);
+                matched.push(MatchResult {
+                    query_id: b_id.clone(),
+                    matched_id: a_id,
+                    query_side: Side::B,
+                    score: 1.0,
+                    field_scores: vec![],
+                    classification: Classification::Auto,
+                    matched_record: a_rec,
+                    from_crossmap: false,
+                });
+                exact_count += 1;
             }
         }
 
@@ -280,9 +281,9 @@ pub fn run_batch(
     let synonym_dict: Option<std::sync::Arc<crate::synonym::dictionary::SynonymDictionary>> =
         if let Some(ref sd_cfg) = config.synonym_dictionary {
             let dict_start = Instant::now();
-            let dict = crate::synonym::dictionary::SynonymDictionary::load(
-                std::path::Path::new(&sd_cfg.path),
-            )?;
+            let dict = crate::synonym::dictionary::SynonymDictionary::load(std::path::Path::new(
+                &sd_cfg.path,
+            ))?;
             eprintln!(
                 "Loaded synonym dictionary ({} groups, {} terms) in {:.1}ms",
                 dict.len(),

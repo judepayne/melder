@@ -246,34 +246,34 @@ pub fn cmd_tune(
             }
 
             if has_ground_truth {
-                if let Some(scores) = field_scores_match.get(*key) {
-                    if !scores.is_empty() {
-                        let stats = compute_stats(scores);
-                        println!(
-                            "    {:<42} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}",
-                            "With common_id (expect to match):",
-                            stats.min,
-                            stats.max,
-                            stats.mean,
-                            stats.median,
-                            stats.std_dev
-                        );
-                    }
+                if let Some(scores) = field_scores_match.get(*key)
+                    && !scores.is_empty()
+                {
+                    let stats = compute_stats(scores);
+                    println!(
+                        "    {:<42} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}",
+                        "With common_id (expect to match):",
+                        stats.min,
+                        stats.max,
+                        stats.mean,
+                        stats.median,
+                        stats.std_dev
+                    );
                 }
 
-                if let Some(scores) = field_scores_nonmatch.get(*key) {
-                    if !scores.is_empty() {
-                        let stats = compute_stats(scores);
-                        println!(
-                            "    {:<42} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}",
-                            "No common_id (don't expect to match):",
-                            stats.min,
-                            stats.max,
-                            stats.mean,
-                            stats.median,
-                            stats.std_dev
-                        );
-                    }
+                if let Some(scores) = field_scores_nonmatch.get(*key)
+                    && !scores.is_empty()
+                {
+                    let stats = compute_stats(scores);
+                    println!(
+                        "    {:<42} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}",
+                        "No common_id (don't expect to match):",
+                        stats.min,
+                        stats.max,
+                        stats.mean,
+                        stats.median,
+                        stats.std_dev
+                    );
                 }
 
                 // Separation indicator: difference between match mean and non-match mean.
@@ -533,12 +533,11 @@ fn print_overlap_record(
         }
 
         // Line 5: if this is a "with common_id" record, show expected A
-        if let Some(gt) = ground_truth {
-            if let Some(expected_a) = gt.get(&mr.query_id) {
-                if *expected_a != mr.matched_id {
-                    println!("      expected: {} (matched wrong record)", expected_a);
-                }
-            }
+        if let Some(gt) = ground_truth
+            && let Some(expected_a) = gt.get(&mr.query_id)
+            && *expected_a != mr.matched_id
+        {
+            println!("      expected: {} (matched wrong record)", expected_a);
         }
     }
 }
@@ -557,7 +556,7 @@ fn build_ground_truth(cfg: &crate::config::Config) -> Option<HashMap<String, Str
     let (a_records, _a_ids) = match crate::data::load_dataset(
         Path::new(&cfg.datasets.a.path),
         &cfg.datasets.a.id_field,
-        &[a_cid.clone()],
+        std::slice::from_ref(a_cid),
         cfg.datasets.a.format.as_deref(),
     ) {
         Ok(r) => r,
@@ -581,7 +580,7 @@ fn build_ground_truth(cfg: &crate::config::Config) -> Option<HashMap<String, Str
     let (b_records, _b_ids) = match crate::data::load_dataset(
         Path::new(&cfg.datasets.b.path),
         &cfg.datasets.b.id_field,
-        &[b_cid.clone()],
+        std::slice::from_ref(b_cid),
         cfg.datasets.b.format.as_deref(),
     ) {
         Ok(r) => r,
@@ -595,16 +594,18 @@ fn build_ground_truth(cfg: &crate::config::Config) -> Option<HashMap<String, Str
     for (b_id, b_rec) in &b_records {
         if let Some(b_val) = b_rec.get(b_cid) {
             let b_val = b_val.trim();
-            if !b_val.is_empty() {
-                if let Some(a_id) = a_common_index.get(b_val) {
-                    ground_truth.insert(b_id.clone(), a_id.clone());
-                }
+            if !b_val.is_empty()
+                && let Some(a_id) = a_common_index.get(b_val)
+            {
+                ground_truth.insert(b_id.clone(), a_id.clone());
             }
         }
     }
 
     if ground_truth.is_empty() {
-        eprintln!("Warning: common_id_field configured but zero matching records — falling back to single-population analysis");
+        eprintln!(
+            "Warning: common_id_field configured but zero matching records — falling back to single-population analysis"
+        );
         return None;
     }
 
@@ -1030,7 +1031,7 @@ fn compute_stats(scores: &[f64]) -> FieldStats {
     let mean = sorted.iter().sum::<f64>() / sorted.len().max(1) as f64;
     let median = if sorted.is_empty() {
         0.0
-    } else if sorted.len() % 2 == 0 && sorted.len() >= 2 {
+    } else if sorted.len().is_multiple_of(2) && sorted.len() >= 2 {
         (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
     } else {
         sorted[sorted.len() / 2]
@@ -1074,14 +1075,13 @@ fn render_histogram_one_pop(
 
     let thresholds = threshold_buckets(w, auto_threshold, review_threshold);
 
-    for i in first..=last {
-        let count = hist[i];
+    for (i, &count) in hist.iter().enumerate().take(last + 1).skip(first) {
         let bar_len = if count > 0 {
             (count as f64 * scale + 0.5) as usize
         } else {
             0
         };
-        let bar: String = std::iter::repeat(ALL_CHAR).take(bar_len).collect();
+        let bar: String = std::iter::repeat_n(ALL_CHAR, bar_len).collect();
         let label = format!("  {:.2} ", i as f64 * w);
         if let Some(tlabel) = thresholds.get(&i) {
             println!("{}{}  {} {}", label, bar, THRESHOLD_CHAR, tlabel);
@@ -1143,9 +1143,8 @@ fn render_histogram_two_pop(
         } else {
             0
         };
-        let bar: String = std::iter::repeat(MATCHED_CHAR)
-            .take(m_len)
-            .chain(std::iter::repeat(UNMATCHED_CHAR).take(u_len))
+        let bar: String = std::iter::repeat_n(MATCHED_CHAR, m_len)
+            .chain(std::iter::repeat_n(UNMATCHED_CHAR, u_len))
             .collect();
         let label = format!("  {:.2} ", i as f64 * w);
         if let Some(tlabel) = thresholds.get(&i) {

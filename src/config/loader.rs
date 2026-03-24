@@ -226,13 +226,13 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // Validate inline BM25 fields (if provided on the match_fields entry).
-    if let Some(bm25_mf) = cfg.match_fields.iter().find(|mf| mf.method == "bm25") {
-        if let Some(ref fields) = bm25_mf.fields {
-            for (i, pair) in fields.iter().enumerate() {
-                let prefix = format!("match_fields[bm25].fields[{}]", i);
-                require_non_empty(&pair.field_a, &format!("{}.field_a", prefix))?;
-                require_non_empty(&pair.field_b, &format!("{}.field_b", prefix))?;
-            }
+    if let Some(bm25_mf) = cfg.match_fields.iter().find(|mf| mf.method == "bm25")
+        && let Some(ref fields) = bm25_mf.fields
+    {
+        for (i, pair) in fields.iter().enumerate() {
+            let prefix = format!("match_fields[bm25].fields[{}]", i);
+            require_non_empty(&pair.field_a, &format!("{}.field_a", prefix))?;
+            require_non_empty(&pair.field_b, &format!("{}.field_b", prefix))?;
         }
     }
 
@@ -302,13 +302,13 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // 23b. min_score_gap in [0.0, 1.0) if set
-    if let Some(gap) = cfg.thresholds.min_score_gap {
-        if gap < 0.0 || gap >= 1.0 {
-            return Err(ConfigError::InvalidValue {
-                field: "thresholds.min_score_gap".into(),
-                message: "must be in range [0.0, 1.0)".into(),
-            });
-        }
+    if let Some(gap) = cfg.thresholds.min_score_gap
+        && !(0.0..1.0).contains(&gap)
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "thresholds.min_score_gap".into(),
+            message: "must be in range [0.0, 1.0)".into(),
+        });
     }
 
     // 24-26. output paths

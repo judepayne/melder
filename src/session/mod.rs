@@ -522,9 +522,10 @@ impl Session {
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
         // Acquire opposite-side synonym index read lock (if configured).
-        let opp_syn_guard = opp_side.synonym_index.as_ref().map(|mtx| {
-            mtx.read().unwrap_or_else(|e| e.into_inner())
-        });
+        let opp_syn_guard = opp_side
+            .synonym_index
+            .as_ref()
+            .map(|mtx| mtx.read().unwrap_or_else(|e| e.into_inner()));
 
         // Build BM25 context from opposite side's index.
         // Commit any buffered writes first (write lock, brief), then
@@ -825,9 +826,10 @@ impl Session {
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
         // Acquire opposite-side synonym index read lock (if configured).
-        let opp_syn_guard = opp_side.synonym_index.as_ref().map(|mtx| {
-            mtx.read().unwrap_or_else(|e| e.into_inner())
-        });
+        let opp_syn_guard = opp_side
+            .synonym_index
+            .as_ref()
+            .map(|mtx| mtx.read().unwrap_or_else(|e| e.into_inner()));
 
         // Build BM25 context from opposite side's index.
         // Commit any buffered writes first (write lock, brief), then
