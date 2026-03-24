@@ -26,6 +26,7 @@ tufte/
 # AI/editor tool config
 .opencode/
 .claude/
+opencode.json
 
 # Python bytecode
 __pycache__/
