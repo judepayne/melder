@@ -28,9 +28,16 @@ pub fn wratio(a: &str, b: &str) -> f64 {
     }
 
     let ts = token_sort_ratio_normalized(&a_norm, &b_norm);
-    let pr = partial_ratio_normalized(&a_norm, &b_norm);
+    let best_so_far = r.max(ts);
 
-    r.max(ts).max(pr)
+    // Skip the expensive O(N*M) partial_ratio when we already have a
+    // near-perfect score — partial_ratio can at best return 1.0.
+    if best_so_far >= 0.95 {
+        return best_so_far;
+    }
+
+    let pr = partial_ratio_normalized(&a_norm, &b_norm);
+    best_so_far.max(pr)
 }
 
 #[cfg(test)]

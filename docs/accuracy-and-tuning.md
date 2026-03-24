@@ -371,6 +371,26 @@ that covers only 30% of records — to unlock the two-population analysis.
 
 ### Blocking and match field interaction
 
+Blocking is the single most important performance and accuracy
+trade-off in the melder. When enabled, it eliminates candidates that
+don't share a blocking key value before any scoring runs — typically
+removing 95%+ of pairs. This gives an order-of-magnitude speedup
+(10× in measured benchmarks at 100k scale), but every record excluded
+by blocking is **permanently unreachable**: if the blocking key is
+wrong, missing, or inconsistent on either side, the true match will
+never be found. Disabling blocking removes this ceiling entirely, but
+scoring throughput drops from ~8,500 rec/s to ~800 rec/s at 100k.
+There is no free lunch — choose your blocking fields carefully.
+
+Because blocking quality depends entirely on key quality, normalising
+blocking fields before they reach the melder is one of the
+highest-value things you can do. Country codes are a common example:
+one dataset might use `GB` while the other uses `UK`, `GBR`, or
+`United Kingdom`. A simple lookup table applied during data
+preparation eliminates this mismatch at zero runtime cost. The same
+applies to currency codes, sector classifications, or any categorical
+field used for blocking — clean the key once, benefit on every run.
+
 A common pitfall: using the same field for both blocking and scoring.
 If you block on `country_code`, every candidate pair already has a
 matching country — so an `exact` match field on country will score 1.0

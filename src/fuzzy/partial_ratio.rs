@@ -44,15 +44,22 @@ pub(crate) fn partial_ratio_normalized(a: &str, b: &str) -> f64 {
         return 1.0;
     }
 
-    // Slide a window of `short_len` chars across `longer`
-    let long_chars: Vec<char> = longer.chars().collect();
-    let long_len = long_chars.len();
+    // Slide a window of `short_len` chars across `longer`.
+    // Pre-compute char→byte offset map to avoid per-window String allocation.
+    let char_offsets: Vec<usize> = longer.char_indices().map(|(i, _)| i).collect();
+    let long_len = char_offsets.len();
     let mut best = 0.0_f64;
 
     let windows = long_len - short_len + 1;
     for i in 0..windows {
-        let window: String = long_chars[i..i + short_len].iter().collect();
-        let r = ratio_normalized(shorter, &window);
+        let byte_start = char_offsets[i];
+        let byte_end = if i + short_len < long_len {
+            char_offsets[i + short_len]
+        } else {
+            longer.len()
+        };
+        let window = &longer[byte_start..byte_end];
+        let r = ratio_normalized(shorter, window);
         if r > best {
             best = r;
         }
