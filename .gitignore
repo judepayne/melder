@@ -26,6 +26,9 @@ tufte/
 # AI/editor tool config
 .opencode/
 
+# Python bytecode
+__pycache__/
+
 # OS files
 .DS_Store
 
