@@ -63,18 +63,18 @@ impl MemoryStore {
         // Load A records and build blocking index
         {
             let mut bi = store.a_blocking.write().unwrap_or_else(|e| e.into_inner());
-            for (id, record) in &records_a {
-                store.a_records.insert(id.clone(), record.clone());
-                bi.insert(id, record, Side::A);
+            for (id, record) in records_a {
+                bi.insert(&id, &record, Side::A);
+                store.a_records.insert(id, record);
             }
         }
 
         // Load B records and build blocking index
         {
             let mut bi = store.b_blocking.write().unwrap_or_else(|e| e.into_inner());
-            for (id, record) in &records_b {
-                store.b_records.insert(id.clone(), record.clone());
-                bi.insert(id, record, Side::B);
+            for (id, record) in records_b {
+                bi.insert(&id, &record, Side::B);
+                store.b_records.insert(id, record);
             }
         }
 

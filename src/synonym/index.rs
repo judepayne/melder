@@ -37,7 +37,9 @@ pub struct SynonymEntry {
 /// with their field pair so lookups can filter to the relevant scoring field.
 pub struct SynonymIndex {
     /// Maps normalised lookup key → list of matching entries.
-    index: HashMap<String, Vec<SynonymEntry>>,
+    index: HashMap<String, Vec<Arc<SynonymEntry>>>,
+    /// Reverse index: (record_id, side) → list of index keys for O(K) removal.
+    reverse: HashMap<(String, Side), Vec<String>>,
     /// Optional user-provided synonym dictionary for term expansion.
     dictionary: Option<Arc<SynonymDictionary>>,
 }
@@ -83,6 +85,7 @@ impl SynonymIndex {
     pub fn new(dictionary: Option<Arc<SynonymDictionary>>) -> Self {
         Self {
             index: HashMap::new(),
+            reverse: HashMap::new(),
             dictionary,
         }
     }
@@ -113,6 +116,8 @@ impl SynonymIndex {
         side: Side,
         synonym_fields: &[SynonymFieldConfig],
     ) {
+        let reverse_keys = self.reverse.entry((id.to_string(), side)).or_default();
+
         for config in synonym_fields {
             let value = field_value(record, side, config);
             let trimmed = value.trim();
@@ -121,21 +126,22 @@ impl SynonymIndex {
             }
 
             let min_len = min_length(config);
-            let entry = SynonymEntry {
+            let entry = Arc::new(SynonymEntry {
                 record_id: id.to_string(),
                 side,
                 field_a: config.field_a.clone(),
                 field_b: config.field_b.clone(),
-            };
+            });
 
             // Index generated acronyms as lookup keys.
             // e.g. "Harris, Watkins and Goodwin BV" → index keys "HWG", "HWAG", etc.
             let acronyms = generate_acronyms(trimmed, min_len);
             for acr in &acronyms {
+                reverse_keys.push(acr.clone());
                 self.index
                     .entry(acr.clone())
                     .or_default()
-                    .push(entry.clone());
+                    .push(Arc::clone(&entry));
             }
 
             // Index the raw value (uppercased) as a lookup key.
@@ -143,17 +149,22 @@ impl SynonymIndex {
             // raw name field contains "HWAG", and that record can then be
             // matched against a full name on the other side.
             let raw_key = trimmed.to_uppercase();
-            self.index.entry(raw_key).or_default().push(entry.clone());
+            reverse_keys.push(raw_key.clone());
+            self.index
+                .entry(raw_key)
+                .or_default()
+                .push(Arc::clone(&entry));
 
             // Dictionary expansion: if the record's name matches a dictionary
             // term, also index under all equivalent terms.
             if let Some(ref dict) = self.dictionary {
                 let expanded = dict.expand(trimmed);
                 for equiv_term in expanded {
+                    reverse_keys.push(equiv_term.clone());
                     self.index
                         .entry(equiv_term.clone())
                         .or_default()
-                        .push(entry.clone());
+                        .push(Arc::clone(&entry));
                 }
             }
         }
@@ -174,13 +185,21 @@ impl SynonymIndex {
     }
 
     /// Remove all entries for a record (live mode).
+    ///
+    /// Uses the reverse index for O(K) removal instead of scanning the
+    /// entire forward index.
     pub fn remove(&mut self, id: &str, side: Side) {
-        // Retain only entries that don't match the record+side.
-        // Remove empty keys to avoid unbounded growth.
-        self.index.retain(|_key, entries| {
-            entries.retain(|e| !(e.record_id == id && e.side == side));
-            !entries.is_empty()
-        });
+        let key = (id.to_string(), side);
+        if let Some(index_keys) = self.reverse.remove(&key) {
+            for ikey in &index_keys {
+                if let Some(entries) = self.index.get_mut(ikey) {
+                    entries.retain(|e| !(e.record_id == id && e.side == side));
+                    if entries.is_empty() {
+                        self.index.remove(ikey);
+                    }
+                }
+            }
+        }
     }
 
     /// Look up synonym candidates for a query value on a given field pair.

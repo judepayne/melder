@@ -86,6 +86,39 @@ pub fn stream_dataset(
     }
 }
 
+/// Count rows in a dataset without loading records into memory.
+///
+/// For CSV files, counts data rows (excludes header). For other formats,
+/// falls back to `load_dataset` and returns the count.
+pub fn count_rows(path: &Path, format: Option<&str>) -> Result<usize, DataError> {
+    let fmt = match format {
+        Some(f) => f.to_lowercase(),
+        None => infer_format(path),
+    };
+
+    match fmt.as_str() {
+        "csv" => {
+            let mut rdr = ::csv::ReaderBuilder::new()
+                .has_headers(true)
+                .from_path(path)?;
+            Ok(rdr.records().count())
+        }
+        "jsonl" | "ndjson" => {
+            let file = std::fs::File::open(path)?;
+            let reader = std::io::BufReader::new(file);
+            use std::io::BufRead;
+            Ok(reader
+                .lines()
+                .filter(|l| l.as_ref().is_ok_and(|s| !s.trim().is_empty()))
+                .count())
+        }
+        _ => Err(DataError::Parse(format!(
+            "count_rows not supported for format {:?}; use load_dataset instead",
+            fmt,
+        ))),
+    }
+}
+
 /// Infer data format from file extension.
 fn infer_format(path: &Path) -> String {
     match path.extension().and_then(|e| e.to_str()) {

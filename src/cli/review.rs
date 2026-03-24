@@ -7,13 +7,7 @@ use crate::crossmap::CrossMapOps;
 
 /// List pending reviews.
 pub fn cmd_review_list(config_path: &Path) {
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     let review_path = Path::new(&cfg.output.review_path);
     if !review_path.exists() {
@@ -104,13 +98,7 @@ pub fn cmd_review_list(config_path: &Path) {
 
 /// Import review decisions.
 pub fn cmd_review_import(config_path: &Path, decisions_path: &Path) {
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     // Load crossmap
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");

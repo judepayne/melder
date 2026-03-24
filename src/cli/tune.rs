@@ -51,13 +51,7 @@ pub fn cmd_tune(
     };
 
     // 1. Load config
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     let current_auto = cfg.thresholds.auto_match;
     let current_floor = cfg.thresholds.review_floor;

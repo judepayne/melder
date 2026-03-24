@@ -544,13 +544,7 @@ impl VectorDB for UsearchVectorDB {
 
     fn contains(&self, id: &str) -> bool {
         let rb = self.record_block.read().unwrap();
-        if let Some(&block_idx) = rb.get(id) {
-            let blocks = self.blocks.read().unwrap();
-            let state = blocks[block_idx].read().unwrap();
-            state.id_to_key.contains_key(id)
-        } else {
-            false
-        }
+        rb.contains_key(id)
     }
 
     fn len(&self) -> usize {

@@ -9,13 +9,7 @@ use crate::vectordb::texthash::texthash_sidecar_path;
 
 /// Build embedding caches.
 pub fn cmd_cache_build(config_path: &Path) {
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     let load_b = cfg.embeddings.b_cache_dir.is_some();
     let opts = crate::state::LoadOptions {
@@ -63,13 +57,7 @@ pub fn cmd_cache_build(config_path: &Path) {
 
 /// Show cache status.
 pub fn cmd_cache_status(config_path: &Path) {
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     // Check A-side cache dir
     print_cache_dir_status("A cache", &cfg.embeddings.a_cache_dir);
@@ -151,13 +139,7 @@ fn print_cache_dir_status(label: &str, dir: &str) {
 /// stale files from old field specs are removed, but the current cache is
 /// left untouched (pass `--force` to wipe everything, mapped to `all=true`).
 pub fn cmd_cache_clear(config_path: &Path, all: bool) {
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     let mut deleted = Vec::new();
 

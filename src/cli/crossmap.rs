@@ -7,13 +7,7 @@ use crate::crossmap::CrossMapOps;
 
 /// Show cross-map statistics.
 pub fn cmd_crossmap_stats(config_path: &Path) {
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     // Load crossmap
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");
@@ -29,29 +23,25 @@ pub fn cmd_crossmap_stats(config_path: &Path) {
         }
     };
 
-    // Load datasets to get totals
-    let a_count = match crate::data::load_dataset(
+    // Count dataset rows without loading full records into memory
+    let a_count = match crate::data::count_rows(
         Path::new(&cfg.datasets.a.path),
-        &cfg.datasets.a.id_field,
-        &cfg.required_fields_a,
         cfg.datasets.a.format.as_deref(),
     ) {
-        Ok((records, _)) => records.len(),
+        Ok(n) => n,
         Err(e) => {
-            eprintln!("Warning: failed to load A dataset: {}", e);
+            eprintln!("Warning: failed to count A dataset: {}", e);
             0
         }
     };
 
-    let b_count = match crate::data::load_dataset(
+    let b_count = match crate::data::count_rows(
         Path::new(&cfg.datasets.b.path),
-        &cfg.datasets.b.id_field,
-        &cfg.required_fields_b,
         cfg.datasets.b.format.as_deref(),
     ) {
-        Ok((records, _)) => records.len(),
+        Ok(n) => n,
         Err(e) => {
-            eprintln!("Warning: failed to load B dataset: {}", e);
+            eprintln!("Warning: failed to count B dataset: {}", e);
             0
         }
     };
@@ -87,13 +77,7 @@ pub fn cmd_crossmap_stats(config_path: &Path) {
 
 /// Export cross-map to csv.
 pub fn cmd_crossmap_export(config_path: &Path, out_path: &Path) {
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");
     let crossmap = match crate::crossmap::MemoryCrossMap::load(
@@ -126,13 +110,7 @@ pub fn cmd_crossmap_export(config_path: &Path, out_path: &Path) {
 
 /// Import cross-map from csv.
 pub fn cmd_crossmap_import(config_path: &Path, import_path: &Path) {
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     let crossmap_path = cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv");
 

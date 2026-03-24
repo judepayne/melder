@@ -93,14 +93,7 @@ fn error_response(status: StatusCode, msg: &str) -> impl IntoResponse {
 }
 
 fn json_ok(value: impl serde::Serialize) -> axum::response::Response {
-    match serde_json::to_value(value) {
-        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("serialization error: {}", e),
-        )
-        .into_response(),
-    }
+    (StatusCode::OK, Json(value)).into_response()
 }
 
 /// Run a blocking closure on `spawn_blocking` and map the result.

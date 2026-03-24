@@ -10,13 +10,7 @@ use crate::models::Side;
 /// Run a batch matching job.
 pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<usize>) {
     // 1. Load and validate config
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     if verbose {
         eprintln!("Job: {} ({})", cfg.job.name, cfg.job.description);

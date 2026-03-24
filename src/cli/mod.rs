@@ -9,6 +9,20 @@ pub mod serve;
 pub mod tune;
 pub mod validate;
 
+/// Load config or print an error and exit.
+///
+/// Eliminates the repeated `match load_config { Ok => ..., Err => eprintln + exit(1) }`
+/// boilerplate across CLI commands.
+pub fn load_config_or_exit(config_path: &std::path::Path) -> crate::config::Config {
+    match crate::config::load_config(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Config error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Initialise the `tracing` subscriber based on log format.
 pub fn init_tracing(log_format: &str) {
     use tracing_subscriber::EnvFilter;

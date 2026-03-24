@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use tracing::warn;
+
 use crate::error::SessionError;
 use crate::matching::pipeline;
 use crate::matching::pipeline::Bm25Ctx;
@@ -394,10 +396,12 @@ impl Session {
                 store.mark_unmatched(Side::B, &b_id);
 
                 // WAL
-                let _ = self.state.wal.append(&WalEvent::CrossMapBreak {
+                if let Err(e) = self.state.wal.append(&WalEvent::CrossMapBreak {
                     a_id: a_id.clone(),
                     b_id: b_id.clone(),
-                });
+                }) {
+                    warn!(error = %e, "WAL append failed for crossmap break");
+                }
 
                 old_mapping = Some(OldMapping { a_id, b_id });
                 self.state.mark_crossmap_dirty();
@@ -410,7 +414,9 @@ impl Session {
         }
 
         // 3. WAL append (zero-clone borrowing serialization).
-        let _ = self.state.wal.append_upsert(side, &record);
+        if let Err(e) = self.state.wal.append_upsert(side, &record) {
+            warn!(error = %e, "WAL append failed for upsert");
+        }
 
         // 4. Insert/replace record
         store.insert(side, &id, &record);
@@ -470,11 +476,13 @@ impl Session {
                         store.mark_matched(Side::A, &a_id);
                         store.mark_matched(Side::B, &b_id);
 
-                        let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
+                        if let Err(e) = self.state.wal.append(&WalEvent::CrossMapConfirm {
                             a_id: a_id.clone(),
                             b_id: b_id.clone(),
                             score: Some(1.0),
-                        });
+                        }) {
+                            warn!(error = %e, "WAL append failed for crossmap confirm");
+                        }
                         self.state.mark_crossmap_dirty();
 
                         let opp_record = store.get(opp, &opp_id);
@@ -593,11 +601,13 @@ impl Session {
                 if self.state.crossmap.claim(&a_id, &b_id) {
                     store.mark_matched(Side::A, &a_id);
                     store.mark_matched(Side::B, &b_id);
-                    let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
+                    if let Err(e) = self.state.wal.append(&WalEvent::CrossMapConfirm {
                         a_id,
                         b_id,
                         score: Some(result.score),
-                    });
+                    }) {
+                        warn!(error = %e, "WAL append failed for crossmap confirm");
+                    }
                     self.state.mark_crossmap_dirty();
                     classification = "auto".to_string();
                     _claimed_idx = Some(i);
@@ -606,12 +616,14 @@ impl Session {
                 continue;
             }
             // Score is in review band
-            let _ = self.state.wal.append(&WalEvent::ReviewMatch {
+            if let Err(e) = self.state.wal.append(&WalEvent::ReviewMatch {
                 id: id.clone(),
                 side,
                 candidate_id: result.matched_id.clone(),
                 score: result.score,
-            });
+            }) {
+                warn!(error = %e, "WAL append failed for review match");
+            }
             let key = review_queue_key(side, &id, &result.matched_id);
             self.state.insert_review(
                 key,
@@ -714,10 +726,12 @@ impl Session {
         store.remove(side, id);
 
         // Append to WAL
-        let _ = self.state.wal.append(&WalEvent::RemoveRecord {
+        if let Err(e) = self.state.wal.append(&WalEvent::RemoveRecord {
             side,
             id: id.to_string(),
-        });
+        }) {
+            warn!(error = %e, "WAL append failed for remove record");
+        }
 
         Ok(RemoveResponse {
             status: "removed".to_string(),
@@ -931,11 +945,13 @@ impl Session {
         // Drain any review entries involving either ID.
         self.state.drain_reviews_for_pair(a_id, b_id);
 
-        let _ = self.state.wal.append(&WalEvent::CrossMapConfirm {
+        if let Err(e) = self.state.wal.append(&WalEvent::CrossMapConfirm {
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
             score: None,
-        });
+        }) {
+            warn!(error = %e, "WAL append failed for crossmap confirm");
+        }
         self.state.mark_crossmap_dirty();
 
         Ok(ConfirmResponse {
@@ -994,10 +1010,12 @@ impl Session {
         // Drain any review entries involving either ID.
         self.state.drain_reviews_for_pair(a_id, b_id);
 
-        let _ = self.state.wal.append(&WalEvent::CrossMapBreak {
+        if let Err(e) = self.state.wal.append(&WalEvent::CrossMapBreak {
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
-        });
+        }) {
+            warn!(error = %e, "WAL append failed for crossmap break");
+        }
         self.state.mark_crossmap_dirty();
 
         Ok(BreakResponse {

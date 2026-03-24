@@ -21,13 +21,7 @@ use crate::state::upsert_log::{UpsertLog, WalEvent};
 /// unmatched_b.csv. Reads from SQLite if `live.db_path` is set and the DB
 /// file exists; otherwise reconstructs state from CSV datasets + WAL replay.
 pub fn cmd_export(config_path: &Path, out_dir: &Path) {
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     // Guard: batch configs have neither upsert_log nor db_path configured.
     if cfg.live.upsert_log.is_none() && cfg.live.db_path.is_none() {
@@ -79,11 +73,18 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
 
     // results.csv — confirmed crossmap pairs.
     let pairs: Vec<(String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT a_id, b_id FROM crossmap ORDER BY a_id")
-            .expect("prepare crossmap query");
+        let mut stmt = match conn.prepare("SELECT a_id, b_id FROM crossmap ORDER BY a_id") {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to query crossmap: {}", e);
+                process::exit(1);
+            }
+        };
         stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .expect("query crossmap")
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to query crossmap: {}", e);
+                process::exit(1);
+            })
             .filter_map(|r| r.ok())
             .collect()
     };
@@ -96,9 +97,15 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
 
     // review.csv — pending review-band matches.
     let reviews: Vec<ReviewRow> = {
-        let mut stmt = conn
+        let mut stmt = match conn
             .prepare("SELECT id, side, candidate_id, score FROM reviews ORDER BY score DESC")
-            .expect("prepare reviews query");
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to query reviews: {}", e);
+                process::exit(1);
+            }
+        };
         stmt.query_map([], |row| {
             Ok(ReviewRow {
                 id: row.get(0)?,
@@ -107,7 +114,10 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
                 score: row.get(3)?,
             })
         })
-        .expect("query reviews")
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to query reviews: {}", e);
+            process::exit(1);
+        })
         .filter_map(|r| r.ok())
         .collect()
     };
@@ -147,12 +157,18 @@ fn query_unmatched(conn: &rusqlite::Connection, side: &str) -> Vec<(String, Reco
     let columns: Vec<String> = {
         let mut stmt = conn
             .prepare(&format!("PRAGMA table_info({side}_records)"))
-            .expect("pragma table_info");
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to query {side}_records schema: {e}");
+                process::exit(1);
+            });
         stmt.query_map([], |row| {
             let name: String = row.get(1)?;
             Ok(name)
         })
-        .expect("query table_info")
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to query {side}_records schema: {e}");
+            process::exit(1);
+        })
         .filter_map(|r| r.ok())
         .filter(|name| name != "id")
         .collect()
@@ -177,7 +193,10 @@ fn query_unmatched(conn: &rusqlite::Connection, side: &str) -> Vec<(String, Reco
          ORDER BY r.id",
         col_list, side, side
     );
-    let mut stmt = conn.prepare(&sql).expect("prepare unmatched query");
+    let mut stmt = conn.prepare(&sql).unwrap_or_else(|e| {
+        eprintln!("Failed to query {side} unmatched records: {e}");
+        process::exit(1);
+    });
     stmt.query_map([], |row| {
         let id: String = row.get(0)?;
         let mut record = Record::new();
@@ -187,7 +206,10 @@ fn query_unmatched(conn: &rusqlite::Connection, side: &str) -> Vec<(String, Reco
         }
         Ok((id, record))
     })
-    .expect("query unmatched")
+    .unwrap_or_else(|e| {
+        eprintln!("Failed to query {side} unmatched records: {e}");
+        process::exit(1);
+    })
     .filter_map(|r| r.ok())
     .collect()
 }

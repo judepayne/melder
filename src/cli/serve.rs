@@ -6,13 +6,7 @@ use std::process;
 /// Start the live-mode HTTP server.
 pub fn cmd_serve(config_path: &Path, port: u16) {
     // 1. Load config
-    let cfg = match crate::config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Config error: {}", e);
-            process::exit(1);
-        }
-    };
+    let cfg = super::load_config_or_exit(config_path);
 
     // Warn if mmap mode is configured — it is not safe for live mode because
     // upserts write to the index and will fail on a read-only mmap'd index.
