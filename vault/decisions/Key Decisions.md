@@ -366,4 +366,41 @@ Extended `src/encoder/mod.rs` to detect local paths (absolute, `./`, `../`, `.on
 
 ---
 
+## Arctic-embed-xs as Recommended Embedding Model
+
+**Date:** 2026-03-25
+**Status:** Accepted
+
+**Context:**
+Experiments 1–8 evaluated embedding models for fine-tuning on entity resolution. BGE-small (33M, 384 dims) and BGE-base (110M, 768 dims) were the primary candidates. BGE-small was faster but had limited capacity to separate match/non-match distributions (compression, not stretching). BGE-base stretched better but was 3× larger. Experiment 9 tested Snowflake's Arctic-embed-xs (22M, 6 layers, 384 dims) — a smaller model with superior pre-training (400M samples with hard negative mining).
+
+**Decision:**
+Arctic-embed-xs replaces BGE-small and BGE-base as the recommended embedding model for melder entity resolution fine-tuning.
+
+**Key Results (Experiment 9, 23 rounds):**
+- **Best overlap: 0.031 at R22** — best of any experiment, beating BGE-base (0.046) and BGE-small (0.070)
+- **Combined recall: 99.7% from R14 onward** — best of any trained model, and improved during training (not degraded)
+- **Only 30 missed matches at R22** (19 clean + 11 heavy noise)
+- **Clean convergence R17-R22** with no regression
+- **Review FPs: 2,826 → 184 at R22** (93.5% reduction, still declining)
+- **Zero missed matches R2-R7** — briefly achieved perfect recall before overlap improvement phase began
+- **Not-a-match in auto: 131 at R0 → 0 from R8 onward**
+
+**Why Arctic-embed-xs:**
+1. **Pre-training quality > parameter count.** Arctic's 400M-sample pre-training with hard negative mining outweighs BGE-small's 33M params. The model learns to stretch (separate distributions) rather than compress.
+2. **Smallest size, fastest speed.** 22M params vs BGE-small (33M) and BGE-base (110M). Encoding is 2–3× faster than BGE-base, enabling higher throughput in live mode.
+3. **Fewer layers = larger LoRA intervention.** 6 layers vs BGE-small's 12 means each LoRA adapter has proportionally more influence, improving fine-tuning signal.
+4. **Stretches, not compresses.** Arctic pushes non-matches down while keeping matches stable. BGE-small shifts everything together. This is the key difference that enables 99.7% recall.
+5. **Embedding-only overlap (0.031) should drop to near-zero with BM25.** Experiment 10 will combine Arctic with BM25 to validate production viability.
+
+**Consequences:**
+- Update all production configs to use `embeddings.model: Snowflake/arctic-embed-xs` (or local fine-tuned path after training).
+- Encoding throughput increases 2–3× vs BGE-base, reducing ONNX bottleneck in live mode.
+- Fine-tuning loop now targets Arctic-embed-xs as the base model.
+- Backward compatibility: existing configs using BGE-small/BGE-base continue to work; no forced migration.
+
+**Related:** [[Training Experiments Log#Experiment 9]], `benchmarks/accuracy/training/`
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

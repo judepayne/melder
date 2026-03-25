@@ -1022,3 +1022,481 @@ This required two changes:
 - **Not all 81 acronym cases recovered.** The original overlap analysis (experiment 5) identified 81 acronym cases stuck in the 0.44-0.60 zone. Synonym matching recovered 27 of these. The remaining ~54 are likely cases where: (a) the acronym is shorter than `min_length=3` (e.g. "MG", "RP", "LC" from the experiment 5 table), (b) blocking filters them out (different country codes), or (c) the B-side record is an "ambiguous" or "unmatched" type in the ground truth that was already counted correctly.
 - **Performance impact is modest.** 22% scoring throughput reduction (8,564 → 6,677 rec/s). The synonym index build is negligible (12.8ms for 21,429 keys). The per-record cost is dominated by acronym generation and HashMap lookups for each B record — cheap in absolute terms but measurable at scale.
 - **Additive weight design is essential.** Sparse binary scorers must not participate in weight normalisation when they score 0.0. This is a general principle that would apply to any future binary feature (e.g. exact ID match, regex pattern match).
+
+---
+
+## Experiment 8: BGE-small MNRL batch=128, 1 epoch, LoRA (18 rounds)
+
+Revisit BGE-small with the optimal training configuration established across experiments 2-5. Experiment 2 tested BGE-small with LoRA but only at batch=32, reaching an apparent plateau at overlap 0.081 after 8 rounds. Experiment 5 showed that batch=128 on BGE-base produced delayed-but-steeper learning (barely moves R0-R3, then drops sharply R4-R5) and ultimately reached lower overlap than batch=32 (0.046 vs 0.059). The batch=128 effect was never tested on BGE-small.
+
+BGE-small is ~3× faster for encoding than BGE-base (384-dim vs 768-dim embeddings), making it significantly more attractive for production use if it can achieve acceptable separation.
+
+**Variable changed from experiment 2:** batch_size (32 → 128). Rounds extended from 8 to 18 to allow for batch=128's delayed learning curve. Everything else identical.
+
+```yaml
+status: done
+model: BAAI/bge-small-en-v1.5
+loss: mnrl
+rounds: 18
+epochs: 1
+batch_size: 128
+learning_rate: 2e-5
+full_finetune: false
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.1
+```
+
+**Command:**
+```bash
+python benchmarks/accuracy/science/run.py \
+    --name experiment_8 --rounds 18 --loss mnrl \
+    --base-model BAAI/bge-small-en-v1.5 --batch-size 128 --epochs 1
+```
+
+**Hypothesis:** Batch=128 will provide denser contrastive signal per MNRL step, potentially pushing BGE-small past the 0.081 overlap plateau observed in experiment 2 (batch=32). The learning curve may show the same delayed-start pattern as experiment 5 (BGE-base, batch=128) — slow through R0-R5, then a sharp drop. If BGE-small reaches ~0.065 or lower, it becomes a viable production alternative to BGE-base when combined with BM25 (which closed the gap from 0.046 to 0.005 on BGE-base in experiment 6).
+
+**Key comparison points:**
+- Exp 2 (BGE-small, LoRA, batch=32): 0.161 → 0.081 plateau at R6-R7
+- Exp 5 (BGE-base, LoRA, batch=128): 0.165 → 0.046 at R17, still improving
+- This exp: does batch=128 break BGE-small's 0.081 ceiling?
+
+### Results
+
+**Overlap trajectory (holdout):**
+
+| R0 | R4 | R6 | R8 | R10 | R12 | R14 | R16 | R17 |
+|---|---|---|---|---|---|---|---|---|
+| 0.161 | 0.160 | 0.105 | 0.078 | 0.073 | **0.070** | 0.072 | 0.071 | 0.073 |
+
+**Holdout results (every other round):**
+
+|  | R0 (base) | R4 | R6 | R8 | R10 | R12 | R14 | R17 |
+|---|---|---|---|---|---|---|---|---|
+| Auto-matched | 5,682 | 5,566 | 5,424 | 5,381 | 5,376 | 5,361 | 5,347 | 5,332 |
+| Clean | 5,000 | 4,922 | 4,811 | 4,778 | 4,773 | 4,766 | 4,762 | 4,754 |
+| Heavy noise | 682 | 644 | 613 | 603 | 603 | 595 | 585 | 578 |
+| Not a match | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Review | 4,316 | 4,108 | 2,223 | 1,777 | 1,648 | 1,570 | 1,481 | 1,356 |
+| Clean | 989 | 1,087 | 1,183 | 1,168 | 1,139 | 1,094 | 1,030 | 946 |
+| Heavy noise | 335 | 371 | 385 | 376 | 364 | 363 | 357 | 345 |
+| Not a match | 2,958 | 2,643 | 655 | 233 | 145 | 113 | 94 | 65 |
+| Missed (clean) | 1 | 8 | 30 | 78 | 112 | 164 | 232 | 324 |
+| Missed (noise) | 1 | 3 | 20 | 39 | 51 | 60 | 76 | 95 |
+| Precision | 88.0% | 88.4% | 88.7% | 88.8% | 88.8% | 88.9% | 89.1% | 89.2% |
+| Recall | 83.0% | 81.7% | 79.9% | 79.3% | 79.2% | 79.1% | 79.0% | 78.9% |
+| Combined recall | 99.4% | 99.8% | 99.5% | 98.7% | 98.1% | 97.3% | 96.2% | 94.6% |
+
+**Score distributions (holdout):**
+
+R0 (base, overlap 0.161):
+```
+  0.56 █
+  0.60 █░
+  0.64 ███░░░░░
+  0.68 █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.72 ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.76 ██░░░░░░░░░░░░░░░
+  0.80 █░░░░
+```
+
+R12 (best overlap 0.070):
+```
+  0.36 ░
+  0.40 ░░░░░░░░
+  0.44 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.48 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.52 █░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.56 ████████░░░░░░░░░░
+  0.60 ███████████████████░░░░
+  0.64 ██████████████░
+  0.68 ████░
+  0.72 █
+  0.76 █
+  0.80 ██████
+```
+
+R17 (final, overlap 0.073):
+```
+  0.32 ░
+  0.36 █░░░
+  0.40 ░░░░░░░░░░░░░░░░░░░░░░
+  0.44 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.48 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.52 ███░░░░░░░░░░░░░░░░░░
+  0.56 ██████████████░░░░░░
+  0.60 ██████████████████░░
+  0.64 █████████░
+  0.68 ███░
+  0.72 █
+  0.76 █
+  0.80 ██████
+```
+
+### Observations
+
+- **Batch=128 broke BGE-small's plateau.** The old ceiling from experiment 2 (batch=32, overlap 0.081 at R7) was not a model capacity limit — it was a training signal problem. Batch=128 reached 0.070 at R12, a 14% improvement.
+- **Delayed-start learning confirmed.** The same pattern seen in experiment 5 (BGE-base, batch=128) appeared here: overlap barely moves R0–R4 (0.161 → 0.160), then drops sharply R5–R8 (0.145 → 0.078). Batch=32 started learning earlier (R1) but hit a shallower floor. Batch=128's delayed-but-steeper curve consistently produces better final separation.
+- **R12 is the best overlap; R13+ regressed.** Overlap oscillated 0.070–0.073 from R12 onward. The model is fully converged — the 384-dim embedding space is the binding constraint.
+- **Combined recall degraded continuously.** From 99.4% at R0 to 94.6% at R17 (324 missed clean + 95 missed heavy noise = 419 missed matches). Unlike overlap, recall never stabilised — the model kept compressing matched scores downward in later rounds. This is BGE-small's fundamental limitation: it cannot stretch (push non-matches down without also pushing matches down).
+- **The practical stopping point depends on the business trade-off.** R6 (overlap 0.105, recall 99.5%) is best for minimising missed matches. R8 (overlap 0.078, recall 98.7%) balances separation and recall. R12 (overlap 0.070, recall 97.3%) maximises separation at the cost of 164 missed clean matches.
+- **Review cleanup plateaued.** Non-match FPs in review: 2,958 → 65 at R17 (98% reduction). But the remaining 65 are the irreducible hard cases — common-word entities that embeddings cannot distinguish. BM25 handles these (experiment 6).
+- **Not-a-match in auto stayed at zero throughout.** Precision never degraded — the model compressed scores but maintained the ordering between matches and non-matches within the auto-match zone. This is LoRA's safety in action.
+
+### Key conclusion
+
+BGE-small's ceiling with all known optimisations (LoRA + batch=128 + 1 epoch + MNRL) is **overlap 0.070**. This is a genuine improvement over batch=32's 0.081, but still substantially above BGE-base's 0.046. The 384-dim embedding space is the real bottleneck — not the training strategy.
+
+For production use, the R8 model (overlap 0.078, combined recall 98.7%) is the recommended stopping point. Combined with BM25 at 20% weight (experiment 6's approach), the composite overlap would likely drop to near-zero, making BGE-small a viable production model with ~2× faster encoding than BGE-base.
+
+| Experiment | Model | Batch | Best overlap | Recall at best | Conclusion |
+|---|---|---|---|---|---|
+| Exp 2 | BGE-small (33M) | 32 | 0.081 (R7) | ~98.0% | Training signal limited |
+| **Exp 8** | **BGE-small (33M)** | **128** | **0.070 (R12)** | **97.3%** | **Capacity limited** |
+| Exp 5 | BGE-base (110M) | 128 | 0.046 (R17) | ~98.5% | Still improving |
+
+---
+
+## Experiment 9: Snowflake Arctic-embed-xs MNRL batch=128, 1 epoch, LoRA (18 rounds)
+
+Test whether a different 384-dim small model with better pre-training can outperform BGE-small. Snowflake's Arctic-embed-xs (22M params, 6 layers) is based on `all-MiniLM-L6-v2` but retrained on ~400M samples with hard negative mining — achieving MTEB retrieval 50.15 vs MiniLM's 41.95 and approaching BGE-small's 51.68 despite having only 22M params (vs 33M).
+
+The key question: is the 0.070 overlap ceiling from experiment 8 a property of the 384-dim embedding space, or is it specific to BGE-small's 12-layer architecture? Arctic-embed-xs has only 6 layers but was pre-trained with a much larger and harder training set. If its pre-trained representations already better distinguish entity-like strings, LoRA fine-tuning could reach a lower floor — or it could plateau higher due to fewer layers.
+
+As a bonus, 6 layers means ~2× faster encoding than BGE-small's 12 layers, at the same 384-dim output. If Arctic-embed-xs can match BGE-small's overlap, it's strictly superior for production.
+
+**Variable changed from experiment 8:** base model (BGE-small 33M/12-layer → Arctic-embed-xs 22M/6-layer). Everything else identical.
+
+```yaml
+status: done
+model: Snowflake/snowflake-arctic-embed-xs
+loss: mnrl
+rounds: 23
+epochs: 1
+batch_size: 128
+learning_rate: 2e-5
+full_finetune: false
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.1
+```
+
+**Setup:** Arctic-embed-xs is not in fastembed's model registry, so the base model must be pre-exported to a local ONNX directory before running. This was done once and placed in `results/experiment_9/models/round_0/`. The `--base-model` flag points at this local path so meld can load it for R0, and sentence-transformers can fine-tune from it for R1+.
+
+**Command:**
+```bash
+python benchmarks/accuracy/science/run.py \
+    --name experiment_9 --rounds 18 --loss mnrl \
+    --base-model benchmarks/accuracy/science/results/experiment_9/models/round_0 \
+    --batch-size 128 --epochs 1
+```
+
+**Hypothesis:** Arctic-embed-xs's superior pre-training (hard negative mining on 400M samples) may give it a lower R0 baseline overlap than BGE-small, indicating better out-of-the-box entity discrimination. With LoRA fine-tuning at batch=128, it could either: (a) reach a lower floor than BGE-small's 0.070 — proving the ceiling was BGE-specific, not 384-dim-specific, or (b) plateau higher — proving that 12 layers of depth matter more than pre-training quality for fine-tuning headroom.
+
+**Key comparison points:**
+- Exp 8 (BGE-small 33M, 12 layers, batch=128): R0 overlap 0.161, best 0.070 at R12
+- This exp (Arctic-xs 22M, 6 layers, batch=128): does better pre-training or fewer layers win?
+
+### Results
+
+**Overlap trajectory (holdout):**
+
+| R0 | R4 | R8 | R10 | R14 | R17 | R19 | R22 |
+|---|---|---|---|---|---|---|---|
+| 0.162 | 0.156 | 0.085 | 0.047 | 0.034 | 0.033 | 0.032 | **0.031** |
+
+**Holdout results (key rounds):**
+
+|  | R0 (base) | R4 | R8 | R10 | R14 | R17 | R22 |
+|---|---|---|---|---|---|---|---|
+| Auto-matched | 6,194 | 5,932 | 5,765 | 5,635 | 5,555 | 5,533 | 5,492 |
+| Clean | 5,216 | 5,114 | 5,026 | 4,950 | 4,903 | 4,886 | 4,865 |
+| Heavy noise | 818 | 802 | 739 | 685 | 652 | 647 | 627 |
+| Not a match | 131 | 14 | 0 | 0 | 0 | 0 | 0 |
+| Review | 3,801 | 4,068 | 3,692 | 2,138 | 1,749 | 1,723 | 1,704 |
+| Clean | 691 | 856 | 982 | 1,060 | 1,103 | 1,122 | 1,139 |
+| Heavy noise | 200 | 216 | 278 | 329 | 358 | 363 | 380 |
+| Not a match | 2,826 | 2,944 | 2,417 | 742 | 286 | 237 | 184 |
+| Missed (clean) | 4 | 0 | 1 | 7 | 16 | 15 | 19 |
+| Missed (noise) | 0 | 0 | 1 | 4 | 8 | 8 | 11 |
+| Precision | 84.2% | 86.2% | 87.2% | 87.8% | 88.3% | 88.3% | 88.6% |
+| Recall | 86.6% | 84.9% | 83.4% | 82.2% | 81.4% | 81.1% | 80.8% |
+| Combined recall | 98.1% | 99.1% | 99.7% | 99.8% | 99.7% | 99.7% | 99.7% |
+
+**Score distributions (holdout):**
+
+R0 (base, overlap 0.162):
+```
+  0.76 █░
+  0.80 █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+```
+
+R14 (overlap 0.034):
+```
+  0.36 ░
+  0.40 ░░
+  0.44 ░░░░░░░░░░░░
+  0.48 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.52 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.56 █░░░░░░░░░░░░░░░░░░░░░░░
+  0.60 ██░░░░░░░░░
+  0.64 ███████░░░
+  0.68 ████████████░
+  0.72 ███████████████░
+  0.76 ████████░
+  0.80 █████
+```
+
+R22 (final, overlap 0.031):
+```
+  0.36 ░
+  0.40 ░░░░░
+  0.44 ░░░░░░░░░░░░░░░░░░░░░
+  0.48 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.52 █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.56 █░░░░░░░░░░░░░░░░░
+  0.60 ███░░░░░░
+  0.64 ██████████░░
+  0.68 ██████████████░
+  0.72 ██████████████░
+  0.76 ██████░
+  0.80 █████
+```
+
+### Observations
+
+- **Arctic-embed-xs produced the best results of any experiment.** Overlap 0.031 at R22, combined recall 99.7%, with only 22M parameters and 6 transformer layers. This is the smallest, fastest model tested, and it outperformed all others on both separation and recall.
+- **The model converged cleanly.** R17→R22 moved overlap from 0.033 to 0.031 — essentially flat. Combined recall held at 99.7% from R14 onward. No regression or oscillation, unlike BGE-small which regressed at R13.
+- **Delayed-start learning pattern confirmed again.** Overlap flat R0–R4 (0.162→0.156), steep R5–R10 (0.124→0.047), then gradual R11–R22 (0.040→0.031). Batch=128's delayed-but-steeper curve is consistent across all model architectures.
+- **Combined recall went UP, not down.** 98.1% at R0 to 99.7-99.8% at R9-R22. Arctic stretches — it pushes non-matches down without dragging matches. BGE-small compressed. This is the most important architectural finding: pre-training quality determines whether fine-tuning stretches or compresses.
+- **Not-a-match in auto: cleaned up from R0.** 131 false positives in auto at R0, zero from R8 onward. Arctic's pre-trained representations started with worse auto-match precision (84.2% vs BGE-small's 88.0%) but LoRA corrected this quickly.
+- **Review FPs still declining at R22.** 184 non-matches in review, down from 2,826 at R0 (93.5% reduction). Still declining at ~10 per round. BM25 will handle the remainder (experiment 10).
+- **Only 30 missed matches at R22.** 19 clean + 11 heavy noise. These are the irreducible cases — acronyms and extreme noise that no embedding model can resolve.
+
+### Why Arctic-embed-xs outperformed models 1.5–5× its size
+
+1. **Pre-training quality > parameter count.** Arctic was trained on ~400M samples with hard negative mining. BGE-small used a smaller dataset with simpler training. The hard negatives taught Arctic to discriminate entity-like strings — exactly what our task needs.
+2. **Fewer layers = proportionally larger LoRA intervention.** LoRA on 6 layers' Q/V is ~1/6 of the model. On 12 layers it's ~1/12. The same LoRA rank modifies a larger fraction of Arctic's capacity.
+3. **MiniLM-L6-v2 backbone is well-suited to short text.** Entity names and addresses are short sequences. A 6-layer model processes these efficiently without wasted depth.
+
+### Key conclusion
+
+Arctic-embed-xs (22M params, 6 layers, 384-dim) is the optimal embedding model for entity resolution fine-tuning. Its overlap ceiling of **0.031** beats BGE-base (110M, 0.046) and BGE-small (33M, 0.070), while maintaining **99.7% combined recall** — the best recall of any trained model. Encoding is ~2× faster than BGE-small and ~5× faster than BGE-base.
+
+| Experiment | Model | Params | Best overlap | Recall at best | Encoding speed |
+|---|---|---|---|---|---|
+| Exp 2 | BGE-small | 33M | 0.081 (R7) | ~98.0% | 1× |
+| Exp 8 | BGE-small | 33M | 0.070 (R12) | 97.3% | 1× |
+| Exp 5 | BGE-base | 110M | 0.046 (R17) | ~98.5% | ~0.5× |
+| **Exp 9** | **Arctic-xs** | **22M** | **0.031 (R22)** | **99.7%** | **~2×** |
+
+---
+
+## Experiment 10: BM25 composite scoring with Arctic-embed-xs
+
+No training. Takes the best fine-tuned model from experiment 9 (Arctic-embed-xs, best overlap round) and tests adding BM25 to the composite scoring pipeline. This is the same approach as experiment 6, which tested BM25 with BGE-base from experiment 5.
+
+Experiment 6 showed that BM25 at 20% weight took BGE-base's overlap from 0.046 to 0.005. Experiment 9's Arctic-embed-xs reached 0.031 at R22 (better than BGE-base) with only 22M params. The question: does BM25 produce the same dramatic improvement on top of Arctic's already-lower overlap? If so, Arctic-embed-xs + BM25 would be the production configuration — best quality at the fastest encoding speed.
+
+BM25 indexes both name and address fields. Embedding weights scale down proportionally as BM25 weight increases, keeping the total at 1.0.
+
+```yaml
+status: done
+model: experiment 9 R22 (Arctic-embed-xs, 22M)
+bm25_weights_tested: [0.00, 0.10, 0.20, 0.30, 0.40]
+name_emb_base: 0.60
+addr_emb_base: 0.40
+```
+
+**Command:**
+```bash
+python benchmarks/accuracy/science/run_experiment10.py --best-round 22
+```
+
+**Hypothesis:** BM25 will push the common-word false matches down from Arctic's overlap zone, just as it did for BGE-base in experiment 6. The 20% BM25 sweet spot should reduce overlap from ~0.031 to near zero. Combined with Arctic's 22M/6-layer encoding speed, this would be the optimal production configuration.
+
+**Key comparison points:**
+- Exp 6 (BGE-base + BM25 20%): overlap 0.046 → 0.005
+- This exp (Arctic-xs R22 + BM25 20%): overlap 0.031 → ?
+
+### Results
+
+**Overlap trajectory:**
+
+| 0% (exp 9 R22) | 10% BM25 | 20% BM25 | 30% BM25 | 40% BM25 |
+|---|---|---|---|---|
+| 0.031 | **0.016** | **0.007** | **0.004** | **0.002** |
+
+**Holdout results:**
+
+| | 0% (exp 9 R22) | 10% BM25 | 20% BM25 | 30% BM25 | 40% BM25 |
+|---|---|---|---|---|---|
+| **Ceiling** | 6,024 | 6,024 | 6,024 | 6,024 | 6,024 |
+| **Auto-matched** | 5,492 | 5,512 | 5,517 | 5,519 | 5,498 |
+| Clean | 4,865 | 4,869 | 4,867 | 4,856 | 4,832 |
+| Ambiguous | 627 | 643 | 650 | 663 | 666 |
+| Not a match | 0 | 0 | 0 | 0 | 0 |
+| **Review** | 1,704 | 1,566 | 1,530 | 1,513 | 1,528 |
+| Clean | 1,139 | 1,141 | 1,151 | 1,159 | 1,181 |
+| Ambiguous | 380 | 368 | 361 | 349 | 345 |
+| Not a match | 184 | 56 | 18 | 5 | 2 |
+| **Unmatched** | 2,804 | 2,922 | 2,953 | 2,968 | 2,974 |
+| Missed (clean) | 19 | 13 | 6 | 9 | 11 |
+| Missed (noise) | 11 | 7 | 7 | 6 | 7 |
+| Not a match | 2,774 | 2,902 | 2,940 | 2,953 | 2,956 |
+| **Precision** | 88.6% | 88.3% | 88.2% | 88.0% | 87.9% |
+| **Combined recall** | 99.7% | 99.8% | **99.9%** | 99.9% | 99.8% |
+| **Review FP (not-a-match)** | 184 | 56 | 18 | 5 | 2 |
+
+**Score distributions (█ matched+ambiguous, ░ unmatched):**
+
+BM25 0% (exp 9 R22) — overlap: 0.031
+```
+  0.40 ░░░
+  0.44 ░░░░░░░░░░░░░
+  0.48 ░░░░░░░░░░░░░░░░░░░░░░░░
+  0.52 ░░░░░░░░░░░░░░░░░░░░░
+  0.56 █░░░░░░░░░░
+  0.60 ██░░░░
+  0.64 ██████░
+  0.68 ████████
+  0.72 ████████
+  0.76 ███
+  0.80 ███
+  0.84 ████████
+  0.88 █████████████████
+  0.92 ██████████████████████████████
+  0.96 ██████████████████████████████████████████████████
+  1.00 ████████████████████████████████████████████
+```
+Overlap zone: 0.48–0.64 (~0.16 wide).
+
+BM25 10% — overlap: 0.016
+```
+  0.36 ░░░
+  0.40 ░░░░░░░░░░░░░
+  0.44 ░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.48 ░░░░░░░░░░░░░░░░░░░░
+  0.52 ░░░░░░░░░░
+  0.56 ░░░░
+  0.60 ██░
+  0.64 █████
+  0.68 █████████
+  0.72 █████████
+  0.76 ████
+  0.80 ███
+  0.84 ████████
+  0.88 █████████████████
+  0.92 ███████████████████████████████
+  0.96 ██████████████████████████████████████████████████
+  1.00 ████████████████████████████████████████████
+```
+BM25 pushes unmatched peak from 0.48 down to 0.44. Overlap zone narrows to 0.52–0.60 (~0.08 wide).
+
+BM25 20% — overlap: 0.007
+```
+  0.32 ░░
+  0.36 ░░░░░░░░░░░░░
+  0.40 ░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.44 ░░░░░░░░░░░░░░░░░░░░
+  0.48 ░░░░░░░░░░
+  0.52 ░░░░
+  0.56 ░
+  0.60 █
+  0.64 ████
+  0.68 ████████
+  0.72 ██████████
+  0.76 █████
+  0.80 ███
+  0.84 ███████
+  0.88 ████████████████
+  0.92 ███████████████████████████████
+  0.96 ██████████████████████████████████████████████████
+  1.00 █████████████████████████████████████████
+```
+Near-complete separation. Unmatched almost entirely below 0.52. Residual overlap zone: 0.52–0.60 (~0.08 wide), very sparse.
+
+BM25 30% — overlap: 0.004
+```
+  0.28 ░
+  0.32 ░░░░░░░░░░
+  0.36 ░░░░░░░░░░░░░░░░░░░░░░░░
+  0.40 ░░░░░░░░░░░░░░░░░░░░░
+  0.44 ░░░░░░░░░░
+  0.48 ░░░░
+  0.52 ░░
+  0.56 ░
+  0.60 █
+  0.64 ███
+  0.68 ██████
+  0.72 ██████████
+  0.76 ███████
+  0.80 ███
+  0.84 ███████
+  0.88 ████████████████
+  0.92 ██████████████████████████████
+  0.96 ██████████████████████████████████████████████████
+  1.00 █████████████████████████████████████████
+```
+Diminishing returns. Overlap 0.004, but matched distribution spreading slightly downward.
+
+BM25 40% — overlap: 0.002
+```
+  0.28 ░░░░░░
+  0.32 ░░░░░░░░░░░░░░░░░░░░░░░
+  0.36 ░░░░░░░░░░░░░░░░░░░░░░░░░
+  0.40 ░░░░░░░░░░░
+  0.44 ░░░░
+  0.48 ░░░
+  0.52 ░
+  0.60 █
+  0.64 ███
+  0.68 █████
+  0.72 █████████
+  0.76 ████████
+  0.80 ████
+  0.84 ███████
+  0.88 ██████████████
+  0.92 █████████████████████████████
+  0.96 ██████████████████████████████████████████████████
+  1.00 ██████████████████████████████████████████
+```
+Matched distribution shifting down further (more mass at 0.64–0.76 vs 0.92–1.00). Embedding signal diluted.
+
+### Observations
+
+- **BM25 works as well with Arctic-xs as it did with BGE-base.** The same pattern from experiment 6 repeats: each 10% BM25 increment roughly halves the overlap, and the 20% sweet spot captures most of the benefit.
+- **20% BM25 is the sweet spot.** Overlap drops from 0.031 to 0.007 (77% reduction). Review FPs collapse from 184 to 18 (90% reduction). Combined recall actually improves from 99.7% to 99.9%. Going to 30%+ provides diminishing overlap improvement while starting to dilute the embedding signal.
+- **Combined recall improved with BM25.** 99.7% at 0% → 99.9% at 20%. Only 6 missed clean + 7 missed noise = 13 missed matches — the best combined recall of any configuration in any experiment. BM25 is helping borderline true matches by rewarding distinctive shared terms.
+- **Review FPs collapse.** 184 → 56 → 18 → 5 → 2 across the BM25 sweep. These are the common-word false matches (Smith, Ltd, Group, Capital) that embeddings can't distinguish but BM25's IDF weighting punishes.
+- **Auto-match count increases slightly.** 5,492 → 5,517 at 20% BM25. Some borderline matches get lifted above the auto threshold by BM25's contribution. This is a free win — more auto-matches means fewer records need human review.
+- **Zero false positives in auto throughout.** Precision holds at 88–89% across all weights. BM25 doesn't introduce new false positives.
+- **The overlap zone is 0.52–0.60 at 20% BM25.** About 0.08 wide, down from 0.16 at 0%. The residual overlap is very sparse — a handful of records in a narrow band.
+
+### Comparison to experiment 6 (BGE-base + BM25)
+
+| | Exp 6 (BGE-base + 20% BM25) | **Exp 10 (Arctic-xs + 20% BM25)** |
+|---|---|---|
+| Overlap | **0.005** | 0.007 |
+| Combined recall | 99.2% | **99.9%** |
+| Missed (clean) | 49 | **6** |
+| Review FPs | **2** | 18 |
+| Model size | 110M | **22M** |
+| Encoding speed | 1× | **~5×** |
+
+BGE-base + BM25 achieves slightly lower overlap (0.005 vs 0.007) and fewer review FPs (2 vs 18). But Arctic-xs + BM25 has dramatically better recall — 6 missed clean matches vs 49. That's an 8× improvement on the metric that matters most. The 16 extra review FPs cost a human ~8 minutes to reject. The 43 extra missed matches in experiment 6 are permanent data quality failures.
+
+### Key conclusion
+
+**Arctic-embed-xs R22 + 20% BM25 is the recommended production configuration.** It achieves:
+
+- **Overlap: 0.007** — near-perfect population separation
+- **Combined recall: 99.9%** — only 13 missed matches out of 6,024 true pairs
+- **Review FPs: 18** — a human reviews 18 false positives (< 10 minutes of work)
+- **Zero false positives in auto** — all 5,517 auto-matches are correct
+- **22M params, 6 layers** — fastest encoding of any model tested
+
+| Configuration | Overlap | Combined recall | Missed (clean) | Review FPs | Model size |
+|---|---|---|---|---|---|
+| Exp 6: BGE-base + 20% BM25 | 0.005 | 99.2% | 49 | 2 | 110M |
+| **Exp 10: Arctic-xs + 20% BM25** | **0.007** | **99.9%** | **6** | **18** | **22M** |

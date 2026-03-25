@@ -1,0 +1,56 @@
+job:
+  name: experiment_10_bm25_40pct
+  description: "BM25 composite \u2014 40% BM25 with Arctic-embed-xs"
+datasets:
+  a:
+    path: benchmarks/accuracy/science/master/dataset_a.csv
+    id_field: entity_id
+    format: csv
+  b:
+    path: benchmarks/accuracy/science/holdout/dataset_b.csv
+    id_field: counterparty_id
+    format: csv
+cross_map:
+  backend: local
+  path: benchmarks/accuracy/science/results/experiment_10/bm25_40pct/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+embeddings:
+  model: benchmarks/accuracy/science/results/experiment_9/models/round_22/model.onnx
+  a_cache_dir: benchmarks/accuracy/science/results/experiment_10/bm25_40pct/cache/a
+  b_cache_dir: benchmarks/accuracy/science/results/experiment_10/bm25_40pct/cache/b
+blocking:
+  enabled: true
+  operator: and
+  fields:
+  - field_a: country_code
+    field_b: domicile
+match_fields:
+- field_a: legal_name
+  field_b: counterparty_name
+  method: embedding
+  weight: 0.36
+- field_a: registered_address
+  field_b: counterparty_address
+  method: embedding
+  weight: 0.24
+- method: bm25
+  weight: 0.4
+thresholds:
+  auto_match: 0.88
+  review_floor: 0.6
+output:
+  results_path: benchmarks/accuracy/science/results/experiment_10/bm25_40pct/output/results.csv
+  review_path: benchmarks/accuracy/science/results/experiment_10/bm25_40pct/output/review.csv
+  unmatched_path: benchmarks/accuracy/science/results/experiment_10/bm25_40pct/output/unmatched.csv
+performance:
+  encoder_pool_size: 4
+  vector_index_mode: load
+vector_backend: usearch
+top_n: 5
+ann_candidates: 50
+bm25_fields:
+- field_a: legal_name
+  field_b: counterparty_name
+- field_a: registered_address
+  field_b: counterparty_address

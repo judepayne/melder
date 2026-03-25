@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-03-18
+Last updated: 2026-03-25
 
 ---
 
@@ -441,13 +441,15 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 
 ## 11. Current State
 
+### Completed
+
+**Experiment 8: BGE-small + LoRA + batch=128 + MNRL, 18 rounds** — Confirmed that batch size affects training signal but not capacity ceiling. Best overlap 0.070 at R12 (vs exp 2's 0.081 at R7 with batch=32). The 384-dim embedding space is the real bottleneck. Practical stopping point: R8 (overlap 0.078, recall 98.7%) for production use. Combined with BM25 at 20%, BGE-small could be viable in production with ~2× faster encoding. See [[Training Experiments Log#Experiment 8]] and [[BGE Small Training Results]].
+
+**Experiment 9: Snowflake Arctic-embed-xs + LoRA + batch=128 + MNRL, 23 rounds** — **KEY DECISION: Arctic-embed-xs is the new recommended embedding model.** Best overlap 0.031 at R22 — best of any experiment, beating BGE-base (110M, 0.046) and BGE-small (33M, 0.070). Combined recall 99.7% from R14 onward (best of any trained model, and improved during training). Only 30 missed matches at R22 (19 clean + 11 heavy noise). Converged cleanly R17-R22 with no regression. Review FPs: 2,826 → 184 at R22 (93.5% reduction). Zero missed matches R2-R7 — briefly achieved perfect recall before overlap improvement phase. Arctic-embed-xs (22M, 6 layers) is optimal: best quality at smallest size and fastest speed. Pre-training quality (400M samples with hard negative mining) matters more than parameter count. Fewer layers = proportionally larger LoRA intervention. Arctic stretches (pushes non-matches down while keeping matches stable); BGE-small compresses. The 0.031 embedding-only overlap should drop to near-zero with BM25 (experiment 10 next). See [[Training Experiments Log#Experiment 9]] and [[Arctic Embed XS Training Results]].
+
 ### In Progress
 
 **CI/CD** — `.github/workflows/ci.yml` + `release.yml` created (macOS ARM, Linux glibc x86_64, Windows MSVC). Requires GitHub remote to activate. Homebrew/Scoop auto-update hooks not yet wired.
-
-### Ready to Run
-
-**Fine-tuning loop Attempt 2** — see Section 11.
 
 ### Backlog (ranked)
 

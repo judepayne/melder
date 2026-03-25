@@ -25,8 +25,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SCIENCE_DIR, "..", "..", ".."))
 MASTER_A = os.path.join(SCIENCE_DIR, "master", "dataset_a.csv")
 HOLDOUT_B = os.path.join(SCIENCE_DIR, "holdout", "dataset_b.csv")
 
-# Number of rounds to generate (enough for the longest experiment: exp 5, 18 rounds)
-NUM_ROUNDS = 18
+# Number of rounds to generate (enough for the longest experiment: exp 9, 23 rounds)
+NUM_ROUNDS = 23
 SEED_OFFSET = 100
 N_RECORDS = 10000
 

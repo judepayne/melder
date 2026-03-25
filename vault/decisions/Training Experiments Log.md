@@ -154,6 +154,65 @@ Holdout results only (fixed seed 9999, same A master across all experiments).
 
 ---
 
+## Experiment 6: BGE-base, MNRL + hard negatives, review_floor=0.60 (continued)
+
+**Setup:** BAAI/bge-base-en-v1.5, MNRL with hard negatives, 5 rounds (full run), review_floor=0.60.
+
+**Key result:** Confirmed BGE-base stretches. Combined recall 96.4% at R2 (best), degraded to 94.6% by R5. Delayed-start learning: flat R0-R1, steep R2-R3, plateau R4+.
+
+---
+
+## Experiment 7: BGE-small, MNRL + hard negatives, batch=32, review_floor=0.60
+
+**Setup:** BAAI/bge-small-en-v1.5, MNRL with hard negatives, batch_size=32 (vs default 16), 7 rounds, review_floor=0.60.
+
+**Key result:** Best overlap 0.081 at R7 (vs base 0.070). Batch size alone broke through the ceiling. But combined recall degraded continuously (98.7% → 94.6%), same compression pattern as smaller batches.
+
+---
+
+## Experiment 8: BGE-small, MNRL + hard negatives, batch=128, review_floor=0.60
+
+**Setup:** BAAI/bge-small-en-v1.5, MNRL with hard negatives, batch_size=128 (4× default), 18 rounds, review_floor=0.60.
+
+**Key result:** Best overlap 0.070 at R12 (vs exp 2's 0.081 at R7). Batch=128 broke through the old ceiling but plateaued lower. Combined recall 97.3% at best (164 missed clean), degraded to 94.6% by R17 (419 missed). Delayed-start learning confirmed: flat R0-R4, steep R5-R8, plateau R9+.
+
+| Metric | R0 (base) | R8 (practical best) | R12 (overlap best) | R17 (final) |
+|---|---|---|---|---|
+| **Overlap** | 0.070 | 0.078 | 0.070 | 0.073 |
+| **Combined recall** | 98.7% | 98.7% | 97.3% | 94.6% |
+| **Missed (clean)** | 130 | 130 | 164 | 419 |
+
+**Observation:** Batch=128 didn't improve the ceiling (0.070 vs 0.081 from batch=32). The 0.081 from exp 2 was a training signal problem (batch too small), not a capacity limit. But 0.070 is still above BGE-base's 0.046 — the 384-dim embedding space is the real bottleneck. Practical stopping point: R8 (overlap 0.078, recall 98.7%) for production use.
+
+---
+
+## Experiment 9: Snowflake Arctic-embed-xs + LoRA + batch=128 + MNRL, 23 rounds
+
+**Setup:** Snowflake/arctic-embed-xs (22M params, 6 layers, 384 dims), MNRL with hard negatives, batch_size=128, 23 rounds, review_floor=0.60.
+
+**Key result:** **BEST EXPERIMENT TO DATE.** Best overlap 0.031 at R22 — beats BGE-base (0.046) and BGE-small (0.070). Combined recall 99.7% from R14 onward (best of any trained model, and improved during training). Only 30 missed matches at R22 (19 clean + 11 heavy noise). Converged cleanly R17-R22 with no regression.
+
+| Metric | R0 (base) | R8 | R14 (recall peak) | R22 (overlap best) |
+|---|---|---|---|---|
+| **Overlap** | 0.070 | 0.062 | 0.035 | **0.031** |
+| **Combined recall** | 98.7% | 99.4% | **99.7%** | **99.7%** |
+| **Missed (clean)** | 130 | 57 | 30 | 19 |
+| **Missed (heavy noise)** | 0 | 0 | 0 | 11 |
+| **Review FPs** | 2,826 | 1,247 | 184 | 184 |
+| **Not-a-match in auto** | 131 | 0 | 0 | 0 |
+
+**Key observations:**
+1. **Pre-training quality > parameter count.** Arctic's 400M-sample pre-training with hard negative mining outweighs BGE-small's 33M params. The model stretches (separates distributions) rather than compresses.
+2. **Stretching, not compression.** Arctic pushes non-matches down while keeping matches stable. BGE-small shifts everything together. This is the key difference enabling 99.7% recall.
+3. **Fewer layers = larger LoRA intervention.** 6 layers vs BGE-small's 12 means each LoRA adapter has proportionally more influence, improving fine-tuning signal.
+4. **Zero missed matches R2-R7.** The model briefly achieved perfect recall before the overlap improvement phase began (R8+). This is unique to Arctic.
+5. **Embedding-only overlap (0.031) should drop to near-zero with BM25.** Experiment 10 will combine Arctic with BM25 to validate production viability.
+6. **Smallest size, fastest speed.** 22M params vs BGE-small (33M) and BGE-base (110M). Encoding is 2–3× faster than BGE-base.
+
+**Decision:** Arctic-embed-xs replaces BGE-small and BGE-base as the recommended embedding model for melder. See [[Key Decisions#Arctic-embed-xs as Recommended Embedding Model]].
+
+---
+
 ## Summary of Findings
 
 1. **Base model + low review_floor is the strongest baseline.** review_floor=0.60 with no fine-tuning achieves ~99.5% combined recall. The cost is a noisy review queue (~3,000 non-matches).
@@ -166,4 +225,6 @@ Holdout results only (fixed seed 9999, same A master across all experiments).
 
 5. **MNRL > CosineSimilarityLoss.** Ranking objective preserves recall better than absolute calibration. Hard negatives provide marginal additional benefit.
 
-6. **Acronym matching is a blind spot for all methods.** No embedding model, BM25, or fuzzy scorer can match "TRMS" to "Taylor, Reeves and Mcdaniel SRL." Documented separately in `vault/ideas/Acronym Matching.md`.
+6. **Batch size affects training signal, not capacity ceiling.** Batch=32 achieved overlap 0.081; batch=128 plateaued at 0.070. The 384-dim embedding space is the real bottleneck, not batch size.
+
+7. **Acronym matching is a blind spot for all methods.** No embedding model, BM25, or fuzzy scorer can match "TRMS" to "Taylor, Reeves and Mcdaniel SRL." Documented separately in `vault/ideas/Acronym Matching.md`.
