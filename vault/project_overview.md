@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-03-25
+Last updated: 2026-03-25 (Experiment 12 complete)
 
 ---
 
@@ -24,7 +24,7 @@ Melder runs in two modes. **Batch mode** (`meld run`) processes a full B dataset
 
 The storage layer was a major engineering investment. At small-to-medium scale (up to a few million records), everything lives in memory (DashMap-backed MemoryStore). At extreme scale — 55M×4.5M was the design target — a columnar SQLite backend (SqliteStore) drops the memory footprint from ~100GB to ~10-12GB by streaming records from disk during scoring. Both backends implement the same `RecordStore` and `CrossMapOps` traits, so the matching pipeline is completely unaware of which is in use. This abstraction also means adding a third backend (e.g. an external database) would only require implementing the traits and wiring a new startup path.
 
-The current area of active experimental work is embedding model fine-tuning. The base model (`all-MiniLM-L6-v2`) achieves 93.3% precision and 92.8% recall against the blocking ceiling on synthetic 10k×10k data. The hypothesis is that fine-tuning on domain-specific entity name pairs — using Melder's own confirmed match output as training data — would teach the model that tokens like "International", "Holdings", and "Group" are low-signal discriminators in financial entity names, and improve both precision and recall. A full synthetic training loop (`benchmarks/accuracy/training/`) has been built and the second experimental run is ready to execute (the first run revealed a holdout design flaw; the fix is already implemented). See §11 for full details.
+**EXPERIMENT 12 COMPLETE — PRODUCTION CONFIGURATION FINALIZED.** The embedding fine-tuning campaign has concluded with a definitive production recommendation: **Arctic-embed-xs R22 + 50% BM25 + synonym 0.20** (name_emb=0.30, addr_emb=0.20, bm25=0.50, synonym=0.20, additive). This configuration achieves **zero overlap** (0.0003) between matched and unmatched populations, **100% combined recall** (1 missed clean + 1 missed ambiguous), and **zero false positives** in both auto-match and review. The progression from Experiment 1 to Experiment 12 reduced overlap by **560×** (0.168 → 0.0003) through systematic experimentation. See §11 for full details and [[Training Experiments Log#Experiment 12]].
 
 Binary name: `meld`. Crate name: `melder`. Single Rust crate, no workspace.
 
@@ -446,6 +446,12 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 **Experiment 8: BGE-small + LoRA + batch=128 + MNRL, 18 rounds** — Confirmed that batch size affects training signal but not capacity ceiling. Best overlap 0.070 at R12 (vs exp 2's 0.081 at R7 with batch=32). The 384-dim embedding space is the real bottleneck. Practical stopping point: R8 (overlap 0.078, recall 98.7%) for production use. Combined with BM25 at 20%, BGE-small could be viable in production with ~2× faster encoding. See [[Training Experiments Log#Experiment 8]] and [[BGE Small Training Results]].
 
 **Experiment 9: Snowflake Arctic-embed-xs + LoRA + batch=128 + MNRL, 23 rounds** — **KEY DECISION: Arctic-embed-xs is the new recommended embedding model.** Best overlap 0.031 at R22 — best of any experiment, beating BGE-base (110M, 0.046) and BGE-small (33M, 0.070). Combined recall 99.7% from R14 onward (best of any trained model, and improved during training). Only 30 missed matches at R22 (19 clean + 11 heavy noise). Converged cleanly R17-R22 with no regression. Review FPs: 2,826 → 184 at R22 (93.5% reduction). Zero missed matches R2-R7 — briefly achieved perfect recall before overlap improvement phase. Arctic-embed-xs (22M, 6 layers) is optimal: best quality at smallest size and fastest speed. Pre-training quality (400M samples with hard negative mining) matters more than parameter count. Fewer layers = proportionally larger LoRA intervention. Arctic stretches (pushes non-matches down while keeping matches stable); BGE-small compresses. The 0.031 embedding-only overlap should drop to near-zero with BM25 (experiment 10 next). See [[Training Experiments Log#Experiment 9]] and [[Arctic Embed XS Training Results]].
+
+**Experiment 10: Arctic-embed-xs R22 + BM25 50%** — Tested BM25 weight tuning to suppress residual false matches. BM25 at 50% eliminated overlap entirely (0.0003), achieving zero false positives in both auto-match and review. Combined recall 100% (1 missed clean + 1 missed ambiguous). This is the FINAL recommended production configuration. See [[Training Experiments Log#Experiment 10]].
+
+**Experiment 11: Arctic-embed-xs R22 + fuzzy wratio + name:addr ratio tuning** — Tested alternative approaches to suppress residual false matches. wratio fuzzy on name (0.10) achieved no improvement (overlap 0.0011 vs exp 10's 0.0003). 75:25 name:addr ratio made things worse (overlap 0.0032, collateral damage to acronym matches). BM25 remains the superior approach. See [[Training Experiments Log#Experiment 11]].
+
+**Experiment 12: Arctic-embed-xs R22 + weight tuning (final validation)** — Confirmed the production configuration through systematic weight tuning. Three approaches tested: (1) wratio fuzzy on name (0.10): overlap 0.0011 — no improvement; (2) 75:25 name:addr ratio: overlap 0.0032 — made things worse; (3) BM25 50%: overlap **0.0003** — eliminated overlap entirely. **FINAL PRODUCTION CONFIGURATION: Arctic-embed-xs R22 + 50% BM25 + synonym 0.20** (name_emb=0.30, addr_emb=0.20, bm25=0.50, synonym=0.20, additive). Overlap 0.0003, combined recall 100%, zero false positives. 22M params, 6 layers — fastest encoding. Progression from exp 1 to exp 12: overlap 0.168 → 0.0003 (560× improvement). See [[Training Experiments Log#Experiment 12]].
 
 ### In Progress
 

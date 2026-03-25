@@ -1,0 +1,60 @@
+job:
+  name: experiment_11
+  description: "Synonym + Arctic-xs + 40% BM25 \u2014 with synonym"
+datasets:
+  a:
+    path: benchmarks/accuracy/science/master/dataset_a.csv
+    id_field: entity_id
+    format: csv
+  b:
+    path: benchmarks/accuracy/science/holdout/dataset_b.csv
+    id_field: counterparty_id
+    format: csv
+cross_map:
+  backend: local
+  path: benchmarks/accuracy/science/results/experiment_11/with_synonym/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+embeddings:
+  model: benchmarks/accuracy/science/results/experiment_9/models/round_22/model.onnx
+  a_cache_dir: benchmarks/accuracy/science/results/experiment_11/with_synonym/cache/a
+  b_cache_dir: benchmarks/accuracy/science/results/experiment_11/with_synonym/cache/b
+blocking:
+  enabled: true
+  operator: and
+  fields:
+  - field_a: country_code
+    field_b: domicile
+bm25_fields:
+- field_a: legal_name
+  field_b: counterparty_name
+- field_a: registered_address
+  field_b: counterparty_address
+match_fields:
+- field_a: legal_name
+  field_b: counterparty_name
+  method: embedding
+  weight: 0.36
+- field_a: registered_address
+  field_b: counterparty_address
+  method: embedding
+  weight: 0.24
+- method: bm25
+  weight: 0.4
+- field_a: legal_name
+  field_b: counterparty_name
+  method: synonym
+  weight: 0.2
+thresholds:
+  auto_match: 0.88
+  review_floor: 0.6
+output:
+  results_path: benchmarks/accuracy/science/results/experiment_11/with_synonym/output/results.csv
+  review_path: benchmarks/accuracy/science/results/experiment_11/with_synonym/output/review.csv
+  unmatched_path: benchmarks/accuracy/science/results/experiment_11/with_synonym/output/unmatched.csv
+performance:
+  encoder_pool_size: 4
+  vector_index_mode: load
+vector_backend: usearch
+top_n: 5
+ann_candidates: 50

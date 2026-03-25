@@ -1,0 +1,23 @@
+{
+  "auto_matched": 5851,
+  "auto_tp": 5069,
+  "auto_fp": 782,
+  "auto_fp_wrong": 0,
+  "auto_fp_ambiguous": 782,
+  "auto_fp_unmatched": 0,
+  "review": 1191,
+  "review_tp": 954,
+  "review_fp": 237,
+  "review_fp_wrong": 0,
+  "review_fp_ambiguous": 235,
+  "review_fp_unmatched": 2,
+  "fn": 1,
+  "fn_ambiguous": 1,
+  "tn": 2956,
+  "total_true_matches": 6024,
+  "blocking_ceiling": 6024,
+  "precision": 0.8663,
+  "recall_ceiling": 0.8415,
+  "recall_total": 0.8415,
+  "combined_recall": 0.9998
+}

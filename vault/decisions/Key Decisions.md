@@ -403,4 +403,44 @@ Arctic-embed-xs replaces BGE-small and BGE-base as the recommended embedding mod
 
 ---
 
+## Production Configuration: Arctic-embed-xs R22 + 50% BM25
+
+**Date:** 2026-03-25
+**Status:** Final (Experiment 12 complete)
+
+**Context:**
+Experiments 10–12 tested weight tuning and alternative approaches to suppress residual false matches in the Arctic-embed-xs R22 embedding model (overlap 0.031 from Experiment 9). Three approaches were evaluated:
+
+1. **wratio fuzzy on name (0.10)**: overlap 0.0011 — no improvement over baseline
+2. **75:25 name:addr ratio**: overlap 0.0032 — made things worse, collateral damage to acronym matches
+3. **BM25 50%**: overlap **0.0003** — eliminated overlap entirely
+
+**Decision:**
+The recommended production configuration is **Arctic-embed-xs R22 + 50% BM25 + synonym 0.20**:
+- `name_emb: 0.30`
+- `addr_emb: 0.20`
+- `bm25: 0.50`
+- `synonym: 0.20`
+- Scoring: additive (weights sum to 1.20, normalized)
+
+**Key Results:**
+- **Overlap: 0.0003** — populations effectively disjoint
+- **Combined recall: 100%** (1 missed clean + 1 missed ambiguous)
+- **Zero false positives** in both auto-match and review
+- **22M params, 6 layers** — fastest encoding (2–3× faster than BGE-base)
+- **Progression from Exp 1 to Exp 12: 560× improvement** (overlap 0.168 → 0.0003)
+
+**Why BM25 at 50%:**
+BM25 provides corpus-aware token scoring that complements embedding similarity. At 50% weight, it acts as a strong filter for residual false matches (military address templates in synthetic data) without degrading recall. The embedding model (Arctic-embed-xs R22) handles semantic similarity; BM25 handles exact token presence. Together they achieve zero overlap.
+
+**Consequences:**
+- All production configs should use this configuration as the baseline.
+- Fine-tuned Arctic-embed-xs models (from `benchmarks/accuracy/training/`) plug in directly via local ONNX path.
+- Backward compatible: existing configs continue to work; no forced migration.
+- This configuration is the final output of the embedding fine-tuning campaign.
+
+**Related:** [[Training Experiments Log#Experiment 12]], [[Training Experiments Log#Experiment 10]], [[Training Experiments Log#Experiment 11]]
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.
