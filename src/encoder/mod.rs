@@ -231,10 +231,7 @@ impl EncoderPool {
             model: format!("no files downloaded from {}", repo_id),
         })?;
 
-        eprintln!(
-            "Model cached at: {}",
-            dir.display()
-        );
+        eprintln!("Model cached at: {}", dir.display());
 
         Self::new_from_local_path(dir.to_str().unwrap_or(repo_id), pool_size)
     }
