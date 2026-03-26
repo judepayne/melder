@@ -22,6 +22,7 @@
 use rayon::prelude::*;
 
 use crate::models::{Record, Side};
+use crate::scoring::embedding::dot_product_f32;
 use crate::store::RecordStore;
 use crate::vectordb::VectorDB;
 
@@ -113,11 +114,7 @@ pub fn select_candidates(
             let record = pool_store.get(pool_side, id)?;
             let pool_vec = idx.get(id).ok().flatten().unwrap_or_default();
             let dot: f32 = if pool_vec.len() == query_combined_vec.len() {
-                query_combined_vec
-                    .iter()
-                    .zip(pool_vec.iter())
-                    .map(|(a, b)| a * b)
-                    .sum()
+                dot_product_f32(query_combined_vec, &pool_vec)
             } else {
                 0.0
             };

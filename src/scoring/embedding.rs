@@ -4,14 +4,32 @@
 //! We clamp to [0.0, 1.0] since negative cosine similarity is not meaningful
 //! for our matching use case.
 
-/// Compute the dot product of two f32 slices.
+/// Dot product of two f32 slices — single implementation used everywhere.
 ///
-/// Uses f32 arithmetic internally, returns as f64 for score compatibility.
-/// Panics if slices have different lengths.
+/// When the `simd` feature is enabled, dispatches to SimSIMD's
+/// hardware-accelerated inner product (NEON / SVE / AVX2 / AVX-512).
+/// Otherwise falls back to an iterator loop that LLVM auto-vectorizes.
+#[inline]
+pub fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
+    #[cfg(feature = "simd")]
+    {
+        use simsimd::SpatialSimilarity;
+        // simsimd returns Option<f64>; None only on length mismatch.
+        f32::dot(a, b).unwrap_or(0.0) as f32
+    }
+    #[cfg(not(feature = "simd"))]
+    {
+        a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+    }
+}
+
+/// Compute the dot product of two f32 slices, returning f64 for score
+/// compatibility.
+///
+/// Thin wrapper around [`dot_product_f32`] with a widening cast.
 pub fn dot_product(a: &[f32], b: &[f32]) -> f64 {
     assert_eq!(a.len(), b.len(), "vectors must have same dimension");
-    let sum: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    sum as f64
+    dot_product_f32(a, b) as f64
 }
 
 /// L2-normalize a vector in-place.

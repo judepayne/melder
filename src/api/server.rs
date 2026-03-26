@@ -12,7 +12,29 @@ use crate::session::Session;
 use super::handlers;
 
 /// Build the axum Router with all API routes.
+///
+/// In enroll mode, only the `/enroll` endpoints and health/status are mounted.
+/// In match mode, the full A/B/crossmap/review API is mounted.
 pub fn build_router(session: Arc<Session>) -> Router {
+    let router = if session.state.config.is_enroll_mode() {
+        build_enroll_router()
+    } else {
+        build_match_router()
+    };
+
+    router
+        // Health / status (always available)
+        .route("/api/v1/health", get(handlers::health))
+        .route("/api/v1/status", get(handlers::status))
+        // Middleware
+        .layer(CatchPanicLayer::new())
+        .layer(TraceLayer::new_for_http())
+        // State
+        .with_state(session)
+}
+
+/// Routes for standard two-sided matching mode.
+fn build_match_router() -> Router<Arc<Session>> {
     Router::new()
         // A-side endpoints
         .route("/api/v1/a/add", post(handlers::add_a))
@@ -45,14 +67,16 @@ pub fn build_router(session: Arc<Session>) -> Router {
         .route("/api/v1/crossmap/stats", get(handlers::crossmap_stats))
         // Review endpoints
         .route("/api/v1/review/list", get(handlers::review_list))
-        // Health / status
-        .route("/api/v1/health", get(handlers::health))
-        .route("/api/v1/status", get(handlers::status))
-        // Middleware
-        .layer(CatchPanicLayer::new())
-        .layer(TraceLayer::new_for_http())
-        // State
-        .with_state(session)
+}
+
+/// Routes for single-pool enrollment mode.
+fn build_enroll_router() -> Router<Arc<Session>> {
+    Router::new()
+        .route("/api/v1/enroll", post(handlers::enroll))
+        .route("/api/v1/enroll-batch", post(handlers::enroll_batch))
+        .route("/api/v1/enroll/remove", post(handlers::enroll_remove))
+        .route("/api/v1/enroll/query", get(handlers::enroll_query))
+        .route("/api/v1/enroll/count", get(handlers::enroll_count))
 }
 
 /// Start the HTTP server on a TCP port.

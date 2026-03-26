@@ -58,6 +58,24 @@ meld serve --config config.yaml --port 8090
 | `--config` | `-c` | Path to YAML config file (required) |
 | `--port` | `-p` | TCP port to listen on (default: 8080) |
 
+## `meld enroll`
+
+Start the enroll-mode HTTP server for single-pool entity resolution.
+Records are enrolled into one growing pool and scored against everything
+already there. Designed for graph-based ER workflows and deduplication.
+Uses a simplified config format with `field:` instead of
+`field_a:`/`field_b:`. See [Enroll Mode](enroll-mode.md) for full
+details.
+
+```bash
+meld enroll --config enroll_config.yaml --port 8090
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--config` | `-c` | Path to enroll-mode YAML config file (required) |
+| `--port` | `-p` | TCP port to listen on (default: 8080) |
+
 ## `meld tune`
 
 Run the full batch pipeline without writing any output files, then print

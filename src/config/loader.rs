@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::error::ConfigError;
 
+use super::enroll_schema::EnrollConfig;
 use super::schema::{BlockingFieldPair, Config, DatasetConfig};
 
 /// Valid match methods.
@@ -36,6 +37,24 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     normalise_blocking(&mut cfg);
     apply_defaults(&mut cfg);
     validate(&cfg)?;
+    derive_bm25_fields(&mut cfg);
+    derive_synonym_fields(&mut cfg);
+    derive_required_fields(&mut cfg);
+
+    Ok(cfg)
+}
+
+/// Load, parse, validate, and return a `Config` for enroll mode.
+///
+/// The YAML is deserialized into `EnrollConfig` (single-pool schema),
+/// then normalised into the engine-facing `Config` with `field_a == field_b`.
+pub fn load_enroll_config(path: &Path) -> Result<Config, ConfigError> {
+    let data = std::fs::read_to_string(path)?;
+    let enroll: EnrollConfig = serde_yaml::from_str(&data)?;
+    let mut cfg = enroll.into_config()?;
+
+    apply_defaults(&mut cfg);
+    validate_enroll(&cfg)?;
     derive_bm25_fields(&mut cfg);
     derive_synonym_fields(&mut cfg);
     derive_required_fields(&mut cfg);
@@ -413,6 +432,231 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
                 vim
             );
         }
+    }
+
+    Ok(())
+}
+
+/// Validation for enroll mode — skips B-side datasets, crossmap, and output paths.
+fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
+    // 1. job.name
+    require_non_empty(&cfg.job.name, "job.name")?;
+
+    // 2. dataset (A side) — only required if a path is set (dataset is optional)
+    if !cfg.datasets.a.path.is_empty() {
+        validate_dataset(&cfg.datasets.a, "dataset")?;
+    } else if cfg.datasets.a.id_field.is_empty() {
+        // No dataset provided — id_field still needed for enroll requests.
+        // The user must set id_field somewhere. For now, allow empty (set via dataset).
+    }
+
+    // 3. embeddings
+    require_non_empty(&cfg.embeddings.model, "embeddings.model")?;
+    require_non_empty(&cfg.embeddings.a_cache_dir, "embeddings.cache_dir")?;
+
+    // 4. at least one match_fields
+    if cfg.match_fields.is_empty() {
+        return Err(ConfigError::InvalidValue {
+            field: "match_fields".into(),
+            message: "at least one match field required".into(),
+        });
+    }
+
+    // 5. validate each match field + accumulate weight sum
+    let mut weight_sum = 0.0_f64;
+    let mut bm25_count = 0usize;
+    for (i, mf) in cfg.match_fields.iter().enumerate() {
+        let prefix = format!("match_fields[{}]", i);
+        require_one_of(&mf.method, VALID_METHODS, &format!("{}.method", prefix))?;
+
+        if mf.method == "bm25" {
+            if !mf.field_a.is_empty() || !mf.field_b.is_empty() {
+                return Err(ConfigError::InvalidValue {
+                    field: prefix.to_string(),
+                    message: "bm25 method operates across all text fields; field must be omitted"
+                        .into(),
+                });
+            }
+            bm25_count += 1;
+        } else {
+            // In enroll mode, field_a == field_b (both set by into_config)
+            require_non_empty(&mf.field_a, &format!("{}.field", prefix))?;
+        }
+
+        if mf.method == "fuzzy"
+            && let Some(ref scorer) = mf.scorer
+            && !scorer.is_empty()
+        {
+            require_one_of(scorer, VALID_SCORERS, &format!("{}.scorer", prefix))?;
+        }
+
+        if mf.weight < 0.0 {
+            return Err(ConfigError::InvalidValue {
+                field: format!("{}.weight", prefix),
+                message: "must be >= 0".into(),
+            });
+        }
+        if mf.method != "synonym" {
+            weight_sum += mf.weight;
+        }
+    }
+
+    if bm25_count > 1 {
+        return Err(ConfigError::InvalidValue {
+            field: "match_fields".into(),
+            message: format!("at most one bm25 entry allowed, found {}", bm25_count),
+        });
+    }
+
+    // Check for conflicting BM25 field definitions
+    let has_inline_bm25_fields = cfg
+        .match_fields
+        .iter()
+        .any(|mf| mf.method == "bm25" && mf.fields.is_some());
+    if has_inline_bm25_fields && !cfg.bm25_fields.is_empty() {
+        return Err(ConfigError::InvalidValue {
+            field: "bm25_fields".into(),
+            message: "BM25 fields defined both inline and as a top-level section".into(),
+        });
+    }
+
+    // Candidate count constraints
+    let has_bm25 = bm25_count > 0;
+    let has_embedding = cfg.match_fields.iter().any(|mf| mf.method == "embedding");
+    let top_n = cfg.top_n.unwrap_or(5);
+    let ann_candidates = cfg.ann_candidates.unwrap_or(50);
+    let bm25_candidates = cfg.bm25_candidates.unwrap_or(10);
+
+    if has_embedding && ann_candidates < top_n {
+        return Err(ConfigError::InvalidValue {
+            field: "ann_candidates".into(),
+            message: format!(
+                "must be >= top_n ({}) when ANN is enabled, got {}",
+                top_n, ann_candidates
+            ),
+        });
+    }
+    if has_bm25 && bm25_candidates < top_n {
+        return Err(ConfigError::InvalidValue {
+            field: "bm25_candidates".into(),
+            message: format!(
+                "must be >= top_n ({}) when BM25 is enabled, got {}",
+                top_n, bm25_candidates
+            ),
+        });
+    }
+
+    // 6. weights sum to 1.0
+    if (weight_sum - 1.0).abs() > 0.001 {
+        return Err(ConfigError::WeightSum { sum: weight_sum });
+    }
+
+    // 7. thresholds
+    if cfg.thresholds.auto_match <= 0.0 || cfg.thresholds.auto_match > 1.0 {
+        return Err(ConfigError::InvalidValue {
+            field: "thresholds.auto_match".into(),
+            message: "must be in range (0, 1]".into(),
+        });
+    }
+    if cfg.thresholds.review_floor < 0.0 || cfg.thresholds.review_floor >= 1.0 {
+        return Err(ConfigError::InvalidValue {
+            field: "thresholds.review_floor".into(),
+            message: "must be in range [0, 1)".into(),
+        });
+    }
+    if cfg.thresholds.auto_match <= cfg.thresholds.review_floor {
+        return Err(ConfigError::InvalidValue {
+            field: "thresholds".into(),
+            message: format!(
+                "auto_match ({:.2}) must be greater than review_floor ({:.2})",
+                cfg.thresholds.auto_match, cfg.thresholds.review_floor
+            ),
+        });
+    }
+    if let Some(gap) = cfg.thresholds.min_score_gap
+        && !(0.0..1.0).contains(&gap)
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "thresholds.min_score_gap".into(),
+            message: "must be in range [0.0, 1.0)".into(),
+        });
+    }
+
+    // 8. blocking
+    if cfg.blocking.enabled {
+        if cfg.blocking.fields.is_empty() {
+            return Err(ConfigError::InvalidValue {
+                field: "blocking".into(),
+                message: "at least one field required when enabled".into(),
+            });
+        }
+        for (i, fp) in cfg.blocking.fields.iter().enumerate() {
+            let prefix = format!("blocking.fields[{}]", i);
+            require_non_empty(&fp.field_a, &format!("{}.field", prefix))?;
+        }
+        let op = cfg.blocking.operator.to_lowercase();
+        if op != "and" && op != "or" {
+            return Err(ConfigError::InvalidValue {
+                field: "blocking.operator".into(),
+                message: format!("must be \"and\" or \"or\", got {:?}", cfg.blocking.operator),
+            });
+        }
+    }
+
+    // 9. exact_prefilter
+    if cfg.exact_prefilter.enabled {
+        if cfg.exact_prefilter.fields.is_empty() {
+            return Err(ConfigError::InvalidValue {
+                field: "exact_prefilter".into(),
+                message: "at least one field required when enabled".into(),
+            });
+        }
+        for (i, fp) in cfg.exact_prefilter.fields.iter().enumerate() {
+            let prefix = format!("exact_prefilter.fields[{}]", i);
+            require_non_empty(&fp.field_a, &format!("{}.field", prefix))?;
+        }
+    }
+
+    // 10. performance
+    if let Some(pool) = cfg.performance.encoder_pool_size
+        && pool < 1
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "performance.encoder_pool_size".into(),
+            message: "must be >= 1".into(),
+        });
+    }
+
+    // 11. vector_backend
+    require_one_of(&cfg.vector_backend, VALID_VECTOR_BACKENDS, "vector_backend")?;
+    if cfg.vector_backend == "usearch" && !cfg!(feature = "usearch") {
+        return Err(ConfigError::InvalidValue {
+            field: "vector_backend".into(),
+            message: "usearch backend requires building with --features usearch".into(),
+        });
+    }
+
+    // 12. vector_quantization
+    if let Some(ref vq) = cfg.performance.vector_quantization {
+        require_one_of(
+            vq,
+            VALID_VECTOR_QUANTIZATIONS,
+            "performance.vector_quantization",
+        )?;
+    }
+
+    // 13. synonym_dictionary
+    if let Some(ref sd) = cfg.synonym_dictionary {
+        require_non_empty(&sd.path, "synonym_dictionary.path")?;
+    }
+
+    // 14. vector_index_mode
+    if let Some(ref vim) = cfg.performance.vector_index_mode {
+        require_one_of(
+            vim,
+            VALID_VECTOR_INDEX_MODES,
+            "performance.vector_index_mode",
+        )?;
     }
 
     Ok(())
@@ -1600,5 +1844,176 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
             "error should mention vector_index_mode, got: {}",
             err
         );
+    }
+
+    // --- Enroll config tests ---
+
+    #[test]
+    fn enroll_config_basic_parse() {
+        let yaml = r#"
+job:
+  name: enroll_test
+embeddings:
+  model: all-MiniLM-L6-v2
+  cache_dir: cache/emb
+match_fields:
+  - { field: legal_name, method: embedding, weight: 0.55 }
+  - { field: country_code, method: exact, weight: 0.25 }
+  - { field: short_name, method: fuzzy, weight: 0.20 }
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+"#;
+        let enroll: super::super::enroll_schema::EnrollConfig = serde_yaml::from_str(yaml).unwrap();
+        let mut cfg = enroll.into_config().unwrap();
+        apply_defaults(&mut cfg);
+        validate_enroll(&cfg).unwrap();
+
+        assert!(cfg.is_enroll_mode(), "should be enroll mode");
+        assert_eq!(cfg.job.name, "enroll_test");
+        assert_eq!(cfg.embeddings.model, "all-MiniLM-L6-v2");
+        assert_eq!(cfg.embeddings.a_cache_dir, "cache/emb");
+
+        // field -> field_a == field_b
+        assert_eq!(cfg.match_fields[0].field_a, "legal_name");
+        assert_eq!(cfg.match_fields[0].field_b, "legal_name");
+        assert_eq!(cfg.match_fields[1].field_a, "country_code");
+        assert_eq!(cfg.match_fields[1].field_b, "country_code");
+    }
+
+    #[test]
+    fn enroll_config_with_dataset() {
+        let yaml = r#"
+job:
+  name: enroll_with_data
+dataset:
+  path: reference.csv
+  id_field: entity_id
+embeddings:
+  model: all-MiniLM-L6-v2
+  cache_dir: cache/emb
+match_fields:
+  - { field: name, method: exact, weight: 1.0 }
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+"#;
+        let enroll: super::super::enroll_schema::EnrollConfig = serde_yaml::from_str(yaml).unwrap();
+        let mut cfg = enroll.into_config().unwrap();
+        apply_defaults(&mut cfg);
+        validate_enroll(&cfg).unwrap();
+
+        assert_eq!(cfg.datasets.a.path, "reference.csv");
+        assert_eq!(cfg.datasets.a.id_field, "entity_id");
+        // B-side mirrors A-side id_field
+        assert_eq!(cfg.datasets.b.id_field, "entity_id");
+        assert!(
+            cfg.datasets.b.path.is_empty(),
+            "B-side path should be empty"
+        );
+    }
+
+    #[test]
+    fn enroll_config_with_blocking() {
+        let yaml = r#"
+job:
+  name: enroll_blocking
+embeddings:
+  model: m
+  cache_dir: c
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - { field: country }
+match_fields:
+  - { field: name, method: exact, weight: 1.0 }
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+"#;
+        let enroll: super::super::enroll_schema::EnrollConfig = serde_yaml::from_str(yaml).unwrap();
+        let mut cfg = enroll.into_config().unwrap();
+        apply_defaults(&mut cfg);
+        validate_enroll(&cfg).unwrap();
+
+        assert!(cfg.blocking.enabled);
+        assert_eq!(cfg.blocking.fields.len(), 1);
+        assert_eq!(cfg.blocking.fields[0].field_a, "country");
+        assert_eq!(cfg.blocking.fields[0].field_b, "country");
+    }
+
+    #[test]
+    fn enroll_config_weight_sum_rejected() {
+        let yaml = r#"
+job:
+  name: bad_weights
+embeddings:
+  model: m
+  cache_dir: c
+match_fields:
+  - { field: f, method: exact, weight: 0.5 }
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+"#;
+        let enroll: super::super::enroll_schema::EnrollConfig = serde_yaml::from_str(yaml).unwrap();
+        let mut cfg = enroll.into_config().unwrap();
+        apply_defaults(&mut cfg);
+        let err = validate_enroll(&cfg).unwrap_err();
+        assert!(err.to_string().contains("weights sum"), "got: {}", err);
+    }
+
+    #[test]
+    fn enroll_config_no_dataset_allowed() {
+        let yaml = r#"
+job:
+  name: empty_pool
+embeddings:
+  model: m
+  cache_dir: c
+match_fields:
+  - { field: f, method: exact, weight: 1.0 }
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+"#;
+        let enroll: super::super::enroll_schema::EnrollConfig = serde_yaml::from_str(yaml).unwrap();
+        let mut cfg = enroll.into_config().unwrap();
+        apply_defaults(&mut cfg);
+        validate_enroll(&cfg).unwrap(); // should pass — empty pool is valid
+        assert!(cfg.datasets.a.path.is_empty());
+    }
+
+    #[test]
+    fn enroll_config_bm25_with_inline_fields() {
+        let yaml = r#"
+job:
+  name: enroll_bm25
+embeddings:
+  model: m
+  cache_dir: c
+match_fields:
+  - { field: name, method: embedding, weight: 0.8 }
+  - method: bm25
+    weight: 0.2
+    fields:
+      - { field: name }
+      - { field: address }
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+"#;
+        let enroll: super::super::enroll_schema::EnrollConfig = serde_yaml::from_str(yaml).unwrap();
+        let mut cfg = enroll.into_config().unwrap();
+        apply_defaults(&mut cfg);
+        validate_enroll(&cfg).unwrap();
+        derive_bm25_fields(&mut cfg);
+
+        assert_eq!(cfg.bm25_fields.len(), 2);
+        assert_eq!(cfg.bm25_fields[0].field_a, "name");
+        assert_eq!(cfg.bm25_fields[0].field_b, "name");
+        assert_eq!(cfg.bm25_fields[1].field_a, "address");
+        assert_eq!(cfg.bm25_fields[1].field_b, "address");
     }
 }

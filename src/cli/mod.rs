@@ -2,6 +2,7 @@
 
 pub mod cache;
 pub mod crossmap;
+pub mod enroll;
 pub mod export;
 pub mod review;
 pub mod run;

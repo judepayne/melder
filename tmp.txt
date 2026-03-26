@@ -1,4 +1,0 @@
-python3 benchmarks/batch/10kx10k_usearch/warm/run_test.py
-
-embeddings:
-  model: benchmarks/accuracy/science/results/experiment_9/models/round_22/model.onnx

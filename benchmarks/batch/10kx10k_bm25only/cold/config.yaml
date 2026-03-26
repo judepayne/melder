@@ -20,6 +20,7 @@ cross_map:
 
 embeddings:
   model: all-MiniLM-L6-v2
+  # model: themelder/arctic-embed-xs-entity-resolution
   a_cache_dir: benchmarks/batch/10kx10k_bm25only/cold/cache
 
 blocking:

@@ -50,6 +50,15 @@ enum Commands {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
+    /// Start the enroll-mode HTTP server (single-pool entity resolution)
+    Enroll {
+        /// Path to YAML config file
+        #[arg(short, long)]
+        config: PathBuf,
+        /// HTTP port
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+    },
     /// Tune thresholds — score distribution, overlap analysis, and accuracy metrics
     Tune {
         /// Path to YAML config file
@@ -187,6 +196,7 @@ fn main() {
             #[cfg(unix)]
                 socket: _socket,
         } => melder::cli::serve::cmd_serve(&config, port),
+        Commands::Enroll { config, port } => melder::cli::enroll::cmd_enroll(&config, port),
         Commands::Tune {
             config,
             verbose,

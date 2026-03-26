@@ -12,6 +12,7 @@ use std::sync::RwLock;
 
 use crate::error::IndexError;
 use crate::models::{Record, Side};
+use crate::scoring::embedding::dot_product_f32;
 
 use super::texthash::TextHashStore;
 use super::{SearchResult, VectorDB, VectorDBError};
@@ -256,11 +257,8 @@ impl std::fmt::Debug for VecIndex {
     }
 }
 
-/// Dot product of two f32 slices. LLVM auto-vectorizes this.
-#[inline]
-fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
+// Dot product: uses crate::scoring::embedding::dot_product_f32 (shared,
+// SIMD-accelerated when the `simd` feature is enabled).
 
 // ===========================================================================
 // Cache serialization

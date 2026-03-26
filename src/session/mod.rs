@@ -210,6 +210,35 @@ pub mod response {
         pub offset: usize,
         pub reviews: Vec<ReviewListEntry>,
     }
+
+    // --- Enroll-mode response types ---
+
+    #[derive(Debug, Serialize)]
+    pub struct EnrollEdge {
+        pub id: String,
+        pub score: f64,
+        pub field_scores: Vec<EnrollFieldScore>,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct EnrollFieldScore {
+        pub field: String,
+        pub method: String,
+        pub score: f64,
+        pub weight: f64,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct EnrollResponse {
+        pub id: String,
+        pub enrolled: bool,
+        pub edges: Vec<EnrollEdge>,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct BatchEnrollResponse {
+        pub results: Vec<EnrollResponse>,
+    }
 }
 
 use response::*;
@@ -513,7 +542,7 @@ impl Session {
         // 9. Pipeline: blocking → candidate selection → full scoring
         let top_n = config.top_n.unwrap_or(5);
         let blocked_ids: Vec<String> = if config.blocking.enabled {
-            store.blocking_query(&record, side)
+            store.blocking_query(&record, side, opp)
         } else {
             store.ids(opp)
         };
@@ -824,7 +853,7 @@ impl Session {
         // Pipeline: blocking → candidate selection → full scoring
         let top_n = config.top_n.unwrap_or(5);
         let blocked_ids: Vec<String> = if config.blocking.enabled {
-            store.blocking_query(&record, side)
+            store.blocking_query(&record, side, opp)
         } else {
             store.ids(opp)
         };
@@ -1436,6 +1465,184 @@ impl Session {
             coverage_a,
             coverage_b,
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Enroll mode
+    // -------------------------------------------------------------------
+
+    /// Enroll a record into the single pool, returning scored edges.
+    ///
+    /// 1. Encode combined vector
+    /// 2. Score against the pool (same side, excluding self)
+    /// 3. Add record to pool (store, blocking, BM25, synonym, vector index)
+    /// 4. Return edges above `review_floor`, capped at `top_n`
+    pub fn enroll(&self, record: Record) -> Result<EnrollResponse, SessionError> {
+        let config = &self.state.config;
+        let store = &self.state.store;
+        let side = Side::A; // Enroll always uses A-side as the pool.
+
+        // Extract ID
+        let id_field = &config.datasets.a.id_field;
+        let id = record
+            .get(id_field)
+            .ok_or_else(|| SessionError::MissingField {
+                field: id_field.clone(),
+            })?
+            .to_string();
+
+        if id.is_empty() {
+            return Err(SessionError::MissingField {
+                field: id_field.clone(),
+            });
+        }
+
+        // 1. Encode combined vector and upsert into index
+        let combined_vec = self.encode_combined(&record, &self.emb_specs, true)?;
+        if let Some(idx) = self.state.a.combined_index.as_ref()
+            && !combined_vec.is_empty()
+        {
+            let _ = idx.upsert(&id, &combined_vec, &record, side);
+        }
+
+        // 2. Score against the pool (same side)
+        let top_n = config.top_n.unwrap_or(5);
+        let ann_candidates = config.ann_candidates.unwrap_or(50);
+        let bm25_candidates = config.bm25_candidates.unwrap_or(10);
+
+        let blocked_ids: Vec<String> = if config.blocking.enabled {
+            store.blocking_query(&record, side, side)
+        } else {
+            store.ids(side)
+        };
+
+        let pool_state = &self.state.a;
+
+        // Acquire synonym index read lock (if configured).
+        let syn_guard = pool_state
+            .synonym_index
+            .as_ref()
+            .map(|lock| lock.read().unwrap_or_else(|e| e.into_inner()));
+
+        let synonym_dict = self.state.synonym_dictionary.as_deref();
+
+        // Build BM25 context. Commit buffered writes (brief write lock),
+        // then query under read lock for concurrency.
+        let results = if let Some(ref bm25_mtx) = pool_state.bm25_index {
+            {
+                let mut w = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
+                w.commit_if_dirty();
+            }
+            let guard = bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
+            let query_text = guard.query_text_for(&record, side);
+            let ctx = Bm25Ctx::new(&guard, query_text);
+            pipeline::score_pool(
+                &id,
+                &record,
+                side,
+                &combined_vec,
+                store.as_ref(),
+                side, // pool_side = same side
+                pool_state.combined_index.as_deref(),
+                &blocked_ids,
+                config,
+                ann_candidates,
+                bm25_candidates,
+                top_n,
+                Some(ctx),
+                syn_guard.as_deref(),
+                synonym_dict,
+            )
+        } else {
+            pipeline::score_pool(
+                &id,
+                &record,
+                side,
+                &combined_vec,
+                store.as_ref(),
+                side, // pool_side = same side
+                pool_state.combined_index.as_deref(),
+                &blocked_ids,
+                config,
+                ann_candidates,
+                bm25_candidates,
+                top_n,
+                None,
+                syn_guard.as_deref(),
+                synonym_dict,
+            )
+        };
+
+        // 3. Add record to pool
+        // Handle upsert: remove old blocking entry if exists
+        if let Some(old_rec) = store.get(side, &id) {
+            store.blocking_remove(side, &id, &old_rec);
+        }
+
+        // WAL append
+        let _ = self.state.wal.append_upsert(side, &record);
+
+        // Insert into store
+        store.insert(side, &id, &record);
+        store.mark_unmatched(side, &id);
+
+        // Update blocking index
+        store.blocking_insert(side, &id, &record);
+
+        // Update BM25 index
+        if let Some(ref bm25_lock) = pool_state.bm25_index {
+            let mut bm25 = bm25_lock.write().unwrap_or_else(|e| e.into_inner());
+            bm25.upsert(&id, &record);
+        }
+
+        // Update synonym index
+        if let Some(ref syn_lock) = pool_state.synonym_index {
+            let mut syn = syn_lock.write().unwrap_or_else(|e| e.into_inner());
+            syn.upsert(&id, &record, side, &config.synonym_fields);
+        }
+
+        self.upsert_count.fetch_add(1, Ordering::Relaxed);
+
+        // 4. Build response — filter by review_floor, cap at top_n
+        let review_floor = config.thresholds.review_floor;
+        let edges: Vec<EnrollEdge> = results
+            .iter()
+            .filter(|r| r.score >= review_floor)
+            .take(top_n)
+            .map(|r| EnrollEdge {
+                id: r.matched_id.clone(),
+                score: r.score,
+                field_scores: r
+                    .field_scores
+                    .iter()
+                    .map(|fs| EnrollFieldScore {
+                        // In enroll mode field_a == field_b; use field_a
+                        field: fs.field_a.clone(),
+                        method: fs.method.clone(),
+                        score: fs.score,
+                        weight: fs.weight,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        Ok(EnrollResponse {
+            id,
+            enrolled: true,
+            edges,
+        })
+    }
+
+    /// Enroll a batch of records sequentially.
+    ///
+    /// Each record is scored against the pool (including previously enrolled
+    /// records from this batch), then added to the pool.
+    pub fn enroll_batch(&self, records: Vec<Record>) -> Result<BatchEnrollResponse, SessionError> {
+        let mut results = Vec::with_capacity(records.len());
+        for record in records {
+            results.push(self.enroll(record)?);
+        }
+        Ok(BatchEnrollResponse { results })
     }
 
     /// Return pending review-band matches with pagination.

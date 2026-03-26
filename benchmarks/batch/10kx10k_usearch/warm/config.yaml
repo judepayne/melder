@@ -19,8 +19,8 @@ cross_map:
   b_id_field: counterparty_id
 
 embeddings:
-#  model: benchmarks/accuracy/science/results/experiment_9/models/round_22/model.onnx
   model: all-MiniLM-L6-v2
+  # model: themelder/arctic-embed-xs-entity-resolution
   a_cache_dir: benchmarks/batch/10kx10k_usearch/warm/cache
   b_cache_dir: benchmarks/batch/10kx10k_usearch/warm/cache
 

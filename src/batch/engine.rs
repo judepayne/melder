@@ -348,7 +348,7 @@ pub fn run_batch(
 
             // Pre-query the blocking index via the store.
             let blocked_ids: Vec<String> = if config.blocking.enabled {
-                store.blocking_query(&b_record, Side::B)
+                store.blocking_query(&b_record, Side::B, Side::A)
             } else {
                 store.ids(Side::A)
             };

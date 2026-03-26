@@ -18,6 +18,7 @@ cross_map:
 
 embeddings:
   model: all-MiniLM-L6-v2
+  # model: themelder/arctic-embed-xs-entity-resolution
   a_cache_dir: benchmarks/live/100kx100k_inject10k_usearch/warm/cache
   b_cache_dir: benchmarks/live/100kx100k_inject10k_usearch/warm/cache
 

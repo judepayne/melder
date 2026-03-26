@@ -47,6 +47,12 @@ arrow = { version = "54", optional = true, default-features = false, features = 
 # HNSW vector index (feature-flagged)
 usearch = { version = "2", optional = true }
 
+# HuggingFace Hub model download
+hf-hub = "0.4"
+
+# Hardware-accelerated dot product (NEON / SVE / AVX2 / AVX-512)
+simsimd = { version = "6", optional = true }
+
 # BM25 full-text search
 tantivy = "0.22"
 
@@ -60,6 +66,7 @@ thiserror = "2"
 [features]
 parquet-format = ["dep:parquet", "dep:arrow"]
 usearch = ["dep:usearch"]
+simd = ["dep:simsimd"]
 
 
 [dev-dependencies]

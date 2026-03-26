@@ -86,12 +86,14 @@ pub trait RecordStore: Send + Sync {
     /// Remove a record's blocking keys from the index.
     fn blocking_remove(&self, side: Side, id: &str, record: &Record);
 
-    /// Query the blocking index: return candidate IDs from the given side
-    /// that share blocking key values with the query record.
+    /// Query the blocking index: return candidate IDs that share blocking
+    /// key values with the query record.
     ///
-    /// `query_side` is the side of the query record. The returned IDs are
-    /// from the *opposite* side's index.
-    fn blocking_query(&self, record: &Record, query_side: Side) -> Vec<String>;
+    /// `query_side` is the side of the query record (determines which
+    /// blocking field names to read from the record). `pool_side` is the
+    /// side whose index to search. In match mode, `pool_side` is the
+    /// opposite of `query_side`. In enroll mode, both are `Side::A`.
+    fn blocking_query(&self, record: &Record, query_side: Side, pool_side: Side) -> Vec<String>;
 
     // --- Unmatched ---
 

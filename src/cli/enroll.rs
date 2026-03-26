@@ -1,0 +1,83 @@
+//! `meld enroll` command — single-pool entity resolution server.
+
+use std::path::Path;
+use std::process;
+
+/// Start the enroll-mode HTTP server.
+pub fn cmd_enroll(config_path: &Path, port: u16) {
+    // 1. Load enroll config
+    let cfg = match crate::config::load_enroll_config(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Config error: {}", e);
+            process::exit(1);
+        }
+    };
+
+    // 2. Load live match state (enroll path)
+    let mut state = match crate::state::LiveMatchState::load(cfg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to load enroll state: {}", e);
+            process::exit(1);
+        }
+    };
+
+    // 3. Start tokio runtime and run server
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    rt.block_on(async {
+        // Initialise the encoding coordinator inside the runtime.
+        if let Some(s) = std::sync::Arc::get_mut(&mut state) {
+            s.init_coordinator();
+        }
+
+        let session = std::sync::Arc::new(crate::session::Session::new(state.clone()));
+
+        // Start background WAL flusher
+        let wal_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                if let Err(e) = wal_state.wal.flush() {
+                    eprintln!("WAL flush error: {}", e);
+                }
+            }
+        });
+
+        // No crossmap flusher — enroll mode has no crossmap.
+
+        // Start HTTP server
+        eprintln!("Starting enroll server on port {}...", port);
+        if let Err(e) = crate::api::server::start_server(session.clone(), port).await {
+            eprintln!("Server error: {}", e);
+            process::exit(1);
+        }
+
+        // Shutdown sequence
+        eprintln!("Running shutdown sequence...");
+
+        // Flush WAL
+        if let Err(e) = state.wal.flush() {
+            eprintln!("Warning: WAL flush failed: {}", e);
+        }
+
+        // Compact WAL
+        let id_field = &state.config.datasets.a.id_field;
+        if let Err(e) = state.wal.compact(id_field, id_field) {
+            eprintln!("Warning: WAL compact failed: {}", e);
+        }
+
+        // Save combined embedding index caches
+        if let Err(e) = state.save_combined_index_caches() {
+            eprintln!("Warning: combined index cache save failed: {}", e);
+        }
+
+        let sess = session.as_ref();
+        eprintln!(
+            "Shutdown complete. Uptime: {:.0}s, enrollments: {}",
+            sess.start_time.elapsed().as_secs_f64(),
+            sess.upsert_count.load(std::sync::atomic::Ordering::Relaxed),
+        );
+    });
+}

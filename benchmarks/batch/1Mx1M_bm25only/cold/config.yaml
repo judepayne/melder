@@ -17,6 +17,7 @@ cross_map:
   b_id_field: counterparty_id
 embeddings:
   model: all-MiniLM-L6-v2
+  # model: themelder/arctic-embed-xs-entity-resolution
   a_cache_dir: benchmarks/batch/1Mx1M_bm25only/cold/cache
 blocking:
   enabled: true

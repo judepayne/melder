@@ -5,11 +5,27 @@
 
 use serde::Deserialize;
 
+/// Operating mode — determines which YAML schema to expect and how
+/// the scoring pipeline behaves at runtime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// Two-sided matching: side A (pool) vs side B (query).
+    #[default]
+    Match,
+    /// Single-pool enrollment: records scored against one growing pool.
+    Enroll,
+}
+
 /// Top-level configuration parsed from YAML.
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    /// Operating mode. Set by the CLI subcommand, not from YAML.
+    #[serde(skip)]
+    pub mode: Mode,
     pub job: JobConfig,
+    #[serde(default)]
     pub datasets: DatasetsConfig,
+    #[serde(default)]
     pub cross_map: CrossMapConfig,
     pub embeddings: EmbeddingsConfig,
     #[serde(default)]
@@ -25,6 +41,7 @@ pub struct Config {
     #[serde(default)]
     pub output_mapping: Vec<FieldMapping>,
     pub thresholds: ThresholdsConfig,
+    #[serde(default)]
     pub output: OutputConfig,
     #[serde(default)]
     pub batch: BatchConfig,
@@ -77,22 +94,27 @@ pub struct Config {
     pub synonym_dictionary: Option<SynonymDictionaryConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct JobConfig {
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct DatasetsConfig {
+    #[serde(default)]
     pub a: DatasetConfig,
+    #[serde(default)]
     pub b: DatasetConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct DatasetConfig {
+    #[serde(default)]
     pub path: String,
+    #[serde(default)]
     pub id_field: String,
     /// Optional shared identifier field (e.g. LEI). If set on one side,
     /// it must be set on both. Records sharing a common ID are
@@ -107,7 +129,7 @@ pub struct DatasetConfig {
     pub encoding: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct CrossMapConfig {
     /// "local" (only supported backend). Defaults to "local".
     #[serde(default = "default_backend")]
@@ -115,16 +137,20 @@ pub struct CrossMapConfig {
     /// Path for local backend.
     #[serde(default)]
     pub path: Option<String>,
+    #[serde(default)]
     pub a_id_field: String,
+    #[serde(default)]
     pub b_id_field: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct EmbeddingsConfig {
     /// HuggingFace model name or local ONNX path.
+    #[serde(default)]
     pub model: String,
     /// Directory for A-side combined embedding index cache. Created
     /// automatically on first run; loaded on subsequent runs to skip encoding.
+    #[serde(default)]
     pub a_cache_dir: String,
     /// Directory for B-side combined embedding index cache. Optional — omit
     /// to skip B-side caching (vectors rebuilt from scratch each run).
@@ -249,9 +275,11 @@ pub struct FieldMapping {
     pub to: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct ThresholdsConfig {
+    #[serde(default)]
     pub auto_match: f64,
+    #[serde(default)]
     pub review_floor: f64,
     /// Minimum score gap between the top and second-best candidate required
     /// to auto-confirm a match.
@@ -269,10 +297,13 @@ pub struct ThresholdsConfig {
     pub min_score_gap: Option<f64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct OutputConfig {
+    #[serde(default)]
     pub results_path: String,
+    #[serde(default)]
     pub review_path: String,
+    #[serde(default)]
     pub unmatched_path: String,
 }
 
@@ -393,15 +424,22 @@ pub struct PerformanceConfig {
     pub vector_index_mode: Option<String>,
 }
 
+impl Config {
+    /// Returns `true` when the engine is running in single-pool enrollment mode.
+    pub fn is_enroll_mode(&self) -> bool {
+        self.mode == Mode::Enroll
+    }
+}
+
 fn default_backend() -> String {
     "local".into()
 }
 
-fn default_vector_backend() -> String {
+pub fn default_vector_backend() -> String {
     "flat".into()
 }
 
-fn default_operator() -> String {
+pub fn default_operator() -> String {
     "and".into()
 }
 

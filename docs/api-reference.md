@@ -1,9 +1,11 @@
-← [Back to README](../README.md) | [Live Mode](live-mode.md) | [CLI Reference](cli-reference.md)
+← [Back to README](../README.md) | [Live Mode](live-mode.md) | [Enroll Mode](enroll-mode.md) | [CLI Reference](cli-reference.md)
 
 # Live Mode API Reference
 
 All endpoints are under `/api/v1/`. The server is started with
 `meld serve --config config.yaml --port 8090`.
+
+> For enroll-mode endpoints (`meld enroll`), see [Enroll Mode](enroll-mode.md).
 
 ## Endpoints
 

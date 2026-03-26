@@ -413,6 +413,74 @@ pub async fn crossmap_break(
 // Utility handlers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Enroll-mode handlers
+// ---------------------------------------------------------------------------
+
+/// POST /api/v1/enroll
+pub async fn enroll(
+    State(session): State<AppState>,
+    Json(body): Json<AddRequest>,
+) -> axum::response::Response {
+    let t0 = std::time::Instant::now();
+    match tokio::task::spawn_blocking(move || session.enroll(body.record)).await {
+        Ok(Ok(resp)) => {
+            info!(id = %resp.id, edges = resp.edges.len(), latency_ms = %t0.elapsed().as_millis(), "enroll");
+            json_ok(resp)
+        }
+        Ok(Err(e)) => {
+            warn!(error = %e, "enroll failed");
+            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/v1/enroll-batch
+pub async fn enroll_batch(
+    State(session): State<AppState>,
+    Json(body): Json<AddBatchRequest>,
+) -> axum::response::Response {
+    let count = body.records.len();
+    let t0 = std::time::Instant::now();
+    match tokio::task::spawn_blocking(move || session.enroll_batch(body.records)).await {
+        Ok(Ok(resp)) => {
+            info!(count, latency_ms = %t0.elapsed().as_millis(), "enroll-batch");
+            json_ok(resp)
+        }
+        Ok(Err(e)) => {
+            warn!(error = %e, "enroll-batch failed");
+            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/v1/enroll/remove
+pub async fn enroll_remove(
+    State(session): State<AppState>,
+    Json(body): Json<RemoveRequest>,
+) -> axum::response::Response {
+    remove_handler(Side::A, session, body.id).await
+}
+
+/// GET /api/v1/enroll/query?id=X
+pub async fn enroll_query(
+    State(session): State<AppState>,
+    Query(p): Query<QueryParams>,
+) -> axum::response::Response {
+    query_handler(Side::A, session, p.id).await
+}
+
+/// GET /api/v1/enroll/count
+pub async fn enroll_count(State(session): State<AppState>) -> axum::response::Response {
+    json_ok(serde_json::json!({ "count": session.state.store.len(Side::A) }))
+}
+
+// ---------------------------------------------------------------------------
+// Utility handlers
+// ---------------------------------------------------------------------------
+
 /// GET /api/v1/health
 pub async fn health(State(session): State<AppState>) -> axum::response::Response {
     json_ok(session.health())

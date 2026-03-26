@@ -565,11 +565,10 @@ impl RecordStore for SqliteStore {
         .expect("delete blocking keys");
     }
 
-    fn blocking_query(&self, record: &Record, query_side: Side) -> Vec<String> {
+    fn blocking_query(&self, record: &Record, query_side: Side, pool_side: Side) -> Vec<String> {
         let conn = self.reader_pool.acquire();
         let fields = &self.blocking_config.fields;
-        let opp = query_side.opposite();
-        let prefix = side_prefix(opp);
+        let prefix = side_prefix(pool_side);
         let is_and = self.blocking_config.operator.eq_ignore_ascii_case("and");
 
         let query_values: Vec<(usize, String)> = fields
@@ -1090,13 +1089,13 @@ mod tests {
 
         // Query from B-side: country_b = "us" should match record 1
         let query = make_record(&[("country_b", "US")]);
-        let results = store.blocking_query(&query, Side::B);
+        let results = store.blocking_query(&query, Side::B, Side::A);
         assert_eq!(results.len(), 1, "should find 1 match for US");
         assert_eq!(results[0], "1");
 
         // Remove blocking keys for record 1
         store.blocking_remove(Side::A, "1", &r1);
-        let results2 = store.blocking_query(&query, Side::B);
+        let results2 = store.blocking_query(&query, Side::B, Side::A);
         assert!(results2.is_empty(), "should find 0 after remove");
 
         std::mem::forget(dir);

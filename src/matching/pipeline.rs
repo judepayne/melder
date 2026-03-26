@@ -35,6 +35,7 @@ use crate::config::Config;
 use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::scoring;
+use crate::scoring::embedding::dot_product_f32;
 use crate::store::RecordStore;
 use crate::vectordb::VectorDB;
 
@@ -193,6 +194,11 @@ pub fn score_pool(
         return Vec::new();
     }
 
+    // Self-match exclusion: when query_side == pool_side (enroll mode),
+    // the query record may appear in the pool index. Filter it out before
+    // scoring so a record never matches itself.
+    let filter_self = query_side == pool_side;
+
     // --- Stage 4: Full scoring with per-field decomposition ---
     let emb_specs = crate::vectordb::embedding_field_specs(config);
     let has_emb_specs = has_embeddings && !emb_specs.is_empty();
@@ -201,6 +207,10 @@ pub fn score_pool(
 
     // Score all candidates through the same path.
     for cand in ann_cands.iter().chain(extra_cands.iter()) {
+        // Skip self-match in enroll mode
+        if filter_self && cand.id == query_id {
+            continue;
+        }
         results.push(score_candidate(
             cand,
             query_id,
@@ -415,7 +425,7 @@ fn decompose_emb_scores(
         let q_sub = &query_combined[start..end];
         let p_sub = &pool_combined[start..end];
 
-        let dot: f32 = q_sub.iter().zip(p_sub.iter()).map(|(a, b)| a * b).sum();
+        let dot: f32 = dot_product_f32(q_sub, p_sub);
 
         let cos = if *weight > 0.0 {
             (dot as f64 / weight).clamp(0.0, 1.0)

@@ -130,8 +130,9 @@ configuration examples, and trade-offs for each method.
 | **[Accuracy & Tuning](docs/accuracy-and-tuning.md)** | Measuring match quality, using `meld tune`, and a worked example showing the journey from 16.5% overlap to near-perfect separation. |
 | **[Batch Mode](docs/batch-mode.md)** | Running `meld run` — output files, SQLite batch mode for large datasets, data formats. |
 | **[Live Mode](docs/live-mode.md)** | Running `meld serve` — storage backends, persistence, WAL, crash recovery. |
+| **[Enroll Mode](docs/enroll-mode.md)** | Running `meld enroll` — single-pool entity resolution for graph-based ER and deduplication. |
 | **[API Reference](docs/api-reference.md)** | HTTP API endpoints — add, remove, match, query, crossmap, review. Request/response examples. |
-| **[CLI Reference](docs/cli-reference.md)** | All CLI commands — validate, run, serve, tune, cache, review, crossmap. |
+| **[CLI Reference](docs/cli-reference.md)** | All CLI commands — validate, run, serve, enroll, tune, cache, review, crossmap. |
 | **[Performance](docs/performance.md)** | Benchmarks for batch and live mode, scaling characteristics, how to run your own benchmarks. |
 | **[Vector Caching](docs/vector-caching.md)** | How embedding caches work, staleness detection, incremental encoding. |
 | **[Building](docs/building.md)** | Build instructions, feature flags, Windows notes. |

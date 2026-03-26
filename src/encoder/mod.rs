@@ -173,6 +173,11 @@ impl EncoderPool {
         if is_local_model_path(model_name) {
             return Self::new_from_local_path(model_name, pool_size);
         }
+        // If the name looks like a HuggingFace repo ID (contains `/` but
+        // isn't a local path), download it from the Hub and load locally.
+        if model_name.contains('/') {
+            return Self::new_from_hub(model_name, pool_size);
+        }
         let model = resolve_model(model_name, quantized)?;
         let dim = model_dim(&model);
         let pool_size = pool_size.max(1);
@@ -188,6 +193,50 @@ impl EncoderPool {
         }
 
         Ok(Self { encoders, dim })
+    }
+
+    /// Download a model from HuggingFace Hub and load it.
+    ///
+    /// Downloads `model.onnx`, `tokenizer.json`, `config.json`,
+    /// `special_tokens_map.json`, and `tokenizer_config.json` into the
+    /// hf-hub cache directory, then delegates to [`new_from_local_path`].
+    fn new_from_hub(repo_id: &str, pool_size: usize) -> Result<Self, EncoderError> {
+        use hf_hub::api::sync::Api;
+
+        eprintln!("Downloading model from HuggingFace Hub: {}...", repo_id);
+        let api = Api::new().map_err(|e| EncoderError::ModelNotFound {
+            model: format!("failed to init HuggingFace API: {}", e),
+        })?;
+        let repo = api.model(repo_id.to_string());
+
+        let required_files = [
+            "model.onnx",
+            "tokenizer.json",
+            "config.json",
+            "special_tokens_map.json",
+            "tokenizer_config.json",
+        ];
+
+        let mut dir_path: Option<std::path::PathBuf> = None;
+        for fname in &required_files {
+            let path = repo.get(fname).map_err(|e| EncoderError::ModelNotFound {
+                model: format!("failed to download {}/{}: {}", repo_id, fname, e),
+            })?;
+            if dir_path.is_none() {
+                dir_path = path.parent().map(|p| p.to_path_buf());
+            }
+        }
+
+        let dir = dir_path.ok_or_else(|| EncoderError::ModelNotFound {
+            model: format!("no files downloaded from {}", repo_id),
+        })?;
+
+        eprintln!(
+            "Model cached at: {}",
+            dir.display()
+        );
+
+        Self::new_from_local_path(dir.to_str().unwrap_or(repo_id), pool_size)
     }
 
     /// Build an `EncoderPool` from a local directory or `.onnx` file.

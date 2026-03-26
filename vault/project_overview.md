@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-03-25 (Experiment 12 complete)
+Last updated: 2026-03-26 (Enroll endpoint implementation complete)
 
 ---
 
@@ -40,7 +40,7 @@ cargo test --all-features         # REQUIRED before committing
 cargo fmt -- --check && cargo clippy --all-features       # lint gate
 ```
 
-Feature flags: `usearch` (HNSW ANN), `parquet-format` (Parquet I/O), `bm25` (Tantivy BM25).
+Feature flags: `usearch` (HNSW ANN), `parquet-format` (Parquet I/O), `bm25` (Tantivy BM25), `simd` (SimSIMD hardware-accelerated dot product). Mode enum: `Match` (two-sided matching) or `Enroll` (single-pool entity resolution).
 
 ---
 
@@ -67,14 +67,15 @@ Full text: `vault/architecture/CONSTITUTION.md`. Violating these is a bug regard
 | `src/main.rs` | CLI entry — clap parsing + dispatch to `cli::*` only, no business logic |
 | `src/lib.rs` | `pub mod` declarations only, alphabetical, no logic |
 | `src/error.rs` | All error types: `MelderError`, `ConfigError`, `DataError`, `EncoderError`, `IndexError`, `CrossMapError` |
-| `src/models.rs` | Core types: `pub type Record = HashMap<String, String>`, `Side`, `Classification`, `MatchResult` |
+| `src/models.rs` | Core types: `pub type Record = HashMap<String, String>`, `Side`, `Classification`, `MatchResult`, `Mode` (Match/Enroll) |
 
 ### `src/config/`
 
 | File | Key items |
 |---|---|
-| `schema.rs` | All config structs: `MelderConfig`, `DatasetConfig`, `EmbeddingConfig`, `MatchField`, `BlockingConfig`, `ExactPrefilterConfig`, `ThresholdConfig`, `PerformanceConfig`, `LiveConfig`, `BatchConfig` |
-| `loader.rs` | `load_config(path)` — parses YAML, validates all fields, returns `MelderConfig` |
+| `schema.rs` | All config structs: `MelderConfig`, `DatasetConfig`, `EmbeddingConfig`, `MatchField`, `BlockingConfig`, `ExactPrefilterConfig`, `ThresholdConfig`, `PerformanceConfig`, `LiveConfig`, `BatchConfig`, `Mode` enum (Match/Enroll) |
+| `loader.rs` | `load_config(path)` — parses YAML, validates all fields, returns `MelderConfig`; `load_enroll_config()` for enroll mode |
+| `enroll_schema.rs` | `EnrollConfig` — simplified schema for single-pool mode (single `field:` instead of `field_a:`/`field_b:`, single `dataset:`, no crossmap) |
 
 ### `src/matching/`
 
@@ -152,16 +153,16 @@ SQLite connection pool: 1 writer (`Mutex<Connection>`) + N read-only (`SqliteRea
 
 | File | Key items |
 |---|---|
-| `session/mod.rs` | `Session` — wraps two `LiveSideState`; `upsert()`, `try_match()`, `remove()` |
-| `state/live.rs` | `LiveMatchState` — `Arc<dyn RecordStore>` + `Box<dyn CrossMapOps>` + BM25 index + vector index. `load()` dispatches to `load_memory()` or `load_sqlite()`. Zero backend awareness at runtime — all backend ops go through trait methods. |
+| `session/mod.rs` | `Session` — wraps two `LiveSideState` (match mode) or one `LiveMatchState` (enroll mode); `upsert()`, `try_match()`, `remove()`, `enroll()`, `enroll_batch()` |
+| `state/live.rs` | `LiveMatchState` — `Arc<dyn RecordStore>` + `Box<dyn CrossMapOps>` + BM25 index + vector index. `load()` dispatches to `load_memory()`, `load_sqlite()`, or `load_enroll()` (single-pool, A-side only, no crossmap). Zero backend awareness at runtime — all backend ops go through trait methods. |
 | `state/upsert_log.rs` | WAL — append-only log of upsert/remove events. Replayed on memory-backend startup. Skipped for SQLite (durable by construction). Compaction creates timestamped snapshots. |
 
 ### `src/api/`
 
 | File | Key items |
 |---|---|
-| `server.rs` | Axum router setup, `Arc<Session>` state, graceful shutdown with `tokio::select!` on SIGTERM/Ctrl-C |
-| `handlers.rs` | All HTTP handlers — add, remove, try-match, batch endpoints, crossmap, review, unmatched. Errors mapped to `StatusCode` + JSON. Full endpoint list: `vault/architecture/API Reference.md` |
+| `server.rs` | Axum router setup, `Arc<Session>` state, graceful shutdown with `tokio::select!` on SIGTERM/Ctrl-C. Conditional router: match-mode endpoints vs enroll-mode endpoints mounted based on config mode. |
+| `handlers.rs` | All HTTP handlers — add, remove, try-match, batch endpoints, crossmap, review, unmatched (match mode); enroll, enroll-batch, enroll/remove, enroll/query, enroll/count (enroll mode). Errors mapped to `StatusCode` + JSON. Full endpoint list: `vault/architecture/API Reference.md` |
 
 ### `src/cli/`
 
@@ -180,12 +181,12 @@ One file per subcommand: `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.
 1. **Exact prefilter** (`exact_prefilter` config) — O(1) hash lookup against pre-built index on A side. All configured field pairs must match exactly (AND). If all match → auto-confirm at 1.0, skip all remaining phases. Runs _before_ blocking — recovers cross-block matches (e.g. same LEI, different country code).
 2. **Common ID pre-match** (`common_id_field`) — exact match on single shared ID field → auto-confirm at 1.0.
 3. **CrossMap skip** — skip B records already confirmed.
-4. **Blocking** (`src/matching/blocking.rs`) — `BlockingIndex` lookup; AND/OR modes.
+4. **Blocking** (`src/matching/blocking.rs`) — `BlockingIndex` lookup; AND/OR modes. In enroll mode, `blocking_query()` takes `pool_side` parameter to exclude self-matches when query_side == pool_side.
 5. **BM25 candidate filter** (optional) — Tantivy BM25 re-ranks blocked candidates; retains `bm25_candidates` top results.
 6. **ANN candidate selection** (`src/matching/candidates.rs`) — searches combined embedding index for `top_n` nearest A neighbours. If no embedding fields configured, all blocked records pass through.
 7. **Full scoring** (`src/scoring/mod.rs::score_pair()`) — all `match_fields` scored; embedding cosines decomposed from combined vectors.
 8. **Classification** — `>= auto_match` → Auto; `>= review_floor` → Review; else NoMatch.
-9. **CrossMap claim** — atomic; falls through to next candidate if A already claimed.
+9. **CrossMap claim** — atomic; falls through to next candidate if A already claimed (match mode only).
 
 ### Live upsert (`src/session/mod.rs`, `src/api/handlers.rs`)
 
@@ -201,9 +202,13 @@ One file per subcommand: `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.
 
 ### Startup paths (`src/state/live.rs::load()`)
 
+**Match mode:**
 - `live.db_path` absent → `load_memory()`: parse CSVs, build indices, optionally replay WAL.
 - `live.db_path` set, DB not found → `load_sqlite()` cold: create DB, stream CSVs into SqliteStore, build indices.
 - `live.db_path` set, DB found → `load_sqlite()` warm: open existing DB (records + crossmap already durable), load reviews, skip WAL.
+
+**Enroll mode:**
+- `load_enroll()`: single-pool startup (A-side only, no B-side, no crossmap). Optional pre-load from `dataset.path`. Indices built once; records added via API.
 
 ---
 
@@ -372,7 +377,7 @@ Each benchmark subdirectory typically contains: `config.yaml` (melder config), `
 
 **Async**: `main.rs` synchronous; `tokio::runtime::Runtime::new()` created manually. CPU-bound → `tokio::task::spawn_blocking`. Axum handlers return `axum::response::Response`. State via `Arc<Session>` + `Router::with_state()`.
 
-**Feature flags**: `#[cfg(feature = "...")]` on modules, functions, tests, and match arms. Currently: `usearch`, `parquet-format`, `bm25`.
+**Feature flags**: `#[cfg(feature = "...")]` on modules, functions, tests, and match arms. Currently: `usearch`, `parquet-format`, `bm25`, `simd`.
 
 **Tests**: `#[cfg(test)] mod tests` at bottom of each source file. No integration test directory — everything in-crate. Table-driven for scorers `(input, expected)`. `make_` helpers. `assert!` with messages. `tempfile::tempdir()` for filesystem. `macro_rules!` for generic test suites. No external test frameworks.
 
@@ -453,21 +458,21 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 
 **Experiment 12: Arctic-embed-xs R22 + weight tuning (final validation)** — Confirmed the production configuration through systematic weight tuning. Three approaches tested: (1) wratio fuzzy on name (0.10): overlap 0.0011 — no improvement; (2) 75:25 name:addr ratio: overlap 0.0032 — made things worse; (3) BM25 50%: overlap **0.0003** — eliminated overlap entirely. **FINAL PRODUCTION CONFIGURATION: Arctic-embed-xs R22 + 50% BM25 + synonym 0.20** (name_emb=0.30, addr_emb=0.20, bm25=0.50, synonym=0.20, additive). Overlap 0.0003, combined recall 100%, zero false positives. 22M params, 6 layers — fastest encoding. Progression from exp 1 to exp 12: overlap 0.168 → 0.0003 (560× improvement). See [[Training Experiments Log#Experiment 12]].
 
+**Enroll endpoint for single-pool entity resolution** — New `mode: enroll` with 5 HTTP endpoints: `POST /api/v1/enroll`, `POST /api/v1/enroll-batch`, `POST /api/v1/enroll/remove`, `GET /api/v1/enroll/query`, `GET /api/v1/enroll/count`. New `EnrollConfig` serde schema in `src/config/enroll_schema.rs`. New `Mode` enum (Match/Enroll) in `src/config/schema.rs`. `load_enroll_config()` in `src/config/loader.rs`. `Session::enroll()` and `Session::enroll_batch()` methods. Self-match exclusion in `pipeline.rs` when query_side == pool_side. `blocking_query()` gains `pool_side` parameter for same-side blocking. `LiveMatchState::load_enroll()` for single-pool startup (A-side only, no crossmap). Conditional router: enroll endpoints only mounted in enroll mode. 6 new tests for enroll config parsing. 382 tests pass, zero clippy warnings. See [[Enroll Endpoint Design]].
+
 ### In Progress
 
 **CI/CD** — `.github/workflows/ci.yml` + `release.yml` created (macOS ARM, Linux glibc x86_64, Windows MSVC). Requires GitHub remote to activate. Homebrew/Scoop auto-update hooks not yet wired.
 
 ### Backlog (ranked)
 
-1. Re-verify `meld tune` — not tested since SQLite storage refactor.
+1. Publish fine-tuned Arctic-embed-xs to HuggingFace.
 2. Single-artifact deployment — `include_bytes!()` on ONNX weights.
-3. Pipeline hooks — pre-score / post-score / on-confirm callouts.
-4. Fine-tune on domain corpus (production crossmap as gold data).
-5. SIMD-explicit dot product — NEON for ~2× flat scan (marginal).
-6. External vector DB — Qdrant/Milvus (VectorDB trait is the interface).
-7. BM25 Mutex → RwLock for BM25-heavy batch at scale.
-8. Benchmark data regeneration script.
-9. Split README into wiki.
+3. Structured logging / log output configuration.
+4. Pipeline hooks — pre-score / post-score / on-confirm callouts.
+5. External vector DB — Qdrant/Milvus (VectorDB trait is the interface).
+6. BM25 Mutex → RwLock for BM25-heavy batch at scale.
+7. Benchmark data regeneration script.
 
 ---
 
@@ -490,3 +495,4 @@ Full rationale for all decisions: `vault/decisions/Key Decisions.md`. Check befo
 | Linux CI target | glibc not musl — fastembed → openssl-sys incompatible with musl cross-compilation |
 | mmap vector index | `vector_index_mode: mmap` via usearch `view()` — OS paging at 100M+ records; read-only |
 | Encoding coordinator off by default | With MiniLM + pool_size≥4, parallel sessions beat batched single session |
+| SIMD dot product via simsimd | Optional `simd` feature flag; single `dot_product_f32()` in `scoring::embedding` replaces 3 copies |

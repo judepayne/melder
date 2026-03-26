@@ -184,9 +184,9 @@ impl RecordStore for MemoryStore {
         bi.remove(id, record, side);
     }
 
-    fn blocking_query(&self, record: &Record, query_side: Side) -> Vec<String> {
+    fn blocking_query(&self, record: &Record, query_side: Side, pool_side: Side) -> Vec<String> {
         let bi = self
-            .blocking(query_side.opposite())
+            .blocking(pool_side)
             .read()
             .unwrap_or_else(|e| e.into_inner());
         bi.query(record, query_side).into_iter().collect()
@@ -417,12 +417,12 @@ mod tests {
 
         // Query from B side looking for GB records in A
         let query = make_record(&[("domicile", "GB")]);
-        let hits = store.blocking_query(&query, Side::B);
+        let hits = store.blocking_query(&query, Side::B, Side::A);
         assert_eq!(hits.len(), 2, "expected 2 GB hits, got {:?}", hits);
 
         // Remove one and re-query
         store.blocking_remove(Side::A, "a1", &rec_gb);
-        let hits = store.blocking_query(&query, Side::B);
+        let hits = store.blocking_query(&query, Side::B, Side::A);
         assert_eq!(hits.len(), 1, "expected 1 GB hit after remove");
     }
 
@@ -487,7 +487,7 @@ mod tests {
 
         // Blocking should work: query from B for GB records in A
         let query = make_record(&[("domicile", "GB")]);
-        let hits = store.blocking_query(&query, Side::B);
+        let hits = store.blocking_query(&query, Side::B, Side::A);
         assert_eq!(hits.len(), 1, "expected 1 GB hit from A-side blocking");
     }
 }
