@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process;
 
+use tracing::{info, warn};
+
 /// Start the live-mode HTTP server.
 pub fn cmd_serve(config_path: &Path, port: u16) {
     // 1. Load config
@@ -11,11 +13,7 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
     // Warn if mmap mode is configured — it is not safe for live mode because
     // upserts write to the index and will fail on a read-only mmap'd index.
     if cfg.performance.vector_index_mode.as_deref() == Some("mmap") {
-        eprintln!(
-            "Warning: performance.vector_index_mode=mmap is not suitable for \
-             meld serve. The mmap'd index is read-only; upserts will fail. \
-             Use mmap only with meld run."
-        );
+        warn!("mmap vector index is read-only; upserts will fail — use mmap only with meld run");
     }
 
     // 2. Load live match state
@@ -36,9 +34,21 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
             s.init_coordinator();
         }
 
+        // Spawn hook writer task if configured.
+        let hook_tx = if let Some(ref cmd) = state.config.hooks.command {
+            let (tx, rx) = tokio::sync::mpsc::channel(1000);
+            let cmd = cmd.clone();
+            tokio::spawn(async move {
+                crate::hooks::writer::run(cmd, rx).await;
+            });
+            Some(tx)
+        } else {
+            None
+        };
+
         // Create session (must happen after init_coordinator so Arc is shared
         // only after the coordinator is set up).
-        let session = std::sync::Arc::new(crate::session::Session::new(state.clone()));
+        let session = std::sync::Arc::new(crate::session::Session::new(state.clone(), hook_tx));
 
         // Start background crossmap flusher
         let flush_state = state.clone();
@@ -48,7 +58,7 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
             loop {
                 interval.tick().await;
                 if let Err(e) = flush_state.flush_crossmap() {
-                    eprintln!("Crossmap flush error: {}", e);
+                    warn!(error = %e, "crossmap flush failed");
                 }
             }
         });
@@ -60,7 +70,7 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
             loop {
                 interval.tick().await;
                 if let Err(e) = wal_state.wal.flush() {
-                    eprintln!("WAL flush error: {}", e);
+                    warn!(error = %e, "wal flush failed");
                 }
             }
         });
@@ -72,37 +82,37 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
         }
 
         // Shutdown sequence
-        eprintln!("Running shutdown sequence...");
+        info!("shutdown sequence started");
 
         // Flush WAL
         if let Err(e) = state.wal.flush() {
-            eprintln!("Warning: WAL flush failed: {}", e);
+            warn!(error = %e, "wal flush failed");
         }
 
         // Compact WAL
         let a_id_field = &state.config.datasets.a.id_field;
         let b_id_field = &state.config.datasets.b.id_field;
         if let Err(e) = state.wal.compact(a_id_field, b_id_field) {
-            eprintln!("Warning: WAL compact failed: {}", e);
+            warn!(error = %e, "wal compact failed");
         }
 
         // Final crossmap flush
         state.mark_crossmap_dirty(); // force flush
         if let Err(e) = state.flush_crossmap() {
-            eprintln!("Warning: final crossmap flush failed: {}", e);
+            warn!(error = %e, "final crossmap flush failed");
         }
 
         // Save combined embedding index caches
         if let Err(e) = state.save_combined_index_caches() {
-            eprintln!("Warning: combined index cache save failed: {}", e);
+            warn!(error = %e, "combined index cache save failed");
         }
 
         let sess = session.as_ref();
-        eprintln!(
-            "Shutdown complete. Uptime: {:.0}s, additions: {}, matches: {}",
-            sess.start_time.elapsed().as_secs_f64(),
-            sess.upsert_count.load(std::sync::atomic::Ordering::Relaxed),
-            sess.match_count.load(std::sync::atomic::Ordering::Relaxed),
+        info!(
+            uptime_s = format!("{:.0}", sess.start_time.elapsed().as_secs_f64()),
+            additions = sess.upsert_count.load(std::sync::atomic::Ordering::Relaxed),
+            matches = sess.match_count.load(std::sync::atomic::Ordering::Relaxed),
+            "shutdown complete",
         );
     });
 }

@@ -30,7 +30,7 @@ def wait_for_server(log_path, timeout):
     while time.time() < deadline:
         if os.path.exists(log_path):
             with open(log_path) as f:
-                if "listening on port" in f.read():
+                if "server listening" in f.read():
                     return True
         time.sleep(2)
     return False

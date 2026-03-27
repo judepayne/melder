@@ -22,6 +22,7 @@ use fastembed::{
     EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel,
 };
+use tracing::info;
 
 use crate::error::EncoderError;
 
@@ -203,7 +204,7 @@ impl EncoderPool {
     fn new_from_hub(repo_id: &str, pool_size: usize) -> Result<Self, EncoderError> {
         use hf_hub::api::sync::Api;
 
-        eprintln!("Downloading model from HuggingFace Hub: {}...", repo_id);
+        info!(repo_id = repo_id, "downloading model from huggingface hub");
         let api = Api::new().map_err(|e| EncoderError::ModelNotFound {
             model: format!("failed to init HuggingFace API: {}", e),
         })?;
@@ -231,7 +232,7 @@ impl EncoderPool {
             model: format!("no files downloaded from {}", repo_id),
         })?;
 
-        eprintln!("Model cached at: {}", dir.display());
+        info!(path = %dir.display(), "model cached");
 
         Self::new_from_local_path(dir.to_str().unwrap_or(repo_id), pool_size)
     }

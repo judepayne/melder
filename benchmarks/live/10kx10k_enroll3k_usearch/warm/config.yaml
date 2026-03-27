@@ -1,0 +1,51 @@
+job:
+  name: enroll_10kx10k_usearch_warm
+  description: Enroll benchmark — 10k pool, usearch backend, warm run (cache pre-built)
+
+# Pre-load 10k reference entities into the pool at startup.
+# No edges generated — just populates the pool index.
+dataset:
+  path: benchmarks/data/dataset_a_10k.csv
+  id_field: entity_id
+  format: csv
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  # model: themelder/arctic-embed-xs-entity-resolution
+  cache_dir: benchmarks/live/10kx10k_enroll3k_usearch/warm/cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field: country_code
+
+match_fields:
+  - field: legal_name
+    method: embedding
+    weight: 0.55
+  - field: short_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+  - field: country_code
+    method: exact
+    weight: 0.20
+  - field: lei
+    method: exact
+    weight: 0.05
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+live:
+  upsert_log: benchmarks/live/10kx10k_enroll3k_usearch/warm/wal/events.ndjson
+
+performance:
+  encoder_pool_size: 4
+  vector_index_mode: "load"
+
+vector_backend: usearch
+top_n: 20
+ann_candidates: 20

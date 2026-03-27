@@ -237,6 +237,12 @@ The pool persists across restarts using the same WAL mechanism as
 live mode. On shutdown, the embedding index cache is saved to disk.
 On restart, the WAL is replayed and the cache is reloaded.
 
+## Hooks
+
+Hooks work in enroll mode. Since there is no crossmap or classification,
+only `on_nomatch` fires — when an enrolled record has zero edges above
+`review_floor`. See [Hooks](hooks.md) for configuration and examples.
+
 ## Upsert semantics
 
 Enrolling a record with an ID that already exists replaces the existing

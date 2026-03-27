@@ -8,6 +8,7 @@ pub mod data;
 pub mod encoder;
 pub mod error;
 pub mod fuzzy;
+pub mod hooks;
 pub mod matching;
 pub mod models;
 pub mod scoring;

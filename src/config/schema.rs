@@ -49,6 +49,8 @@ pub struct Config {
     pub live: LiveConfig,
     #[serde(default)]
     pub performance: PerformanceConfig,
+    #[serde(default)]
+    pub hooks: HooksConfig,
     /// Vector storage backend: "flat" (brute-force, default) or "usearch"
     /// (per-block HNSW, requires building with `--features usearch`).
     #[serde(default = "default_vector_backend")]
@@ -422,6 +424,16 @@ pub struct PerformanceConfig {
     /// Has no effect when `vector_backend` is `flat`.
     #[serde(default)]
     pub vector_index_mode: Option<String>,
+}
+
+/// Pipeline hook configuration — a single long-running subprocess that
+/// receives match events as newline-delimited JSON on stdin.
+#[derive(Debug, Deserialize, Default)]
+pub struct HooksConfig {
+    /// Shell command to run as the hook subprocess. If absent, hooks are
+    /// disabled. Example: `"python scripts/hook.py"`
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 impl Config {

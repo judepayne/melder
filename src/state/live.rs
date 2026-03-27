@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use dashmap::DashMap;
+use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::crossmap::{CrossMapOps, MemoryCrossMap};
@@ -125,10 +126,7 @@ impl LiveMatchState {
 
         // 1. Init encoder pool
         let pool_size = config.performance.encoder_pool_size.unwrap_or(1);
-        eprintln!(
-            "Initializing encoder pool (model={}, pool_size={})...",
-            config.embeddings.model, pool_size
-        );
+        info!(model = %config.embeddings.model, pool_size, "initializing encoder pool");
         let encoder_pool = Arc::new(
             EncoderPool::new(
                 &config.embeddings.model,
@@ -138,10 +136,10 @@ impl LiveMatchState {
             .map_err(MelderError::Encoder)?,
         );
         let dim = encoder_pool.dim();
-        eprintln!(
-            "Encoder ready (dim={}), took {:.1}s",
+        info!(
             dim,
-            start.elapsed().as_secs_f64()
+            elapsed_s = format!("{:.1}", start.elapsed().as_secs_f64()),
+            "encoder ready"
         );
 
         // Determine startup mode
@@ -182,10 +180,11 @@ impl LiveMatchState {
             config.datasets.a.format.as_deref(),
         )
         .map_err(MelderError::Data)?;
-        eprintln!(
-            "Loaded dataset A: {} records in {:.1}s",
-            records_a_map.len(),
-            a_start.elapsed().as_secs_f64()
+        info!(
+            side = "A",
+            records = records_a_map.len(),
+            elapsed_s = format!("{:.1}", a_start.elapsed().as_secs_f64()),
+            "loaded dataset"
         );
 
         let b_start = Instant::now();
@@ -196,10 +195,11 @@ impl LiveMatchState {
             config.datasets.b.format.as_deref(),
         )
         .map_err(MelderError::Data)?;
-        eprintln!(
-            "Loaded dataset B: {} records in {:.1}s",
-            records_b_map.len(),
-            b_start.elapsed().as_secs_f64()
+        info!(
+            side = "B",
+            records = records_b_map.len(),
+            elapsed_s = format!("{:.1}", b_start.elapsed().as_secs_f64()),
+            "loaded dataset"
         );
 
         Ok((records_a_map, ids_a, records_b_map, ids_b))
@@ -231,7 +231,7 @@ impl LiveMatchState {
                 let dict = crate::synonym::dictionary::SynonymDictionary::load(
                     std::path::Path::new(&sd_cfg.path),
                 )?;
-                eprintln!("Loaded synonym dictionary ({} groups)", dict.len(),);
+                info!(groups = dict.len(), "loaded synonym dictionary");
                 Some(Arc::new(dict))
             } else {
                 None
@@ -263,14 +263,15 @@ impl LiveMatchState {
             .map_err(|e| MelderError::Other(anyhow::anyhow!("WAL open failed: {}", e)))?;
 
         let total = start.elapsed();
-        eprintln!(
-            "Live state loaded in {:.1}s ({label}A: {} records/{} unmatched, B: {} records/{} unmatched, crossmap: {} pairs)",
-            total.as_secs_f64(),
-            store.len(Side::A),
-            store.unmatched_count(Side::A),
-            store.len(Side::B),
-            store.unmatched_count(Side::B),
-            crossmap.len(),
+        info!(
+            label,
+            a_records = store.len(Side::A),
+            a_unmatched = store.unmatched_count(Side::A),
+            b_records = store.len(Side::B),
+            b_unmatched = store.unmatched_count(Side::B),
+            crossmap_pairs = crossmap.len(),
+            elapsed_s = format!("{:.1}", total.as_secs_f64()),
+            "live state loaded"
         );
 
         // Load review queue from the store (WAL replay or SQLite read)
@@ -287,7 +288,7 @@ impl LiveMatchState {
             );
         }
         if !review_queue.is_empty() {
-            eprintln!("Review queue: {} pending reviews", review_queue.len());
+            info!(pending = review_queue.len(), "review queue loaded");
         }
 
         Ok(Arc::new(Self {
@@ -345,9 +346,9 @@ impl LiveMatchState {
             records_b_map,
             &config.blocking,
         ));
-        eprintln!(
-            "Built blocking indices in {:.1}ms",
-            start.elapsed().as_secs_f64() * 1000.0
+        info!(
+            elapsed_ms = format!("{:.1}", start.elapsed().as_secs_f64() * 1000.0),
+            "built blocking indices"
         );
 
         // Load CrossMap
@@ -359,7 +360,7 @@ impl LiveMatchState {
         ) {
             Ok(cm) => {
                 if !cm.is_empty() {
-                    eprintln!("Loaded crossmap: {} pairs", cm.len());
+                    info!(pairs = cm.len(), "loaded crossmap");
                 }
                 cm.set_flush_path(
                     Path::new(crossmap_path),
@@ -369,7 +370,7 @@ impl LiveMatchState {
                 Box::new(cm)
             }
             Err(e) => {
-                eprintln!("Warning: failed to load crossmap ({}), starting fresh", e);
+                warn!(error = %e, "failed to load crossmap, starting fresh");
                 let cm = MemoryCrossMap::new();
                 cm.set_flush_path(
                     Path::new(crossmap_path),
@@ -444,14 +445,14 @@ impl LiveMatchState {
                 config.datasets.a.format.as_deref(),
             )
             .map_err(MelderError::Data)?;
-            eprintln!(
-                "Loaded pool dataset: {} records in {:.1}s",
-                map.len(),
-                a_start.elapsed().as_secs_f64()
+            info!(
+                records = map.len(),
+                elapsed_s = format!("{:.1}", a_start.elapsed().as_secs_f64()),
+                "loaded pool dataset"
             );
             (map, ids)
         } else {
-            eprintln!("No initial dataset — starting with empty pool");
+            info!("no initial dataset, starting with empty pool");
             (std::collections::HashMap::new(), Vec::new())
         };
 
@@ -540,7 +541,7 @@ impl LiveMatchState {
         let mut wal_skipped = 0usize;
         let mut wal_encoded = 0usize;
 
-        eprintln!("Replaying {} WAL events...", wal_events.len());
+        info!(events = wal_events.len(), "replaying WAL");
         for event in wal_events {
             match event {
                 WalEvent::UpsertRecord { side, record } => {
@@ -621,9 +622,10 @@ impl LiveMatchState {
             }
         }
         if wal_skipped > 0 || wal_encoded > 0 {
-            eprintln!(
-                "WAL vector index: {} skipped (cached), {} re-encoded",
-                wal_skipped, wal_encoded
+            info!(
+                skipped = wal_skipped,
+                re_encoded = wal_encoded,
+                "WAL vector index"
             );
         }
 
@@ -644,7 +646,7 @@ impl LiveMatchState {
                 store.mark_unmatched(Side::B, &id);
             }
         }
-        eprintln!("WAL replay complete");
+        info!("WAL replay complete");
         Ok(())
     }
 
@@ -659,7 +661,7 @@ impl LiveMatchState {
     ) -> Result<Arc<Self>, MelderError> {
         let db_exists = Path::new(db_path).exists();
         let mode = if db_exists { "warm" } else { "cold" };
-        eprintln!("SQLite {} start: {}", mode, db_path);
+        info!(mode, path = %db_path, "sqlite startup");
 
         let (sqlite_store, sqlite_crossmap, _conn) = open_sqlite(
             Path::new(db_path),
@@ -687,9 +689,9 @@ impl LiveMatchState {
                 store.insert(Side::B, id, record);
                 store.blocking_insert(Side::B, id, record);
             }
-            eprintln!(
-                "Populated SQLite store in {:.1}s",
-                pop_start.elapsed().as_secs_f64()
+            info!(
+                elapsed_s = format!("{:.1}", pop_start.elapsed().as_secs_f64()),
+                "populated sqlite store"
             );
 
             // Load existing crossmap from CSV into SQLite
@@ -704,7 +706,7 @@ impl LiveMatchState {
                 for (a_id, b_id) in &pairs {
                     crossmap.add(a_id, b_id);
                 }
-                eprintln!("Imported crossmap: {} pairs into SQLite", pairs.len());
+                info!(pairs = pairs.len(), "imported crossmap into sqlite");
             }
 
             // Build unmatched sets
@@ -727,11 +729,11 @@ impl LiveMatchState {
             Self::build_common_id_index(&store, &config);
         } else {
             // --- Warm start: everything is already in SQLite ---
-            eprintln!(
-                "SQLite warm start: A={} records, B={} records, crossmap={} pairs",
-                store.len(Side::A),
-                store.len(Side::B),
-                crossmap.len(),
+            info!(
+                a_records = store.len(Side::A),
+                b_records = store.len(Side::B),
+                crossmap_pairs = crossmap.len(),
+                "sqlite warm start"
             );
         }
 
@@ -840,18 +842,18 @@ impl LiveMatchState {
                 &config.bm25_fields,
                 &config.blocking.fields,
             )?;
-            eprintln!(
-                "Built BM25 indices (A: {}, B: {}) in {:.1}ms",
-                store.len(Side::A),
-                store.len(Side::B),
-                bm25_start.elapsed().as_secs_f64() * 1000.0
+            info!(
+                a_records = store.len(Side::A),
+                b_records = store.len(Side::B),
+                elapsed_ms = format!("{:.1}", bm25_start.elapsed().as_secs_f64() * 1000.0),
+                "built BM25 indices"
             );
 
             // Pre-warm self-score caches for both sides.
             // A-side index needs self-scores for B query texts (B queries A).
             // B-side index needs self-scores for A query texts (A queries B).
             let pw_start = Instant::now();
-            eprintln!("Pre-warming BM25 self-score caches...");
+            info!("pre-warming BM25 self-score caches");
 
             let mut b_query_texts: Vec<String> = Vec::new();
             store.for_each_record(Side::B, &mut |_id, rec| {
@@ -861,10 +863,11 @@ impl LiveMatchState {
                 }
             });
             idx_a.precompute_self_scores(&b_query_texts);
-            eprintln!(
-                "  A-side: {} self-scores in {:.1}ms",
-                b_query_texts.len(),
-                pw_start.elapsed().as_secs_f64() * 1000.0
+            info!(
+                side = "A",
+                self_scores = b_query_texts.len(),
+                elapsed_ms = format!("{:.1}", pw_start.elapsed().as_secs_f64() * 1000.0),
+                "BM25 self-scores computed"
             );
 
             let pw_b_start = Instant::now();
@@ -876,14 +879,15 @@ impl LiveMatchState {
                 }
             });
             idx_b.precompute_self_scores(&a_query_texts);
-            eprintln!(
-                "  B-side: {} self-scores in {:.1}ms",
-                a_query_texts.len(),
-                pw_b_start.elapsed().as_secs_f64() * 1000.0
+            info!(
+                side = "B",
+                self_scores = a_query_texts.len(),
+                elapsed_ms = format!("{:.1}", pw_b_start.elapsed().as_secs_f64() * 1000.0),
+                "BM25 self-scores computed"
             );
-            eprintln!(
-                "BM25 self-score pre-warm complete ({:.1}ms total)",
-                pw_start.elapsed().as_secs_f64() * 1000.0
+            info!(
+                elapsed_ms = format!("{:.1}", pw_start.elapsed().as_secs_f64() * 1000.0),
+                "BM25 self-score pre-warm complete"
             );
 
             let _ = start; // suppress unused warning when bm25 timing is used
@@ -921,11 +925,11 @@ impl LiveMatchState {
             &config.synonym_fields,
             dictionary,
         );
-        eprintln!(
-            "Built synonym indices (A: {} keys, B: {} keys) in {:.1}ms",
-            idx_a.len(),
-            idx_b.len(),
-            syn_start.elapsed().as_secs_f64() * 1000.0
+        info!(
+            a_keys = idx_a.len(),
+            b_keys = idx_b.len(),
+            elapsed_ms = format!("{:.1}", syn_start.elapsed().as_secs_f64() * 1000.0),
+            "built synonym indices"
         );
         (
             Some(std::sync::RwLock::new(idx_a)),
@@ -941,10 +945,7 @@ impl LiveMatchState {
     pub fn init_coordinator(&mut self) {
         let batch_wait_ms = self.config.performance.encoder_batch_wait_ms.unwrap_or(0);
         if batch_wait_ms > 0 {
-            eprintln!(
-                "Encoding coordinator enabled (batch_wait={}ms)",
-                batch_wait_ms
-            );
+            info!(batch_wait_ms, "encoding coordinator enabled");
             self.coordinator = Some(EncoderCoordinator::new(
                 Arc::clone(&self.encoder_pool),
                 std::time::Duration::from_millis(batch_wait_ms),
@@ -1068,7 +1069,7 @@ impl LiveMatchState {
                 std::fs::create_dir_all(parent).ok();
             }
             if let Err(e) = idx.save(&path) {
-                eprintln!("Warning: failed to save A combined index cache: {}", e);
+                warn!(side = "A", error = %e, "failed to save combined index cache");
             }
         }
 
@@ -1083,7 +1084,7 @@ impl LiveMatchState {
                 std::fs::create_dir_all(parent).ok();
             }
             if let Err(e) = idx.save(&path) {
-                eprintln!("Warning: failed to save B combined index cache: {}", e);
+                warn!(side = "B", error = %e, "failed to save combined index cache");
             }
         }
 

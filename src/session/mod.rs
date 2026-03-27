@@ -251,10 +251,15 @@ pub struct Session {
     pub match_count: AtomicU64,
     /// Pre-computed embedding field specs (avoids per-request allocation).
     emb_specs: Vec<(String, String, f64)>,
+    /// Hook event sender. `None` when hooks are not configured.
+    hook_tx: Option<tokio::sync::mpsc::Sender<crate::hooks::HookEvent>>,
 }
 
 impl Session {
-    pub fn new(state: Arc<LiveMatchState>) -> Self {
+    pub fn new(
+        state: Arc<LiveMatchState>,
+        hook_tx: Option<tokio::sync::mpsc::Sender<crate::hooks::HookEvent>>,
+    ) -> Self {
         let emb_specs = crate::vectordb::embedding_field_specs(&state.config);
         Self {
             state,
@@ -262,6 +267,14 @@ impl Session {
             upsert_count: AtomicU64::new(0),
             match_count: AtomicU64::new(0),
             emb_specs,
+            hook_tx,
+        }
+    }
+
+    /// Send a hook event (best-effort, never blocks).
+    fn send_hook(&self, event: crate::hooks::HookEvent) {
+        if let Some(ref tx) = self.hook_tx {
+            let _ = tx.try_send(event);
         }
     }
 
@@ -514,6 +527,15 @@ impl Session {
                         }
                         self.state.mark_crossmap_dirty();
 
+                        // Hook: on_confirm (common_id auto-match)
+                        self.send_hook(crate::hooks::HookEvent::Confirm {
+                            a_id: a_id.clone(),
+                            b_id: b_id.clone(),
+                            score: 1.0,
+                            source: "auto".into(),
+                            field_scores: vec![],
+                        });
+
                         let opp_record = store.get(opp, &opp_id);
                         let match_entry = MatchEntry {
                             id: opp_id,
@@ -630,6 +652,16 @@ impl Session {
                 if self.state.crossmap.claim(&a_id, &b_id) {
                     store.mark_matched(Side::A, &a_id);
                     store.mark_matched(Side::B, &b_id);
+
+                    // Hook: on_confirm (auto-match via claim)
+                    self.send_hook(crate::hooks::HookEvent::Confirm {
+                        a_id: a_id.clone(),
+                        b_id: b_id.clone(),
+                        score: result.score,
+                        source: "auto".into(),
+                        field_scores: result.field_scores.clone(),
+                    });
+
                     if let Err(e) = self.state.wal.append(&WalEvent::CrossMapConfirm {
                         a_id,
                         b_id,
@@ -663,8 +695,32 @@ impl Session {
                     score: result.score,
                 },
             );
+            // Hook: on_review
+            {
+                let (hook_a, hook_b) = match side {
+                    Side::A => (id.clone(), result.matched_id.clone()),
+                    Side::B => (result.matched_id.clone(), id.clone()),
+                };
+                self.send_hook(crate::hooks::HookEvent::Review {
+                    a_id: hook_a,
+                    b_id: hook_b,
+                    score: result.score,
+                    field_scores: result.field_scores.clone(),
+                });
+            }
+
             classification = "review".to_string();
             break;
+        }
+
+        // Hook: on_nomatch
+        if classification == "no_match" {
+            self.send_hook(crate::hooks::HookEvent::NoMatch {
+                side,
+                id: id.clone(),
+                best_score: results.first().map(|r| r.score),
+                best_candidate_id: results.first().map(|r| r.matched_id.clone()),
+            });
         }
 
         let matches = build_match_entries(&results);
@@ -983,6 +1039,15 @@ impl Session {
         }
         self.state.mark_crossmap_dirty();
 
+        // Hook: on_confirm (manual)
+        self.send_hook(crate::hooks::HookEvent::Confirm {
+            a_id: a_id.to_string(),
+            b_id: b_id.to_string(),
+            score: 0.0,
+            source: "manual".into(),
+            field_scores: vec![],
+        });
+
         Ok(ConfirmResponse {
             status: "confirmed".to_string(),
         })
@@ -1046,6 +1111,12 @@ impl Session {
             warn!(error = %e, "WAL append failed for crossmap break");
         }
         self.state.mark_crossmap_dirty();
+
+        // Hook: on_break
+        self.send_hook(crate::hooks::HookEvent::Break {
+            a_id: a_id.to_string(),
+            b_id: b_id.to_string(),
+        });
 
         Ok(BreakResponse {
             status: "broken".to_string(),

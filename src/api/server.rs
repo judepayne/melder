@@ -7,6 +7,8 @@ use axum::routing::{get, post};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::trace::TraceLayer;
 
+use tracing::info;
+
 use crate::session::Session;
 
 use super::handlers;
@@ -87,7 +89,7 @@ pub async fn start_server(
     let app = build_router(session);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
-    eprintln!("meld serve listening on port {}", port);
+    info!(port, "server listening");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -120,5 +122,5 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 
-    eprintln!("\nShutdown signal received...");
+    info!("shutdown signal received");
 }

@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-03-26 (Enroll endpoint implementation complete)
+Last updated: 2026-03-27 (Pipeline hooks + structured logging complete)
 
 ---
 
@@ -460,19 +460,22 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 
 **Enroll endpoint for single-pool entity resolution** — New `mode: enroll` with 5 HTTP endpoints: `POST /api/v1/enroll`, `POST /api/v1/enroll-batch`, `POST /api/v1/enroll/remove`, `GET /api/v1/enroll/query`, `GET /api/v1/enroll/count`. New `EnrollConfig` serde schema in `src/config/enroll_schema.rs`. New `Mode` enum (Match/Enroll) in `src/config/schema.rs`. `load_enroll_config()` in `src/config/loader.rs`. `Session::enroll()` and `Session::enroll_batch()` methods. Self-match exclusion in `pipeline.rs` when query_side == pool_side. `blocking_query()` gains `pool_side` parameter for same-side blocking. `LiveMatchState::load_enroll()` for single-pool startup (A-side only, no crossmap). Conditional router: enroll endpoints only mounted in enroll mode. 6 new tests for enroll config parsing. 382 tests pass, zero clippy warnings. See [[Enroll Endpoint Design]].
 
+**Structured logging** — Converted ~70 `eprintln!` calls in live-path files to `tracing` (info!/warn!). `--log-format json` now produces clean structured JSON for all server output including startup, encoding, WAL, shutdown. CLI-only commands (run, tune, etc.) kept as `eprintln!`.
+
+**HuggingFace Hub model download** — Added `hf-hub` dependency. `EncoderPool::new()` auto-downloads models with `/` in the name from HuggingFace Hub (e.g. `themelder/arctic-embed-xs-entity-resolution`). Local paths detected by heuristic (absolute, `./`, `../`, `.onnx` suffix, or resolves on disk).
+
+**Pipeline hooks** — Single long-running subprocess receiving NDJSON events on stdin. Config: `hooks: { command: "python hook.py" }` in both match and enroll mode configs. 4 event types: `on_confirm`, `on_review`, `on_nomatch`, `on_break`. `HookEvent` enum in `src/hooks/mod.rs` with custom JSON serialization. Hook writer task in `src/hooks/writer.rs` with subprocess lifecycle, exponential backoff respawn (1s-60s), disable after 5 consecutive failures. Non-blocking: scoring thread uses `try_send` on mpsc channel (~10ns), dedicated writer task handles pipe I/O. 6 injection points in `src/session/mod.rs` (2× on_confirm auto, 1× on_confirm manual, 1× on_review, 1× on_nomatch, 1× on_break). Platform dispatch: `sh -c` on Unix, `cmd /C` on Windows. Validation: empty command rejected. 392 tests pass, zero clippy warnings. Full docs page at `docs/hooks.md` with example Python script. Design spec at `HOOK_DESIGN.md`.
+
 ### In Progress
 
 **CI/CD** — `.github/workflows/ci.yml` + `release.yml` created (macOS ARM, Linux glibc x86_64, Windows MSVC). Requires GitHub remote to activate. Homebrew/Scoop auto-update hooks not yet wired.
 
 ### Backlog (ranked)
 
-1. Publish fine-tuned Arctic-embed-xs to HuggingFace.
-2. Single-artifact deployment — `include_bytes!()` on ONNX weights.
-3. Structured logging / log output configuration.
-4. Pipeline hooks — pre-score / post-score / on-confirm callouts.
-5. External vector DB — Qdrant/Milvus (VectorDB trait is the interface).
-6. BM25 Mutex → RwLock for BM25-heavy batch at scale.
-7. Benchmark data regeneration script.
+1. Single-artifact deployment — `include_bytes!()` on ONNX weights.
+2. External vector DB — Qdrant/Milvus (VectorDB trait is the interface).
+3. BM25 Mutex → RwLock for BM25-heavy batch at scale.
+4. Benchmark data regeneration script.
 
 ---
 

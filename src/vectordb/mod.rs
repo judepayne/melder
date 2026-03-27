@@ -30,6 +30,8 @@ use manifest::{
 };
 use texthash::compute_text_hash;
 
+use tracing::{info, warn};
+
 use crate::config::Config;
 use crate::config::schema::BlockingConfig;
 use crate::encoder::EncoderPool;
@@ -424,10 +426,7 @@ pub fn build_or_load_combined_index(
         let proceed_to_load = match &stale_reason {
             StaleReason::Fresh | StaleReason::Missing => true,
             reason => {
-                eprintln!(
-                    "Warning: {} combined index cache invalidated ({}), rebuilding from scratch.",
-                    side, reason
-                );
+                warn!(side = side, reason = %reason, "combined index cache invalidated, rebuilding");
                 false
             }
         };
@@ -442,10 +441,7 @@ pub fn build_or_load_combined_index(
             let load_start = Instant::now();
             match load_index(backend, cache_path, vq, vim) {
                 Err(e) => {
-                    eprintln!(
-                        "Warning: {} combined index cache load failed ({}), rebuilding...",
-                        side, e
-                    );
+                    warn!(side = side, error = %e, "combined index cache load failed, rebuilding");
                     // fall through to cold build
                 }
                 Ok(index) => {
@@ -458,12 +454,11 @@ pub fn build_or_load_combined_index(
                         && index.len() == ids.len()
                     {
                         let elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
-                        eprintln!(
-                            "Loaded {} combined embedding index from cache: {} vecs, \
-                             source unchanged in {:.1}ms",
-                            side,
-                            index.len(),
-                            elapsed_ms
+                        info!(
+                            side = side,
+                            vecs = index.len(),
+                            elapsed_ms = format!("{:.1}", elapsed_ms).as_str(),
+                            "loaded combined index from cache, source unchanged"
                         );
                         return Ok(Some(index));
                     }
@@ -496,12 +491,11 @@ pub fn build_or_load_combined_index(
                     // Step 4: Full cache hit
                     if to_encode.is_empty() && to_delete.is_empty() {
                         let elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
-                        eprintln!(
-                            "Loaded {} combined embedding index from cache: {} vecs, \
-                             all fresh in {:.1}ms",
-                            side,
-                            index.len(),
-                            elapsed_ms
+                        info!(
+                            side = side,
+                            vecs = index.len(),
+                            elapsed_ms = format!("{:.1}", elapsed_ms).as_str(),
+                            "loaded combined index from cache, all fresh"
                         );
                         // Refresh the manifest with the current record count.
                         let m = make_manifest(
@@ -512,7 +506,7 @@ pub fn build_or_load_combined_index(
                             current_fp.clone(),
                         );
                         if let Err(e) = write_manifest(cache_path, &m) {
-                            eprintln!("Warning: could not update {} manifest: {}", side, e);
+                            warn!(side = side, error = %e, "could not update manifest");
                         }
                         return Ok(Some(index));
                     }
@@ -522,19 +516,20 @@ pub fn build_or_load_combined_index(
                     let total_changes = to_encode.len() + to_delete.len();
                     let total = ids.len().max(1);
                     if total_changes * 10 > total * 9 {
-                        eprintln!(
-                            "{} combined index: {}/{} records changed — cold rebuild \
-                             is more efficient.",
-                            side, total_changes, total
+                        info!(
+                            side = side,
+                            changed = total_changes,
+                            total = total,
+                            "cold rebuild more efficient"
                         );
                         // fall through to cold build
                     } else {
                         // Step 6: Incremental path
-                        eprintln!(
-                            "{} combined index: {} to encode, {} to remove (incremental)",
-                            side,
-                            to_encode.len(),
-                            to_delete.len()
+                        info!(
+                            side = side,
+                            new_records = to_encode.len(),
+                            removed = to_delete.len(),
+                            "updating embedding cache"
                         );
                         let incr_start = Instant::now();
 
@@ -559,20 +554,17 @@ pub fn build_or_load_combined_index(
                         )?;
 
                         let incr_elapsed = incr_start.elapsed();
-                        eprintln!(
-                            "{} combined index updated: {} vecs total in {:.1}s",
-                            side,
-                            index.len(),
-                            incr_elapsed.as_secs_f64()
+                        info!(
+                            side = side,
+                            vecs = index.len(),
+                            elapsed_s = format!("{:.1}", incr_elapsed.as_secs_f64()).as_str(),
+                            "combined index updated"
                         );
 
                         // Save updated index + sidecars.
                         ensure_parent(cache_path);
                         if let Err(e) = index.save(cache_path) {
-                            eprintln!(
-                                "Warning: failed to save {} combined index cache: {}",
-                                side, e
-                            );
+                            warn!(side = side, error = %e, "failed to save combined index cache");
                         } else {
                             let m = make_manifest(
                                 current_spec_hash.clone(),
@@ -582,12 +574,12 @@ pub fn build_or_load_combined_index(
                                 current_fp.clone(),
                             );
                             if let Err(e) = write_manifest(cache_path, &m) {
-                                eprintln!("Warning: could not write {} manifest: {}", side, e);
+                                warn!(side = side, error = %e, "could not write manifest");
                             }
-                            eprintln!(
-                                "Saved {} combined index cache to {}",
-                                side,
-                                cache_path.display()
+                            info!(
+                                side = side,
+                                path = %cache_path.display(),
+                                "saved combined index cache"
                             );
                         }
 
@@ -601,12 +593,12 @@ pub fn build_or_load_combined_index(
     // -----------------------------------------------------------------------
     // Step 7: Cold build
     // -----------------------------------------------------------------------
-    eprintln!(
-        "Building {} combined embedding index ({} records, dim={}, {} field(s))...",
-        side,
-        ids.len(),
-        combined_dim,
-        emb_specs.len(),
+    info!(
+        side = side,
+        records = ids.len(),
+        dim = combined_dim,
+        fields = emb_specs.len(),
+        "building combined embedding index"
     );
     let build_start = Instant::now();
     let index = new_index(backend, combined_dim, blocking_config, &emb_specs, vq);
@@ -625,22 +617,19 @@ pub fn build_or_load_combined_index(
     )?;
 
     let build_elapsed = build_start.elapsed();
-    eprintln!(
-        "{} combined embedding index built: {} vecs in {:.1}s ({:.0} records/sec)",
-        side,
-        index.len(),
-        build_elapsed.as_secs_f64(),
-        ids.len() as f64 / build_elapsed.as_secs_f64()
+    info!(
+        side = side,
+        vecs = index.len(),
+        elapsed_s = format!("{:.1}", build_elapsed.as_secs_f64()).as_str(),
+        records_per_sec = format!("{:.0}", ids.len() as f64 / build_elapsed.as_secs_f64()).as_str(),
+        "combined embedding index built"
     );
 
     // Save to cache.
     if let Some(ref cache_path) = cache_path_opt {
         ensure_parent(cache_path);
         if let Err(e) = index.save(cache_path) {
-            eprintln!(
-                "Warning: failed to save {} combined index cache: {}",
-                side, e
-            );
+            warn!(side = side, error = %e, "failed to save combined index cache");
         } else {
             let m = make_manifest(
                 current_spec_hash,
@@ -650,12 +639,12 @@ pub fn build_or_load_combined_index(
                 current_fp,
             );
             if let Err(e) = write_manifest(cache_path, &m) {
-                eprintln!("Warning: could not write {} manifest: {}", side, e);
+                warn!(side = side, error = %e, "could not write manifest");
             }
-            eprintln!(
-                "Saved {} combined index cache to {}",
-                side,
-                cache_path.display()
+            info!(
+                side = side,
+                path = %cache_path.display(),
+                "saved combined index cache"
             );
         }
     }
@@ -730,16 +719,14 @@ fn encode_and_upsert(
 
         let done = ((batch_idx + 1) * batch_size).min(total);
         if done % 1024 < batch_size || done >= total {
-            eprint!(
-                "\r  {} combined index: encoded {}/{} ({:.0}%)",
-                side_label,
-                done,
-                total,
-                done as f64 / total as f64 * 100.0,
+            let pct = done as f64 / total as f64 * 100.0;
+            info!(
+                side = side_label,
+                encoded = done,
+                total = total,
+                pct = format!("{:.0}", pct).as_str(),
+                "embedding encoding progress"
             );
-            if done >= total {
-                eprintln!();
-            }
         }
     }
 

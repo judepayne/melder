@@ -434,6 +434,9 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         }
     }
 
+    // 32. hooks
+    validate_hooks(cfg)?;
+
     Ok(())
 }
 
@@ -659,6 +662,22 @@ fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
         )?;
     }
 
+    // hooks
+    validate_hooks(cfg)?;
+
+    Ok(())
+}
+
+/// Validate hooks configuration (shared by match and enroll validators).
+fn validate_hooks(cfg: &Config) -> Result<(), ConfigError> {
+    if let Some(ref cmd) = cfg.hooks.command
+        && cmd.trim().is_empty()
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "hooks.command".into(),
+            message: "must be non-empty if specified".into(),
+        });
+    }
     Ok(())
 }
 
@@ -2015,5 +2034,53 @@ thresholds:
         assert_eq!(cfg.bm25_fields[0].field_b, "name");
         assert_eq!(cfg.bm25_fields[1].field_a, "address");
         assert_eq!(cfg.bm25_fields[1].field_b, "address");
+    }
+
+    // --- Hooks config tests ---
+
+    #[test]
+    fn hooks_empty_command_rejected() {
+        let yaml = format!(
+            "{}\nhooks:\n  command: \"\"",
+            base_yaml_with_match_fields(
+                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
+            )
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("hooks.command"),
+            "expected hooks.command error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn hooks_valid_command_accepted() {
+        let yaml = format!(
+            "{}\nhooks:\n  command: \"python hook.py\"",
+            base_yaml_with_match_fields(
+                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
+            )
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(cfg.hooks.command.as_deref(), Some("python hook.py"),);
+    }
+
+    #[test]
+    fn hooks_absent_defaults_to_none() {
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }",
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert!(cfg.hooks.command.is_none());
     }
 }

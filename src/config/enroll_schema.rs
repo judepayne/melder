@@ -9,7 +9,8 @@ use crate::error::ConfigError;
 
 use super::schema::{
     BatchConfig, Bm25FieldPair, Config, CrossMapConfig, DatasetConfig, DatasetsConfig,
-    EmbeddingsConfig, LiveConfig, Mode, OutputConfig, PerformanceConfig, SynonymDictionaryConfig,
+    EmbeddingsConfig, HooksConfig, LiveConfig, Mode, OutputConfig, PerformanceConfig,
+    SynonymDictionaryConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -117,6 +118,9 @@ pub struct EnrollConfig {
 
     #[serde(default)]
     pub performance: PerformanceConfig,
+
+    #[serde(default)]
+    pub hooks: HooksConfig,
 
     #[serde(default = "super::schema::default_vector_backend")]
     pub vector_backend: String,
@@ -287,6 +291,7 @@ impl EnrollConfig {
             batch: BatchConfig::default(),
             live: self.live,
             performance: self.performance,
+            hooks: self.hooks,
             vector_backend: self.vector_backend,
             top_n: self.top_n,
             ann_candidates: self.ann_candidates,

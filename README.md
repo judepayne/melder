@@ -131,6 +131,7 @@ configuration examples, and trade-offs for each method.
 | **[Batch Mode](docs/batch-mode.md)** | Running `meld run` — output files, SQLite batch mode for large datasets, data formats. |
 | **[Live Mode](docs/live-mode.md)** | Running `meld serve` — storage backends, persistence, WAL, crash recovery. |
 | **[Enroll Mode](docs/enroll-mode.md)** | Running `meld enroll` — single-pool entity resolution for graph-based ER and deduplication. |
+| **[Hooks](docs/hooks.md)** | Pipeline event hooks — run commands on match, review, no-match, and break events. |
 | **[API Reference](docs/api-reference.md)** | HTTP API endpoints — add, remove, match, query, crossmap, review. Request/response examples. |
 | **[CLI Reference](docs/cli-reference.md)** | All CLI commands — validate, run, serve, enroll, tune, cache, review, crossmap. |
 | **[Performance](docs/performance.md)** | Benchmarks for batch and live mode, scaling characteristics, how to run your own benchmarks. |

@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 
 use crate::util::rename_replacing;
 
@@ -130,7 +131,7 @@ impl UpsertLog {
             fs::create_dir_all(parent)?;
         }
 
-        eprintln!("WAL: writing to {}", path.display());
+        info!(path = %path.display(), "WAL opened for writing");
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = Mutex::new(BufWriter::new(file));
 
@@ -284,27 +285,22 @@ impl UpsertLog {
                 Ok(event) => events.push(event),
                 Err(e) => {
                     truncated += 1;
-                    eprintln!(
-                        "WAL: skipping malformed line {} in {} ({}): {}",
-                        line_num,
-                        path.display(),
-                        e,
-                        if trimmed.len() > 80 {
-                            format!("{}...", &trimmed[..80])
-                        } else {
-                            trimmed.to_string()
-                        }
+                    warn!(
+                        line = line_num,
+                        path = %path.display(),
+                        error = %e,
+                        "WAL skipping malformed line"
                     );
                 }
             }
         }
 
         if truncated > 0 {
-            eprintln!(
-                "WAL: {} — recovered {} events, skipped {} malformed/truncated lines",
-                path.display(),
-                events.len(),
-                truncated
+            warn!(
+                path = %path.display(),
+                recovered = events.len(),
+                skipped = truncated,
+                "WAL replay had malformed lines"
             );
         }
 
@@ -323,11 +319,7 @@ impl UpsertLog {
         if base_path.exists() {
             let events = Self::replay_file(base_path)?;
             if !events.is_empty() {
-                eprintln!(
-                    "WAL: replayed {} events from {} (legacy)",
-                    events.len(),
-                    base_path.display()
-                );
+                info!(events = events.len(), path = %base_path.display(), "WAL replayed legacy file");
                 all_events.extend(events);
             }
         }
@@ -340,11 +332,7 @@ impl UpsertLog {
             }
             let events = Self::replay_file(&path)?;
             if !events.is_empty() {
-                eprintln!(
-                    "WAL: replayed {} events from {}",
-                    events.len(),
-                    path.display()
-                );
+                info!(events = events.len(), path = %path.display(), "WAL replayed");
                 all_events.extend(events);
             }
         }
@@ -465,10 +453,10 @@ impl UpsertLog {
             .map_err(|e| io::Error::other(e.to_string()))?;
         *w = BufWriter::new(file);
 
-        eprintln!(
-            "WAL compacted: {} events -> {} events",
-            events.len(),
-            compacted.len()
+        info!(
+            before = events.len(),
+            after = compacted.len(),
+            "WAL compacted"
         );
 
         Ok(())

@@ -109,6 +109,13 @@ meld serve --config config.yaml --port 8090 2>serve.log &
 tail -f serve.log
 ```
 
+## Pipeline hooks
+
+For event notifications (match confirmed, review queued, no match,
+match broken), see [Hooks](hooks.md). Hooks run a single long-lived
+subprocess that receives events as JSON on stdin — zero impact on
+scoring throughput.
+
 ## Write-ahead log (WAL)
 
 Every record addition and cross-map change is appended to the WAL file

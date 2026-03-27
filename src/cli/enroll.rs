@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process;
 
+use tracing::{info, warn};
+
 /// Start the enroll-mode HTTP server.
 pub fn cmd_enroll(config_path: &Path, port: u16) {
     // 1. Load enroll config
@@ -31,7 +33,19 @@ pub fn cmd_enroll(config_path: &Path, port: u16) {
             s.init_coordinator();
         }
 
-        let session = std::sync::Arc::new(crate::session::Session::new(state.clone()));
+        // Spawn hook writer task if configured.
+        let hook_tx = if let Some(ref cmd) = state.config.hooks.command {
+            let (tx, rx) = tokio::sync::mpsc::channel(1000);
+            let cmd = cmd.clone();
+            tokio::spawn(async move {
+                crate::hooks::writer::run(cmd, rx).await;
+            });
+            Some(tx)
+        } else {
+            None
+        };
+
+        let session = std::sync::Arc::new(crate::session::Session::new(state.clone(), hook_tx));
 
         // Start background WAL flusher
         let wal_state = state.clone();
@@ -40,7 +54,7 @@ pub fn cmd_enroll(config_path: &Path, port: u16) {
             loop {
                 interval.tick().await;
                 if let Err(e) = wal_state.wal.flush() {
-                    eprintln!("WAL flush error: {}", e);
+                    warn!(error = %e, "wal flush failed");
                 }
             }
         });
@@ -48,36 +62,34 @@ pub fn cmd_enroll(config_path: &Path, port: u16) {
         // No crossmap flusher — enroll mode has no crossmap.
 
         // Start HTTP server
-        eprintln!("Starting enroll server on port {}...", port);
+        info!(port, "starting enroll server");
         if let Err(e) = crate::api::server::start_server(session.clone(), port).await {
             eprintln!("Server error: {}", e);
             process::exit(1);
         }
 
         // Shutdown sequence
-        eprintln!("Running shutdown sequence...");
+        info!("running shutdown sequence");
 
         // Flush WAL
         if let Err(e) = state.wal.flush() {
-            eprintln!("Warning: WAL flush failed: {}", e);
+            warn!(error = %e, "wal flush failed");
         }
 
         // Compact WAL
         let id_field = &state.config.datasets.a.id_field;
         if let Err(e) = state.wal.compact(id_field, id_field) {
-            eprintln!("Warning: WAL compact failed: {}", e);
+            warn!(error = %e, "wal compact failed");
         }
 
         // Save combined embedding index caches
         if let Err(e) = state.save_combined_index_caches() {
-            eprintln!("Warning: combined index cache save failed: {}", e);
+            warn!(error = %e, "combined index cache save failed");
         }
 
         let sess = session.as_ref();
-        eprintln!(
-            "Shutdown complete. Uptime: {:.0}s, enrollments: {}",
-            sess.start_time.elapsed().as_secs_f64(),
-            sess.upsert_count.load(std::sync::atomic::Ordering::Relaxed),
-        );
+        let uptime_s = format!("{:.0}", sess.start_time.elapsed().as_secs_f64());
+        let enrollments = sess.upsert_count.load(std::sync::atomic::Ordering::Relaxed);
+        info!(uptime_s, enrollments, "shutdown complete");
     });
 }
