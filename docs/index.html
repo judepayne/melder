@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Melder — Record Matching Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #FAF7F2; --bg-warm: #F5F0E8; --text: #2C2A28; --text-sec: #6B6560;
+  --text-muted: #9E9790; --border: #E5DFD6; --surface: #FFFFFF;
+  --accent: #D94F30; --accent-hover: #C4432A; --accent-light: #FDEEE9;
+  --code-bg: #1E1E2E; --info: #2A7B9B; --success: #2D8B55;
+  --font-display: 'Bricolage Grotesque', Georgia, serif;
+  --font-body: 'DM Sans', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --shadow-sm: 0 1px 2px rgba(44,42,40,0.05);
+  --shadow-md: 0 4px 12px rgba(44,42,40,0.08);
+  --radius: 12px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font-body); color: var(--text); background: var(--bg); line-height: 1.6;
+  background-image: radial-gradient(ellipse at 20% 50%, rgba(217,79,48,0.03) 0%, transparent 50%); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+code { font-family: var(--font-mono); font-size: 0.875em; background: var(--code-bg); color: #CDD6F4;
+  padding: 2px 6px; border-radius: 4px; }
+
+.container { max-width: 820px; margin: 0 auto; padding: 0 24px; }
+
+/* --- Hero --- */
+.hero { text-align: center; padding: 80px 24px 48px; }
+.hero pre { font-family: var(--font-mono); font-size: 0.7rem; color: var(--accent); line-height: 1.3;
+  background: none; display: inline-block; text-align: left; margin-bottom: 24px; }
+.hero h1 { font-family: var(--font-display); font-size: 2.5rem; font-weight: 800; line-height: 1.15; margin-bottom: 16px; }
+.hero h1 span { color: var(--accent); }
+.hero p { color: var(--text-sec); font-size: 1.125rem; max-width: 620px; margin: 0 auto 32px; }
+.hero-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; border-radius: 8px;
+  font-family: var(--font-display); font-weight: 600; font-size: 0.95rem; transition: all 150ms; }
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover { background: var(--accent-hover); text-decoration: none; }
+.btn-outline { border: 2px solid var(--border); color: var(--text); }
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+/* --- Sections --- */
+.section { padding: 48px 0; }
+.section-alt { background: var(--bg-warm); padding: 48px 0; }
+.section h2 { font-family: var(--font-display); font-size: 1.75rem; font-weight: 700; margin-bottom: 8px; }
+.section .subtitle { color: var(--text-sec); margin-bottom: 32px; }
+
+/* --- Mode cards --- */
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 32px; }
+.mode-card { background: var(--surface); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow-sm);
+  border-top: 3px solid var(--accent); }
+.mode-card h3 { font-family: var(--font-display); font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.mode-card p { color: var(--text-sec); font-size: 0.9rem; margin-bottom: 8px; }
+.mode-card .use-case { font-size: 0.8rem; color: var(--text-muted); font-style: italic; }
+
+/* --- Doc grid --- */
+.doc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.doc-card { display: flex; align-items: flex-start; gap: 12px; padding: 16px; background: var(--surface);
+  border-radius: 8px; box-shadow: var(--shadow-sm); border: 1px solid transparent;
+  transition: border-color 150ms, box-shadow 150ms; }
+.doc-card:hover { border-color: var(--accent); box-shadow: var(--shadow-md); text-decoration: none; }
+.doc-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center;
+  justify-content: center; font-size: 1rem; flex-shrink: 0; color: white; }
+.doc-card h4 { font-family: var(--font-display); font-weight: 600; font-size: 0.95rem; color: var(--text); margin-bottom: 2px; }
+.doc-card p { font-size: 0.8rem; color: var(--text-sec); margin: 0; }
+
+/* --- Quick start --- */
+.quick-start { background: var(--code-bg); border-radius: var(--radius); padding: 24px; color: #CDD6F4;
+  font-family: var(--font-mono); font-size: 0.85rem; line-height: 1.8; overflow-x: auto; box-shadow: var(--shadow-md); }
+.quick-start .comment { color: #6C7086; }
+.quick-start .cmd { color: #89B4FA; }
+.quick-start .flag { color: #CBA6F7; }
+
+/* --- Scoring table --- */
+.scoring-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.scoring-table th { font-family: var(--font-display); font-weight: 600; text-align: left; padding: 12px;
+  border-bottom: 2px solid var(--accent); }
+.scoring-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.scoring-table tr:hover td { background: var(--accent-light); }
+.scoring-table code { font-size: 0.85em; }
+
+/* --- Footer --- */
+.footer { text-align: center; padding: 40px 24px; color: var(--text-muted); font-size: 0.85rem; }
+.footer a { color: var(--text-sec); }
+
+@media (max-width: 640px) {
+  .hero h1 { font-size: 1.75rem; }
+  .modes, .doc-grid { grid-template-columns: 1fr; }
+  .hero pre { font-size: 0.5rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <pre>                            &#x2584;&#x2584;
+ &#x2588;&#x2584; &#x2588;&#x2584;                           &#x2588;&#x2588;    &#x2588;&#x2584;
+&#x2584;&#x2588;&#x2588;&#x2584;&#x2588;&#x2588;            &#x2584;              &#x2588;&#x2588;    &#x2588;&#x2588;       &#x2584;
+ &#x2588;&#x2588; &#x2588;&#x2588;&#x2588;&#x2588;&#x2584; &#x2584;&#x2588;&#x2580;&#x2588;&#x2584;   &#x2588;&#x2588;&#x2588;&#x2584;&#x2588;&#x2588;&#x2588;&#x2584; &#x2584;&#x2588;&#x2580;&#x2588;&#x2584; &#x2588;&#x2588; &#x2584;&#x2588;&#x2588;&#x2588;&#x2588; &#x2584;&#x2588;&#x2580;&#x2588;&#x2584; &#x2588;&#x2588;&#x2588;&#x2588;&#x2584;
+ &#x2588;&#x2588; &#x2588;&#x2588; &#x2588;&#x2588; &#x2588;&#x2588;&#x2584;&#x2588;&#x2580;   &#x2588;&#x2588; &#x2588;&#x2588; &#x2588;&#x2588; &#x2588;&#x2588;&#x2584;&#x2588;&#x2580; &#x2588;&#x2588; &#x2588;&#x2588; &#x2588;&#x2588; &#x2588;&#x2588;&#x2584;&#x2588;&#x2580; &#x2588;&#x2588;
+&#x2584;&#x2588;&#x2588;&#x2584;&#x2588;&#x2588; &#x2588;&#x2588;&#x2584;&#x2580;&#x2588;&#x2584;&#x2584;&#x2584;  &#x2584;&#x2588;&#x2588; &#x2588;&#x2588; &#x2580;&#x2588;&#x2584;&#x2580;&#x2588;&#x2584;&#x2584;&#x2584;&#x2584;&#x2588;&#x2588;&#x2584;&#x2588;&#x2580;&#x2588;&#x2588;&#x2588;&#x2584;&#x2580;&#x2588;&#x2584;&#x2584;&#x2584;&#x2584;&#x2588;&#x2580;</pre>
+  <h1>Record <span>Matching</span> Engine</h1>
+  <p>A high-performance entity resolution engine written in Rust. Matches messy vendor records against clean reference data using embeddings, BM25, fuzzy matching, and a few clever tricks.</p>
+  <div class="hero-actions">
+    <a href="codebase-course.html" class="btn btn-primary">Interactive Codebase Guide</a>
+    <a href="https://github.com/judepayne/melder" class="btn btn-outline">View on GitHub</a>
+  </div>
+</div>
+
+<div class="section-alt">
+  <div class="container">
+    <h2>Two Modes</h2>
+    <p class="subtitle">Same scoring pipeline, different execution models.</p>
+    <div class="modes">
+      <div class="mode-card">
+        <h3>Batch Mode</h3>
+        <p><code>meld run</code> &mdash; Load both datasets, match every B record against the A-side pool in parallel, write results.</p>
+        <span class="use-case">Overnight reconciliation, periodic vendor matching, data migration.</span>
+      </div>
+      <div class="mode-card" style="border-top-color: var(--info)">
+        <h3>Live Mode</h3>
+        <p><code>meld serve</code> &mdash; HTTP server with both datasets preloaded. New records matched instantly via API.</p>
+        <span class="use-case">Real-time integration, duplicate prevention, system sync.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="container">
+    <h2>Quick Start</h2>
+    <p class="subtitle">Build and run in under a minute.</p>
+    <div class="quick-start">
+      <span class="comment"># Build with HNSW vector index (recommended)</span><br>
+      <span class="cmd">cargo</span> build <span class="flag">--release --features</span> usearch<br><br>
+      <span class="comment"># Validate a config file</span><br>
+      <span class="cmd">./target/release/meld</span> validate <span class="flag">--config</span> config.yaml<br><br>
+      <span class="comment"># Run batch matching</span><br>
+      <span class="cmd">./target/release/meld</span> run <span class="flag">--config</span> config.yaml<br><br>
+      <span class="comment"># Start live server</span><br>
+      <span class="cmd">./target/release/meld</span> serve <span class="flag">--config</span> config.yaml <span class="flag">--port</span> 8090
+    </div>
+  </div>
+</div>
+
+<div class="section-alt">
+  <div class="container">
+    <h2>Scoring Methods</h2>
+    <p class="subtitle">Combine multiple comparison strategies with configurable weights.</p>
+    <table class="scoring-table">
+      <thead><tr><th>Method</th><th>What it does</th><th>Best for</th></tr></thead>
+      <tbody>
+        <tr><td><code>embedding</code></td><td>Neural semantic similarity</td><td>Primary name field</td></tr>
+        <tr><td><code>bm25</code></td><td>IDF-weighted token overlap</td><td>Suppressing common-word noise</td></tr>
+        <tr><td><code>fuzzy</code></td><td>Edit-distance similarity</td><td>Names, free text with typos</td></tr>
+        <tr><td><code>exact</code></td><td>Binary string equality</td><td>Identifiers, codes, country</td></tr>
+        <tr><td><code>synonym</code></td><td>Acronym/abbreviation detection</td><td>"HSBC" vs "Hongkong and Shanghai Banking Corp"</td></tr>
+        <tr><td><code>numeric</code></td><td>Numeric equality</td><td>Numeric identifiers</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section">
+  <div class="container">
+    <h2>Documentation</h2>
+    <p class="subtitle">Everything you need to configure, run, and understand Melder.</p>
+    <div class="doc-grid">
+      <a href="https://github.com/judepayne/melder/blob/main/docs/configuration.md" class="doc-card">
+        <div class="doc-icon" style="background:#D94F30">&#x2699;&#xFE0F;</div>
+        <div><h4>Configuration</h4><p>Complete annotated YAML reference. Every field, option, and default.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/scoring.md" class="doc-card">
+        <div class="doc-icon" style="background:#2A7B9B">&#x1F3AF;</div>
+        <div><h4>Scoring Methods</h4><p>Detailed reference for each comparison method with trade-offs.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/accuracy-and-tuning.md" class="doc-card">
+        <div class="doc-icon" style="background:#D4A843">&#x1F527;</div>
+        <div><h4>Accuracy &amp; Tuning</h4><p>Measuring match quality, using meld tune, worked threshold example.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/batch-mode.md" class="doc-card">
+        <div class="doc-icon" style="background:#7B6DAA">&#x1F4E6;</div>
+        <div><h4>Batch Mode</h4><p>Running meld run &mdash; output files, SQLite mode, data formats.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/live-mode.md" class="doc-card">
+        <div class="doc-icon" style="background:#2D8B55">&#x1F504;</div>
+        <div><h4>Live Mode</h4><p>Storage backends, persistence, WAL, crash recovery.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/enroll-mode.md" class="doc-card">
+        <div class="doc-icon" style="background:#D94F30">&#x1F465;</div>
+        <div><h4>Enroll Mode</h4><p>Single-pool entity resolution for deduplication and graph-based ER.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/api-reference.md" class="doc-card">
+        <div class="doc-icon" style="background:#2A7B9B">&#x1F310;</div>
+        <div><h4>API Reference</h4><p>HTTP endpoints &mdash; add, remove, match, query, crossmap, review.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/cli-reference.md" class="doc-card">
+        <div class="doc-icon" style="background:#D4A843">&#x1F4BB;</div>
+        <div><h4>CLI Reference</h4><p>All subcommands &mdash; validate, run, serve, enroll, tune, cache, review.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/hooks.md" class="doc-card">
+        <div class="doc-icon" style="background:#7B6DAA">&#x1FA9D;</div>
+        <div><h4>Pipeline Hooks</h4><p>Run commands on match, review, no-match, and break events.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/performance.md" class="doc-card">
+        <div class="doc-icon" style="background:#2D8B55">&#x26A1;</div>
+        <div><h4>Performance</h4><p>Benchmarks, scaling characteristics, running your own tests.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/vector-caching.md" class="doc-card">
+        <div class="doc-icon" style="background:#D94F30">&#x1F4BE;</div>
+        <div><h4>Vector Caching</h4><p>Embedding caches, staleness detection, incremental encoding.</p></div>
+      </a>
+      <a href="https://github.com/judepayne/melder/blob/main/docs/building.md" class="doc-card">
+        <div class="doc-icon" style="background:#2A7B9B">&#x1F3D7;&#xFE0F;</div>
+        <div><h4>Building</h4><p>Build instructions, feature flags, Windows notes.</p></div>
+      </a>
+    </div>
+  </div>
+</div>
+
+<div class="section-alt" style="text-align:center">
+  <div class="container">
+    <h2>Learn the Codebase</h2>
+    <p class="subtitle">New to the project? Start with the interactive guide.</p>
+    <p style="margin-bottom:24px">A self-contained walkthrough of the architecture, scoring pipeline, and engineering patterns &mdash; with animated diagrams, code explanations, and quizzes.</p>
+    <a href="codebase-course.html" class="btn btn-primary" style="font-size:1.1rem;padding:14px 32px">Open the Interactive Guide</a>
+  </div>
+</div>
+
+<div class="footer">
+  <p>MIT &copy; Jude Payne 2026 &middot; <a href="https://github.com/judepayne/melder">GitHub</a></p>
+</div>
+
+</body>
+</html>
