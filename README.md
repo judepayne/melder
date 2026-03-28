@@ -41,9 +41,9 @@ search facility to prevent your users setting up duplicate data.</p></blockquote
 Both modes use the same scoring pipeline, so a match score means the
 same thing regardless of how it was produced.
 
-## Learn the Codebase
+## Documentation Site
 
-Explore the [interactive codebase guide](https://judepayne.github.io/melder/codebase-course.html) — a self-contained walkthrough of the architecture, scoring pipeline, and engineering patterns with animated diagrams, code explanations, and quizzes.
+**[judepayne.github.io/melder](https://judepayne.github.io/melder/)** — full documentation with quick start, scoring reference, configuration guide, API reference, performance benchmarks, and an [interactive codebase walkthrough](https://judepayne.github.io/melder/codebase-course.html) with animated diagrams, code explanations, and quizzes.
 
 ## Prerequisites
 
@@ -127,23 +127,11 @@ configuration examples, and trade-offs for each method.
 
 ## Documentation
 
-| Page | Description |
-|------|-------------|
-| **[Scoring Methods](docs/scoring.md)** | Detailed reference for each comparison method — exact, fuzzy, embedding, BM25, synonym, numeric. Includes configuration examples and trade-offs. |
-| **[Configuration](docs/configuration.md)** | Complete annotated YAML config reference. Every field, every option, every default. |
-| **[Accuracy & Tuning](docs/accuracy-and-tuning.md)** | Measuring match quality, using `meld tune`, and a worked example showing the journey from 16.5% overlap to near-perfect separation. |
-| **[Batch Mode](docs/batch-mode.md)** | Running `meld run` — output files, SQLite batch mode for large datasets, data formats. |
-| **[Live Mode](docs/live-mode.md)** | Running `meld serve` — storage backends, persistence, WAL, crash recovery. |
-| **[Enroll Mode](docs/enroll-mode.md)** | Running `meld enroll` — single-pool entity resolution for graph-based ER and deduplication. |
-| **[Hooks](docs/hooks.md)** | Pipeline event hooks — run commands on match, review, no-match, and break events. |
-| **[API Reference](docs/api-reference.md)** | HTTP API endpoints — add, remove, match, query, crossmap, review. Request/response examples. |
-| **[CLI Reference](docs/cli-reference.md)** | All CLI commands — validate, run, serve, enroll, tune, cache, review, crossmap. |
-| **[Performance](docs/performance.md)** | Benchmarks for batch and live mode, scaling characteristics, how to run your own benchmarks. |
-| **[Vector Caching](docs/vector-caching.md)** | How embedding caches work, staleness detection, incremental encoding. |
-| **[Building](docs/building.md)** | Build instructions, feature flags, Windows notes. |
-| **[Batch Worked Example](examples/batch/README.md)** | Step-by-step tutorial for batch matching. |
-| **[Live Worked Example](examples/live/README.md)** | Step-by-step tutorial for live mode. |
-| **[Fine-Tuning Guide](vault/ideas/Fine%20Tuning%20Embeddings.md)** | How to fine-tune embedding models on your own data. |
+Browse all documentation on the **[documentation site](https://judepayne.github.io/melder/)**, or jump directly:
+
+[Configuration](docs/configuration.md) | [Scoring Methods](docs/scoring.md) | [Accuracy & Tuning](docs/accuracy-and-tuning.md) | [Batch Mode](docs/batch-mode.md) | [Live Mode](docs/live-mode.md) | [Enroll Mode](docs/enroll-mode.md) | [API Reference](docs/api-reference.md) | [CLI Reference](docs/cli-reference.md) | [Hooks](docs/hooks.md) | [Performance](docs/performance.md) | [Vector Caching](docs/vector-caching.md) | [Building](docs/building.md)
+
+**Tutorials:** [Batch Worked Example](examples/batch/README.md) | [Live Worked Example](examples/live/README.md) | [Fine-Tuning Guide](vault/ideas/Fine%20Tuning%20Embeddings.md)
 
 ## Project structure
 
