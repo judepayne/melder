@@ -1,4 +1,4 @@
-← [Back to README](../README.md) | [Live Mode](live-mode.md) | [Enroll Mode](enroll-mode.md) | [CLI Reference](cli-reference.md)
+← [Back to Index](./) | [Live Mode](live-mode.md) | [Enroll Mode](enroll-mode.md) | [CLI Reference](cli-reference.md)
 
 # Live Mode API Reference
 

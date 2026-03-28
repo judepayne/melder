@@ -1,4 +1,4 @@
-← [Back to README](../README.md) | [Configuration](configuration.md) | [Live Mode](live-mode.md)
+← [Back to Index](./) | [Configuration](configuration.md) | [Live Mode](live-mode.md)
 
 # Batch Mode
 

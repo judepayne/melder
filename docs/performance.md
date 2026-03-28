@@ -1,4 +1,4 @@
-← [Back to README](../README.md) | [Configuration](configuration.md) | [Building](building.md)
+← [Back to Index](./) | [Configuration](configuration.md) | [Building](building.md)
 
 # Performance
 

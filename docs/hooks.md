@@ -1,4 +1,4 @@
-← [Back to README](../README.md) | [Live Mode](live-mode.md) | [Enroll Mode](enroll-mode.md)
+← [Back to Index](./) | [Live Mode](live-mode.md) | [Enroll Mode](enroll-mode.md)
 
 # Pipeline Hooks
 

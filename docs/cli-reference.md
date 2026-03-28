@@ -1,4 +1,4 @@
-← [Back to README](../README.md) | [Configuration](configuration.md) | [API Reference](api-reference.md)
+← [Back to Index](./) | [Configuration](configuration.md) | [API Reference](api-reference.md)
 
 # CLI Reference
 

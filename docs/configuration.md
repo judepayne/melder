@@ -1,4 +1,4 @@
-← [Back to README](../README.md) | [Scoring Methods](scoring.md) | [CLI Reference](cli-reference.md)
+← [Back to Index](./) | [Scoring Methods](scoring.md) | [CLI Reference](cli-reference.md)
 
 # Configuration Reference
 

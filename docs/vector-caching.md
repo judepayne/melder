@@ -1,4 +1,4 @@
-← [Back to README](../README.md) | [Configuration](configuration.md) | [Performance](performance.md)
+← [Back to Index](./) | [Configuration](configuration.md) | [Performance](performance.md)
 
 # How Vector Caching Works
 

@@ -1,4 +1,4 @@
-← [Back to README](../README.md) | [Configuration](configuration.md) | [Accuracy & Tuning](accuracy-and-tuning.md)
+← [Back to Index](./) | [Configuration](configuration.md) | [Accuracy & Tuning](accuracy-and-tuning.md)
 
 # Scoring Methods
 
