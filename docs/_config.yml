@@ -1,0 +1,10 @@
+title: Melder
+description: A high-performance record matching engine written in Rust
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+exclude:
+  - codebase-course.html
+  - index.html

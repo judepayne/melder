@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ page.title | default: site.title }} — Melder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400;1,9..40,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #FAF7F2; --bg-warm: #F5F0E8; --text: #2C2A28; --text-sec: #6B6560;
+  --text-muted: #9E9790; --border: #E5DFD6; --border-light: #EEEBE5;
+  --surface: #FFFFFF; --accent: #D94F30; --accent-hover: #C4432A;
+  --accent-light: #FDEEE9; --code-bg: #1E1E2E; --info: #2A7B9B;
+  --font-display: 'Bricolage Grotesque', Georgia, serif;
+  --font-body: 'DM Sans', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --shadow-sm: 0 1px 2px rgba(44,42,40,0.05);
+  --shadow-md: 0 4px 12px rgba(44,42,40,0.08);
+  --radius: 8px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--font-body); color: var(--text); background: var(--bg); line-height: 1.65;
+  background-image: radial-gradient(ellipse at 20% 50%, rgba(217,79,48,0.03) 0%, transparent 50%);
+}
+
+/* --- Nav bar --- */
+.site-nav {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(250,247,242,0.92); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-light);
+  padding: 0 24px; height: 50px;
+  display: flex; align-items: center; justify-content: space-between;
+  max-width: 100%;
+}
+.site-nav a { text-decoration: none; }
+.nav-home {
+  font-family: var(--font-display); font-weight: 700; font-size: 0.95rem; color: var(--text);
+}
+.nav-home:hover { color: var(--accent); }
+.nav-links { display: flex; gap: 20px; font-size: 0.85rem; }
+.nav-links a { color: var(--text-sec); }
+.nav-links a:hover { color: var(--accent); }
+
+/* --- Content --- */
+.content {
+  max-width: 800px; margin: 0 auto;
+  padding: 48px 24px 80px;
+}
+
+/* --- Typography --- */
+.content h1 {
+  font-family: var(--font-display); font-size: 2.25rem; font-weight: 800;
+  line-height: 1.15; margin-bottom: 8px; color: var(--text);
+  border-bottom: 3px solid var(--accent); padding-bottom: 12px;
+}
+.content h2 {
+  font-family: var(--font-display); font-size: 1.5rem; font-weight: 700;
+  margin-top: 48px; margin-bottom: 16px; color: var(--text);
+  border-bottom: 1px solid var(--border); padding-bottom: 8px;
+}
+.content h3 {
+  font-family: var(--font-display); font-size: 1.2rem; font-weight: 600;
+  margin-top: 32px; margin-bottom: 12px; color: var(--text);
+}
+.content h4 {
+  font-family: var(--font-display); font-size: 1.05rem; font-weight: 600;
+  margin-top: 24px; margin-bottom: 8px; color: var(--text-sec);
+}
+.content p { margin-bottom: 16px; }
+.content ul, .content ol { margin-bottom: 16px; padding-left: 24px; }
+.content li { margin-bottom: 6px; }
+.content li > ul, .content li > ol { margin-top: 6px; margin-bottom: 0; }
+.content a { color: var(--accent); text-decoration: none; }
+.content a:hover { color: var(--accent-hover); text-decoration: underline; }
+.content strong { font-weight: 600; }
+.content hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+
+/* --- Inline code --- */
+.content code {
+  font-family: var(--font-mono); font-size: 0.85em;
+  background: var(--accent-light); color: var(--accent-hover);
+  padding: 2px 6px; border-radius: 4px;
+}
+
+/* --- Code blocks --- */
+.content pre {
+  background: var(--code-bg); color: #CDD6F4;
+  padding: 20px 24px; border-radius: var(--radius);
+  overflow-x: auto; margin-bottom: 20px;
+  box-shadow: var(--shadow-md); line-height: 1.6;
+  font-size: 0.85rem;
+}
+.content pre code {
+  background: none; color: inherit; padding: 0;
+  font-family: var(--font-mono); font-size: inherit;
+}
+
+/* --- Tables --- */
+.content table {
+  width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 0.9rem;
+}
+.content th {
+  font-family: var(--font-display); font-weight: 600; text-align: left;
+  padding: 10px 12px; border-bottom: 2px solid var(--accent); background: var(--bg-warm);
+}
+.content td {
+  padding: 8px 12px; border-bottom: 1px solid var(--border-light);
+}
+.content tr:hover td { background: var(--accent-light); }
+
+/* --- Blockquotes --- */
+.content blockquote {
+  border-left: 4px solid var(--accent); background: var(--accent-light);
+  padding: 12px 20px; margin: 0 0 20px 0; border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--text-sec); font-size: 0.95rem;
+}
+.content blockquote p { margin-bottom: 0; }
+.content blockquote p + p { margin-top: 8px; }
+
+/* --- Images --- */
+.content img { max-width: 100%; height: auto; border-radius: var(--radius); }
+
+/* --- Breadcrumb (existing doc nav links) --- */
+.content > p:first-child a { color: var(--text-muted); font-size: 0.85rem; }
+.content > p:first-child { margin-bottom: 24px; font-size: 0.85rem; color: var(--text-muted); }
+
+/* --- Footer --- */
+.site-footer {
+  text-align: center; padding: 32px 24px; color: var(--text-muted);
+  font-size: 0.8rem; border-top: 1px solid var(--border-light);
+}
+.site-footer a { color: var(--text-sec); text-decoration: none; }
+.site-footer a:hover { color: var(--accent); }
+
+/* --- Scrollbar --- */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+@media (max-width: 640px) {
+  .content h1 { font-size: 1.75rem; }
+  .content h2 { font-size: 1.25rem; }
+  .content { padding: 32px 16px 64px; }
+  .nav-links { gap: 12px; font-size: 0.8rem; }
+}
+</style>
+</head>
+<body>
+
+<nav class="site-nav">
+  <a href="{{ '/' | relative_url }}" class="nav-home">Melder</a>
+  <div class="nav-links">
+    <a href="{{ '/configuration' | relative_url }}">Config</a>
+    <a href="{{ '/scoring' | relative_url }}">Scoring</a>
+    <a href="{{ '/api-reference' | relative_url }}">API</a>
+    <a href="{{ '/performance' | relative_url }}">Performance</a>
+    <a href="{{ '/codebase-course.html' | relative_url }}">Codebase Guide</a>
+    <a href="https://github.com/judepayne/melder">GitHub</a>
+  </div>
+</nav>
+
+<main class="content">
+  {{ content }}
+</main>
+
+<footer class="site-footer">
+  <p>MIT &copy; Jude Payne 2026 &middot; <a href="https://github.com/judepayne/melder">GitHub</a> &middot; <a href="{{ '/' | relative_url }}">Home</a></p>
+</footer>
+
+</body>
+</html>
