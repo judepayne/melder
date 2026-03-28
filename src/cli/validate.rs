@@ -24,6 +24,9 @@ pub fn cmd_validate(config_path: &Path) {
                 .unwrap_or_else(|| "5 (default)".into())
         );
         println!("  vector_backend: {}", cfg.vector_backend);
+        if let Some(es) = cfg.performance.expansion_search {
+            println!("  expansion_search: {}", es);
+        }
         if let Some(pool) = cfg.performance.encoder_pool_size {
             println!("  encoder_pool_size: {}", pool);
         }

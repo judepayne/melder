@@ -107,14 +107,18 @@ struct BlockState {
 }
 
 impl BlockState {
-    fn new(dim: usize, quantization: ScalarKind) -> Result<Self, VectorDBError> {
+    fn new(
+        dim: usize,
+        quantization: ScalarKind,
+        expansion_search: usize,
+    ) -> Result<Self, VectorDBError> {
         let opts = IndexOptions {
             dimensions: dim,
             metric: MetricKind::IP,
             quantization,
             connectivity: 0,  // usearch default (typically 16)
             expansion_add: 0, // usearch default
-            expansion_search: 0,
+            expansion_search,
             multi: false,
         };
         let index = Index::new(&opts).map_err(|e| VectorDBError::Backend(e.to_string()))?;
@@ -144,6 +148,8 @@ pub struct UsearchVectorDB {
     dim: usize,
     /// Usearch vector quantization level (F32, F16, or BF16).
     quantization: ScalarKind,
+    /// HNSW search beam width. 0 = usearch default.
+    expansion_search: usize,
     /// Blocking field pairs for computing block keys.
     blocking_fields: Vec<BlockingFieldPair>,
     /// Whether blocking is enabled.
@@ -184,18 +190,20 @@ impl UsearchVectorDB {
     /// Used in tests and wherever emb_specs are not needed. The text-hash
     /// store will be empty (no-op on upsert).
     pub fn new(dim: usize, blocking_config: Option<&BlockingConfig>) -> Self {
-        Self::new_with_emb_specs(dim, blocking_config, Vec::new(), "f32")
+        Self::new_with_emb_specs(dim, blocking_config, Vec::new(), "f32", 0)
     }
 
     /// Create a new UsearchVectorDB with embedding specs for text hashing.
     ///
     /// Called by `new_index()` in mod.rs when building the combined index.
     /// `quantization` controls the usearch scalar kind for storage/search.
+    /// `expansion_search` sets the HNSW search beam width (0 = usearch default).
     pub fn new_with_emb_specs(
         dim: usize,
         blocking_config: Option<&BlockingConfig>,
         emb_specs: Vec<(String, String, f64)>,
         quantization: &str,
+        expansion_search: usize,
     ) -> Self {
         let (blocking_enabled, blocking_fields) = match blocking_config {
             Some(cfg) if cfg.enabled && !cfg.fields.is_empty() => (true, cfg.fields.clone()),
@@ -204,6 +212,7 @@ impl UsearchVectorDB {
         Self {
             dim,
             quantization: parse_scalar_kind(quantization),
+            expansion_search,
             blocking_fields,
             blocking_enabled,
             block_router: RwLock::new(HashMap::new()),
@@ -230,7 +239,7 @@ impl UsearchVectorDB {
         if let Some(&idx) = router.get(block_key) {
             return Ok(idx);
         }
-        let state = BlockState::new(self.dim, self.quantization)?;
+        let state = BlockState::new(self.dim, self.quantization, self.expansion_search)?;
         let mut blocks = self.blocks.write().unwrap();
         let idx = blocks.len();
         blocks.push(RwLock::new(state));
@@ -671,6 +680,7 @@ impl UsearchVectorDB {
         path: &Path,
         quantization: &str,
         vector_index_mode: &str,
+        expansion_search: usize,
     ) -> Result<Self, VectorDBError> {
         let scalar_kind = parse_scalar_kind(quantization);
         let use_mmap = vector_index_mode == "mmap";
@@ -693,7 +703,7 @@ impl UsearchVectorDB {
                 quantization: scalar_kind,
                 connectivity: 0,
                 expansion_add: 0,
-                expansion_search: 0,
+                expansion_search,
                 multi: false,
             };
             let index = Index::new(&opts).map_err(|e| VectorDBError::Backend(e.to_string()))?;
@@ -751,6 +761,7 @@ impl UsearchVectorDB {
         Ok(Self {
             dim,
             quantization: scalar_kind,
+            expansion_search,
             blocking_fields: manifest.blocking_fields,
             blocking_enabled: manifest.blocking_enabled,
             block_router: RwLock::new(block_router),

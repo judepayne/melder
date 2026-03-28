@@ -424,6 +424,18 @@ pub struct PerformanceConfig {
     /// Has no effect when `vector_backend` is `flat`.
     #[serde(default)]
     pub vector_index_mode: Option<String>,
+    /// HNSW search beam width (`ef` parameter) for the usearch index.
+    ///
+    /// Controls how many graph nodes are explored when searching for the
+    /// top-k nearest neighbors. Higher values improve recall (fewer missed
+    /// true matches) at the cost of slower search.
+    ///
+    /// - `None` or `0` (default): use usearch's built-in default.
+    /// - Typical values: 16–256. Must be >= `ann_candidates`.
+    ///
+    /// Has no effect when `vector_backend` is `flat`.
+    #[serde(default)]
+    pub expansion_search: Option<usize>,
 }
 
 /// Pipeline hook configuration — a single long-running subprocess that

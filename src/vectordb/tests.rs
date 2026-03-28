@@ -685,7 +685,7 @@ mod usearch_block_tests {
 
         db.save(&path).unwrap();
 
-        let loaded = UsearchVectorDB::load(&path, "f32", "load").unwrap();
+        let loaded = UsearchVectorDB::load(&path, "f32", "load", 0).unwrap();
 
         assert_eq!(loaded.len(), n);
         assert_eq!(loaded.dim(), DIM);
@@ -763,7 +763,7 @@ mod usearch_block_tests {
     fn f16_quantization_insert_and_search() {
         // F16 quantization: vectors are stored as half-precision but the API
         // still accepts/returns f32. Search should still find self-matches.
-        let db = UsearchVectorDB::new_with_emb_specs(DIM, None, Vec::new(), "f16");
+        let db = UsearchVectorDB::new_with_emb_specs(DIM, None, Vec::new(), "f16", 0);
 
         let n = 50;
         for i in 0..n {
@@ -793,7 +793,7 @@ mod usearch_block_tests {
 
     #[test]
     fn bf16_quantization_insert_and_search() {
-        let db = UsearchVectorDB::new_with_emb_specs(DIM, None, Vec::new(), "bf16");
+        let db = UsearchVectorDB::new_with_emb_specs(DIM, None, Vec::new(), "bf16", 0);
 
         let n = 50;
         for i in 0..n {
@@ -820,7 +820,7 @@ mod usearch_block_tests {
 
     #[test]
     fn f16_save_and_load_roundtrip() {
-        let db = UsearchVectorDB::new_with_emb_specs(DIM, None, Vec::new(), "f16");
+        let db = UsearchVectorDB::new_with_emb_specs(DIM, None, Vec::new(), "f16", 0);
 
         for i in 0..10 {
             db.upsert(
@@ -836,7 +836,7 @@ mod usearch_block_tests {
         let path = dir.path().join("test_f16.usearch");
         db.save(&path).unwrap();
 
-        let loaded = UsearchVectorDB::load(&path, "f16", "load").unwrap();
+        let loaded = UsearchVectorDB::load(&path, "f16", "load", 0).unwrap();
         assert_eq!(loaded.len(), 10);
 
         // Verify search still works after load.
@@ -866,8 +866,8 @@ mod usearch_block_tests {
         let path = dir.path().join("test_mmap.usearch");
         db.save(&path).unwrap();
 
-        let loaded = UsearchVectorDB::load(&path, "f32", "load").unwrap();
-        let mmaped = UsearchVectorDB::load(&path, "f32", "mmap").unwrap();
+        let loaded = UsearchVectorDB::load(&path, "f32", "load", 0).unwrap();
+        let mmaped = UsearchVectorDB::load(&path, "f32", "mmap", 0).unwrap();
 
         assert_eq!(mmaped.len(), n, "mmap load: wrong record count");
         assert_eq!(mmaped.dim(), DIM, "mmap load: wrong dimension");

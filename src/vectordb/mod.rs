@@ -194,6 +194,7 @@ pub fn new_index(
     #[allow(unused_variables)] blocking_config: Option<&BlockingConfig>,
     emb_specs: &[(String, String, f64)],
     #[allow(unused_variables)] quantization: &str,
+    #[allow(unused_variables)] expansion_search: usize,
 ) -> Box<dyn VectorDB> {
     match backend {
         #[cfg(feature = "usearch")]
@@ -202,6 +203,7 @@ pub fn new_index(
             blocking_config,
             emb_specs.to_vec(),
             quantization,
+            expansion_search,
         )),
         _ => Box::new(flat::FlatVectorDB::new_with_emb_specs(
             dim,
@@ -214,12 +216,14 @@ pub fn new_index(
 ///
 /// `vector_index_mode` controls whether the usearch backend loads the index
 /// fully into memory (`"load"`, default) or memory-maps it (`"mmap"`).
-/// The flat backend ignores this parameter.
+/// `expansion_search` sets the HNSW search beam width (0 = usearch default).
+/// The flat backend ignores these parameters.
 pub fn load_index(
     backend: &str,
     path: &Path,
     #[allow(unused_variables)] quantization: &str,
     #[allow(unused_variables)] vector_index_mode: &str,
+    #[allow(unused_variables)] expansion_search: usize,
 ) -> Result<Box<dyn VectorDB>, VectorDBError> {
     match backend {
         #[cfg(feature = "usearch")]
@@ -227,6 +231,7 @@ pub fn load_index(
             path,
             quantization,
             vector_index_mode,
+            expansion_search,
         )?)),
         _ => Ok(Box::new(flat::FlatVectorDB::load(path)?)),
     }
@@ -400,6 +405,7 @@ pub fn build_or_load_combined_index(
         .vector_index_mode
         .as_deref()
         .unwrap_or("load");
+    let es = config.performance.expansion_search.unwrap_or(0);
     let current_spec_hash = spec_hash(&emb_specs, vq);
     let current_blocking_hash = blocking_hash(&config.blocking);
     let current_model = &config.embeddings.model;
@@ -439,7 +445,7 @@ pub fn build_or_load_combined_index(
         if proceed_to_load && cache_exists {
             // Step 2: Load existing index
             let load_start = Instant::now();
-            match load_index(backend, cache_path, vq, vim) {
+            match load_index(backend, cache_path, vq, vim, es) {
                 Err(e) => {
                     warn!(side = side, error = %e, "combined index cache load failed, rebuilding");
                     // fall through to cold build
@@ -601,7 +607,7 @@ pub fn build_or_load_combined_index(
         "building combined embedding index"
     );
     let build_start = Instant::now();
-    let index = new_index(backend, combined_dim, blocking_config, &emb_specs, vq);
+    let index = new_index(backend, combined_dim, blocking_config, &emb_specs, vq, es);
     let all_ids: Vec<&String> = ids.iter().collect();
 
     encode_and_upsert(
