@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-03-27 (Pipeline hooks + structured logging complete)
+Last updated: 2026-03-28 (expansion_search knob, BM25 batching, tracing spans, live benchmarks, profiling)
 
 ---
 
@@ -262,10 +262,12 @@ bm25_fields: [ {field_a, field_b} ]    # optional; derived from fuzzy/embedding 
 thresholds: { auto_match: 0.85, review_floor: 0.60 }
 
 performance:
-  encoder_pool_size: 4
-  vector_index_mode: load | mmap       # mmap = read-only, batch only, OS-paged
-  vector_quantization: f32 | f16 | bf16
-  encoder_batch_wait_ms: 0             # >0 only at c≥20 with large models
+   encoder_pool_size: 4
+   vector_index_mode: load | mmap       # mmap = read-only, batch only, OS-paged
+   vector_quantization: f32 | f16 | bf16
+   encoder_batch_wait_ms: 0             # >0 only at c≥20 with large models
+   expansion_search: 0                  # HNSW ef parameter (usearch); 0 = usearch default
+   bm25_commit_batch_size: 1             # Buffer N BM25 upserts before commit; amortizes cost
 
 top_n: 5          # ANN candidates per B record
 ann_candidates: 50
@@ -291,8 +293,9 @@ Full tables: `vault/architecture/Performance Baselines.md`
 | Batch, SQLite columnar, 10k×10k | 1,420 rec/s (~10-12GB RAM) |
 | Live, usearch, 10k×10k warm (c=10) | 1,558 req/s, p95 25.6ms |
 | Live, SQLite, 10k×10k warm (c=10) | 1,395 req/s, p95 13.6ms, 4× faster warm start |
+| Live, usearch+BM25 (batch_size=100), 10k×10k (c=10) | 1,473 req/s (3.2× vs batch_size=1) |
 
-Production: usearch backend; `quantized: true` (2× encoding, negligible quality loss); `vector_quantization: f16` (43% smaller cache). Batch endpoint sweet spot: size 50 (445 req/s, 1.8× vs single).
+Production: usearch backend; `quantized: true` (2× encoding, negligible quality loss); `vector_quantization: f16` (43% smaller cache); `bm25_commit_batch_size: 100` (3.2× live throughput with BM25). Batch endpoint sweet spot: size 50 (445 req/s, 1.8× vs single).
 
 Accuracy (10k×10k, embeddings + exact prefilter): precision 93.3%, recall vs ceiling 92.8%, 441 FP, blocking ceiling 6,863 of 7,000.
 
@@ -465,6 +468,16 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 **HuggingFace Hub model download** — Added `hf-hub` dependency. `EncoderPool::new()` auto-downloads models with `/` in the name from HuggingFace Hub (e.g. `themelder/arctic-embed-xs-entity-resolution`). Local paths detected by heuristic (absolute, `./`, `../`, `.onnx` suffix, or resolves on disk).
 
 **Pipeline hooks** — Single long-running subprocess receiving NDJSON events on stdin. Config: `hooks: { command: "python hook.py" }` in both match and enroll mode configs. 4 event types: `on_confirm`, `on_review`, `on_nomatch`, `on_break`. `HookEvent` enum in `src/hooks/mod.rs` with custom JSON serialization. Hook writer task in `src/hooks/writer.rs` with subprocess lifecycle, exponential backoff respawn (1s-60s), disable after 5 consecutive failures. Non-blocking: scoring thread uses `try_send` on mpsc channel (~10ns), dedicated writer task handles pipe I/O. 6 injection points in `src/session/mod.rs` (2× on_confirm auto, 1× on_confirm manual, 1× on_review, 1× on_nomatch, 1× on_break). Platform dispatch: `sh -c` on Unix, `cmd /C` on Windows. Validation: empty command rejected. 392 tests pass, zero clippy warnings. Full docs page at `docs/hooks.md` with example Python script. Design spec at `HOOK_DESIGN.md`.
+
+**expansion_search config knob** — Added `performance.expansion_search` (HNSW ef parameter) as a configurable field for the usearch backend. Default 0 (usearch default). Threaded through config → vectordb → usearch_backend. Documented in docs/configuration.md.
+
+**BM25 commit batching** — Added `bm25_commit_batch_size` config flag (default: 1). Buffers N BM25 upserts before committing the Tantivy index, amortizing the expensive commit cost. At batch_size=100, live throughput improved from 461 to 1,473 req/s (3.2×) on 10k×10k with 50% embedding + 50% BM25. Documented in docs/configuration.md with trade-off analysis.
+
+**Tracing spans** — Added lightweight info_span tracing at hot-path boundaries: upsert_record, encode_combined, onnx_encode, bm25_upsert, bm25_commit, blocking_query, score_pool, ann_candidates, bm25_candidates, full_scoring, claim_loop. Near-zero cost when not collecting.
+
+**New benchmark** — Added benchmarks/live/10kx10k_inject50k_usearch/ with resource monitoring (CPU/GPU/memory via psutil and ioreg). Uses Arctic-embed-xs + 50% BM25 scoring config.
+
+**Profiling findings** — CPU profiling via macOS `sample` command revealed BM25 commit_if_dirty was 40% of CPU time under load (tantivy segment finalization, FST construction, GC, lock acquisition). Encoding was 47%. Scoring pipeline was only 12%. This led directly to the batching optimization.
 
 ### In Progress
 

@@ -41,6 +41,10 @@ search facility to prevent your users setting up duplicate data.</p></blockquote
 Both modes use the same scoring pipeline, so a match score means the
 same thing regardless of how it was produced.
 
+## Learn the Codebase
+
+Explore the [interactive codebase guide](https://judepayne.github.io/melder/codebase-course.html) — a self-contained walkthrough of the architecture, scoring pipeline, and engineering patterns with animated diagrams, code explanations, and quizzes.
+
 ## Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install) 1.85 or later
