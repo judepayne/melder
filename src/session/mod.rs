@@ -10,9 +10,9 @@ use std::time::Instant;
 
 use tracing::{info_span, warn};
 
+use crate::bm25::scorer::normalise_bm25;
 use crate::error::SessionError;
 use crate::matching::pipeline;
-use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::live::{LiveMatchState, ReviewEntry, review_queue_key};
 use crate::state::upsert_log::WalEvent;
@@ -280,8 +280,9 @@ impl Session {
 
     /// Upsert a record into the live state and attempt matching.
     ///
-    /// Encodes the combined embedding vector, stores it in the combined index,
-    /// then performs insertion and scoring.
+    /// Encodes the combined embedding vector in parallel with BM25/synonym
+    /// upserts and blocking query via `rayon::scope`. After the join, inserts
+    /// the vector, runs ANN search, and scores candidates.
     ///
     /// When an `EncoderCoordinator` is configured, encoding is batched with
     /// other concurrent requests via the coordinator (requires a tokio runtime
@@ -306,31 +307,22 @@ impl Session {
                 field: id_field.clone(),
             })?;
 
-        // Encode and store the combined embedding vector, unless the
-        // embedding fields haven't changed (text-hash skip).
+        // Check if encoding is needed (text-hash skip).
         let emb_specs = &self.emb_specs;
-        if !emb_specs.is_empty() {
-            let this_side = self.state.side(side);
-            let needs_encoding = match this_side.combined_index {
+        let needs_encoding = if emb_specs.is_empty() {
+            false
+        } else {
+            match self.state.side(side).combined_index {
                 Some(ref idx) => {
                     let current_hash =
                         crate::vectordb::texthash::compute_text_hash(&record, emb_specs, side);
                     idx.text_hash_for(&id) != Some(current_hash)
                 }
                 None => true,
-            };
-
-            if needs_encoding {
-                let combined_vec = self.encode_combined(&record, emb_specs, is_a_side)?;
-                if !combined_vec.is_empty()
-                    && let Some(ref idx) = this_side.combined_index
-                {
-                    let _ = idx.upsert(&id, &combined_vec, &record, side);
-                }
             }
-        }
+        };
 
-        self.upsert_record_inner(side, record)
+        self.upsert_record_inner(side, record, needs_encoding, is_a_side)
     }
 
     /// Encode a record's embedding fields into a combined vector.
@@ -386,12 +378,14 @@ impl Session {
         }
     }
 
-    /// Upsert a record whose per-field vectors have already been stored in
-    /// the combined index. Handles insertion, crossmap management, and scoring.
+    /// Upsert a record, running encoding in parallel with BM25/synonym/blocking
+    /// work via `rayon::scope`. Handles insertion, crossmap management, and scoring.
     fn upsert_record_inner(
         &self,
         side: Side,
         record: Record,
+        needs_encoding: bool,
+        is_a_side: bool,
     ) -> Result<UpsertResponse, SessionError> {
         let config = &self.state.config;
         let store = &self.state.store;
@@ -471,181 +465,242 @@ impl Session {
         // 6. Update blocking index
         store.blocking_insert(side, &id, &record);
 
-        // 6b. Update BM25 index
-        if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
-            let _span = info_span!("bm25_upsert").entered();
-            let mut idx = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
-            idx.upsert(&id, &record);
-        }
+        // 6b-6c + 8 + 9: Parallel pipeline.
+        //
+        // Encoding (4-6ms) runs in parallel with BM25/synonym upserts,
+        // common_id check, and blocking query (<0.5ms combined).
+        // After the join: vector index upsert, BM25 scoring, score_pool.
 
-        // 6c. Update synonym index
-        if let Some(ref syn_mtx) = self.state.side(side).synonym_index {
-            let mut idx = syn_mtx.write().unwrap_or_else(|e| e.into_inner());
-            idx.upsert(&id, &record, side, &config.synonym_fields);
-        }
+        let top_n = config.top_n.unwrap_or(5);
+        let ann_candidates = config.ann_candidates.unwrap_or(50);
+        let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
+        let opp_side = self.state.opposite_side(side);
+        let this_side = self.state.side(side);
+        let emb_specs = &self.emb_specs;
 
-        // 8. Update common_id_index and check for common ID match
+        // Extract references for rayon closures (avoid borrowing &self).
+        let this_bm25 = this_side.bm25_index.as_ref();
+        let opp_bm25 = opp_side.bm25_index.as_ref();
+        let this_syn = this_side.synonym_index.as_ref();
+        let syn_fields = &config.synonym_fields;
+        let blocking_enabled = config.blocking.enabled;
         let this_cid_field = match side {
             Side::A => config.datasets.a.common_id_field.as_deref(),
             Side::B => config.datasets.b.common_id_field.as_deref(),
         };
-        if let Some(cid_field) = this_cid_field {
-            // Update this side's common_id_index
-            if let Some(cid_val) = record.get(cid_field) {
-                let cid_val = cid_val.trim();
-                if !cid_val.is_empty() {
-                    store.common_id_insert(side, cid_val, &id);
 
-                    // Check opposite side for a matching common ID
-                    if let Some(opp_id) = store.common_id_lookup(opp, cid_val) {
-                        // Break any existing crossmap for either record.
-                        if let Some(old_opp) = match side {
-                            Side::A => self.state.crossmap.take_a(&id),
-                            Side::B => self.state.crossmap.take_b(&id),
-                        } {
-                            store.mark_unmatched(opp, &old_opp);
-                        }
-                        if let Some(old_this) = match side {
-                            Side::A => self.state.crossmap.take_b(&opp_id),
-                            Side::B => self.state.crossmap.take_a(&opp_id),
-                        } {
-                            store.mark_unmatched(side, &old_this);
-                        }
+        // --- Encoding + index updates + blocking query ---
+        //
+        // When encoding is needed (4-6ms), run it in parallel with the
+        // fast work (BM25/synonym upserts + blocking query, <0.5ms) via
+        // rayon::scope. When encoding is skipped (text-hash hit), run
+        // everything sequentially to avoid rayon overhead.
+        let mut combined_vec: Vec<f32> = Vec::new();
+        let mut blocked_ids: Vec<String> = Vec::new();
 
-                        // Create the common ID match
-                        let (a_id, b_id) = match side {
-                            Side::A => (id.clone(), opp_id.clone()),
-                            Side::B => (opp_id.clone(), id.clone()),
-                        };
-                        self.state.crossmap.add(&a_id, &b_id);
-                        store.mark_matched(Side::A, &a_id);
-                        store.mark_matched(Side::B, &b_id);
+        if needs_encoding {
+            // Parallel path: encoding dominates, hide fast work underneath.
+            let record_ref = &record;
+            let id_ref = id.as_str();
+            let mut encode_error: Option<SessionError> = None;
 
-                        if let Err(e) = self.state.wal.append(&WalEvent::CrossMapConfirm {
-                            a_id: a_id.clone(),
-                            b_id: b_id.clone(),
-                            score: Some(1.0),
-                        }) {
-                            warn!(error = %e, "WAL append failed for crossmap confirm");
-                        }
-                        self.state.mark_crossmap_dirty();
-
-                        // Hook: on_confirm (common_id auto-match)
-                        self.send_hook(crate::hooks::HookEvent::Confirm {
-                            a_id: a_id.clone(),
-                            b_id: b_id.clone(),
-                            score: 1.0,
-                            source: "auto".into(),
-                            field_scores: vec![],
-                        });
-
-                        let opp_record = store.get(opp, &opp_id);
-                        let match_entry = MatchEntry {
-                            id: opp_id,
-                            score: 1.0,
-                            classification: "auto".to_string(),
-                            field_scores: vec![],
-                            matched_record: opp_record,
-                        };
-
-                        self.upsert_count.fetch_add(1, Ordering::Relaxed);
-
-                        return Ok(UpsertResponse {
-                            status: status.to_string(),
-                            id,
-                            side,
-                            classification: "auto".to_string(),
-                            from_crossmap: false,
-                            matches: vec![match_entry],
-                            old_mapping,
-                        });
+            rayon::scope(|s| {
+                let combined_out = &mut combined_vec;
+                let encode_err = &mut encode_error;
+                s.spawn(move |_| {
+                    let _span = info_span!("encode_combined").entered();
+                    match self.encode_combined(record_ref, emb_specs, is_a_side) {
+                        Ok(vec) => *combined_out = vec,
+                        Err(e) => *encode_err = Some(e),
                     }
+                });
+
+                let blocked_out = &mut blocked_ids;
+                s.spawn(move |_| {
+                    if let Some(bm25) = this_bm25 {
+                        let _span = info_span!("bm25_upsert").entered();
+                        bm25.upsert(id_ref, record_ref);
+                    }
+                    if let Some(syn_mtx) = this_syn {
+                        let mut idx = syn_mtx.write().unwrap_or_else(|e| e.into_inner());
+                        idx.upsert(id_ref, record_ref, side, syn_fields);
+                    }
+                    let _span = info_span!("blocking_query").entered();
+                    *blocked_out = if blocking_enabled {
+                        store.blocking_query(record_ref, side, opp)
+                    } else {
+                        store.ids(opp)
+                    };
+                });
+            });
+
+            if let Some(e) = encode_error {
+                return Err(e);
+            }
+        } else {
+            // Sequential path: no encoding, avoid rayon overhead.
+            if let Some(bm25) = this_bm25 {
+                let _span = info_span!("bm25_upsert").entered();
+                bm25.upsert(&id, &record);
+            }
+            if let Some(syn_mtx) = this_syn {
+                let mut idx = syn_mtx.write().unwrap_or_else(|e| e.into_inner());
+                idx.upsert(&id, &record, side, syn_fields);
+            }
+            let _span = info_span!("blocking_query").entered();
+            blocked_ids = if blocking_enabled {
+                store.blocking_query(&record, side, opp)
+            } else {
+                store.ids(opp)
+            };
+        }
+
+        // --- Common ID check (must be sequential — has side effects) ---
+        if let Some(cid_field) = this_cid_field
+            && let Some(cid_val) = record.get(cid_field)
+        {
+            let cid_val = cid_val.trim();
+            if !cid_val.is_empty() {
+                store.common_id_insert(side, cid_val, &id);
+
+                if let Some(opp_id) = store.common_id_lookup(opp, cid_val) {
+                    if let Some(old_opp) = match side {
+                        Side::A => self.state.crossmap.take_a(&id),
+                        Side::B => self.state.crossmap.take_b(&id),
+                    } {
+                        store.mark_unmatched(opp, &old_opp);
+                    }
+                    if let Some(old_this) = match side {
+                        Side::A => self.state.crossmap.take_b(&opp_id),
+                        Side::B => self.state.crossmap.take_a(&opp_id),
+                    } {
+                        store.mark_unmatched(side, &old_this);
+                    }
+
+                    let (a_id, b_id) = match side {
+                        Side::A => (id.clone(), opp_id.clone()),
+                        Side::B => (opp_id.clone(), id.clone()),
+                    };
+                    self.state.crossmap.add(&a_id, &b_id);
+                    store.mark_matched(Side::A, &a_id);
+                    store.mark_matched(Side::B, &b_id);
+
+                    if let Err(e) = self.state.wal.append(&WalEvent::CrossMapConfirm {
+                        a_id: a_id.clone(),
+                        b_id: b_id.clone(),
+                        score: Some(1.0),
+                    }) {
+                        warn!(error = %e, "WAL append failed for crossmap confirm");
+                    }
+                    self.state.mark_crossmap_dirty();
+
+                    self.send_hook(crate::hooks::HookEvent::Confirm {
+                        a_id: a_id.clone(),
+                        b_id: b_id.clone(),
+                        score: 1.0,
+                        source: "auto".into(),
+                        field_scores: vec![],
+                    });
+
+                    let opp_record = store.get(opp, &opp_id);
+                    let match_entry = MatchEntry {
+                        id: opp_id,
+                        score: 1.0,
+                        classification: "auto".to_string(),
+                        field_scores: vec![],
+                        matched_record: opp_record,
+                    };
+
+                    self.upsert_count.fetch_add(1, Ordering::Relaxed);
+
+                    return Ok(UpsertResponse {
+                        status: status.to_string(),
+                        id,
+                        side,
+                        classification: "auto".to_string(),
+                        from_crossmap: false,
+                        matches: vec![match_entry],
+                        old_mapping,
+                    });
                 }
             }
         }
 
-        // 9. Pipeline: blocking → candidate selection → full scoring
-        let top_n = config.top_n.unwrap_or(5);
-        let blocked_ids: Vec<String> = {
-            let _span = info_span!("blocking_query").entered();
-            if config.blocking.enabled {
-                store.blocking_query(&record, side, opp)
-            } else {
-                store.ids(opp)
-            }
+        // --- Sequential tail (after parallel join) ---
+
+        // Vector index upsert (needs combined_vec from branch 1).
+        if !combined_vec.is_empty()
+            && let Some(ref idx) = this_side.combined_index
+        {
+            let _ = idx.upsert(&id, &combined_vec, &record, side);
+        }
+
+        // Fetch the query combined vec: use freshly encoded vec if available,
+        // otherwise read from the index (text-hash skip case).
+        let query_combined_vec = if !combined_vec.is_empty() {
+            combined_vec
+        } else {
+            this_side
+                .combined_index
+                .as_ref()
+                .and_then(|idx| idx.get(&id).ok().flatten())
+                .unwrap_or_default()
         };
 
-        // Fetch the query combined vec from this side's index.
-        let this_side = self.state.side(side);
-        let opp_side = self.state.opposite_side(side);
-        let query_combined_vec: Vec<f32> = this_side
-            .combined_index
-            .as_ref()
-            .and_then(|idx| idx.get(&id).ok().flatten())
-            .unwrap_or_default();
-        let ann_candidates = config.ann_candidates.unwrap_or(50);
-        let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
+        // BM25 candidate generation (needs blocked_ids from branch 2).
+        let (bm25_cand_ids, bm25_scores_map) = if let Some(opp_bm25) = opp_bm25 {
+            let _span = info_span!("bm25_score").entered();
+            let query_text = opp_bm25.query_text_for(&record, side);
+            let self_score = opp_bm25.analytical_self_score(&query_text);
+            let raw_results =
+                opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n, &record, side);
+            let scored: Vec<(String, f64)> = raw_results
+                .into_iter()
+                .map(|(cid, raw)| {
+                    let norm = normalise_bm25(raw, self_score);
+                    (cid, norm)
+                })
+                .collect();
+            let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
+            let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
+            (ids, map)
+        } else {
+            (Vec::new(), std::collections::HashMap::new())
+        };
 
-        // Acquire opposite-side synonym index read lock (if configured).
+        // Synonym candidate generation.
         let opp_syn_guard = opp_side
             .synonym_index
             .as_ref()
             .map(|mtx| mtx.read().unwrap_or_else(|e| e.into_inner()));
-
-        // Build BM25 context from opposite side's index.
-        // Commit buffered writes if the batch threshold has been reached
-        // (write lock, brief), then query under a read lock so concurrent
-        // requests can score in parallel.
-        let bm25_batch = config.bm25_commit_batch_size.unwrap_or(1);
-        let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
-            // Brief write lock for batched commit
-            {
-                let _span = info_span!("bm25_commit").entered();
-                let mut w = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
-                w.commit_if_ready(bm25_batch);
+        let synonym_cand_ids = if !syn_fields.is_empty() {
+            if let Some(ref guard) = opp_syn_guard {
+                pipeline::synonym_candidate_stage(guard, &record, side, syn_fields)
+            } else {
+                Vec::new()
             }
-            // Read lock for query — concurrent readers allowed
-            let guard = opp_bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
-            let query_text = guard.query_text_for(&record, side);
-            let ctx = Bm25Ctx::new(&guard, query_text);
-            let _span = info_span!("score_pool").entered();
-            pipeline::score_pool(
-                &id,
-                &record,
-                side,
-                &query_combined_vec,
-                store.as_ref(),
-                opp,
-                opp_side.combined_index.as_deref(),
-                &blocked_ids,
-                config,
-                ann_candidates,
-                bm25_candidates_n,
-                top_n,
-                Some(ctx),
-                opp_syn_guard.as_deref(),
-                self.state.synonym_dictionary.as_deref(),
-            )
         } else {
-            let _span = info_span!("score_pool").entered();
-            pipeline::score_pool(
-                &id,
-                &record,
-                side,
-                &query_combined_vec,
-                store.as_ref(),
-                opp,
-                opp_side.combined_index.as_deref(),
-                &blocked_ids,
-                config,
-                ann_candidates,
-                bm25_candidates_n,
-                top_n,
-                None,
-                opp_syn_guard.as_deref(),
-                self.state.synonym_dictionary.as_deref(),
-            )
+            Vec::new()
         };
+
+        let _span = info_span!("score_pool").entered();
+        let results = pipeline::score_pool(
+            &id,
+            &record,
+            side,
+            &query_combined_vec,
+            store.as_ref(),
+            opp,
+            opp_side.combined_index.as_deref(),
+            &blocked_ids,
+            config,
+            ann_candidates,
+            top_n,
+            &bm25_cand_ids,
+            &bm25_scores_map,
+            &synonym_cand_ids,
+            self.state.synonym_dictionary.as_deref(),
+        );
 
         // 10. Claim loop: try candidates in ranked order.
         let _span = info_span!("claim_loop").entered();
@@ -790,10 +845,9 @@ impl Session {
             let _ = idx.remove(id);
         }
 
-        // Remove from BM25 index
-        if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
-            let mut idx = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
-            idx.remove(id);
+        // Remove from BM25 index (SimpleBm25: lock-free)
+        if let Some(ref bm25) = self.state.side(side).bm25_index {
+            bm25.remove(id);
         }
 
         // Remove from synonym index
@@ -848,40 +902,33 @@ impl Session {
         };
         let id = record.get(id_field).cloned().unwrap_or_default();
 
-        // Encode and store combined embedding vector, with text-hash skip.
+        // Check if encoding is needed (text-hash skip).
         let emb_specs = &self.emb_specs;
-        if !emb_specs.is_empty() {
-            let this_side = self.state.side(side);
-            let needs_encoding = match this_side.combined_index {
+        let needs_encoding = if emb_specs.is_empty() {
+            false
+        } else {
+            match self.state.side(side).combined_index {
                 Some(ref idx) => {
                     let current_hash =
                         crate::vectordb::texthash::compute_text_hash(&record, emb_specs, side);
                     idx.text_hash_for(&id) != Some(current_hash)
                 }
                 None => true,
-            };
-
-            if needs_encoding {
-                let combined_vec = self.encode_combined(&record, emb_specs, is_a_side)?;
-                if !combined_vec.is_empty() {
-                    let this_side = self.state.side(side);
-                    if let Some(ref idx) = this_side.combined_index {
-                        let _ = idx.upsert(&id, &combined_vec, &record, side);
-                    }
-                }
             }
-        }
+        };
 
-        self.try_match_inner(side, record, &id)
+        self.try_match_inner(side, record, &id, needs_encoding, is_a_side)
     }
 
-    /// Try matching a record whose per-field vectors are already in the
-    /// combined index (read-only scoring).
+    /// Try matching a record, running encoding in parallel with the blocking
+    /// query via `rayon::scope` (read-only — no store/BM25/synonym upserts).
     fn try_match_inner(
         &self,
         side: Side,
         record: Record,
         id: &str,
+        needs_encoding: bool,
+        is_a_side: bool,
     ) -> Result<MatchResponse, SessionError> {
         let config = &self.state.config;
         let store = &self.state.store;
@@ -895,7 +942,6 @@ impl Session {
         };
 
         if let Some(paired_id) = existing {
-            // Return existing match from crossmap
             let matched_record = store.get(opp, &paired_id);
 
             let entry = MatchEntry {
@@ -918,77 +964,126 @@ impl Session {
             });
         }
 
-        // Pipeline: blocking → candidate selection → full scoring
+        // --- Parallel branches: encode vs blocking query ---
         let top_n = config.top_n.unwrap_or(5);
-        let blocked_ids: Vec<String> = if config.blocking.enabled {
-            store.blocking_query(&record, side, opp)
-        } else {
-            store.ids(opp)
-        };
-
-        let this_side = self.state.side(side);
-        // Fetch the query combined vec from this side's index.
-        let query_combined_vec: Vec<f32> = this_side
-            .combined_index
-            .as_ref()
-            .and_then(|idx| idx.get(id).ok().flatten())
-            .unwrap_or_default();
         let ann_candidates = config.ann_candidates.unwrap_or(50);
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
+        let this_side = self.state.side(side);
+        let opp_bm25 = opp_side.bm25_index.as_ref();
+        let emb_specs = &self.emb_specs;
+        let syn_fields = &config.synonym_fields;
+        let blocking_enabled = config.blocking.enabled;
 
-        // Acquire opposite-side synonym index read lock (if configured).
+        let mut combined_vec: Vec<f32> = Vec::new();
+        let mut blocked_ids: Vec<String> = Vec::new();
+
+        if needs_encoding {
+            let record_ref = &record;
+            let mut encode_error: Option<SessionError> = None;
+
+            rayon::scope(|s| {
+                let combined_out = &mut combined_vec;
+                let encode_err = &mut encode_error;
+                s.spawn(move |_| {
+                    let _span = info_span!("encode_combined").entered();
+                    match self.encode_combined(record_ref, emb_specs, is_a_side) {
+                        Ok(vec) => *combined_out = vec,
+                        Err(e) => *encode_err = Some(e),
+                    }
+                });
+
+                let blocked_out = &mut blocked_ids;
+                s.spawn(move |_| {
+                    let _span = info_span!("blocking_query").entered();
+                    *blocked_out = if blocking_enabled {
+                        store.blocking_query(record_ref, side, opp)
+                    } else {
+                        store.ids(opp)
+                    };
+                });
+            });
+
+            if let Some(e) = encode_error {
+                return Err(e);
+            }
+        } else {
+            let _span = info_span!("blocking_query").entered();
+            blocked_ids = if blocking_enabled {
+                store.blocking_query(&record, side, opp)
+            } else {
+                store.ids(opp)
+            };
+        }
+
+        // --- Sequential tail ---
+        if !combined_vec.is_empty()
+            && let Some(ref idx) = this_side.combined_index
+        {
+            let _ = idx.upsert(id, &combined_vec, &record, side);
+        }
+
+        let query_combined_vec = if !combined_vec.is_empty() {
+            combined_vec
+        } else {
+            this_side
+                .combined_index
+                .as_ref()
+                .and_then(|idx| idx.get(id).ok().flatten())
+                .unwrap_or_default()
+        };
+
+        // BM25 candidate generation (needs blocked_ids).
+        let (bm25_cand_ids, bm25_scores_map) = if let Some(opp_bm25) = opp_bm25 {
+            let query_text = opp_bm25.query_text_for(&record, side);
+            let self_score = opp_bm25.analytical_self_score(&query_text);
+            let raw_results =
+                opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n, &record, side);
+            let scored: Vec<(String, f64)> = raw_results
+                .into_iter()
+                .map(|(cid, raw)| {
+                    let norm = normalise_bm25(raw, self_score);
+                    (cid, norm)
+                })
+                .collect();
+            let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
+            let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
+            (ids, map)
+        } else {
+            (Vec::new(), std::collections::HashMap::new())
+        };
+
+        // Synonym candidate generation.
         let opp_syn_guard = opp_side
             .synonym_index
             .as_ref()
             .map(|mtx| mtx.read().unwrap_or_else(|e| e.into_inner()));
-
-        // Build BM25 context from opposite side's index.
-        // Commit any buffered writes first (write lock, brief), then
-        // query under a read lock so concurrent requests can score in parallel.
-        let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
-            {
-                let mut w = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
-                w.commit_if_dirty();
+        let synonym_cand_ids = if !syn_fields.is_empty() {
+            if let Some(ref guard) = opp_syn_guard {
+                pipeline::synonym_candidate_stage(guard, &record, side, syn_fields)
+            } else {
+                Vec::new()
             }
-            let guard = opp_bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
-            let query_text = guard.query_text_for(&record, side);
-            let ctx = Bm25Ctx::new(&guard, query_text);
-            pipeline::score_pool(
-                id,
-                &record,
-                side,
-                &query_combined_vec,
-                store.as_ref(),
-                opp,
-                opp_side.combined_index.as_deref(),
-                &blocked_ids,
-                config,
-                ann_candidates,
-                bm25_candidates_n,
-                top_n,
-                Some(ctx),
-                opp_syn_guard.as_deref(),
-                self.state.synonym_dictionary.as_deref(),
-            )
         } else {
-            pipeline::score_pool(
-                id,
-                &record,
-                side,
-                &query_combined_vec,
-                store.as_ref(),
-                opp,
-                opp_side.combined_index.as_deref(),
-                &blocked_ids,
-                config,
-                ann_candidates,
-                bm25_candidates_n,
-                top_n,
-                None,
-                opp_syn_guard.as_deref(),
-                self.state.synonym_dictionary.as_deref(),
-            )
+            Vec::new()
         };
+
+        let results = pipeline::score_pool(
+            id,
+            &record,
+            side,
+            &query_combined_vec,
+            store.as_ref(),
+            opp,
+            opp_side.combined_index.as_deref(),
+            &blocked_ids,
+            config,
+            ann_candidates,
+            top_n,
+            &bm25_cand_ids,
+            &bm25_scores_map,
+            &synonym_cand_ids,
+            self.state.synonym_dictionary.as_deref(),
+        );
 
         let classification = results
             .first()
@@ -1275,7 +1370,7 @@ impl Session {
         // 3. Insert + score each record sequentially
         let mut results = Vec::with_capacity(records.len());
         for record in records {
-            let resp = self.upsert_record_inner(side, record);
+            let resp = self.upsert_record_inner(side, record, false, side == Side::A);
             match resp {
                 Ok(r) => results.push(r),
                 Err(e) => {
@@ -1370,7 +1465,7 @@ impl Session {
         // 3. Score each record sequentially
         let mut results = Vec::with_capacity(records.len());
         for (record, rec_id) in records.into_iter().zip(ids.iter()) {
-            let resp = self.try_match_inner(side, record, rec_id);
+            let resp = self.try_match_inner(side, record, rec_id, false, side == Side::A);
             match resp {
                 Ok(r) => results.push(r),
                 Err(e) => {
@@ -1609,53 +1704,54 @@ impl Session {
 
         let synonym_dict = self.state.synonym_dictionary.as_deref();
 
-        // Build BM25 context. Commit buffered writes if batch threshold
-        // reached (brief write lock), then query under read lock for concurrency.
-        let bm25_batch = config.bm25_commit_batch_size.unwrap_or(1);
-        let results = if let Some(ref bm25_mtx) = pool_state.bm25_index {
-            {
-                let mut w = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
-                w.commit_if_ready(bm25_batch);
-            }
-            let guard = bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
-            let query_text = guard.query_text_for(&record, side);
-            let ctx = Bm25Ctx::new(&guard, query_text);
-            pipeline::score_pool(
-                &id,
-                &record,
-                side,
-                &combined_vec,
-                store.as_ref(),
-                side, // pool_side = same side
-                pool_state.combined_index.as_deref(),
-                &blocked_ids,
-                config,
-                ann_candidates,
-                bm25_candidates,
-                top_n,
-                Some(ctx),
-                syn_guard.as_deref(),
-                synonym_dict,
-            )
+        // BM25 candidate generation (SimpleBm25: lock-free, no commit).
+        let (bm25_cand_ids, bm25_scores_map) = if let Some(ref pool_bm25) = pool_state.bm25_index {
+            let query_text = pool_bm25.query_text_for(&record, side);
+            let self_score = pool_bm25.analytical_self_score(&query_text);
+            let raw_results =
+                pool_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates, &record, side);
+            let scored: Vec<(String, f64)> = raw_results
+                .into_iter()
+                .map(|(cid, raw)| {
+                    let norm = normalise_bm25(raw, self_score);
+                    (cid, norm)
+                })
+                .collect();
+            let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
+            let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
+            (ids, map)
         } else {
-            pipeline::score_pool(
-                &id,
-                &record,
-                side,
-                &combined_vec,
-                store.as_ref(),
-                side, // pool_side = same side
-                pool_state.combined_index.as_deref(),
-                &blocked_ids,
-                config,
-                ann_candidates,
-                bm25_candidates,
-                top_n,
-                None,
-                syn_guard.as_deref(),
-                synonym_dict,
-            )
+            (Vec::new(), std::collections::HashMap::new())
         };
+
+        // Synonym candidate generation.
+        let synonym_cand_ids = if !config.synonym_fields.is_empty() {
+            if let Some(ref guard) = syn_guard {
+                pipeline::synonym_candidate_stage(guard, &record, side, &config.synonym_fields)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        let results = pipeline::score_pool(
+            &id,
+            &record,
+            side,
+            &combined_vec,
+            store.as_ref(),
+            side, // pool_side = same side
+            pool_state.combined_index.as_deref(),
+            &blocked_ids,
+            config,
+            ann_candidates,
+            top_n,
+            &bm25_cand_ids,
+            &bm25_scores_map,
+            &synonym_cand_ids,
+            synonym_dict,
+        );
 
         // 3. Add record to pool
         // Handle upsert: remove old blocking entry if exists
@@ -1673,9 +1769,8 @@ impl Session {
         // Update blocking index
         store.blocking_insert(side, &id, &record);
 
-        // Update BM25 index
-        if let Some(ref bm25_lock) = pool_state.bm25_index {
-            let mut bm25 = bm25_lock.write().unwrap_or_else(|e| e.into_inner());
+        // Update BM25 index (SimpleBm25: lock-free, instant visibility)
+        if let Some(ref bm25) = pool_state.bm25_index {
             bm25.upsert(&id, &record);
         }
 

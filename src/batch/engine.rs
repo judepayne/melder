@@ -12,11 +12,11 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
+use crate::bm25::scorer::normalise_bm25;
 use crate::config::Config;
 use crate::crossmap::CrossMapOps;
 use crate::error::MelderError;
 use crate::matching::pipeline;
-use crate::matching::pipeline::Bm25Ctx;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::store::RecordStore;
 use crate::vectordb::VectorDB;
@@ -234,48 +234,28 @@ pub fn run_batch(
     let top_n = config.top_n.unwrap_or(5);
 
     // Build A-side BM25 index if method: bm25 is configured.
-    let bm25_index_a: Option<std::sync::RwLock<crate::bm25::index::BM25Index>> = {
+    // Uses SimpleBm25 — no RwLock, no commit, no self-score pre-computation
+    // (analytical self-score is O(K) at query time).
+    let bm25_index_a: Option<crate::bm25::simple::SimpleBm25> = {
         let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
-            let idx = crate::bm25::index::BM25Index::build(
+            let idx = crate::bm25::simple::SimpleBm25::build(
                 store,
                 Side::A,
                 &config.bm25_fields,
                 &config.blocking.fields,
-            )?;
+            );
             eprintln!(
                 "Built BM25 index for {} A records in {:.1}ms",
                 store.len(Side::A),
                 bm25_start.elapsed().as_secs_f64() * 1000.0
             );
-            Some(std::sync::RwLock::new(idx))
+            Some(idx)
         } else {
             None
         }
     };
-
-    // Pre-compute BM25 self-scores for all B query texts. This fills the
-    // cache with a write lock so the scoring loop (read lock) can look up
-    // self-scores without mutable access. Gives principled normalisation
-    // instead of the max-from-results approximation.
-    if let Some(ref mtx) = bm25_index_a {
-        let self_score_start = Instant::now();
-        let mut guard = mtx.write().unwrap_or_else(|e| e.into_inner());
-        let query_texts: Vec<String> = work_ids
-            .iter()
-            .filter_map(|b_id| {
-                let b_rec = store.get(Side::B, b_id)?;
-                Some(guard.query_text_for(&b_rec, Side::B))
-            })
-            .collect();
-        guard.precompute_self_scores(&query_texts);
-        eprintln!(
-            "Pre-computed {} BM25 self-scores in {:.1}ms",
-            query_texts.len(),
-            self_score_start.elapsed().as_secs_f64() * 1000.0
-        );
-    }
 
     // Load synonym dictionary if configured.
     let synonym_dict: Option<std::sync::Arc<crate::synonym::dictionary::SynonymDictionary>> =
@@ -362,47 +342,64 @@ pub fn run_batch(
             let ann_candidates = config.ann_candidates.unwrap_or(50);
             let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
 
-            // Build BM25 context: lock the index, build query text, pass to pipeline.
-            let results = if let Some(ref mtx) = bm25_index_a {
-                let guard = mtx.read().unwrap_or_else(|e| e.into_inner());
-                let query_text = guard.query_text_for(&b_record, Side::B);
-                let ctx = Bm25Ctx::new(&guard, query_text);
-                pipeline::score_pool(
-                    b_id,
+            // BM25 candidate generation (pre-computed, passed to pipeline).
+            let (bm25_cand_ids, bm25_scores_map) = if let Some(ref bm25) = bm25_index_a {
+                let query_text = bm25.query_text_for(&b_record, Side::B);
+                let self_score = bm25.analytical_self_score(&query_text);
+                let raw_results = bm25.score_blocked(
+                    &query_text,
+                    &blocked_ids,
+                    bm25_candidates_n,
                     &b_record,
                     Side::B,
-                    &query_combined_vec,
-                    store,
-                    Side::A,
-                    combined_index_a,
-                    &blocked_ids,
-                    config,
-                    ann_candidates,
-                    bm25_candidates_n,
-                    top_n,
-                    Some(ctx),
-                    synonym_index_a.as_ref(),
-                    synonym_dict.as_deref(),
-                )
+                );
+                let scored: Vec<(String, f64)> = raw_results
+                    .into_iter()
+                    .map(|(cid, raw)| {
+                        let norm = normalise_bm25(raw, self_score);
+                        (cid, norm)
+                    })
+                    .collect();
+                let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
+                let map: HashMap<String, f64> = scored.into_iter().collect();
+                (ids, map)
             } else {
-                pipeline::score_pool(
-                    b_id,
-                    &b_record,
-                    Side::B,
-                    &query_combined_vec,
-                    store,
-                    Side::A,
-                    combined_index_a,
-                    &blocked_ids,
-                    config,
-                    ann_candidates,
-                    bm25_candidates_n,
-                    top_n,
-                    None,
-                    synonym_index_a.as_ref(),
-                    synonym_dict.as_deref(),
-                )
+                (Vec::new(), HashMap::new())
             };
+
+            // Synonym candidate generation.
+            let synonym_cand_ids = if !config.synonym_fields.is_empty() {
+                if let Some(ref idx) = synonym_index_a {
+                    pipeline::synonym_candidate_stage(
+                        idx,
+                        &b_record,
+                        Side::B,
+                        &config.synonym_fields,
+                    )
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            let results = pipeline::score_pool(
+                b_id,
+                &b_record,
+                Side::B,
+                &query_combined_vec,
+                store,
+                Side::A,
+                combined_index_a,
+                &blocked_ids,
+                config,
+                ann_candidates,
+                top_n,
+                &bm25_cand_ids,
+                &bm25_scores_map,
+                &synonym_cand_ids,
+                synonym_dict.as_deref(),
+            );
 
             // Claim loop: try each auto-match candidate in ranked order.
             // Uses crossmap.claim() so concurrent threads can't double-match.

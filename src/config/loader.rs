@@ -36,6 +36,7 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
 
     normalise_blocking(&mut cfg);
     apply_defaults(&mut cfg);
+    deprecation_warnings(&cfg);
     validate(&cfg)?;
     derive_bm25_fields(&mut cfg);
     derive_synonym_fields(&mut cfg);
@@ -102,6 +103,19 @@ fn apply_defaults(cfg: &mut Config) {
         if mf.method == "fuzzy" && mf.scorer.as_deref().unwrap_or("").is_empty() {
             mf.scorer = Some("wratio".into());
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deprecation warnings
+// ---------------------------------------------------------------------------
+
+fn deprecation_warnings(cfg: &Config) {
+    if cfg.bm25_commit_batch_size.is_some() {
+        eprintln!(
+            "WARNING: bm25_commit_batch_size is deprecated and ignored. \
+             SimpleBm25 has instant write visibility — no commit batching needed."
+        );
     }
 }
 

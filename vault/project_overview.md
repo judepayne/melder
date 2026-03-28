@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-03-28 (expansion_search knob, BM25 batching, tracing spans, live benchmarks, profiling)
+Last updated: 2026-03-28 (SimpleBm25 replaces Tantivy — lock-free BM25, 3.2× default throughput, tantivy dep removed)
 
 ---
 
@@ -40,7 +40,7 @@ cargo test --all-features         # REQUIRED before committing
 cargo fmt -- --check && cargo clippy --all-features       # lint gate
 ```
 
-Feature flags: `usearch` (HNSW ANN), `parquet-format` (Parquet I/O), `bm25` (Tantivy BM25), `simd` (SimSIMD hardware-accelerated dot product). Mode enum: `Match` (two-sided matching) or `Enroll` (single-pool entity resolution).
+Feature flags: `usearch` (HNSW ANN), `parquet-format` (Parquet I/O), `simd` (SimSIMD hardware-accelerated dot product). BM25 is now always compiled (no feature gate — uses lock-free `SimpleBm25`, no Tantivy dependency). Mode enum: `Match` (two-sided matching) or `Enroll` (single-pool entity resolution).
 
 ---
 
@@ -182,7 +182,7 @@ One file per subcommand: `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.
 2. **Common ID pre-match** (`common_id_field`) — exact match on single shared ID field → auto-confirm at 1.0.
 3. **CrossMap skip** — skip B records already confirmed.
 4. **Blocking** (`src/matching/blocking.rs`) — `BlockingIndex` lookup; AND/OR modes. In enroll mode, `blocking_query()` takes `pool_side` parameter to exclude self-matches when query_side == pool_side.
-5. **BM25 candidate filter** (optional) — Tantivy BM25 re-ranks blocked candidates; retains `bm25_candidates` top results.
+5. **BM25 candidate filter** (optional) — `SimpleBm25` scores blocked candidates; retains `bm25_candidates` top results.
 6. **ANN candidate selection** (`src/matching/candidates.rs`) — searches combined embedding index for `top_n` nearest A neighbours. If no embedding fields configured, all blocked records pass through.
 7. **Full scoring** (`src/scoring/mod.rs::score_pair()`) — all `match_fields` scored; embedding cosines decomposed from combined vectors.
 8. **Classification** — `>= auto_match` → Auto; `>= review_floor` → Review; else NoMatch.
@@ -192,7 +192,7 @@ One file per subcommand: `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.
 
 1. Parse JSON record.
 2. Encode via `EncoderPool` — skip if text-hash unchanged (`src/vectordb/texthash.rs`).
-3. Store in `RecordStore`, upsert combined vector index, update blocking index. BM25 index marked dirty (committed lazily before opposite-side query).
+3. Store in `RecordStore`, upsert combined vector index, update blocking index. BM25 index updated (lock-free DashMap, instantly visible).
 4. `score_pool()` against opposite side.
 5. Claim CrossMap if auto-match.
 6. WAL append (memory backend only).
@@ -227,7 +227,7 @@ One file per subcommand: `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.
 | `wratio` | `src/fuzzy/wratio.rs` | max of all three above; default fuzzy scorer |
 | `embedding` | `src/scoring/embedding.rs` | Cosine similarity; negative → 0.0 |
 | `numeric` | `src/scoring/mod.rs` | Parse f64, equality only |
-| `bm25` | `src/bm25/` (feature-gated) | Tantivy-backed, normalised by analytical self-score |
+| `bm25` | `src/bm25/simple.rs` | DashMap-based lock-free scorer, normalised by analytical self-score |
 
 ---
 
@@ -267,7 +267,7 @@ performance:
    vector_quantization: f32 | f16 | bf16
    encoder_batch_wait_ms: 0             # >0 only at c≥20 with large models
    expansion_search: 0                  # HNSW ef parameter (usearch); 0 = usearch default
-   bm25_commit_batch_size: 1             # Buffer N BM25 upserts before commit; amortizes cost
+   # bm25_commit_batch_size: DEPRECATED — SimpleBm25 has instant write visibility
 
 top_n: 5          # ANN candidates per B record
 ann_candidates: 50
@@ -293,9 +293,9 @@ Full tables: `vault/architecture/Performance Baselines.md`
 | Batch, SQLite columnar, 10k×10k | 1,420 rec/s (~10-12GB RAM) |
 | Live, usearch, 10k×10k warm (c=10) | 1,558 req/s, p95 25.6ms |
 | Live, SQLite, 10k×10k warm (c=10) | 1,395 req/s, p95 13.6ms, 4× faster warm start |
-| Live, usearch+BM25 (batch_size=100), 10k×10k (c=10) | 1,473 req/s (3.2× vs batch_size=1) |
+| Live, usearch+BM25 (SimpleBm25), 10k×10k (c=10) | 1,460 req/s (3.2× vs old Tantivy default) |
 
-Production: usearch backend; `quantized: true` (2× encoding, negligible quality loss); `vector_quantization: f16` (43% smaller cache); `bm25_commit_batch_size: 100` (3.2× live throughput with BM25). Batch endpoint sweet spot: size 50 (445 req/s, 1.8× vs single).
+Production: usearch backend; `quantized: true` (2× encoding, negligible quality loss); `vector_quantization: f16` (43% smaller cache). SimpleBm25 achieves 1,460 req/s out of the box — no tuning knobs needed (old Tantivy default was 461 req/s). Batch endpoint sweet spot: size 50 (445 req/s, 1.8× vs single).
 
 Accuracy (10k×10k, embeddings + exact prefilter): precision 93.3%, recall vs ceiling 92.8%, 441 FP, blocking ceiling 6,863 of 7,000.
 
@@ -380,7 +380,7 @@ Each benchmark subdirectory typically contains: `config.yaml` (melder config), `
 
 **Async**: `main.rs` synchronous; `tokio::runtime::Runtime::new()` created manually. CPU-bound → `tokio::task::spawn_blocking`. Axum handlers return `axum::response::Response`. State via `Arc<Session>` + `Router::with_state()`.
 
-**Feature flags**: `#[cfg(feature = "...")]` on modules, functions, tests, and match arms. Currently: `usearch`, `parquet-format`, `bm25`, `simd`.
+**Feature flags**: `#[cfg(feature = "...")]` on modules, functions, tests, and match arms. Currently: `usearch`, `parquet-format`, `simd`. BM25 is always compiled (no feature gate).
 
 **Tests**: `#[cfg(test)] mod tests` at bottom of each source file. No integration test directory — everything in-crate. Table-driven for scorers `(input, expected)`. `make_` helpers. `assert!` with messages. `tempfile::tempdir()` for filesystem. `macro_rules!` for generic test suites. No external test frameworks.
 
@@ -479,6 +479,8 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 
 **Profiling findings** — CPU profiling via macOS `sample` command revealed BM25 commit_if_dirty was 40% of CPU time under load (tantivy segment finalization, FST construction, GC, lock acquisition). Encoding was 47%. Scoring pipeline was only 12%. This led directly to the batching optimization.
 
+**SimpleBm25 — Tantivy replacement** — Replaced the Tantivy-backed BM25 index (`src/bm25/index.rs`, 1,226 lines) with a custom DashMap-based scorer (`src/bm25/simple.rs`, ~1,000 lines). Removed `tantivy = "0.22"` from Cargo.toml (~40 transitive dependencies eliminated). Key changes: (1) `LiveSideState.bm25_index` changed from `Option<RwLock<BM25Index>>` to `Option<SimpleBm25>` — no external locks needed. (2) All `RwLock` write/read lock acquisition, `commit_if_ready`, `commit_if_dirty`, and `Bm25Ctx` usage removed from `session/mod.rs`. (3) `score_pool()` signature in `pipeline.rs` now accepts pre-computed BM25 and synonym candidates — callers do candidate generation, pipeline does union + scoring. (4) `precompute_self_scores()` eliminated from batch mode (analytical self-score is O(K) at query time). (5) `bm25_commit_batch_size` config deprecated (instant write visibility, no commit concept). Results: default live throughput improved 3.2× (461→1,460 req/s) without any tuning; batch improved 6.6% (13,776→14,686 rec/s); startup 1.7s faster (no self-score pre-warming). Design docs: `CUSTOM_BM25_DESIGN.md` and `LIVE_MODE_IMPROVEMENTS.md` in project root.
+
 ### In Progress
 
 **CI/CD** — `.github/workflows/ci.yml` + `release.yml` created (macOS ARM, Linux glibc x86_64, Windows MSVC). Requires GitHub remote to activate. Homebrew/Scoop auto-update hooks not yet wired.
@@ -487,7 +489,7 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 
 1. Single-artifact deployment — `include_bytes!()` on ONNX weights.
 2. External vector DB — Qdrant/Milvus (VectorDB trait is the interface).
-3. BM25 Mutex → RwLock for BM25-heavy batch at scale.
+3. Pipeline parallelization — rayon::scope for encode/store/BM25/synonym branches (see `LIVE_MODE_IMPROVEMENTS.md`).
 4. Benchmark data regeneration script.
 
 ---
@@ -505,7 +507,7 @@ Full rationale for all decisions: `vault/decisions/Key Decisions.md`. Check befo
 | RecordStore + CrossMapOps traits | Decouples pipeline from storage; MemoryStore + SqliteStore are the two impls |
 | Columnar SQLite | One column per field — 2.3× faster candidate lookups vs JSON blob |
 | SQLite connection pool | 1 writer + N readers (round-robin try_lock) |
-| BM25 commit batching | `dirty` flag; commit only before opposite-side query — 2× live throughput |
+| BM25: SimpleBm25 replaces Tantivy | DashMap-based lock-free scorer — no commits, no RwLock, instant write visibility. 3.2× default throughput, ~40 fewer deps |
 | Exact prefilter | Pre-blocking field-pair confirmation — O(1) hash; recovers cross-block matches |
 | Local ONNX encoder paths | Path heuristic → `UserDefinedEmbeddingModel` — fine-tuned models plug in directly |
 | Linux CI target | glibc not musl — fastembed → openssl-sys incompatible with musl cross-compilation |

@@ -1,7 +1,7 @@
 //! BM25 full-text search index for candidate filtering and scoring.
 //!
-//! Wraps Tantivy to provide BM25-based retrieval and scoring over
-//! record text fields. Gated behind `--features bm25`.
+//! Uses a DashMap-based lock-free scorer (`SimpleBm25`) that provides
+//! instant write visibility and concurrent reads without external locks.
 
-pub mod index;
 pub mod scorer;
+pub mod simple;

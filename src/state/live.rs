@@ -36,7 +36,7 @@ pub struct LiveSideState {
     pub combined_index: Option<Box<dyn VectorDB>>,
     /// BM25 full-text index for this side. Built from fuzzy/embedding
     /// text fields. `None` if BM25 not configured.
-    pub bm25_index: Option<std::sync::RwLock<crate::bm25::index::BM25Index>>,
+    pub bm25_index: Option<crate::bm25::simple::SimpleBm25>,
     /// Synonym index for this side. Built from synonym_fields config.
     /// `None` if no synonym matching configured.
     pub synonym_index: Option<std::sync::RwLock<crate::synonym::index::SynonymIndex>>,
@@ -815,33 +815,36 @@ impl LiveMatchState {
     }
 
     /// Build BM25 indices from the store (if BM25 is configured and enabled).
-    #[allow(clippy::type_complexity)]
+    ///
+    /// Uses `SimpleBm25` — a lock-free DashMap-based scorer. No RwLock
+    /// wrapping, no commit step, no self-score pre-warming needed (uses
+    /// analytical self-score at query time).
     fn build_bm25_indices(
         store: &Arc<dyn RecordStore>,
         config: &Config,
         start: Instant,
     ) -> Result<
         (
-            Option<std::sync::RwLock<crate::bm25::index::BM25Index>>,
-            Option<std::sync::RwLock<crate::bm25::index::BM25Index>>,
+            Option<crate::bm25::simple::SimpleBm25>,
+            Option<crate::bm25::simple::SimpleBm25>,
         ),
         MelderError,
     > {
         let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
-            let mut idx_a = crate::bm25::index::BM25Index::build(
+            let idx_a = crate::bm25::simple::SimpleBm25::build(
                 store.as_ref(),
                 Side::A,
                 &config.bm25_fields,
                 &config.blocking.fields,
-            )?;
-            let mut idx_b = crate::bm25::index::BM25Index::build(
+            );
+            let idx_b = crate::bm25::simple::SimpleBm25::build(
                 store.as_ref(),
                 Side::B,
                 &config.bm25_fields,
                 &config.blocking.fields,
-            )?;
+            );
             info!(
                 a_records = store.len(Side::A),
                 b_records = store.len(Side::B),
@@ -849,52 +852,8 @@ impl LiveMatchState {
                 "built BM25 indices"
             );
 
-            // Pre-warm self-score caches for both sides.
-            // A-side index needs self-scores for B query texts (B queries A).
-            // B-side index needs self-scores for A query texts (A queries B).
-            let pw_start = Instant::now();
-            info!("pre-warming BM25 self-score caches");
-
-            let mut b_query_texts: Vec<String> = Vec::new();
-            store.for_each_record(Side::B, &mut |_id, rec| {
-                let t = idx_a.query_text_for(rec, Side::B);
-                if !t.is_empty() {
-                    b_query_texts.push(t);
-                }
-            });
-            idx_a.precompute_self_scores(&b_query_texts);
-            info!(
-                side = "A",
-                self_scores = b_query_texts.len(),
-                elapsed_ms = format!("{:.1}", pw_start.elapsed().as_secs_f64() * 1000.0),
-                "BM25 self-scores computed"
-            );
-
-            let pw_b_start = Instant::now();
-            let mut a_query_texts: Vec<String> = Vec::new();
-            store.for_each_record(Side::A, &mut |_id, rec| {
-                let t = idx_b.query_text_for(rec, Side::A);
-                if !t.is_empty() {
-                    a_query_texts.push(t);
-                }
-            });
-            idx_b.precompute_self_scores(&a_query_texts);
-            info!(
-                side = "B",
-                self_scores = a_query_texts.len(),
-                elapsed_ms = format!("{:.1}", pw_b_start.elapsed().as_secs_f64() * 1000.0),
-                "BM25 self-scores computed"
-            );
-            info!(
-                elapsed_ms = format!("{:.1}", pw_start.elapsed().as_secs_f64() * 1000.0),
-                "BM25 self-score pre-warm complete"
-            );
-
             let _ = start; // suppress unused warning when bm25 timing is used
-            Ok((
-                Some(std::sync::RwLock::new(idx_a)),
-                Some(std::sync::RwLock::new(idx_b)),
-            ))
+            Ok((Some(idx_a), Some(idx_b)))
         } else {
             Ok((None, None))
         }

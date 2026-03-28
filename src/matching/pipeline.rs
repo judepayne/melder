@@ -32,7 +32,6 @@ use std::collections::HashMap;
 
 use tracing::info_span;
 
-use crate::bm25::scorer::normalise_bm25;
 use crate::config::Config;
 use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
@@ -41,42 +40,16 @@ use crate::scoring::embedding::dot_product_f32;
 use crate::store::RecordStore;
 use crate::vectordb::VectorDB;
 
-/// BM25 context passed into the pipeline.
-///
-/// Carries an immutable reference to the pool-side BM25 index, the
-/// concatenated query text, and a pre-computed self-score for normalisation.
-pub struct Bm25Ctx<'a> {
-    pub index: &'a crate::bm25::index::BM25Index,
-    pub query_text: String,
-    /// Pre-computed self-score for BM25 normalisation. Populated from cache
-    /// (batch pre-compute or prior event) or analytically on cache miss.
-    pub self_score: f32,
-}
-
-impl<'a> Bm25Ctx<'a> {
-    /// Create a new BM25 context.
-    ///
-    /// The self-score is resolved eagerly: cache hit → O(1), cache miss →
-    /// analytical computation → O(unique tokens), ~5–20µs.
-    pub fn new(index: &'a crate::bm25::index::BM25Index, query_text: String) -> Self {
-        let self_score = index
-            .cached_self_score(&query_text)
-            .unwrap_or_else(|| index.analytical_self_score(&query_text));
-        Self {
-            index,
-            query_text,
-            self_score,
-        }
-    }
-}
-
 /// Score a single query record against the opposite-side pool.
 ///
-/// Runs independent candidate generators (ANN, BM25), unions their results,
-/// then scores all candidates on every configured match_field. Returns a
-/// sorted `Vec<MatchResult>` (descending by score), truncated to `top_n`
-/// entries. The top result carries an attached `matched_record` with output
-/// mapping applied.
+/// Runs independent candidate generators (ANN, BM25, synonym), unions their
+/// results, then scores all candidates on every configured match_field.
+/// Returns a sorted `Vec<MatchResult>` (descending by score), truncated to
+/// `top_n` entries.
+///
+/// BM25 and synonym candidate generation is handled by the *caller* — this
+/// function receives pre-computed candidate IDs and BM25 scores. ANN
+/// candidate generation still runs internally.
 #[allow(clippy::too_many_arguments)]
 pub fn score_pool(
     query_id: &str,
@@ -89,10 +62,12 @@ pub fn score_pool(
     blocked_ids: &[String],
     config: &Config,
     ann_candidates: usize,
-    bm25_candidates: usize,
     top_n: usize,
-    bm25_ctx: Option<Bm25Ctx>,
-    synonym_index: Option<&crate::synonym::index::SynonymIndex>,
+    // Pre-computed BM25 candidates (from caller).
+    bm25_candidate_ids: &[String],
+    bm25_scores_map: &HashMap<String, f64>,
+    // Pre-computed synonym candidates (from caller).
+    synonym_candidate_ids: &[String],
     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
 ) -> Vec<MatchResult> {
     if blocked_ids.is_empty() {
@@ -134,31 +109,9 @@ pub fn score_pool(
         )
     };
 
-    // BM25 candidates (empty if no BM25 configured).
-    let (bm25_cand_ids, bm25_scores_map) = {
-        let _span = info_span!("bm25_candidates").entered();
-        let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
-        if has_bm25 {
-            if let Some(ctx) = bm25_ctx {
-                bm25_candidate_stage(&ctx, bm25_candidates, query_record, query_side)
-            } else {
-                (Vec::new(), HashMap::new())
-            }
-        } else {
-            (Vec::new(), HashMap::new())
-        }
-    };
-
-    // Synonym candidates (empty if no synonym_fields configured).
-    let synonym_cand_ids = if !config.synonym_fields.is_empty() {
-        if let Some(idx) = synonym_index {
-            synonym_candidate_stage(idx, query_record, query_side, &config.synonym_fields)
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
+    // BM25 and synonym candidates are pre-computed by the caller.
+    let bm25_cand_ids = bm25_candidate_ids;
+    let synonym_cand_ids = synonym_candidate_ids;
 
     // --- Stage 3: Union candidates ---
     //
@@ -226,7 +179,7 @@ pub fn score_pool(
             query_combined_vec,
             pool_combined_index,
             config,
-            &bm25_scores_map,
+            bm25_scores_map,
             &emb_specs,
             has_emb_specs,
             synonym_dictionary,
@@ -319,42 +272,6 @@ fn score_candidate(
 ///
 /// Queries the Tantivy index directly with blocking filters to surface the
 /// top `bm25_candidates` records. Returns candidate IDs and their normalised
-/// BM25 scores.
-///
-/// This runs independently of ANN — it can find candidates that ANN missed
-/// entirely (e.g. records with shared distinctive tokens but low embedding
-/// similarity).
-fn bm25_candidate_stage(
-    ctx: &Bm25Ctx,
-    bm25_candidates: usize,
-    query_record: &Record,
-    query_side: Side,
-) -> (Vec<String>, HashMap<String, f64>) {
-    if ctx.query_text.is_empty() {
-        return (Vec::new(), HashMap::new());
-    }
-
-    // Query BM25 index with blocking filter — Tantivy skips documents
-    // from the wrong block entirely (no wasted scoring).
-    let raw_results =
-        ctx.index
-            .query_blocked(&ctx.query_text, bm25_candidates, query_record, query_side);
-
-    let norm_ceiling = ctx.self_score;
-
-    let scored: Vec<(String, f64)> = raw_results
-        .into_iter()
-        .map(|(id, raw)| {
-            let norm = normalise_bm25(raw, norm_ceiling);
-            (id, norm)
-        })
-        .collect();
-
-    let ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
-    let map: HashMap<String, f64> = scored.into_iter().collect();
-    (ids, map)
-}
-
 /// Independent synonym candidate generation stage.
 ///
 /// For each configured synonym field, looks up the query record's field value
@@ -362,7 +279,7 @@ fn bm25_candidate_stage(
 ///
 /// Typically produces 0-2 candidates per query — synonym matches are rare
 /// but critical for acronym recovery.
-fn synonym_candidate_stage(
+pub fn synonym_candidate_stage(
     index: &crate::synonym::index::SynonymIndex,
     query_record: &Record,
     query_side: Side,
@@ -714,6 +631,7 @@ output:
         let store = make_store();
         let config = make_config_exact("name", "name");
         let query = make_record(&[("id", "q1"), ("name", "Foo")]);
+        let empty_bm25: HashMap<String, f64> = HashMap::new();
 
         let results = score_pool(
             "q1",
@@ -726,10 +644,10 @@ output:
             &[],
             &config,
             50,
-            10,
             5,
-            None,
-            None,
+            &[],
+            &empty_bm25,
+            &[],
             None,
         );
 
@@ -748,8 +666,9 @@ output:
         let config = make_config_exact("name", "name");
         let query = make_record(&[("id", "q1"), ("name", "Foo Corp")]);
         let blocked = vec!["a1".to_string()];
+        let empty_bm25: HashMap<String, f64> = HashMap::new();
 
-        // No embeddings (empty vec), no BM25 context → both generators
+        // No embeddings (empty vec), no BM25 candidates → both generators
         // return empty → union is empty → no results.
         let results = score_pool(
             "q1",
@@ -762,10 +681,10 @@ output:
             &blocked,
             &config,
             50,
-            10,
             5,
-            None,
-            None,
+            &[],
+            &empty_bm25,
+            &[],
             None,
         );
 
@@ -796,6 +715,7 @@ output:
         let query = make_record(&[("id", "q1"), ("name", "Foo Corp")]);
         let blocked = vec!["a1".to_string(), "a2".to_string()];
         let query_vec = unit_vec(dim, 1); // identical to a1
+        let empty_bm25: HashMap<String, f64> = HashMap::new();
 
         let results = score_pool(
             "q1",
@@ -808,10 +728,10 @@ output:
             &blocked,
             &config,
             50,
-            10,
             5,
-            None,
-            None,
+            &[],
+            &empty_bm25,
+            &[],
             None,
         );
 
@@ -852,6 +772,7 @@ output:
         let query = make_record(&[("id", "q1"), ("name", "Acme Corp")]);
         let blocked = vec!["a1".to_string(), "a2".to_string(), "a3".to_string()];
         let query_vec = unit_vec(dim, 99);
+        let empty_bm25: HashMap<String, f64> = HashMap::new();
 
         let results = score_pool(
             "q1",
@@ -864,10 +785,10 @@ output:
             &blocked,
             &config,
             50,
-            10,
             5,
-            None,
-            None,
+            &[],
+            &empty_bm25,
+            &[],
             None,
         );
 
@@ -902,6 +823,7 @@ output:
         let config = make_config_exact("name", "name");
         let query = make_record(&[("id", "q1"), ("name", "Corp 0")]);
         let query_vec = unit_vec(dim, 99);
+        let empty_bm25: HashMap<String, f64> = HashMap::new();
 
         let results = score_pool(
             "q1",
@@ -913,11 +835,11 @@ output:
             Some(&idx as &dyn VectorDB),
             &blocked,
             &config,
-            50, // ann_candidates
-            10, // bm25_candidates
-            3,  // top_n = 3
-            None,
-            None,
+            50,
+            3, // top_n = 3
+            &[],
+            &empty_bm25,
+            &[],
             None,
         );
 

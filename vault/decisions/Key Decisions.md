@@ -443,4 +443,37 @@ BM25 provides corpus-aware token scoring that complements embedding similarity. 
 
 ---
 
+## Replace Tantivy BM25 Index with Custom DashMap-Based SimpleBm25
+
+**Date:** 2026-03-28
+**Status:** Accepted
+
+**Context:**
+Tantivy's commit/segment/reload cycle was the dominant live-mode bottleneck, consuming 40% of CPU time under load. The architectural mismatch: Tantivy is designed for batch-ingest-then-query; melder interleaves single-doc writes with immediate reads. At default settings (`bm25_commit_batch_size: 1`), live throughput was only 461 req/s. A tuning knob (`bm25_commit_batch_size: 100`) improved to 1,473 req/s but introduced eventual consistency — writes invisible for up to 100 upserts.
+
+**Decision:**
+Build SimpleBm25 in `src/bm25/simple.rs` (~1,000 lines): DashMap-based with per-doc term frequencies, global IDF stats, and block-segmented posting lists. Two query paths: exhaustive scoring for small blocks (B ≤ 5,000), inverted index lookup for large blocks (B > 5,000). Analytical self-score computation (O(K), no sentinel documents). No external locks needed — DashMap handles concurrency internally.
+
+**Alternatives Rejected:**
+- **Pending buffer on Tantivy**: Works around the problem rather than solving it. Would still need commits, still have eventual consistency.
+- **BM25 sharding by blocking key**: Tantivy's global IDF statistics would be broken by sharding.
+- **External search service** (Elasticsearch, etc.): Adds network latency to a sub-millisecond operation.
+- **Keeping Tantivy with larger batch sizes**: Masks the problem; users who don't set the knob get 3× worse performance.
+
+**Results:**
+- **Default live throughput**: 461 → 1,460 req/s (3.2× improvement, no tuning needed)
+- **Batch throughput**: 13,776 → 14,686 rec/s (+6.6%)
+- **Startup**: 1.7s faster (no self-score pre-warming)
+- **Write visibility**: Instant (was eventual with batching)
+- **Dependencies**: ~40 transitive crates removed with tantivy
+- **Code**: Net ~220 lines removed (1,226 deleted, ~1,000 added)
+- **Config**: `bm25_commit_batch_size` deprecated
+
+**Why SimpleBm25:**
+The custom implementation eliminates the architectural mismatch. DashMap's lock-free concurrent hash map is ideal for interleaved writes and reads. Per-doc term frequencies and global IDF stats are maintained in-memory with no commit cycle. The dual query path (exhaustive for small blocks, inverted index for large) provides both simplicity and scalability. Analytical self-score computation avoids the overhead of sentinel documents. The result is a BM25 scorer that is both faster and simpler than Tantivy for melder's access pattern.
+
+**Related:** [[Key Decisions#BM25 Index Commit Batching in Live Mode]], [[Discarded Ideas#BM25 Pending Buffer on Tantivy]]
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

@@ -53,9 +53,6 @@ hf-hub = "0.4"
 # Hardware-accelerated dot product (NEON / SVE / AVX2 / AVX-512)
 simsimd = { version = "6", optional = true }
 
-# BM25 full-text search
-tantivy = "0.22"
-
 # SQLite storage (live mode persistence)
 rusqlite = { version = "0.32", features = ["bundled"] }
 

@@ -62,4 +62,12 @@ Approaches that were considered and rejected. Recorded here to prevent re-attemp
 
 ---
 
+## BM25 Pending Buffer on Tantivy
+
+**What**: Buffer BM25 writes with a `dirty` flag. `upsert()` and `remove()` mark `dirty = true` without committing. A new `commit_if_dirty()` method commits + reloads + clears cache only when dirty. Session code calls `commit_if_dirty()` on the opposite-side BM25 index just before querying it.
+
+**Why discarded**: This approach was implemented and measured a 2x throughput improvement (256 → 512 req/s on 10k×10k dataset with usearch+BM25). However, it only masked the underlying architectural problem: Tantivy's commit/segment/reload cycle is fundamentally expensive (~5-10ms per commit). The pending buffer reduced commit frequency but did not eliminate the cost. At scale, the batching window becomes a tuning knob that users must configure, and the default behavior (small batch size) remains slow. The full SimpleBm25 replacement (see [[Key Decisions#Replace Tantivy BM25 Index with Custom DashMap Based SimpleBm25]]) solves the problem at the root: no commits needed at all. SimpleBm25 achieved 3.2× improvement over the original Tantivy baseline (461 → 1,460 req/s) with zero tuning, and eliminated eventual consistency entirely.
+
+---
+
 See also: [[Constitution]] for the invariants that ruled out several of these approaches, [[Key Decisions]] for the alternatives that were chosen instead.
