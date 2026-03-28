@@ -41,6 +41,9 @@ pub struct BM25Index {
     /// True when documents have been added/deleted but not yet committed.
     /// Cleared by `commit_if_dirty()`.
     dirty: bool,
+    /// Number of upserts/removes since the last commit. Used by
+    /// `commit_if_ready()` to implement batched commits.
+    pending_writes: usize,
 }
 
 impl BM25Index {
@@ -115,6 +118,7 @@ impl BM25Index {
             side,
             self_score_cache: HashMap::new(),
             dirty: false,
+            pending_writes: 0,
         })
     }
 
@@ -145,6 +149,7 @@ impl BM25Index {
             side,
             self_score_cache: HashMap::new(),
             dirty: false,
+            pending_writes: 0,
         })
     }
 
@@ -574,6 +579,30 @@ impl BM25Index {
         self.reader.reload().ok();
         self.self_score_cache.clear();
         self.dirty = false;
+        self.pending_writes = 0;
+    }
+
+    /// Commit only if at least `batch_size` writes have accumulated.
+    ///
+    /// When `batch_size` is 1, this behaves identically to
+    /// `commit_if_dirty()`. Larger values amortize the cost of Tantivy
+    /// segment finalization across multiple upserts.
+    ///
+    /// Returns `true` if a commit was performed.
+    pub fn commit_if_ready(&mut self, batch_size: usize) -> bool {
+        if !self.dirty {
+            return false;
+        }
+        // batch_size <= 1 means "always commit" (backward-compatible default)
+        if batch_size <= 1 || self.pending_writes >= batch_size {
+            let _ = self.writer.commit();
+            self.reader.reload().ok();
+            self.self_score_cache.clear();
+            self.dirty = false;
+            self.pending_writes = 0;
+            return true;
+        }
+        false
     }
 
     /// Insert or update a record in the index.
@@ -607,6 +636,7 @@ impl BM25Index {
             let _ = self.writer.add_document(doc);
         }
         self.dirty = true;
+        self.pending_writes += 1;
     }
 
     /// Remove a record from the index.
@@ -617,6 +647,7 @@ impl BM25Index {
         let id_term = tantivy::Term::from_field_text(self.id_field, id);
         self.writer.delete_term(id_term);
         self.dirty = true;
+        self.pending_writes += 1;
     }
 
     /// Build the concatenated query text for a record on the given side.

@@ -1,6 +1,6 @@
 job:
   name: live_10kx10k_usearch_warm
-  description: Live benchmark — 10k × 10k, usearch backend, warm run (cache pre-built)
+  description: Live benchmark — 10k × 10k, usearch + BM25, warm run (cache pre-built)
 
 datasets:
   a:
@@ -19,8 +19,7 @@ cross_map:
   b_id_field: counterparty_id
 
 embeddings:
-  model: all-MiniLM-L6-v2
-  # model: themelder/arctic-embed-xs-entity-resolution
+  model: themelder/arctic-embed-xs-entity-resolution
   a_cache_dir: benchmarks/live/10kx10k_inject50k_usearch/warm/cache
   b_cache_dir: benchmarks/live/10kx10k_inject50k_usearch/warm/cache
 
@@ -35,20 +34,9 @@ match_fields:
   - field_a: legal_name
     field_b: counterparty_name
     method: embedding
-    weight: 0.55
-  - field_a: short_name
-    field_b: counterparty_name
-    method: fuzzy
-    scorer: partial_ratio
-    weight: 0.20
-  - field_a: country_code
-    field_b: domicile
-    method: exact
-    weight: 0.20
-  - field_a: lei
-    field_b: lei_code
-    method: exact
-    weight: 0.05
+    weight: 0.50
+  - method: bm25
+    weight: 0.50
 
 thresholds:
   auto_match: 0.85
@@ -56,11 +44,14 @@ thresholds:
 
 vector_backend: usearch
 top_n: 5
-ann_candidates: 5
+ann_candidates: 20
+bm25_candidates: 20
+bm25_commit_batch_size: 100
 
 performance:
   encoder_pool_size: 4
   vector_index_mode: "load"
+  expansion_search: 20
 
 live:
   upsert_log: benchmarks/live/10kx10k_inject50k_usearch/warm/wal/events.ndjson

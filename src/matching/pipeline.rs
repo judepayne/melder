@@ -30,6 +30,8 @@
 
 use std::collections::HashMap;
 
+use tracing::info_span;
+
 use crate::bm25::scorer::normalise_bm25;
 use crate::config::Config;
 use crate::matching::candidates;
@@ -117,20 +119,24 @@ pub fn score_pool(
     // of all candidate sets flows to full scoring.
 
     // ANN candidates (empty if no embedding fields configured).
-    let ann_cands = candidates::select_candidates(
-        query_combined_vec,
-        ann_candidates,
-        pool_combined_index,
-        blocked_ids,
-        pool_store,
-        pool_side,
-        query_record,
-        query_side,
-        &config.vector_backend,
-    );
+    let ann_cands = {
+        let _span = info_span!("ann_candidates").entered();
+        candidates::select_candidates(
+            query_combined_vec,
+            ann_candidates,
+            pool_combined_index,
+            blocked_ids,
+            pool_store,
+            pool_side,
+            query_record,
+            query_side,
+            &config.vector_backend,
+        )
+    };
 
     // BM25 candidates (empty if no BM25 configured).
     let (bm25_cand_ids, bm25_scores_map) = {
+        let _span = info_span!("bm25_candidates").entered();
         let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
         if has_bm25 {
             if let Some(ctx) = bm25_ctx {
@@ -200,6 +206,7 @@ pub fn score_pool(
     let filter_self = query_side == pool_side;
 
     // --- Stage 4: Full scoring with per-field decomposition ---
+    let _span = info_span!("full_scoring").entered();
     let emb_specs = crate::vectordb::embedding_field_specs(config);
     let has_emb_specs = has_embeddings && !emb_specs.is_empty();
 

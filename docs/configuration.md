@@ -98,6 +98,13 @@ bm25_candidates: 50                 # Candidates BM25 keeps after re-ranking the
                                     #   the block (when BM25 is the only filter).
                                     #   Default: 10. Only used when method: bm25 is in match_fields.
                                     #   Requires: cargo build --release --features bm25
+bm25_commit_batch_size: 1           # optional (default: 1) — how many BM25 upserts to buffer
+                                    #   before committing the Tantivy index. Each commit is
+                                    #   expensive (~2-5ms): segment finalization, FST construction,
+                                    #   garbage collection. Batching amortizes this.
+                                    #   1 = commit every upsert (maximum accuracy).
+                                    #   50-200 = recommended for high-throughput live workloads.
+                                    #   See "BM25 commit batching" in docs/performance.md.
 
 # --- Exact prefilter (pre-blocking exact match) ------------------------------
 # Confirms pairs where ALL configured field pairs match exactly before
@@ -326,6 +333,12 @@ performance:
                                     #   unpredictable cold-cache latency. READ-ONLY: do not use
                                     #   with meld serve (live upserts write to the index).
                                     #   No effect with the flat backend.
+  expansion_search: 0               # optional (default: 0) — HNSW search beam width (ef parameter)
+                                    #   for the usearch index. Controls how many graph nodes are
+                                    #   explored when searching for the top-k nearest neighbours.
+                                    #   Higher values improve recall at the cost of slower search.
+                                    #   0 = usearch default. Typical range: 16-256.
+                                    #   Must be >= ann_candidates. No effect with the flat backend.
 ```
 
 ### Performance field reference
@@ -396,7 +409,59 @@ random-access traversal causes frequent page faults on a cold cache, so
 latency is unpredictable. Not suitable for `meld serve` because upserts
 write to the index.
 
+**`expansion_search`** — HNSW search beam width (`ef` parameter) for
+the usearch backend. Controls how many graph nodes are explored when
+searching for the top-k nearest neighbours. Higher values improve recall
+(fewer missed true matches) at the cost of slower search. The default
+(`0`) delegates to usearch's built-in default. Typical values range from
+16 to 256 and must be >= `ann_candidates`. At small dataset scales
+(10k-50k) the HNSW graph is compact enough that the default works well.
+At 1M+ records, tuning this upward can meaningfully improve recall. No
+effect with the `flat` backend. Changing this value does **not**
+invalidate caches — it only affects search-time behaviour.
+
 Batch scoring thread count is controlled by the `RAYON_NUM_THREADS`
 environment variable (defaults to logical CPU count if unset).
+
+### BM25 commit batching
+
+**`bm25_commit_batch_size`** — controls how many BM25 upserts are
+buffered before the Tantivy index is committed. This is a top-level
+config field (not under `performance`).
+
+Each Tantivy commit is expensive: it finalizes index segments, builds
+FST term dictionaries, serializes postings, and garbage-collects old
+segment files. Under high concurrency this commit takes a write lock
+that serializes all workers, creating a major throughput bottleneck.
+
+| Value | Behaviour | When to use |
+|-------|-----------|-------------|
+| `1` (default) | Commit after every upsert. Every BM25 query sees the very latest records. | Maximum accuracy. Low-throughput or latency-insensitive workloads. |
+| `50`-`200` | Commit after N upserts. Newly inserted records may not be visible to BM25 queries until the batch completes. | High-throughput live workloads where the embedding index provides a parallel candidate path. |
+
+**Accuracy trade-off**: when `bm25_commit_batch_size > 1`, a record
+inserted between commits is invisible to BM25 queries but still
+immediately visible to the embedding (ANN) index. In a typical 50/50
+embedding + BM25 config, the embedding path finds the candidate
+independently, so the combined score drops by at most the BM25 weight
+(e.g. from 0.92 to ~0.46) only for the brief window before the next
+commit. In practice this rarely affects match outcomes because:
+
+1. The embedding index has no commit delay — candidates are found
+   immediately via ANN search.
+2. The BM25 window is short (100 upserts at 1,400 req/s = ~70ms).
+3. The `try_match` endpoint (query-only, no upsert) always forces a
+   full commit before querying, so explicit match requests see the
+   latest data regardless of batch size.
+
+**Benchmark**: on a 10k x 10k dataset with 50% embedding + 50% BM25
+scoring, `bm25_commit_batch_size: 100` improved live-mode throughput
+from 461 req/s to 1,473 req/s (3.2x) and reduced p50 latency from
+11.5ms to 5.1ms.
+
+```yaml
+# Recommended for production live workloads with BM25 scoring:
+bm25_commit_batch_size: 100
+```
 
 For detailed descriptions of each scoring method including worked examples, see [Scoring Methods](scoring.md).

@@ -2120,4 +2120,40 @@ performance:
             "expansion_search should deserialize explicit value"
         );
     }
+
+    #[test]
+    fn bm25_commit_batch_size_defaults_to_none() {
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }",
+        );
+        let cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            cfg.bm25_commit_batch_size, None,
+            "bm25_commit_batch_size should default to None when absent"
+        );
+    }
+
+    #[test]
+    fn bm25_commit_batch_size_explicit_value() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+bm25_commit_batch_size: 100
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.bm25_commit_batch_size,
+            Some(100),
+            "bm25_commit_batch_size should deserialize explicit value"
+        );
+    }
 }

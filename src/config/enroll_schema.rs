@@ -135,6 +135,9 @@ pub struct EnrollConfig {
     pub bm25_candidates: Option<usize>,
 
     #[serde(default)]
+    pub bm25_commit_batch_size: Option<usize>,
+
+    #[serde(default)]
     pub bm25_fields: Vec<EnrollBm25Field>,
 
     #[serde(default)]
@@ -296,6 +299,7 @@ impl EnrollConfig {
             top_n: self.top_n,
             ann_candidates: self.ann_candidates,
             bm25_candidates: self.bm25_candidates,
+            bm25_commit_batch_size: self.bm25_commit_batch_size,
             required_fields_a: Vec::new(),
             required_fields_b: Vec::new(),
             bm25_fields,

@@ -27,6 +27,9 @@ pub fn cmd_validate(config_path: &Path) {
         if let Some(es) = cfg.performance.expansion_search {
             println!("  expansion_search: {}", es);
         }
+        if let Some(bs) = cfg.bm25_commit_batch_size {
+            println!("  bm25_commit_batch_size: {}", bs);
+        }
         if let Some(pool) = cfg.performance.encoder_pool_size {
             println!("  encoder_pool_size: {}", pool);
         }

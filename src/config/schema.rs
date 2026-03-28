@@ -66,6 +66,23 @@ pub struct Config {
     /// Defaults to 10. Must be >= top_n.
     #[serde(default)]
     pub bm25_candidates: Option<usize>,
+    /// How many BM25 upserts to buffer before committing the Tantivy index.
+    ///
+    /// Each Tantivy commit is expensive (~2–5 ms): it finalizes segments,
+    /// builds FST term dictionaries, and garbage-collects old files.
+    /// Batching amortizes that cost across multiple writes.
+    ///
+    /// - `1` (default): commit after every upsert. Maximum accuracy — every
+    ///   BM25 query sees the very latest records. This is the safest option
+    ///   but the slowest under high concurrency.
+    /// - `N > 1`: commit after every N upserts. Newly inserted records may
+    ///   not be visible to BM25 queries until the batch completes. The
+    ///   embedding index is unaffected and still finds candidates immediately,
+    ///   so the accuracy impact is typically negligible.
+    ///
+    /// Recommended values: 50–200 for high-throughput live workloads.
+    #[serde(default)]
+    pub bm25_commit_batch_size: Option<usize>,
     // Derived at load time (not in YAML). Populated by `compute_required_fields`.
     #[serde(skip)]
     pub required_fields_a: Vec<String>,

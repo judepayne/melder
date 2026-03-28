@@ -22,7 +22,7 @@ use fastembed::{
     EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel,
 };
-use tracing::info;
+use tracing::{info, info_span};
 
 use crate::error::EncoderError;
 
@@ -316,6 +316,7 @@ impl EncoderPool {
     /// Tries each slot via `try_lock` (round-robin). If all busy, blocks on
     /// slot 0.
     pub fn encode(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EncoderError> {
+        let _span = info_span!("onnx_encode", n = texts.len()).entered();
         if texts.is_empty() {
             return Ok(vec![]);
         }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use tracing::warn;
+use tracing::{info_span, warn};
 
 use crate::error::SessionError;
 use crate::matching::pipeline;
@@ -292,6 +292,7 @@ impl Session {
         side: Side,
         record: Record,
     ) -> Result<UpsertResponse, SessionError> {
+        let _span = info_span!("upsert_record").entered();
         let config = &self.state.config;
         let is_a_side = side == Side::A;
         let id_field = match side {
@@ -343,6 +344,7 @@ impl Session {
         emb_specs: &[(String, String, f64)],
         is_a_side: bool,
     ) -> Result<Vec<f32>, SessionError> {
+        let _span = info_span!("encode_combined").entered();
         if let Some(ref coordinator) = self.state.coordinator {
             // Coordinator path: encode each embedding field via the
             // coordinator and assemble the combined vector.
@@ -471,6 +473,7 @@ impl Session {
 
         // 6b. Update BM25 index
         if let Some(ref bm25_mtx) = self.state.side(side).bm25_index {
+            let _span = info_span!("bm25_upsert").entered();
             let mut idx = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
             idx.upsert(&id, &record);
         }
@@ -563,10 +566,13 @@ impl Session {
 
         // 9. Pipeline: blocking → candidate selection → full scoring
         let top_n = config.top_n.unwrap_or(5);
-        let blocked_ids: Vec<String> = if config.blocking.enabled {
-            store.blocking_query(&record, side, opp)
-        } else {
-            store.ids(opp)
+        let blocked_ids: Vec<String> = {
+            let _span = info_span!("blocking_query").entered();
+            if config.blocking.enabled {
+                store.blocking_query(&record, side, opp)
+            } else {
+                store.ids(opp)
+            }
         };
 
         // Fetch the query combined vec from this side's index.
@@ -587,18 +593,22 @@ impl Session {
             .map(|mtx| mtx.read().unwrap_or_else(|e| e.into_inner()));
 
         // Build BM25 context from opposite side's index.
-        // Commit any buffered writes first (write lock, brief), then
-        // query under a read lock so concurrent requests can score in parallel.
+        // Commit buffered writes if the batch threshold has been reached
+        // (write lock, brief), then query under a read lock so concurrent
+        // requests can score in parallel.
+        let bm25_batch = config.bm25_commit_batch_size.unwrap_or(1);
         let results = if let Some(ref opp_bm25_mtx) = opp_side.bm25_index {
-            // Brief write lock for commit only
+            // Brief write lock for batched commit
             {
+                let _span = info_span!("bm25_commit").entered();
                 let mut w = opp_bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
-                w.commit_if_dirty();
+                w.commit_if_ready(bm25_batch);
             }
             // Read lock for query — concurrent readers allowed
             let guard = opp_bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
             let query_text = guard.query_text_for(&record, side);
             let ctx = Bm25Ctx::new(&guard, query_text);
+            let _span = info_span!("score_pool").entered();
             pipeline::score_pool(
                 &id,
                 &record,
@@ -617,6 +627,7 @@ impl Session {
                 self.state.synonym_dictionary.as_deref(),
             )
         } else {
+            let _span = info_span!("score_pool").entered();
             pipeline::score_pool(
                 &id,
                 &record,
@@ -637,6 +648,7 @@ impl Session {
         };
 
         // 10. Claim loop: try candidates in ranked order.
+        let _span = info_span!("claim_loop").entered();
         let mut classification = "no_match".to_string();
         let mut _claimed_idx: Option<usize> = None;
 
@@ -1597,12 +1609,13 @@ impl Session {
 
         let synonym_dict = self.state.synonym_dictionary.as_deref();
 
-        // Build BM25 context. Commit buffered writes (brief write lock),
-        // then query under read lock for concurrency.
+        // Build BM25 context. Commit buffered writes if batch threshold
+        // reached (brief write lock), then query under read lock for concurrency.
+        let bm25_batch = config.bm25_commit_batch_size.unwrap_or(1);
         let results = if let Some(ref bm25_mtx) = pool_state.bm25_index {
             {
                 let mut w = bm25_mtx.write().unwrap_or_else(|e| e.into_inner());
-                w.commit_if_dirty();
+                w.commit_if_ready(bm25_batch);
             }
             let guard = bm25_mtx.read().unwrap_or_else(|e| e.into_inner());
             let query_text = guard.query_text_for(&record, side);
