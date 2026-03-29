@@ -199,13 +199,19 @@ impl UpsertLog {
         Ok(())
     }
 
-    /// Flush the buffered writer to the OS.
+    /// Flush the buffered writer to stable storage.
+    ///
+    /// Calls `BufWriter::flush()` to push to the OS page cache, then
+    /// `File::sync_all()` to fsync to disk. Without the sync, a kernel
+    /// crash within the OS buffer window could lose events the WAL was
+    /// supposed to protect.
     pub fn flush(&self) -> io::Result<()> {
         let mut w = self
             .writer
             .lock()
             .map_err(|e| io::Error::other(e.to_string()))?;
-        w.flush()
+        w.flush()?;
+        w.get_ref().sync_all()
     }
 
     /// Find all WAL files matching the base path pattern.

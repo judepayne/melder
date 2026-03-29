@@ -47,18 +47,21 @@ impl CrossMapOps for SqliteCrossMap {
     }
 
     fn add(&self, a_id: &str, b_id: &str) {
-        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute_batch("BEGIN").expect("begin transaction");
-        conn.execute("DELETE FROM crossmap WHERE a_id = ?1", params![a_id])
+        let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        // Use rusqlite's Transaction API for automatic rollback on panic.
+        // The old manual BEGIN/COMMIT left the connection in an open
+        // transaction if any .expect() panicked between them.
+        let tx = conn.transaction().expect("begin transaction");
+        tx.execute("DELETE FROM crossmap WHERE a_id = ?1", params![a_id])
             .expect("delete old a_id");
-        conn.execute("DELETE FROM crossmap WHERE b_id = ?1", params![b_id])
+        tx.execute("DELETE FROM crossmap WHERE b_id = ?1", params![b_id])
             .expect("delete old b_id");
-        conn.execute(
+        tx.execute(
             "INSERT INTO crossmap (a_id, b_id) VALUES (?1, ?2)",
             params![a_id, b_id],
         )
         .expect("insert crossmap pair");
-        conn.execute_batch("COMMIT").expect("commit transaction");
+        tx.commit().expect("commit transaction");
     }
 
     fn remove(&self, a_id: &str, b_id: &str) {
@@ -103,8 +106,11 @@ impl CrossMapOps for SqliteCrossMap {
 
     fn claim(&self, a_id: &str, b_id: &str) -> bool {
         // Must use writer: check-then-insert must be atomic on one connection.
-        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        let a_taken: bool = conn
+        // Wrapped in a transaction so the two SELECTs + INSERT are atomic,
+        // and any panic triggers automatic rollback via Transaction::drop.
+        let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction().expect("begin transaction");
+        let a_taken: bool = tx
             .query_row(
                 "SELECT 1 FROM crossmap WHERE a_id = ?1",
                 params![a_id],
@@ -114,7 +120,7 @@ impl CrossMapOps for SqliteCrossMap {
         if a_taken {
             return false;
         }
-        let b_taken: bool = conn
+        let b_taken: bool = tx
             .query_row(
                 "SELECT 1 FROM crossmap WHERE b_id = ?1",
                 params![b_id],
@@ -124,11 +130,12 @@ impl CrossMapOps for SqliteCrossMap {
         if b_taken {
             return false;
         }
-        conn.execute(
+        tx.execute(
             "INSERT INTO crossmap (a_id, b_id) VALUES (?1, ?2)",
             params![a_id, b_id],
         )
         .expect("claim insert");
+        tx.commit().expect("commit claim");
         true
     }
 

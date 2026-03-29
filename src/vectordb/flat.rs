@@ -462,21 +462,21 @@ impl VectorDB for FlatVectorDB {
                 got: vec.len(),
             });
         }
-        let mut idx = self.inner.write().unwrap();
+        let mut idx = self.inner.write().unwrap_or_else(|e| e.into_inner());
         idx.upsert(id, vec);
         drop(idx);
         // Update text hash (no-op if emb_specs is empty).
-        let mut th = self.text_hashes.write().unwrap();
+        let mut th = self.text_hashes.write().unwrap_or_else(|e| e.into_inner());
         th.update(id, record, side);
         Ok(())
     }
 
     fn remove(&self, id: &str) -> Result<bool, VectorDBError> {
-        let mut idx = self.inner.write().unwrap();
+        let mut idx = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let removed = idx.remove(id);
         drop(idx);
         if removed {
-            let mut th = self.text_hashes.write().unwrap();
+            let mut th = self.text_hashes.write().unwrap_or_else(|e| e.into_inner());
             th.remove(id);
         }
         Ok(removed)
@@ -495,7 +495,7 @@ impl VectorDB for FlatVectorDB {
                 got: query.len(),
             });
         }
-        let idx = self.inner.read().unwrap();
+        let idx = self.inner.read().unwrap_or_else(|e| e.into_inner());
         let results = idx.search(query, k);
         Ok(results
             .into_iter()
@@ -517,7 +517,7 @@ impl VectorDB for FlatVectorDB {
                 got: query.len(),
             });
         }
-        let idx = self.inner.read().unwrap();
+        let idx = self.inner.read().unwrap_or_else(|e| e.into_inner());
         let results = idx.search_filtered(query, k, allowed);
         Ok(results
             .into_iter()
@@ -526,17 +526,17 @@ impl VectorDB for FlatVectorDB {
     }
 
     fn get(&self, id: &str) -> Result<Option<Vec<f32>>, VectorDBError> {
-        let idx = self.inner.read().unwrap();
+        let idx = self.inner.read().unwrap_or_else(|e| e.into_inner());
         Ok(idx.get(id).map(|slice| slice.to_vec()))
     }
 
     fn contains(&self, id: &str) -> bool {
-        let idx = self.inner.read().unwrap();
+        let idx = self.inner.read().unwrap_or_else(|e| e.into_inner());
         idx.contains(id)
     }
 
     fn len(&self) -> usize {
-        let idx = self.inner.read().unwrap();
+        let idx = self.inner.read().unwrap_or_else(|e| e.into_inner());
         idx.len()
     }
 
@@ -545,21 +545,28 @@ impl VectorDB for FlatVectorDB {
     }
 
     fn save(&self, path: &Path) -> Result<(), VectorDBError> {
-        let idx = self.inner.read().unwrap();
+        let idx = self.inner.read().unwrap_or_else(|e| e.into_inner());
         save_index(path, &idx).map_err(|e| VectorDBError::Backend(e.to_string()))?;
         drop(idx);
-        let th = self.text_hashes.read().unwrap();
+        let th = self.text_hashes.read().unwrap_or_else(|e| e.into_inner());
         th.save(path)
             .map_err(|e| VectorDBError::Backend(format!("texthash save: {}", e)))?;
         Ok(())
     }
 
     fn stored_text_hashes(&self) -> HashMap<String, u64> {
-        self.text_hashes.read().unwrap().all().clone()
+        self.text_hashes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .all()
+            .clone()
     }
 
     fn text_hash_for(&self, id: &str) -> Option<u64> {
-        self.text_hashes.read().unwrap().get(id)
+        self.text_hashes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
     }
 
     fn is_stale(path: &Path, expected_count: usize) -> Result<bool, VectorDBError> {

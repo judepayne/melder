@@ -228,19 +228,19 @@ impl UsearchVectorDB {
     fn get_or_create_block(&self, block_key: &BlockKey) -> Result<usize, VectorDBError> {
         // Fast path: block already exists (read lock only).
         {
-            let router = self.block_router.read().unwrap();
+            let router = self.block_router.read().unwrap_or_else(|e| e.into_inner());
             if let Some(&idx) = router.get(block_key) {
                 return Ok(idx);
             }
         }
         // Slow path: need to create a new block.
-        let mut router = self.block_router.write().unwrap();
+        let mut router = self.block_router.write().unwrap_or_else(|e| e.into_inner());
         // Double-check after acquiring write lock (another thread may have created it).
         if let Some(&idx) = router.get(block_key) {
             return Ok(idx);
         }
         let state = BlockState::new(self.dim, self.quantization, self.expansion_search)?;
-        let mut blocks = self.blocks.write().unwrap();
+        let mut blocks = self.blocks.write().unwrap_or_else(|e| e.into_inner());
         let idx = blocks.len();
         blocks.push(RwLock::new(state));
         router.insert(block_key.clone(), idx);
@@ -250,7 +250,7 @@ impl UsearchVectorDB {
     /// Look up the block index for a record's block key.
     /// Returns `None` if the block doesn't exist (no records from this key yet).
     fn find_block(&self, block_key: &BlockKey) -> Option<usize> {
-        let router = self.block_router.read().unwrap();
+        let router = self.block_router.read().unwrap_or_else(|e| e.into_inner());
         router.get(block_key).copied()
     }
 
@@ -288,14 +288,16 @@ impl VectorDB for UsearchVectorDB {
 
         // If the record already exists in a *different* block, remove it there first.
         {
-            let rb = self.record_block.read().unwrap();
+            let rb = self.record_block.read().unwrap_or_else(|e| e.into_inner());
             if let Some(&old_block_idx) = rb.get(id)
                 && old_block_idx != block_idx
             {
                 drop(rb);
                 // Remove from old block.
-                let blocks = self.blocks.read().unwrap();
-                let mut old_state = blocks[old_block_idx].write().unwrap();
+                let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());
+                let mut old_state = blocks[old_block_idx]
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner());
                 if let Some(old_key) = old_state.id_to_key.remove(id) {
                     old_state.key_to_id.remove(&old_key);
                     old_state.id_to_side.remove(id);
@@ -303,14 +305,14 @@ impl VectorDB for UsearchVectorDB {
                     let _ = old_state.index.remove(old_key);
                 }
                 drop(old_state);
-                let mut rb = self.record_block.write().unwrap();
+                let mut rb = self.record_block.write().unwrap_or_else(|e| e.into_inner());
                 rb.remove(id);
             }
         }
 
         // Insert/replace in the target block.
-        let blocks = self.blocks.read().unwrap();
-        let mut state = blocks[block_idx].write().unwrap();
+        let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());
+        let mut state = blocks[block_idx].write().unwrap_or_else(|e| e.into_inner());
 
         // If the ID already exists in this block, remove the old usearch key
         // so the new vector gets a fresh HNSW node.
@@ -344,12 +346,12 @@ impl VectorDB for UsearchVectorDB {
         drop(blocks);
 
         // Update global record→block mapping.
-        let mut rb = self.record_block.write().unwrap();
+        let mut rb = self.record_block.write().unwrap_or_else(|e| e.into_inner());
         rb.insert(id_owned, block_idx);
         drop(rb);
 
         // Update text hash (no-op if emb_specs is empty).
-        let mut th = self.text_hashes.write().unwrap();
+        let mut th = self.text_hashes.write().unwrap_or_else(|e| e.into_inner());
         th.update(id, record, side);
 
         Ok(())
@@ -357,15 +359,15 @@ impl VectorDB for UsearchVectorDB {
 
     fn remove(&self, id: &str) -> Result<bool, VectorDBError> {
         let block_idx = {
-            let rb = self.record_block.read().unwrap();
+            let rb = self.record_block.read().unwrap_or_else(|e| e.into_inner());
             match rb.get(id) {
                 Some(&idx) => idx,
                 None => return Ok(false),
             }
         };
 
-        let blocks = self.blocks.read().unwrap();
-        let mut state = blocks[block_idx].write().unwrap();
+        let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());
+        let mut state = blocks[block_idx].write().unwrap_or_else(|e| e.into_inner());
 
         if let Some(usearch_key) = state.id_to_key.remove(id) {
             state.key_to_id.remove(&usearch_key);
@@ -377,12 +379,12 @@ impl VectorDB for UsearchVectorDB {
         drop(state);
         drop(blocks);
 
-        let mut rb = self.record_block.write().unwrap();
+        let mut rb = self.record_block.write().unwrap_or_else(|e| e.into_inner());
         rb.remove(id);
         drop(rb);
 
         // Remove text hash entry.
-        let mut th = self.text_hashes.write().unwrap();
+        let mut th = self.text_hashes.write().unwrap_or_else(|e| e.into_inner());
         th.remove(id);
 
         Ok(true)
@@ -408,8 +410,8 @@ impl VectorDB for UsearchVectorDB {
             None => return Ok(Vec::new()), // no block = no results
         };
 
-        let blocks = self.blocks.read().unwrap();
-        let state = blocks[block_idx].read().unwrap();
+        let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());
+        let state = blocks[block_idx].read().unwrap_or_else(|e| e.into_inner());
 
         if state.active_count() == 0 {
             return Ok(Vec::new());
@@ -475,8 +477,8 @@ impl VectorDB for UsearchVectorDB {
             None => return Ok(Vec::new()),
         };
 
-        let blocks = self.blocks.read().unwrap();
-        let state = blocks[block_idx].read().unwrap();
+        let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());
+        let state = blocks[block_idx].read().unwrap_or_else(|e| e.into_inner());
 
         if state.active_count() == 0 {
             return Ok(Vec::new());
@@ -523,15 +525,15 @@ impl VectorDB for UsearchVectorDB {
 
     fn get(&self, id: &str) -> Result<Option<Vec<f32>>, VectorDBError> {
         let block_idx = {
-            let rb = self.record_block.read().unwrap();
+            let rb = self.record_block.read().unwrap_or_else(|e| e.into_inner());
             match rb.get(id) {
                 Some(&idx) => idx,
                 None => return Ok(None),
             }
         };
 
-        let blocks = self.blocks.read().unwrap();
-        let state = blocks[block_idx].read().unwrap();
+        let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());
+        let state = blocks[block_idx].read().unwrap_or_else(|e| e.into_inner());
 
         let usearch_key = match state.id_to_key.get(id) {
             Some(&k) => k,
@@ -552,12 +554,12 @@ impl VectorDB for UsearchVectorDB {
     }
 
     fn contains(&self, id: &str) -> bool {
-        let rb = self.record_block.read().unwrap();
+        let rb = self.record_block.read().unwrap_or_else(|e| e.into_inner());
         rb.contains_key(id)
     }
 
     fn len(&self) -> usize {
-        let rb = self.record_block.read().unwrap();
+        let rb = self.record_block.read().unwrap_or_else(|e| e.into_inner());
         rb.len()
     }
 
@@ -571,9 +573,9 @@ impl VectorDB for UsearchVectorDB {
         let dir = path.with_extension("usearchdb");
         std::fs::create_dir_all(&dir)?;
 
-        let blocks = self.blocks.read().unwrap();
-        let router = self.block_router.read().unwrap();
-        let rb = self.record_block.read().unwrap();
+        let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());
+        let router = self.block_router.read().unwrap_or_else(|e| e.into_inner());
+        let rb = self.record_block.read().unwrap_or_else(|e| e.into_inner());
 
         // Build manifest.
         let mut manifest = ManifestData {
@@ -586,7 +588,7 @@ impl VectorDB for UsearchVectorDB {
         };
 
         for (block_key, &block_idx) in router.iter() {
-            let state = blocks[block_idx].read().unwrap();
+            let state = blocks[block_idx].read().unwrap_or_else(|e| e.into_inner());
 
             // Save the usearch index.
             let index_path = dir.join(format!("block_{}.usearch", block_idx));
@@ -628,7 +630,7 @@ impl VectorDB for UsearchVectorDB {
         // Save text-hash sidecar alongside the .usearchdb directory.
         // The sidecar path is derived from `path` (the .index base path),
         // not from `dir` (the .usearchdb directory).
-        let th = self.text_hashes.read().unwrap();
+        let th = self.text_hashes.read().unwrap_or_else(|e| e.into_inner());
         th.save(path)
             .map_err(|e| VectorDBError::Backend(format!("texthash save: {}", e)))?;
 
@@ -636,11 +638,18 @@ impl VectorDB for UsearchVectorDB {
     }
 
     fn stored_text_hashes(&self) -> HashMap<String, u64> {
-        self.text_hashes.read().unwrap().all().clone()
+        self.text_hashes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .all()
+            .clone()
     }
 
     fn text_hash_for(&self, id: &str) -> Option<u64> {
-        self.text_hashes.read().unwrap().get(id)
+        self.text_hashes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
     }
 
     fn is_stale(path: &Path, expected_count: usize) -> Result<bool, VectorDBError>

@@ -26,7 +26,14 @@ pub fn write_results_csv(
     ];
     // Add field score columns
     for mf in &config.match_fields {
-        headers.push(format!("{}_{}_score", mf.field_a, mf.field_b));
+        // BM25 match fields have empty field_a/field_b; use "bm25" for the
+        // column header to match the FieldScore keys produced by score_pair.
+        let (col_a, col_b) = if mf.method == "bm25" {
+            ("bm25", "bm25")
+        } else {
+            (mf.field_a.as_str(), mf.field_b.as_str())
+        };
+        headers.push(format!("{}_{}_score", col_a, col_b));
     }
     wtr.write_record(&headers)?;
 
@@ -43,12 +50,18 @@ pub fn write_results_csv(
             r.classification.as_str().to_string(),
         ];
 
-        // Add field scores
+        // Add field scores. BM25 FieldScores use field_a="bm25", field_b="bm25"
+        // (not the empty strings from the MatchField), so match on those.
         for mf in &config.match_fields {
+            let (fa, fb) = if mf.method == "bm25" {
+                ("bm25".to_string(), "bm25".to_string())
+            } else {
+                (mf.field_a.clone(), mf.field_b.clone())
+            };
             let fs = r
                 .field_scores
                 .iter()
-                .find(|fs| fs.field_a == mf.field_a && fs.field_b == mf.field_b);
+                .find(|fs| fs.field_a == fa && fs.field_b == fb);
             row.push(format!("{:.4}", fs.map(|f| f.score).unwrap_or(0.0)));
         }
 

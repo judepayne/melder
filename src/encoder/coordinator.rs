@@ -120,11 +120,18 @@ fn coordinator_loop(
             Err(_) => return, // channel closed, coordinator shutting down
         };
 
-        // Collect more requests for up to `batch_wait`.
+        // Collect more requests for up to `batch_wait`, capped at
+        // MAX_BATCH_REQUESTS to prevent unbounded accumulation. Very
+        // large batches can OOM due to O(N²) transformer self-attention.
+        const MAX_BATCH_REQUESTS: usize = 64;
+
         let mut batch = vec![first];
         let deadline = Instant::now() + batch_wait;
 
         loop {
+            if batch.len() >= MAX_BATCH_REQUESTS {
+                break;
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;

@@ -17,6 +17,7 @@ pub mod coordinator;
 
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fastembed::{
     EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
@@ -146,6 +147,9 @@ fn detect_dim_from_config(config_path: impl AsRef<Path>) -> Option<usize> {
 pub struct EncoderPool {
     encoders: Vec<Mutex<TextEmbedding>>,
     dim: usize,
+    /// Round-robin counter for fallback slot selection when all slots are
+    /// busy via try_lock. Prevents thundering herd on slot 0.
+    next_fallback: AtomicUsize,
 }
 
 impl std::fmt::Debug for EncoderPool {
@@ -193,7 +197,11 @@ impl EncoderPool {
             encoders.push(Mutex::new(te));
         }
 
-        Ok(Self { encoders, dim })
+        Ok(Self {
+            encoders,
+            dim,
+            next_fallback: AtomicUsize::new(0),
+        })
     }
 
     /// Download a model from HuggingFace Hub and load it.
@@ -303,7 +311,11 @@ impl EncoderPool {
             encoders.push(Mutex::new(te));
         }
 
-        Ok(Self { encoders, dim })
+        Ok(Self {
+            encoders,
+            dim,
+            next_fallback: AtomicUsize::new(0),
+        })
     }
 
     /// ONNX batch size for fastembed. Smaller batches improve CPU cache
@@ -333,8 +345,11 @@ impl EncoderPool {
             }
         }
 
-        // All busy — block on slot 0
-        let mut guard = self.encoders[0]
+        // All busy — block on a round-robin slot to distribute contention
+        // evenly instead of thundering-herding on slot 0.
+        let n = self.encoders.len();
+        let slot = self.next_fallback.fetch_add(1, Ordering::Relaxed) % n;
+        let mut guard = self.encoders[slot]
             .lock()
             .map_err(|e| EncoderError::Inference(format!("mutex poisoned: {}", e)))?;
         guard

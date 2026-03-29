@@ -66,14 +66,14 @@ pub struct QueryParams {
 
 #[derive(Deserialize)]
 pub struct PaginationParams {
-    pub offset: Option<usize>,
+    pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
 pub struct UnmatchedParams {
     pub include_records: Option<bool>,
-    pub offset: Option<usize>,
+    pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -495,15 +495,15 @@ pub async fn status(State(session): State<AppState>) -> axum::response::Response
 // Crossmap, unmatched, stats, and review handlers
 // ---------------------------------------------------------------------------
 
-/// GET /api/v1/crossmap/pairs?offset=0&limit=100
+/// GET /api/v1/crossmap/pairs?cursor=X&limit=100
 pub async fn crossmap_pairs(
     State(session): State<AppState>,
     Query(params): Query<PaginationParams>,
 ) -> axum::response::Response {
-    let offset = params.offset.unwrap_or(0);
+    let cursor = params.cursor;
     let limit = params.limit;
     run_blocking(
-        move || Ok::<_, SessionError>(session.crossmap_pairs(offset, limit)),
+        move || Ok::<_, SessionError>(session.crossmap_pairs(cursor.as_deref(), limit)),
         StatusCode::INTERNAL_SERVER_ERROR,
     )
     .await
@@ -515,12 +515,17 @@ async fn unmatched_handler(
     session: AppState,
     params: UnmatchedParams,
 ) -> axum::response::Response {
-    let offset = params.offset.unwrap_or(0);
+    let cursor = params.cursor;
     let limit = params.limit;
     let include_records = params.include_records.unwrap_or(false);
     run_blocking(
         move || {
-            Ok::<_, SessionError>(session.unmatched_records(side, offset, limit, include_records))
+            Ok::<_, SessionError>(session.unmatched_records(
+                side,
+                cursor.as_deref(),
+                limit,
+                include_records,
+            ))
         },
         StatusCode::INTERNAL_SERVER_ERROR,
     )
@@ -550,15 +555,15 @@ pub async fn crossmap_stats(State(session): State<AppState>) -> axum::response::
     .await
 }
 
-/// GET /api/v1/review/list?offset=0&limit=100
+/// GET /api/v1/review/list?cursor=X&limit=100
 pub async fn review_list(
     State(session): State<AppState>,
     Query(params): Query<PaginationParams>,
 ) -> axum::response::Response {
-    let offset = params.offset.unwrap_or(0);
+    let cursor = params.cursor;
     let limit = params.limit;
     run_blocking(
-        move || Ok::<_, SessionError>(session.review_list(offset, limit)),
+        move || Ok::<_, SessionError>(session.review_list(cursor.as_deref(), limit)),
         StatusCode::INTERNAL_SERVER_ERROR,
     )
     .await

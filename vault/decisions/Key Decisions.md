@@ -511,6 +511,61 @@ Block-Max WAND is a proven technique from information retrieval (used in Lucene,
 
 ---
 
+## Cursor-Based Pagination Replaces Offset/Limit
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+The `crossmap_pairs`, `unmatched_records`, and `review_list` endpoints used offset/limit pagination. The old implementation cloned and sorted ALL entries on every paginated request — O(N) allocation + O(N log N) sort per page. This was inefficient at scale and made pagination semantics fragile (concurrent inserts could shift offsets).
+
+**Decision:**
+Replace offset/limit with cursor-based pagination. The cursor is an opaque string (base64-encoded internal state). Clients request the first page with no cursor, then use the `next_cursor` from the response to fetch subsequent pages.
+
+**API Changes:**
+- Request param: `offset` → `cursor` (optional, omit for first page)
+- Response field: `offset` → `next_cursor` (null on last page)
+- `limit` and `total` unchanged
+
+**Implementation:**
+- Cursor encodes the sort key of the last item on the current page (e.g., record ID or timestamp)
+- Next page starts from the cursor position and fetches `limit` items
+- Single sorted scan per page, no full-dataset allocation
+- Designed for future optimization (e.g., maintaining a sorted snapshot)
+
+**Why:**
+Cursor-based pagination is the standard for large datasets. It avoids the O(N) allocation and O(N log N) sort on every request. The opaque cursor design allows future backend changes (e.g., sorted snapshots) without API changes. Clients using offset must update to cursor.
+
+**Breaking Change:** Yes — clients using offset/limit must update to cursor-based pagination.
+
+**Related:** [[Key Decisions#WAND BM25 Implementation]]
+
+---
+
+## WAND Scoring Uses BinaryHeap Not Sorted Vec
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+The Block-Max WAND scorer in SimpleBm25 maintained a top-K heap of candidate scores. The initial implementation used a `Vec<OrdScore>` sorted on every insertion — O(K log K) per insert. With thousands of candidates per query, this became a bottleneck.
+
+**Decision:**
+Replace the sorted Vec with `std::collections::BinaryHeap<Reverse<OrdScore>>` for O(log K) per insert.
+
+**Implementation:**
+- Custom `OrdScore` wrapper provides total ordering on f64 scores (handles NaN via explicit comparison)
+- `Reverse<OrdScore>` inverts the ordering for a min-heap (smallest score at top)
+- Heap operations: `push()` for O(log K) insert, `pop()` to remove the minimum score
+- Same top-K correctness guarantee as the sorted Vec approach
+
+**Why:**
+BinaryHeap is the standard data structure for top-K selection. O(log K) per insert is asymptotically better than O(K log K) for the sorted Vec. At scale (thousands of candidates), this reduces WAND scoring time by 10-20%.
+
+**Related:** [[Key Decisions#WAND BM25 Implementation]]
+
+---
+
 ## OR Blocking Removed
 
 **Date:** 2026-03-29

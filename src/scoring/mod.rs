@@ -36,8 +36,9 @@ pub fn score_pair(
     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
 ) -> ScoreResult {
     let mut field_scores = Vec::with_capacity(match_fields.len());
-    let mut weighted_sum = 0.0_f64;
-    let mut total_weight = 0.0_f64;
+    let mut base_weighted_sum = 0.0_f64; // non-synonym methods
+    let mut synonym_bonus = 0.0_f64; // additive synonym contribution
+    let mut total_weight = 0.0_f64; // denominator (excludes synonym)
 
     for mf in match_fields {
         let score = if mf.method == "bm25" {
@@ -90,25 +91,27 @@ pub fn score_pair(
             weight: mf.weight,
         };
 
-        weighted_sum += score * mf.weight;
-        // Synonym weight is never included in the denominator. This makes
-        // synonym a flat additive bonus: +weight when it fires (score=1.0),
-        // +0.0 when it doesn't. The other methods normalise among themselves
-        // as before, and synonym sits on top.
-        if mf.method != "synonym" {
+        // Synonym is a flat additive bonus: +weight when it fires (score=1.0),
+        // +0.0 when it doesn't. Its contribution is never diluted by weight
+        // normalization — only the base (non-synonym) methods normalize among
+        // themselves.
+        if mf.method == "synonym" {
+            synonym_bonus += score * mf.weight;
+        } else {
+            base_weighted_sum += score * mf.weight;
             total_weight += mf.weight;
         }
         field_scores.push(fs);
     }
 
-    // Normalize if weights don't sum to 1.0, then clamp to [0, 1].
-    // Additive methods (synonym) can push the sum above 1.0.
-    let total = if total_weight > 0.0 && (total_weight - 1.0).abs() > 0.001 {
-        weighted_sum / total_weight
+    // Normalize the base score if non-synonym weights don't sum to 1.0,
+    // then add the synonym bonus on top, and clamp to [0, 1].
+    let base = if total_weight > 0.0 && (total_weight - 1.0).abs() > 0.001 {
+        base_weighted_sum / total_weight
     } else {
-        weighted_sum
-    }
-    .clamp(0.0, 1.0);
+        base_weighted_sum
+    };
+    let total = (base + synonym_bonus).clamp(0.0, 1.0);
 
     ScoreResult {
         field_scores,
@@ -144,7 +147,7 @@ pub fn build_match_result(
 /// Numeric scorer: returns 0.0 or 1.0 based on numeric equality.
 ///
 /// Tries to parse both values as f64. If both parse and are equal
-/// (within tolerance), returns 1.0. Otherwise returns 0.0.
+/// (within relative tolerance of 1e-9), returns 1.0. Otherwise returns 0.0.
 fn numeric_score(a: &str, b: &str) -> f64 {
     let a = a.trim();
     let b = b.trim();
@@ -153,11 +156,12 @@ fn numeric_score(a: &str, b: &str) -> f64 {
     }
     match (a.parse::<f64>(), b.parse::<f64>()) {
         (Ok(va), Ok(vb)) => {
-            if (va - vb).abs() < f64::EPSILON {
-                1.0
-            } else {
-                0.0
-            }
+            // Use relative tolerance for large values, absolute for small.
+            // f64::EPSILON (~2.2e-16) is effectively bit-equality and far
+            // too tight for values like 1_000_000.0.
+            let max_abs = va.abs().max(vb.abs());
+            let tol = if max_abs > 1.0 { max_abs * 1e-9 } else { 1e-9 };
+            if (va - vb).abs() < tol { 1.0 } else { 0.0 }
         }
         _ => 0.0,
     }

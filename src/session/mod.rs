@@ -164,8 +164,10 @@ pub mod response {
     #[derive(Debug, Serialize)]
     pub struct CrossmapPairsResponse {
         pub total: usize,
-        pub offset: usize,
         pub pairs: Vec<CrossmapPairEntry>,
+        /// Opaque cursor for the next page. `None` when this is the last page.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub next_cursor: Option<String>,
     }
 
     #[derive(Debug, Serialize)]
@@ -179,8 +181,10 @@ pub mod response {
     pub struct UnmatchedResponse {
         pub side: Side,
         pub total: usize,
-        pub offset: usize,
         pub records: Vec<UnmatchedEntry>,
+        /// Opaque cursor for the next page. `None` when this is the last page.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub next_cursor: Option<String>,
     }
 
     #[derive(Debug, Serialize)]
@@ -207,8 +211,10 @@ pub mod response {
     #[derive(Debug, Serialize)]
     pub struct ReviewListResponse {
         pub total: usize,
-        pub offset: usize,
         pub reviews: Vec<ReviewListEntry>,
+        /// Opaque cursor for the next page. `None` when this is the last page.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub next_cursor: Option<String>,
     }
 
     // --- Enroll-mode response types ---
@@ -273,8 +279,10 @@ impl Session {
 
     /// Send a hook event (best-effort, never blocks).
     fn send_hook(&self, event: crate::hooks::HookEvent) {
-        if let Some(ref tx) = self.hook_tx {
-            let _ = tx.try_send(event);
+        if let Some(ref tx) = self.hook_tx
+            && let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(event)
+        {
+            warn!("hook event dropped: channel full");
         }
     }
 
@@ -1595,47 +1603,79 @@ impl Session {
     // Crossmap, unmatched, stats, and review queries
     // -----------------------------------------------------------------------
 
-    /// Return all confirmed crossmap pairs with pagination.
-    pub fn crossmap_pairs(&self, offset: usize, limit: Option<usize>) -> CrossmapPairsResponse {
+    /// Return confirmed crossmap pairs with cursor-based pagination.
+    ///
+    /// Pairs are sorted by `(a_id, b_id)`. The cursor is the `a_id` of the
+    /// last entry on the previous page — the scan starts after that position.
+    pub fn crossmap_pairs(
+        &self,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> CrossmapPairsResponse {
         let mut all = self.state.crossmap.pairs();
         all.sort();
         let total = all.len();
-        let start = offset.min(total);
+
+        let start = match cursor {
+            Some(c) => all
+                .iter()
+                .position(|(a, _)| a.as_str() > c)
+                .unwrap_or(total),
+            None => 0,
+        };
+
         let end = match limit {
             Some(l) => (start + l).min(total),
             None => total,
         };
-        let pairs = all[start..end]
+
+        let pairs: Vec<CrossmapPairEntry> = all[start..end]
             .iter()
             .map(|(a, b)| CrossmapPairEntry {
                 a_id: a.clone(),
                 b_id: b.clone(),
             })
             .collect();
+
+        let next_cursor = if end < total {
+            pairs.last().map(|p| p.a_id.clone())
+        } else {
+            None
+        };
+
         CrossmapPairsResponse {
             total,
-            offset: start,
             pairs,
+            next_cursor,
         }
     }
 
-    /// Return unmatched record IDs for a given side with pagination.
+    /// Return unmatched record IDs with cursor-based pagination.
+    ///
+    /// IDs are already sorted. The cursor is the last ID on the previous
+    /// page — the scan starts after that position.
     pub fn unmatched_records(
         &self,
         side: Side,
-        offset: usize,
+        cursor: Option<&str>,
         limit: Option<usize>,
         include_records: bool,
     ) -> UnmatchedResponse {
         let store = &self.state.store;
         let ids = store.unmatched_ids(side); // already sorted
         let total = ids.len();
-        let start = offset.min(total);
+
+        let start = match cursor {
+            Some(c) => ids.iter().position(|id| id.as_str() > c).unwrap_or(total),
+            None => 0,
+        };
+
         let end = match limit {
             Some(l) => (start + l).min(total),
             None => total,
         };
-        let records = ids[start..end]
+
+        let records: Vec<UnmatchedEntry> = ids[start..end]
             .iter()
             .map(|id| {
                 let record = if include_records {
@@ -1649,11 +1689,18 @@ impl Session {
                 }
             })
             .collect();
+
+        let next_cursor = if end < total {
+            records.last().map(|r| r.id.clone())
+        } else {
+            None
+        };
+
         UnmatchedResponse {
             side,
             total,
-            offset: start,
             records,
+            next_cursor,
         }
     }
 
@@ -1868,8 +1915,11 @@ impl Session {
         Ok(BatchEnrollResponse { results })
     }
 
-    /// Return pending review-band matches with pagination.
-    pub fn review_list(&self, offset: usize, limit: Option<usize>) -> ReviewListResponse {
+    /// Return pending review-band matches with cursor-based pagination.
+    ///
+    /// Reviews are sorted by score descending, then by `id` for stability.
+    /// The cursor encodes `score|id` of the last entry on the previous page.
+    pub fn review_list(&self, cursor: Option<&str>, limit: Option<usize>) -> ReviewListResponse {
         let mut reviews: Vec<ReviewListEntry> = self
             .state
             .review_queue
@@ -1884,23 +1934,51 @@ impl Session {
                 }
             })
             .collect();
-        // Sort by score descending for deterministic output with highest
-        // confidence reviews first.
+        // Sort by score descending, then by id for stability.
         reviews.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
         });
         let total = reviews.len();
-        let start = offset.min(total);
+
+        // Parse cursor: "score|id" — find first entry strictly after it.
+        let start = match cursor {
+            Some(c) => {
+                if let Some((score_str, cursor_id)) = c.split_once('|') {
+                    let cursor_score: f64 = score_str.parse().unwrap_or(0.0);
+                    reviews
+                        .iter()
+                        .position(|r| {
+                            r.score < cursor_score
+                                || (r.score == cursor_score && r.id.as_str() > cursor_id)
+                        })
+                        .unwrap_or(total)
+                } else {
+                    0
+                }
+            }
+            None => 0,
+        };
+
         let end = match limit {
             Some(l) => (start + l).min(total),
             None => total,
         };
+
+        let page = reviews[start..end].to_vec();
+
+        let next_cursor = if end < total {
+            page.last().map(|r| format!("{}|{}", r.score, r.id))
+        } else {
+            None
+        };
+
         ReviewListResponse {
             total,
-            offset: start,
-            reviews: reviews[start..end].to_vec(),
+            reviews: page,
+            next_cursor,
         }
     }
 }

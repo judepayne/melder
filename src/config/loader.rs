@@ -41,6 +41,7 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     derive_bm25_fields(&mut cfg);
     derive_synonym_fields(&mut cfg);
     derive_required_fields(&mut cfg);
+    validate_field_names(&cfg)?;
 
     Ok(cfg)
 }
@@ -59,6 +60,7 @@ pub fn load_enroll_config(path: &Path) -> Result<Config, ConfigError> {
     derive_bm25_fields(&mut cfg);
     derive_synonym_fields(&mut cfg);
     derive_required_fields(&mut cfg);
+    validate_field_names(&cfg)?;
 
     Ok(cfg)
 }
@@ -870,6 +872,14 @@ fn derive_required_fields(cfg: &mut Config) {
         }
     }
 
+    // exact_prefilter fields
+    if cfg.exact_prefilter.enabled {
+        for fp in &cfg.exact_prefilter.fields {
+            seen_a.insert(fp.field_a.clone());
+            seen_b.insert(fp.field_b.clone());
+        }
+    }
+
     let mut a: Vec<String> = seen_a.into_iter().collect();
     let mut b: Vec<String> = seen_b.into_iter().collect();
     a.sort();
@@ -881,6 +891,34 @@ fn derive_required_fields(cfg: &mut Config) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Validate that all field names used as SQL column names (in `required_fields_a`
+/// and `required_fields_b`) are safe identifiers.
+///
+/// Column names from the config are interpolated into SQL via `format!()` in
+/// `SqliteStore`. A column name containing `"` could break the quoting. This
+/// validates them at load time rather than at runtime.
+fn validate_field_names(cfg: &Config) -> Result<(), ConfigError> {
+    fn is_safe_identifier(s: &str) -> bool {
+        !s.is_empty()
+            && s.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    }
+
+    for name in cfg.required_fields_a.iter().chain(&cfg.required_fields_b) {
+        if !is_safe_identifier(name) {
+            return Err(ConfigError::InvalidValue {
+                field: "field name".into(),
+                message: format!(
+                    "{:?} is not a safe identifier (must match [a-zA-Z_][a-zA-Z0-9_.-]*)",
+                    name,
+                ),
+            });
+        }
+    }
+    Ok(())
+}
 
 fn require_non_empty(value: &str, field: &str) -> Result<(), ConfigError> {
     if value.trim().is_empty() {

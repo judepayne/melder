@@ -563,8 +563,9 @@ impl SimpleBm25 {
             .map(|(i, tp)| WandCursor::new(i, tp.idf, &tp.blocks, avg_dl))
             .collect();
 
-        // Min-heap for top-K (we track worst score = threshold).
-        let mut heap: Vec<(u32, f64)> = Vec::with_capacity(top_k + 1);
+        // Min-heap for top-K (smallest score at top for efficient eviction).
+        let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<OrdScore>> =
+            std::collections::BinaryHeap::with_capacity(top_k + 1);
         let mut threshold: f64 = 0.0;
 
         // WAND main loop.
@@ -622,7 +623,8 @@ impl SimpleBm25 {
                     if score > threshold || heap.len() < top_k {
                         heap_insert(&mut heap, top_k, pivot_doc, score);
                         if heap.len() >= top_k {
-                            threshold = heap.last().map(|(_, s)| *s).unwrap_or(0.0);
+                            // Min-heap: peek() is the smallest score.
+                            threshold = heap.peek().map(|r| r.0.1).unwrap_or(0.0);
                         }
                     }
                 }
@@ -645,9 +647,11 @@ impl SimpleBm25 {
             }
         }
 
-        // Convert heap to result.
-        heap.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        heap.into_iter()
+        // Convert heap to result sorted descending by score.
+        let mut results: Vec<(u32, f64)> = heap.into_iter().map(|r| (r.0.0, r.0.1)).collect();
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results
+            .into_iter()
             .map(|(compact_id, score)| (self.id_map.to_str(compact_id), score as f32))
             .collect()
     }
@@ -834,13 +838,49 @@ fn compute_upper_bound(max_tf: u32, idf: f64, avg_dl: f64) -> f64 {
     bm25_term_score(max_tf as f64, idf, 1.0, avg_dl)
 }
 
-/// Insert into a sorted min-heap of (doc_id, score), keeping top_k best.
-fn heap_insert(heap: &mut Vec<(u32, f64)>, top_k: usize, doc_id: u32, score: f64) {
-    heap.push((doc_id, score));
-    // Keep sorted descending by score for easy threshold access.
-    heap.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    if heap.len() > top_k {
+/// Insert into a bounded min-heap keeping the top_k highest scores.
+///
+/// Uses `BinaryHeap<Reverse<...>>` for O(log K) per insertion instead of
+/// the previous O(K log K) sort-on-every-insert approach.
+fn heap_insert(
+    heap: &mut std::collections::BinaryHeap<std::cmp::Reverse<OrdScore>>,
+    top_k: usize,
+    doc_id: u32,
+    score: f64,
+) {
+    if heap.len() < top_k {
+        heap.push(std::cmp::Reverse(OrdScore(doc_id, score)));
+    } else if let Some(min) = heap.peek()
+        && score > min.0.1
+    {
         heap.pop();
+        heap.push(std::cmp::Reverse(OrdScore(doc_id, score)));
+    }
+}
+
+/// Score wrapper with total ordering (by score ascending, then doc_id).
+/// Used as `Reverse<OrdScore>` in the min-heap so the smallest score
+/// is at the top and gets evicted first.
+#[derive(Debug, Clone)]
+struct OrdScore(u32, f64);
+
+impl PartialEq for OrdScore {
+    fn eq(&self, other: &Self) -> bool {
+        self.1 == other.1 && self.0 == other.0
+    }
+}
+impl Eq for OrdScore {}
+impl PartialOrd for OrdScore {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for OrdScore {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.1
+            .partial_cmp(&other.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| self.0.cmp(&other.0))
     }
 }
 
