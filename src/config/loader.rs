@@ -363,10 +363,13 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
             require_non_empty(&fp.field_b, &format!("{}.field_b", prefix))?;
         }
         let op = cfg.blocking.operator.to_lowercase();
-        if op != "and" && op != "or" {
+        if op != "and" {
             return Err(ConfigError::InvalidValue {
                 field: "blocking.operator".into(),
-                message: format!("must be \"and\" or \"or\", got {:?}", cfg.blocking.operator),
+                message: format!(
+                    "must be \"and\" (OR blocking is no longer supported), got {:?}",
+                    cfg.blocking.operator
+                ),
             });
         }
     }
@@ -612,10 +615,13 @@ fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
             require_non_empty(&fp.field_a, &format!("{}.field", prefix))?;
         }
         let op = cfg.blocking.operator.to_lowercase();
-        if op != "and" && op != "or" {
+        if op != "and" {
             return Err(ConfigError::InvalidValue {
                 field: "blocking.operator".into(),
-                message: format!("must be \"and\" or \"or\", got {:?}", cfg.blocking.operator),
+                message: format!(
+                    "must be \"and\" (OR blocking is no longer supported), got {:?}",
+                    cfg.blocking.operator
+                ),
             });
         }
     }

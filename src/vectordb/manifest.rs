@@ -281,13 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn blocking_hash_changes_on_operator() {
-        let c1 = bc(true, "and", &[("x", "y")]);
-        let c2 = bc(true, "or", &[("x", "y")]);
-        assert_ne!(blocking_hash(&c1), blocking_hash(&c2));
-    }
-
-    #[test]
     fn blocking_hash_stable_on_field_reorder() {
         let c1 = bc(true, "and", &[("aa", "bb"), ("cc", "dd")]);
         let c2 = bc(true, "and", &[("cc", "dd"), ("aa", "bb")]);

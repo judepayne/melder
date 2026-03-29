@@ -244,7 +244,6 @@ pub fn run_batch(
                 store,
                 Side::A,
                 &config.bm25_fields,
-                &config.blocking.fields,
             );
             eprintln!(
                 "Built BM25 index for {} A records in {:.1}ms",
@@ -350,8 +349,6 @@ pub fn run_batch(
                     &query_text,
                     &blocked_ids,
                     bm25_candidates_n,
-                    &b_record,
-                    Side::B,
                 );
                 let scored: Vec<(String, f64)> = raw_results
                     .into_iter()

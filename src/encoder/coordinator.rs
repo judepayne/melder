@@ -1,6 +1,6 @@
 //! Encoding coordinator: batches concurrent encoding requests for throughput.
 //!
-//! The coordinator sits between HTTP handlers and the `EncoderPool`. Instead
+//! The coordinator sits between request handlers and the `EncoderPool`. Instead
 //! of each request independently acquiring an encoder slot and running a
 //! single-text ONNX call, the coordinator collects requests that arrive
 //! within a configurable time window (`batch_wait`) and dispatches them as
@@ -11,16 +11,15 @@
 //! ## Architecture
 //!
 //! ```text
-//!   caller 1 ─► submit(text) ──► mpsc ──► background task ──► EncoderPool.encode(batch)
-//!   caller 2 ─► submit(text) ──┘                              │
-//!   caller 3 ─► submit(text) ──┘                              ▼
-//!                  ◄── oneshot ◄── scatter results back to each caller
+//!   caller 1 ─► submit(texts) ──► crossbeam ──► background thread ──► EncoderPool.encode(batch)
+//!   caller 2 ─► submit(texts) ──┘                                      │
+//!   caller 3 ─► submit(texts) ──┘                                      ▼
+//!                     ◄── std::sync::mpsc ◄── scatter results back to each caller
 //! ```
 //!
-//! Each caller awaits a `tokio::sync::oneshot` receiver. The background
-//! task collects requests for up to `batch_wait` after the first arrival,
-//! then encodes them all in one `EncoderPool::encode()` call and sends
-//! each result back via the caller's oneshot channel.
+//! Callers are fully synchronous — no tokio runtime context required. This
+//! allows the coordinator to be called from rayon threads, spawn_blocking
+//! threads, or any other synchronous context.
 //!
 //! ## When to use
 //!
@@ -29,35 +28,39 @@
 //! each request but increases throughput by amortising ONNX overhead.
 //! Sequential workloads (c=1) should leave this disabled (default: 0).
 
+use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::Instant;
+use crossbeam_channel as cbc;
 
 use crate::encoder::EncoderPool;
 use crate::error::EncoderError;
 
-/// A single text submitted for encoding, with a channel to return the result.
+/// A batch of texts submitted by one caller, with a channel to return results.
 struct EncodeRequest {
-    text: String,
-    tx: oneshot::Sender<Result<Vec<f32>, EncoderError>>,
+    /// Texts to encode.
+    texts: Vec<String>,
+    /// Channel to send results back to the caller.
+    tx: std_mpsc::Sender<Result<Vec<Vec<f32>>, EncoderError>>,
 }
 
 /// Batching coordinator that wraps an `EncoderPool`.
 ///
-/// Submit texts via [`encode_one`] or [`encode_many`]; the coordinator
-/// collects them into batches and dispatches to the underlying pool.
+/// Submit texts via [`encode_many`]; the coordinator collects them into
+/// batches and dispatches to the underlying pool. All public methods are
+/// synchronous — safe to call from any thread.
 pub struct EncoderCoordinator {
-    submit_tx: mpsc::UnboundedSender<EncodeRequest>,
-    // Hold the task handle so it lives as long as the coordinator.
-    _task: tokio::task::JoinHandle<()>,
+    submit_tx: cbc::Sender<EncodeRequest>,
+    /// Hold the thread handle so we can join on drop.
+    _thread: Option<thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for EncoderCoordinator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EncoderCoordinator")
-            .field("active", &!self.submit_tx.is_closed())
+            .field("active", &!self.submit_tx.is_empty())
             .finish()
     }
 }
@@ -65,72 +68,56 @@ impl std::fmt::Debug for EncoderCoordinator {
 impl EncoderCoordinator {
     /// Create a new coordinator.
     ///
+    /// Spawns a background OS thread that collects requests and dispatches
+    /// batched encode calls. No tokio runtime required.
+    ///
     /// - `encoder_pool`: the underlying pool of ONNX sessions.
     /// - `batch_wait`: how long to collect requests after the first arrival
     ///   before dispatching. Typical values: 2–10ms.
     pub fn new(encoder_pool: Arc<EncoderPool>, batch_wait: Duration) -> Self {
-        let (submit_tx, submit_rx) = mpsc::unbounded_channel();
-        let task = tokio::spawn(coordinator_loop(encoder_pool, submit_rx, batch_wait));
+        let (submit_tx, submit_rx) = cbc::unbounded();
+        let handle = thread::Builder::new()
+            .name("encoder-coordinator".into())
+            .spawn(move || coordinator_loop(encoder_pool, submit_rx, batch_wait))
+            .expect("failed to spawn encoder coordinator thread");
         Self {
             submit_tx,
-            _task: task,
+            _thread: Some(handle),
         }
     }
 
-    /// Submit a single text for encoding.
+    /// Submit multiple texts for encoding. Blocks until the batch completes.
     ///
-    /// The text is batched with other concurrent requests. Returns the
-    /// embedding vector once the batch completes. The added latency is
-    /// at most `batch_wait` from the plan.
-    pub async fn encode_one(&self, text: String) -> Result<Vec<f32>, EncoderError> {
-        let (tx, rx) = oneshot::channel();
-        self.submit_tx
-            .send(EncodeRequest { text, tx })
-            .map_err(|_| EncoderError::Inference("coordinator channel closed".into()))?;
-        rx.await
-            .map_err(|_| EncoderError::Inference("coordinator dropped result".into()))?
-    }
-
-    /// Submit multiple texts for encoding in a single batch.
+    /// The texts are batched with other concurrent callers' texts. Returns
+    /// vectors in the same order as the input texts. The added latency is
+    /// at most `batch_wait`.
     ///
-    /// All texts are submitted to the coordinator and will be included in
-    /// the same (or consecutive) batch. Returns vectors in input order.
-    pub async fn encode_many(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, EncoderError> {
+    /// Safe to call from any thread (rayon, spawn_blocking, OS thread).
+    pub fn encode_many(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, EncoderError> {
         if texts.is_empty() {
             return Ok(vec![]);
         }
-        let mut receivers = Vec::with_capacity(texts.len());
-        for text in texts {
-            let (tx, rx) = oneshot::channel();
-            self.submit_tx
-                .send(EncodeRequest { text, tx })
-                .map_err(|_| EncoderError::Inference("coordinator channel closed".into()))?;
-            receivers.push(rx);
-        }
-
-        let mut results = Vec::with_capacity(receivers.len());
-        for rx in receivers {
-            let vec = rx
-                .await
-                .map_err(|_| EncoderError::Inference("coordinator dropped result".into()))??;
-            results.push(vec);
-        }
-        Ok(results)
+        let (tx, rx) = std_mpsc::channel();
+        self.submit_tx
+            .send(EncodeRequest { texts, tx })
+            .map_err(|_| EncoderError::Inference("coordinator channel closed".into()))?;
+        rx.recv()
+            .map_err(|_| EncoderError::Inference("coordinator dropped result".into()))?
     }
 }
 
-/// Background task that collects requests and dispatches batches.
-async fn coordinator_loop(
+/// Background thread that collects requests and dispatches batches.
+fn coordinator_loop(
     encoder_pool: Arc<EncoderPool>,
-    mut rx: mpsc::UnboundedReceiver<EncodeRequest>,
+    rx: cbc::Receiver<EncodeRequest>,
     batch_wait: Duration,
 ) {
     loop {
         // Wait for the first request (blocks indefinitely until one arrives
         // or the channel closes).
-        let first = match rx.recv().await {
-            Some(req) => req,
-            None => return, // channel closed, coordinator shutting down
+        let first = match rx.recv() {
+            Ok(req) => req,
+            Err(_) => return, // channel closed, coordinator shutting down
         };
 
         // Collect more requests for up to `batch_wait`.
@@ -138,40 +125,48 @@ async fn coordinator_loop(
         let deadline = Instant::now() + batch_wait;
 
         loop {
-            match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Ok(Some(req)) => batch.push(req),
-                Ok(None) => return, // channel closed
-                Err(_) => break,    // timeout — dispatch what we have
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(remaining) {
+                Ok(req) => batch.push(req),
+                Err(cbc::RecvTimeoutError::Timeout) => break,
+                Err(cbc::RecvTimeoutError::Disconnected) => {
+                    // Channel closed, but process what we have first.
+                    break;
+                }
             }
         }
 
-        // Dispatch the batch on a blocking thread (ONNX is CPU-bound).
-        let pool = Arc::clone(&encoder_pool);
-        let batch_len = batch.len();
+        // Flatten all texts from all requests into a single batch.
+        let mut all_texts: Vec<String> = Vec::new();
+        let mut boundaries: Vec<usize> = Vec::new(); // end index for each request
+        for req in &batch {
+            all_texts.extend_from_slice(&req.texts);
+            boundaries.push(all_texts.len());
+        }
 
-        // Move batch into the blocking closure, encode, scatter results.
-        tokio::task::spawn_blocking(move || {
-            let texts: Vec<&str> = batch.iter().map(|r| r.text.as_str()).collect();
+        // Encode the full batch.
+        let text_refs: Vec<&str> = all_texts.iter().map(|s| s.as_str()).collect();
+        let encode_result = encoder_pool.encode(&text_refs);
 
-            match pool.encode(&texts) {
-                Ok(vecs) => {
-                    debug_assert_eq!(vecs.len(), batch_len);
-                    for (req, vec) in batch.into_iter().zip(vecs) {
-                        let _ = req.tx.send(Ok(vec));
-                    }
-                }
-                Err(e) => {
-                    // Send the error to all callers. We can't clone EncoderError
-                    // directly, so we create new instances with the same message.
-                    let msg = e.to_string();
-                    for req in batch {
-                        let _ = req.tx.send(Err(EncoderError::Inference(msg.clone())));
-                    }
+        // Scatter results back to each caller.
+        match encode_result {
+            Ok(all_vecs) => {
+                let mut start = 0;
+                for (req, &end) in batch.into_iter().zip(boundaries.iter()) {
+                    let vecs = all_vecs[start..end].to_vec();
+                    let _ = req.tx.send(Ok(vecs));
+                    start = end;
                 }
             }
-        })
-        .await
-        .ok(); // If spawn_blocking panics, the oneshot senders are dropped
-        // and callers get a "coordinator dropped result" error.
+            Err(e) => {
+                let msg = e.to_string();
+                for req in batch {
+                    let _ = req.tx.send(Err(EncoderError::Inference(msg.clone())));
+                }
+            }
+        }
     }
 }

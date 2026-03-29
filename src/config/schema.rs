@@ -197,7 +197,7 @@ pub struct ExactPrefilterConfig {
 pub struct BlockingConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// "and" | "or". Defaults to "and".
+    /// Blocking operator. Only "and" is supported. Defaults to "and".
     #[serde(default = "default_operator")]
     pub operator: String,
     #[serde(default)]

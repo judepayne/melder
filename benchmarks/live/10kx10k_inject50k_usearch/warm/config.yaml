@@ -50,6 +50,7 @@ bm25_commit_batch_size: 100
 
 performance:
   encoder_pool_size: 4
+  encoder_batch_wait_ms: 0
   vector_index_mode: "load"
   expansion_search: 20
 

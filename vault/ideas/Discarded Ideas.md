@@ -70,4 +70,24 @@ Approaches that were considered and rejected. Recorded here to prevent re-attemp
 
 ---
 
+## OR Blocking Mode
+
+**What**: Support `blocking.operator: "or"` to allow records matching ANY blocking field (not all) to be candidates.
+
+**Why discarded**: OR blocking creates overlapping blocks where a single record can match multiple blocking keys. This is incompatible with per-block candidate generation strategies:
+- **ANN**: Candidates are selected per-block; overlapping blocks create ambiguity about which block a candidate belongs to
+- **BM25 WAND**: Block-max upper bounds assume non-overlapping blocks; overlapping blocks break the guarantee
+
+AND blocking (all fields must match) is the correct model for entity resolution. OR blocking was never used in production configs. Removed in [[Key Decisions#OR Blocking Removed]].
+
+---
+
+## Inverted Index Path for BM25
+
+**What**: Maintain a separate inverted index (term → posting list) for BM25 queries, in addition to the forward index (doc → term frequencies). Use the inverted index for small blocks (exhaustive scoring) and a separate inverted path for large blocks.
+
+**Why discarded**: The inverted index path was replaced by Block-Max WAND (see [[Key Decisions#WAND BM25 Implementation]]) which provides identical results with 90-99% fewer evaluations at scale. WAND uses the same forward index but adds per-block upper bounds to skip documents early. The inverted path is simpler but less efficient; WAND is more complex but scales better. At 4.5M scale, WAND's savings are critical.
+
+---
+
 See also: [[Constitution]] for the invariants that ruled out several of these approaches, [[Key Decisions]] for the alternatives that were chosen instead.

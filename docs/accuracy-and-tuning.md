@@ -400,12 +400,11 @@ discriminate.
 
 ### Multi-field blocking
 
-Blocking supports multiple fields combined with AND or OR logic:
+Blocking supports multiple fields combined with AND logic (all must match):
 
 ```yaml
 blocking:
   enabled: true
-  operator: or          # "and" | "or"
   fields:
     - field_a: country_code
       field_b: domicile
@@ -413,13 +412,10 @@ blocking:
       field_b: lei_code
 ```
 
-**AND** — a B record only reaches A candidates that match on *all*
-blocking fields. Tightest filtering, fastest runtime, highest recall
-risk if any blocking field is noisy.
-
-**OR** — a B record reaches A candidates that match on *any* blocking
-field. Larger candidate sets, slower, but recovers records where one
-blocking field is wrong or missing.
+A B record only reaches A candidates that match on *all* blocking fields.
+Tightest filtering, fastest runtime. If a blocking field may be noisy or
+missing, consider using fewer blocking fields or relying on
+`exact_prefilter` for cross-block recovery.
 
 ---
 

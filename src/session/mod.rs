@@ -338,13 +338,11 @@ impl Session {
     ) -> Result<Vec<f32>, SessionError> {
         let _span = info_span!("encode_combined").entered();
         if let Some(ref coordinator) = self.state.coordinator {
-            // Coordinator path: encode each embedding field via the
-            // coordinator and assemble the combined vector.
-            let handle = tokio::runtime::Handle::current();
+            // Coordinator path: submit texts for batched encoding.
+            // Fully synchronous — safe from rayon/spawn_blocking threads.
             let field_dim = self.state.encoder_pool.dim();
             let mut combined = Vec::with_capacity(field_dim * emb_specs.len());
 
-            // Gather all field texts and submit them in one encode_many call.
             let texts: Vec<String> = emb_specs
                 .iter()
                 .map(|(field_a, field_b, _weight)| {
@@ -356,8 +354,8 @@ impl Session {
                 })
                 .collect();
 
-            let vecs = handle
-                .block_on(coordinator.encode_many(texts))
+            let vecs = coordinator
+                .encode_many(texts)
                 .map_err(|e| melder_to_session_err(crate::error::MelderError::Encoder(e)))?;
 
             for (vec, (_fa, _fb, weight)) in vecs.into_iter().zip(emb_specs.iter()) {
@@ -498,8 +496,13 @@ impl Session {
         let mut combined_vec: Vec<f32> = Vec::new();
         let mut blocked_ids: Vec<String> = Vec::new();
 
-        if needs_encoding {
+        if needs_encoding && self.state.coordinator.is_none() {
             // Parallel path: encoding dominates, hide fast work underneath.
+            // Only used when encoding goes through the pool directly (no
+            // coordinator). When the coordinator is active, rayon workers
+            // would block on the coordinator channel while fastembed (which
+            // also uses rayon internally) tries to use the same thread pool
+            // — causing a deadlock. See: fastembed → rayon dependency.
             let record_ref = &record;
             let id_ref = id.as_str();
             let mut encode_error: Option<SessionError> = None;
@@ -537,6 +540,24 @@ impl Session {
             if let Some(e) = encode_error {
                 return Err(e);
             }
+        } else if needs_encoding {
+            // Coordinator path: run encoding sequentially to avoid
+            // rayon deadlock. BM25/synonym/blocking work runs after.
+            combined_vec = self.encode_combined(&record, emb_specs, is_a_side)?;
+            if let Some(bm25) = this_bm25 {
+                let _span = info_span!("bm25_upsert").entered();
+                bm25.upsert(&id, &record);
+            }
+            if let Some(syn_mtx) = this_syn {
+                let mut idx = syn_mtx.write().unwrap_or_else(|e| e.into_inner());
+                idx.upsert(&id, &record, side, syn_fields);
+            }
+            let _span = info_span!("blocking_query").entered();
+            blocked_ids = if blocking_enabled {
+                store.blocking_query(&record, side, opp)
+            } else {
+                store.ids(opp)
+            };
         } else {
             // Sequential path: no encoding, avoid rayon overhead.
             if let Some(bm25) = this_bm25 {
@@ -653,7 +674,7 @@ impl Session {
             let query_text = opp_bm25.query_text_for(&record, side);
             let self_score = opp_bm25.analytical_self_score(&query_text);
             let raw_results =
-                opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n, &record, side);
+                opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
             let scored: Vec<(String, f64)> = raw_results
                 .into_iter()
                 .map(|(cid, raw)| {
@@ -1037,7 +1058,7 @@ impl Session {
             let query_text = opp_bm25.query_text_for(&record, side);
             let self_score = opp_bm25.analytical_self_score(&query_text);
             let raw_results =
-                opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n, &record, side);
+                opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
             let scored: Vec<(String, f64)> = raw_results
                 .into_iter()
                 .map(|(cid, raw)| {
@@ -1709,7 +1730,7 @@ impl Session {
             let query_text = pool_bm25.query_text_for(&record, side);
             let self_score = pool_bm25.analytical_self_score(&query_text);
             let raw_results =
-                pool_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates, &record, side);
+                pool_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates);
             let scored: Vec<(String, f64)> = raw_results
                 .into_iter()
                 .map(|(cid, raw)| {

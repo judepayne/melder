@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use crate::config::{BlockingConfig, BlockingFieldPair};
 use crate::models::{Record, Side};
@@ -275,7 +275,11 @@ fn blocking_values(
                 .get(field)
                 .map(|s| s.trim().to_lowercase())
                 .unwrap_or_default();
-            if val.is_empty() { None } else { Some((i, val)) }
+            if val.is_empty() {
+                None
+            } else {
+                Some((i, val))
+            }
         })
         .collect()
 }
@@ -569,7 +573,6 @@ impl RecordStore for SqliteStore {
         let conn = self.reader_pool.acquire();
         let fields = &self.blocking_config.fields;
         let prefix = side_prefix(pool_side);
-        let is_and = self.blocking_config.operator.eq_ignore_ascii_case("and");
 
         let query_values: Vec<(usize, String)> = fields
             .iter()
@@ -583,7 +586,11 @@ impl RecordStore for SqliteStore {
                     .get(field)
                     .map(|s| s.trim().to_lowercase())
                     .unwrap_or_default();
-                if val.is_empty() { None } else { Some((i, val)) }
+                if val.is_empty() {
+                    None
+                } else {
+                    Some((i, val))
+                }
             })
             .collect();
 
@@ -603,19 +610,13 @@ impl RecordStore for SqliteStore {
             .collect();
         let where_clause = conditions.join(" OR ");
 
-        let sql = if is_and {
-            format!(
-                "SELECT record_id FROM {}_blocking_keys WHERE {} GROUP BY record_id HAVING COUNT(DISTINCT field_index) = {}",
-                prefix,
-                where_clause,
-                query_values.len()
-            )
-        } else {
-            format!(
-                "SELECT DISTINCT record_id FROM {}_blocking_keys WHERE {}",
-                prefix, where_clause
-            )
-        };
+        // AND blocking: all field pairs must match.
+        let sql = format!(
+            "SELECT record_id FROM {}_blocking_keys WHERE {} GROUP BY record_id HAVING COUNT(DISTINCT field_index) = {}",
+            prefix,
+            where_clause,
+            query_values.len()
+        );
 
         let mut stmt = conn.prepare(&sql).expect("prepare blocking query");
         let param_values: Vec<&dyn rusqlite::types::ToSql> = query_values

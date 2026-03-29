@@ -381,11 +381,133 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
   </div>
 </section>
 
-<!-- ===== MODULE 2: THE CAST ===== -->
+<!-- ===== MODULE 2: EMBEDDINGS & SEMANTIC SEARCH ===== -->
 <section class="module" id="module-2" style="background: var(--color-bg)">
   <div class="module-content">
     <header class="module-header animate-in">
       <span class="module-number">02</span>
+      <h1 class="module-title">How Machines Understand Meaning</h1>
+      <p class="module-subtitle">Embeddings, semantic search, and why they matter for record matching</p>
+    </header>
+
+    <section class="screen animate-in">
+      <h2 class="screen-heading">The Problem with Words</h2>
+      <p>Computers are great at comparing exact strings. But record matching needs something deeper. Consider:</p>
+      <div class="callout callout-accent" style="margin: var(--space-6) 0">
+        <div class="callout-icon">🤔</div>
+        <div class="callout-content">
+          <p><strong>"Goldman Sachs International"</strong> and <strong>"GS Intl Ltd"</strong> share almost no characters. But a human instantly knows they're the same entity. How?</p>
+          <p style="margin-top:var(--space-2)">You understand the <em>meaning</em> behind the words — "GS" is an abbreviation for "Goldman Sachs", "Intl" means "International", "Ltd" is a legal suffix. You're doing <strong>semantic reasoning</strong>, not character comparison.</p>
+        </div>
+      </div>
+      <p>This is the core insight behind <strong>embeddings</strong>: teach a machine to convert text into a mathematical representation of its <em>meaning</em>, so that similar meanings end up close together — even when the words look completely different.</p>
+    </section>
+
+    <section class="screen animate-in">
+      <h2 class="screen-heading">What is an Embedding?</h2>
+      <p>An <span class="term" data-definition="An embedding is a list of numbers (a vector) that captures the meaning of a piece of text. Similar meanings produce similar vectors.">embedding</span> is a list of numbers — typically 384 of them — that represent the meaning of a piece of text. Think of it as a coordinate in a 384-dimensional space.</p>
+
+      <div class="translation-block">
+        <div class="translation-code">
+          <span class="translation-label">CONCEPTUAL</span>
+          <pre><code><span class="code-comment">// A neural network reads text and outputs a vector of numbers</span>
+<span class="code-string">"Goldman Sachs International"</span>  →  [<span class="code-number">0.12</span>, <span class="code-number">-0.34</span>, <span class="code-number">0.56</span>, ... 384 numbers]
+<span class="code-string">"GS Intl Ltd"</span>                  →  [<span class="code-number">0.11</span>, <span class="code-number">-0.33</span>, <span class="code-number">0.55</span>, ... 384 numbers]
+<span class="code-string">"Apple Inc"</span>                    →  [<span class="code-number">0.87</span>, <span class="code-number">0.42</span>, <span class="code-number">-0.19</span>, ... 384 numbers]
+
+<span class="code-comment">// Goldman Sachs vectors are very close together</span>
+<span class="code-comment">// Apple's vector is far away in a different direction</span></code></pre>
+        </div>
+        <div class="translation-english">
+          <span class="translation-label">PLAIN ENGLISH</span>
+          <div class="translation-lines">
+            <p class="tl">A neural network (the "model") reads text and produces a fixed-size list of numbers. This is the embedding.</p>
+            <p class="tl">Texts with similar meanings produce similar numbers — their vectors point in roughly the same direction.</p>
+            <p class="tl">Texts with different meanings produce different numbers — their vectors point in different directions.</p>
+          </div>
+        </div>
+      </div>
+
+      <p>The magic is that this works even when the words are completely different. The model has been trained on millions of text examples and learned that "GS" and "Goldman Sachs" appear in similar contexts — so it maps them to similar vectors.</p>
+    </section>
+
+    <section class="screen animate-in">
+      <h2 class="screen-heading">Semantic Search: Finding Similar Meanings</h2>
+      <p>Once you have embeddings, finding similar records becomes a geometry problem: <strong>which vectors in my database point in the same direction as my query vector?</strong></p>
+
+      <div class="callout callout-accent" style="margin: var(--space-6) 0">
+        <div class="callout-icon">📐</div>
+        <div class="callout-content">
+          <strong class="callout-title">Cosine Similarity</strong>
+          <p>The similarity between two embeddings is measured by the angle between them. If they point in the same direction, cosine similarity = 1.0 (identical meaning). If perpendicular, cosine similarity = 0.0 (unrelated). This is how Melder decides "how similar are these two entity names?"</p>
+        </div>
+      </div>
+
+      <p>But searching through millions of vectors by comparing each one would be far too slow. That's where <span class="term" data-definition="HNSW (Hierarchical Navigable Small World) is a graph-based algorithm for approximate nearest neighbor search. It finds the most similar vectors in O(log N) time instead of O(N).">HNSW</span> comes in — a graph-based index that finds the most similar vectors in O(log N) time, without checking every single one.</p>
+    </section>
+
+    <section class="screen animate-in">
+      <h2 class="screen-heading">What Embeddings Are Good (and Bad) At</h2>
+      <div class="pattern-cards">
+        <div class="pattern-card" style="border-top:3px solid #22c55e"><div class="pattern-icon" style="background:#22c55e">✓</div><h4 class="pattern-title">Great at</h4><p class="pattern-desc">Bridging abbreviations, synonyms, and rephrasings. "Goldman Sachs International" ≈ "GS Intl Ltd". No shared tokens needed.</p></div>
+        <div class="pattern-card" style="border-top:3px solid #22c55e"><div class="pattern-icon" style="background:#22c55e">✓</div><h4 class="pattern-title">Great at</h4><p class="pattern-desc">Understanding context. "Apple Inc" (technology) vs "Apple Farms" (agriculture) — the model knows these are different kinds of entities.</p></div>
+        <div class="pattern-card" style="border-top:3px solid #ef4444"><div class="pattern-icon" style="background:#ef4444">✗</div><h4 class="pattern-title">Weak at</h4><p class="pattern-desc">Exact identifiers. "LEI: 5493001KJTIIGC8Y1R12" vs "LEI: 5493001KJTIIGC8Y1R13" — one digit difference, but embeddings may see these as nearly identical. Use exact matching for IDs.</p></div>
+        <div class="pattern-card" style="border-top:3px solid #ef4444"><div class="pattern-icon" style="background:#ef4444">✗</div><h4 class="pattern-title">Weak at</h4><p class="pattern-desc">Very short text. A 2-character abbreviation like "GS" has limited context for the model to work with. BM25 (token frequency scoring) often helps here.</p></div>
+      </div>
+      <p>This is why Melder doesn't rely on embeddings alone — it combines them with BM25 (token overlap), fuzzy matching (edit distance), exact matching (for IDs), and synonym detection. Each method catches what the others miss.</p>
+    </section>
+
+    <section class="screen animate-in">
+      <h2 class="screen-heading">Embeddings in Melder</h2>
+
+      <div class="translation-block">
+        <div class="translation-code">
+          <span class="translation-label">config.yaml</span>
+          <pre><code><span class="code-comment"># The embedding model — a small, fast neural network</span>
+<span class="code-keyword">embeddings</span>:
+  <span class="code-keyword">model</span>: <span class="code-string">themelder/arctic-embed-xs-entity-resolution</span>
+
+<span class="code-comment"># How embeddings are used in scoring</span>
+<span class="code-keyword">match_fields</span>:
+  - <span class="code-keyword">field_a</span>: <span class="code-string">legal_name</span>
+    <span class="code-keyword">field_b</span>: <span class="code-string">counterparty_name</span>
+    <span class="code-keyword">method</span>: <span class="code-string">embedding</span>     <span class="code-comment"># ← semantic similarity</span>
+    <span class="code-keyword">weight</span>: <span class="code-number">0.50</span>
+  - <span class="code-keyword">method</span>: <span class="code-string">bm25</span>           <span class="code-comment"># ← token frequency overlap</span>
+    <span class="code-keyword">weight</span>: <span class="code-number">0.50</span></code></pre>
+        </div>
+        <div class="translation-english">
+          <span class="translation-label">PLAIN ENGLISH</span>
+          <div class="translation-lines">
+            <p class="tl">Melder loads a small neural network (22M parameters, ~86MB) that specialises in entity name understanding.</p>
+            <p class="tl">For each record, it encodes the name field into a 384-dimensional vector. This takes ~5ms per text on CPU.</p>
+            <p class="tl">At match time, it compares vectors using cosine similarity. The embedding score is combined with BM25 using configurable weights.</p>
+            <p class="tl">Encoding is the most expensive step in the pipeline — it accounts for ~80% of per-request latency. Everything else (BM25, scoring, crossmap) takes under 2ms combined.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen animate-in">
+      <div class="quiz-container" id="quiz-2">
+        <h3 class="quiz-question">Two entity names share zero words in common: "JPM Chase" and "J.P. Morgan Chase & Co." — which scoring method would still recognise them as the same entity?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="a" onclick="selectOpt(this)"><div class="quiz-option-radio"></div><span>BM25 (token frequency scoring) — it would find matching tokens</span></button>
+          <button class="quiz-option" data-value="b" onclick="selectOpt(this)"><div class="quiz-option-radio"></div><span>Embedding similarity — the neural network understands both refer to the same financial institution</span></button>
+          <button class="quiz-option" data-value="c" onclick="selectOpt(this)"><div class="quiz-option-radio"></div><span>Exact matching — the strings are close enough</span></button>
+        </div>
+        <div class="quiz-feedback" id="q2-fb"></div>
+        <button class="quiz-check-btn" onclick="checkQuiz('quiz-2')">Check Answer</button>
+      </div>
+    </section>
+  </div>
+</section>
+
+<!-- ===== MODULE 3: THE CAST ===== -->
+<section class="module" id="module-3" style="background: var(--color-bg)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">03</span>
       <h1 class="module-title">Meet the Cast</h1>
       <p class="module-subtitle">The modules, their responsibilities, and how they connect</p>
     </header>
@@ -403,7 +525,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
             <div class="ft-folder"><span class="ft-name">vectordb/</span><span class="ft-desc">Vector index: flat (O(N)) or usearch HNSW (O(log N))</span></div>
             <div class="ft-folder"><span class="ft-name">matching/</span><span class="ft-desc">The scoring pipeline: blocking, candidates, score_pool</span></div>
             <div class="ft-folder"><span class="ft-name">scoring/</span><span class="ft-desc">Per-field scorers: exact, fuzzy, embedding, numeric</span></div>
-            <div class="ft-folder"><span class="ft-name">bm25/</span><span class="ft-desc">Tantivy-backed BM25 full-text scoring</span></div>
+            <div class="ft-folder"><span class="ft-name">bm25/</span><span class="ft-desc">Lock-free BM25 scoring with WAND early termination</span></div>
             <div class="ft-folder"><span class="ft-name">fuzzy/</span><span class="ft-desc">Edit-distance scorers: wratio, partial_ratio, token_sort</span></div>
             <div class="ft-folder"><span class="ft-name">synonym/</span><span class="ft-desc">Acronym generation + dictionary matching</span></div>
             <div class="ft-folder"><span class="ft-name">crossmap/</span><span class="ft-desc">Bidirectional 1:1 match registry (A↔B)</span></div>
@@ -450,7 +572,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
       <h2 class="screen-heading">The Supporting Cast</h2>
       <div class="pattern-cards">
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-2)"><div class="pattern-icon" style="background:var(--color-actor-2)">💾</div><h4 class="pattern-title">Store</h4><p class="pattern-desc"><span class="term" data-definition="DashMap is a concurrent HashMap in Rust that allows multiple threads to read and write simultaneously without a global lock.">DashMap</span>-backed or SQLite. Holds all records with concurrent access.</p></div>
-        <div class="pattern-card" style="border-top:3px solid var(--color-actor-4)"><div class="pattern-icon" style="background:var(--color-actor-4)">📝</div><h4 class="pattern-title">BM25</h4><p class="pattern-desc"><span class="term" data-definition="Tantivy is a Rust full-text search engine library, similar to Apache Lucene.">Tantivy</span>-powered IDF-weighted text scoring. Suppresses common tokens like &quot;Holdings&quot;.</p></div>
+        <div class="pattern-card" style="border-top:3px solid var(--color-actor-4)"><div class="pattern-icon" style="background:var(--color-actor-4)">📝</div><h4 class="pattern-title">BM25</h4><p class="pattern-desc"><span class="term" data-definition="SimpleBm25 is a custom lock-free BM25 scorer backed by DashMap with Block-Max WAND for efficient large-scale queries.">SimpleBm25</span> IDF-weighted text scoring with WAND early termination. Suppresses common tokens like &quot;Holdings&quot;.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-3)"><div class="pattern-icon" style="background:var(--color-actor-3)">🔤</div><h4 class="pattern-title">Fuzzy</h4><p class="pattern-desc">Edit-distance scorers. wratio, partial_ratio, token_sort. Catches typos and abbreviations.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-5)"><div class="pattern-icon" style="background:var(--color-actor-5)">🔁</div><h4 class="pattern-title">Synonym</h4><p class="pattern-desc">Generates acronyms (Goldman Sachs → GS). Additive bonus weight.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-1)"><div class="pattern-icon" style="background:var(--color-actor-1)">📋</div><h4 class="pattern-title">WAL</h4><p class="pattern-desc">Write-ahead log for crash recovery. Append-only NDJSON.</p></div>
@@ -464,7 +586,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
 <section class="module" id="module-3" style="background: var(--color-bg-warm)">
   <div class="module-content">
     <header class="module-header animate-in">
-      <span class="module-number">03</span>
+      <span class="module-number">04</span>
       <h1 class="module-title">The Scoring Pipeline</h1>
       <p class="module-subtitle">How score_pool() finds and ranks matches — the heart of Melder</p>
     </header>
@@ -476,7 +598,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
       <div class="step-cards">
         <div class="step-card"><div class="step-num">1</div><div class="step-body"><strong>Blocking</strong><p>Hash-based filter eliminates impossible pairs. A record from France is never compared against one from Japan. Eliminates 95%+ of candidates.</p></div></div>
         <div class="step-card"><div class="step-num">2</div><div class="step-body"><strong>ANN Candidates</strong><p>Vector similarity search via <span class="term" data-definition="HNSW (Hierarchical Navigable Small World) is a graph-based algorithm for approximate nearest neighbor search. O(log N) instead of O(N).">HNSW</span> index. Returns top-k embedding-similar records.</p></div></div>
-        <div class="step-card"><div class="step-num">3</div><div class="step-body"><strong>BM25 Candidates</strong><p>Full-text token overlap query via Tantivy. Returns records with the most informative shared tokens.</p></div></div>
+        <div class="step-card"><div class="step-num">3</div><div class="step-body"><strong>BM25 Candidates</strong><p>Full-text token overlap query via SimpleBm25. Returns records with the most informative shared tokens.</p></div></div>
         <div class="step-card"><div class="step-num">4</div><div class="step-body"><strong>Synonym Candidates</strong><p>Acronym index lookup. Finds "GS" when searching for "Goldman Sachs".</p></div></div>
         <div class="step-card"><div class="step-num">5</div><div class="step-body"><strong>Union &amp; Full Scoring</strong><p>Merge all candidates, deduplicate, then score every match field (exact, fuzzy, embedding, BM25, synonym) and compute the weighted composite.</p></div></div>
         <div class="step-card"><div class="step-num">6</div><div class="step-body"><strong>Classification</strong><p>Score &ge; 0.85 → auto_match. Score &ge; 0.60 → review. Below → no_match.</p></div></div>
@@ -535,7 +657,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
 <section class="module" id="module-4" style="background: var(--color-bg)">
   <div class="module-content">
     <header class="module-header animate-in">
-      <span class="module-number">04</span>
+      <span class="module-number">05</span>
       <h1 class="module-title">The Live Upsert Journey</h1>
       <p class="module-subtitle">What happens when a record arrives via HTTP — from request to response</p>
     </header>
@@ -623,37 +745,29 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
     </section>
 
     <section class="screen animate-in">
-      <h2 class="screen-heading">BM25 Commit Batching</h2>
+      <h2 class="screen-heading">SimpleBm25: Lock-Free with WAND</h2>
       <div class="callout callout-accent">
         <div class="callout-icon">🚀</div>
         <div class="callout-content">
           <strong class="callout-title">Performance Win: 3.2x Throughput</strong>
-          <p>Profiling revealed Tantivy's <code>commit()</code> was 40% of CPU time — serializing segment data, building FST term dictionaries, and garbage-collecting old files under a write lock. Batching commits every 100 upserts improved throughput from <strong>461 → 1,473 req/s</strong>.</p>
+          <p>The original Tantivy-backed BM25 index serialized concurrent workers through a write lock on every commit. Replacing it with a custom <code>DashMap</code>-based scorer (<code>SimpleBm25</code>) eliminated all locking — writes are instantly visible with no commit step. Throughput jumped from <strong>461 → 1,460 req/s</strong> while removing ~40 transitive dependencies.</p>
         </div>
       </div>
 
       <div class="translation-block">
         <div class="translation-code">
-          <span class="translation-label">src/bm25/index.rs</span>
-          <pre><code><span class="code-keyword">pub fn</span> <span class="code-function">commit_if_ready</span>(&amp;<span class="code-keyword">mut</span> self, batch_size: <span class="code-type">usize</span>) -&gt; <span class="code-type">bool</span> {
-    <span class="code-keyword">if</span> !self.dirty { <span class="code-keyword">return false</span>; }
-    <span class="code-keyword">if</span> batch_size &lt;= <span class="code-number">1</span> || self.pending_writes &gt;= batch_size {
-        <span class="code-keyword">let</span> _ = self.writer.<span class="code-function">commit</span>();
-        self.reader.<span class="code-function">reload</span>().ok();
-        self.self_score_cache.<span class="code-function">clear</span>();
-        self.dirty = <span class="code-keyword">false</span>;
-        self.pending_writes = <span class="code-number">0</span>;
-        <span class="code-keyword">return true</span>;
-    }
-    <span class="code-keyword">false</span>
+          <span class="translation-label">src/bm25/simple.rs</span>
+          <pre><code><span class="code-keyword">if</span> blocked_ids.<span class="code-function">len</span>() &lt;= self.exhaustive_threshold {
+    self.<span class="code-function">score_exhaustive</span>(&amp;term_idfs, blocked_ids, avg_dl, top_k)
+} <span class="code-keyword">else</span> {
+    self.<span class="code-function">score_wand</span>(&amp;term_idfs, blocked_ids, avg_dl, top_k)
 }</code></pre>
         </div>
         <div class="translation-english">
           <span class="translation-label">PLAIN ENGLISH</span>
           <div class="translation-lines">
-            <p class="tl">If nothing has been written since last commit, do nothing.</p>
-            <p class="tl">If we've accumulated enough writes (or batch_size=1 for maximum accuracy), commit now: flush to Tantivy's index, reload the reader so queries see new data, and clear the self-score cache.</p>
-            <p class="tl">Otherwise, defer — the next upsert will check again.</p>
+            <p class="tl">For small candidate pools (&le;5,000 records), score every candidate exhaustively — it's fast enough and simple.</p>
+            <p class="tl">For large pools, switch to Block-Max WAND: walk posting lists and skip any document whose upper-bound score can't beat the current Kth-best. Guaranteed to return the same top-K results, but processes only 1-10% of documents.</p>
           </div>
         </div>
       </div>
@@ -665,7 +779,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
 <section class="module" id="module-5" style="background: var(--color-bg-warm)">
   <div class="module-content">
     <header class="module-header animate-in">
-      <span class="module-number">05</span>
+      <span class="module-number">06</span>
       <h1 class="module-title">The Clever Tricks</h1>
       <p class="module-subtitle">Engineering patterns that make Melder fast, correct, and resilient</p>
     </header>
@@ -780,7 +894,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
 <section class="module" id="module-6" style="background: var(--color-bg)">
   <div class="module-content">
     <header class="module-header animate-in">
-      <span class="module-number">06</span>
+      <span class="module-number">07</span>
       <h1 class="module-title">The Big Picture</h1>
       <p class="module-subtitle">Tech stack, feature flags, and where to start contributing</p>
     </header>
@@ -792,8 +906,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
         <div class="badge-item"><code class="badge-code">tokio</code><span class="badge-desc">Async runtime. CPU-bound work via spawn_blocking. Graceful shutdown via select!.</span></div>
         <div class="badge-item"><code class="badge-code">fastembed + ort</code><span class="badge-desc">ONNX Runtime wrapper. Downloads models, tokenizes text, runs neural network inference.</span></div>
         <div class="badge-item"><code class="badge-code">usearch</code><span class="badge-desc">HNSW approximate nearest neighbor index. O(log N) vector search. Feature-gated.</span></div>
-        <div class="badge-item"><code class="badge-code">tantivy</code><span class="badge-desc">Full-text search engine (like Lucene). Powers BM25 scoring with IDF-weighted token overlap.</span></div>
-        <div class="badge-item"><code class="badge-code">dashmap</code><span class="badge-desc">Concurrent HashMap. Lock-free reads, per-shard writes. Used for record storage.</span></div>
+        <div class="badge-item"><code class="badge-code">dashmap</code><span class="badge-desc">Concurrent HashMap. Lock-free reads, per-shard writes. Used for record storage and the BM25 index.</span></div>
         <div class="badge-item"><code class="badge-code">rayon</code><span class="badge-desc">Data parallelism. Batch mode scores B records across all CPU cores simultaneously.</span></div>
         <div class="badge-item"><code class="badge-code">rusqlite</code><span class="badge-desc">SQLite bindings. Alternative to DashMap for durable storage at million-record scale.</span></div>
         <div class="badge-item"><code class="badge-code">rapidfuzz</code><span class="badge-desc">Edit distance library. Provides the core Levenshtein ratio for fuzzy matching.</span></div>
@@ -824,11 +937,11 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
     <!-- Final Quiz -->
     <section class="screen animate-in">
       <div class="quiz-container" id="quiz-6">
-        <h3 class="quiz-question">A user reports that live mode throughput dropped by 3x after they added BM25 scoring to their config. Based on what you've learned, what's the most likely cause?</h3>
+        <h3 class="quiz-question">A user disables blocking on a 100k-record dataset and notices BM25 candidate generation slows down significantly. Based on what you've learned, why does the system handle this gracefully despite the large candidate pool?</h3>
         <div class="quiz-options">
-          <button class="quiz-option" data-value="a" onclick="selectOpt(this)"><div class="quiz-option-radio"></div><span>The BM25 model is too large for memory</span></button>
-          <button class="quiz-option" data-value="b" onclick="selectOpt(this)"><div class="quiz-option-radio"></div><span>Tantivy's commit() is expensive and serializes all concurrent workers through a write lock — they need bm25_commit_batch_size</span></button>
-          <button class="quiz-option" data-value="c" onclick="selectOpt(this)"><div class="quiz-option-radio"></div><span>BM25 requires re-encoding all records with ONNX</span></button>
+          <button class="quiz-option" data-value="a" onclick="selectOpt(this)"><div class="quiz-option-radio"></div><span>BM25 falls back to a database query when the candidate set is too large</span></button>
+          <button class="quiz-option" data-value="b" onclick="selectOpt(this)"><div class="quiz-option-radio"></div><span>SimpleBm25 switches from exhaustive scoring to Block-Max WAND when the candidate set exceeds 5,000 — WAND skips 90-99% of documents using upper-bound pruning</span></button>
+          <button class="quiz-option" data-value="c" onclick="selectOpt(this)"><div class="quiz-option-radio"></div><span>The system automatically re-enables blocking when it detects too many candidates</span></button>
         </div>
         <div class="quiz-feedback" id="q6-fb"></div>
         <button class="quiz-check-btn" onclick="checkQuiz('quiz-6')">Check Answer</button>
@@ -841,7 +954,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
 <section class="module" id="module-7" style="background: var(--color-bg-warm)">
   <div class="module-content">
     <header class="module-header animate-in">
-      <span class="module-number">07</span>
+      <span class="module-number">08</span>
       <h1 class="module-title">See It In Action</h1>
       <p class="module-subtitle">How to build, run benchmarks, and watch Melder match records in your terminal</p>
     </header>
@@ -1014,6 +1127,11 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
       rightMsg: 'Exactly \u2014 "Goldman Sachs International" and "GS Intl Ltd" are the same entity but share almost no characters. You need semantic understanding (embeddings), token overlap (BM25), and edit distance (fuzzy) to bridge these gaps.',
       wrongMsg: 'Case sensitivity is a real issue but trivially solved with .to_lowercase(). The fundamental problem is that entities have multiple valid names, abbreviations, and spellings across sources.'
     },
+    'quiz-2': {
+      correct: 'b',
+      rightMsg: 'Exactly. "JPM Chase" and "J.P. Morgan Chase & Co." share the token "Chase" but the key connection \u2014 that "JPM" is an abbreviation of "J.P. Morgan" \u2014 can only be understood semantically. The embedding model has seen millions of financial texts and learned that these refer to the same institution.',
+      wrongMsg: 'BM25 only scores based on shared tokens. While "Chase" appears in both, it wouldn\u2019t be enough to confidently match. Exact matching would fail entirely \u2014 the strings are very different. Only embeddings can bridge the abbreviation gap by understanding meaning.'
+    },
     'quiz-3': {
       correct: 'b',
       rightMsg: 'Right \u2014 embeddings encode semantic meaning. "GS Intl" and "Goldman Sachs International" share no tokens but are semantically identical. BM25 would score zero because there are no shared tokens to weight.',
@@ -1026,8 +1144,8 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
     },
     'quiz-6': {
       correct: 'b',
-      rightMsg: 'Exactly. Each Tantivy commit (~2-5ms) takes a write lock that blocks all concurrent workers. Setting bm25_commit_batch_size: 100 batches commits and restores throughput from 461 to 1,473 req/s. This was discovered through CPU profiling \u2014 BM25 commit was 40% of CPU time.',
-      wrongMsg: 'BM25 is entirely separate from ONNX encoding \u2014 it uses Tantivy\'s own tokenizer and index. The issue is the commit frequency, not the computation itself.'
+      rightMsg: 'Exactly. SimpleBm25 has a dual-path strategy: exhaustive scoring for small candidate sets (\u22645,000) and Block-Max WAND for large ones. WAND uses per-block max_tf upper bounds to skip documents that can\u2019t beat the current Kth-best score \u2014 mathematically guaranteed to return the same top-K results as exhaustive, but processing only 1-10% of posting entries.',
+      wrongMsg: 'SimpleBm25 is a self-contained DashMap-based scorer \u2014 no database involved, and blocking is never auto-enabled. The key is the WAND algorithm that makes large candidate sets efficient by skipping low-scoring documents via upper-bound pruning.'
     }
   };
 
@@ -1062,7 +1180,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
     '1': [
       { sender: 'Blocking', color: 'var(--color-actor-1)', msg: 'Query record is from GB. I\'ve narrowed the pool to 847 candidates in the GB block.' },
       { sender: 'ANN', color: 'var(--color-actor-2)', msg: 'I searched the HNSW index with the query embedding. Top 20 by cosine similarity: Goldman Sachs Intl (0.94), Goldcrest Securities (0.71), GS Capital Partners (0.68)...' },
-      { sender: 'BM25', color: 'var(--color-actor-4)', msg: 'I tokenized "GS Intl Ltd" and searched Tantivy. "GS" has high IDF. Top 20 by BM25: Goldman Sachs Intl (0.82), GS Capital Partners (0.61)...' },
+      { sender: 'BM25', color: 'var(--color-actor-4)', msg: 'I tokenized "GS Intl Ltd" and searched the BM25 index. "GS" has high IDF. Top 20 by BM25: Goldman Sachs Intl (0.82), GS Capital Partners (0.61)...' },
       { sender: 'Synonym', color: 'var(--color-actor-5)', msg: 'I checked my acronym index. "GS" matches Goldman Sachs (acronym hit). Adding it to the candidate set.' },
       { sender: 'Pipeline', color: 'var(--color-actor-3)', msg: 'Union complete: 28 unique candidates. Now scoring each on all match fields... Goldman Sachs International scores 0.91 — that\'s above 0.85. Auto-match!' },
       { sender: 'CrossMap', color: 'var(--color-actor-1)', msg: 'Claim(A-123, B-456) — checking both directions... neither ID is taken. Confirmed. ✓' },

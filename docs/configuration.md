@@ -133,13 +133,11 @@ exact_prefilter:
 # against one from Japan when blocking on country. Typically eliminates 95%+
 # of pairs at almost no cost.
 #
-# Multiple field pairs can be combined with AND (all must match) or OR (any
-# field match is enough). Omit this section or set enabled: false to disable —
-# every record then becomes a candidate (thorough but slow on large datasets).
+# Multiple field pairs are combined with AND (all must match).
+# Omit this section or set enabled: false to disable — every record then
+# becomes a candidate (thorough but slow on large datasets).
 blocking:
   enabled: true                     # optional (default: false)
-  operator: "and"                   # "and" (default) — all fields must match (intersection)
-                                    # "or"            — any one field matching is enough (union)
   fields:
     - field_a: country_code
       field_b: domicile

@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-03-28 (SimpleBm25 replaces Tantivy — lock-free BM25, 3.2× default throughput, tantivy dep removed)
+Last updated: 2026-03-29 (WAND BM25 implementation + OR blocking removal complete; 100k×100k live benchmark added)
 
 ---
 
@@ -181,8 +181,8 @@ One file per subcommand: `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.
 1. **Exact prefilter** (`exact_prefilter` config) — O(1) hash lookup against pre-built index on A side. All configured field pairs must match exactly (AND). If all match → auto-confirm at 1.0, skip all remaining phases. Runs _before_ blocking — recovers cross-block matches (e.g. same LEI, different country code).
 2. **Common ID pre-match** (`common_id_field`) — exact match on single shared ID field → auto-confirm at 1.0.
 3. **CrossMap skip** — skip B records already confirmed.
-4. **Blocking** (`src/matching/blocking.rs`) — `BlockingIndex` lookup; AND/OR modes. In enroll mode, `blocking_query()` takes `pool_side` parameter to exclude self-matches when query_side == pool_side.
-5. **BM25 candidate filter** (optional) — `SimpleBm25` scores blocked candidates; retains `bm25_candidates` top results.
+4. **Blocking** (`src/matching/blocking.rs`) — `BlockingIndex` lookup; AND mode only (OR removed). In enroll mode, `blocking_query()` takes `pool_side` parameter to exclude self-matches when query_side == pool_side.
+5. **BM25 candidate filter** (optional) — `SimpleBm25` scores blocked candidates; retains `bm25_candidates` top results. Two query paths: exhaustive (B ≤ 5,000) or Block-Max WAND (B > 5,000) for 90-99% fewer evaluations at scale.
 6. **ANN candidate selection** (`src/matching/candidates.rs`) — searches combined embedding index for `top_n` nearest A neighbours. If no embedding fields configured, all blocked records pass through.
 7. **Full scoring** (`src/scoring/mod.rs::score_pair()`) — all `match_fields` scored; embedding cosines decomposed from combined vectors.
 8. **Classification** — `>= auto_match` → Auto; `>= review_floor` → Review; else NoMatch.
@@ -294,6 +294,7 @@ Full tables: `vault/architecture/Performance Baselines.md`
 | Live, usearch, 10k×10k warm (c=10) | 1,558 req/s, p95 25.6ms |
 | Live, SQLite, 10k×10k warm (c=10) | 1,395 req/s, p95 13.6ms, 4× faster warm start |
 | Live, usearch+BM25 (SimpleBm25), 10k×10k (c=10) | 1,460 req/s (3.2× vs old Tantivy default) |
+| Live, usearch+BM25 (WAND), 100k×100k warm (c=10) | 1,070 req/s, p50=6.7ms, p95=24.1ms, BM25 build=309ms (4.7× faster) |
 
 Production: usearch backend; `quantized: true` (2× encoding, negligible quality loss); `vector_quantization: f16` (43% smaller cache). SimpleBm25 achieves 1,460 req/s out of the box — no tuning knobs needed (old Tantivy default was 461 req/s). Batch endpoint sweet spot: size 50 (445 req/s, 1.8× vs single).
 
@@ -342,6 +343,7 @@ benchmarks/
     10kx10k_inject3k_usearch/
     10kx10k_inject3k_usearch_sqlite/
     100kx100k_inject10k_usearch/
+    100kx100k_inject10k_usearch_bm25/  Live benchmark: 100k×100k with BM25 + embedding, arctic-embed-xs model
     1Mx1M_inject10k_usearch/
 
   scripts/
@@ -481,6 +483,12 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 
 **SimpleBm25 — Tantivy replacement** — Replaced the Tantivy-backed BM25 index (`src/bm25/index.rs`, 1,226 lines) with a custom DashMap-based scorer (`src/bm25/simple.rs`, ~1,000 lines). Removed `tantivy = "0.22"` from Cargo.toml (~40 transitive dependencies eliminated). Key changes: (1) `LiveSideState.bm25_index` changed from `Option<RwLock<BM25Index>>` to `Option<SimpleBm25>` — no external locks needed. (2) All `RwLock` write/read lock acquisition, `commit_if_ready`, `commit_if_dirty`, and `Bm25Ctx` usage removed from `session/mod.rs`. (3) `score_pool()` signature in `pipeline.rs` now accepts pre-computed BM25 and synonym candidates — callers do candidate generation, pipeline does union + scoring. (4) `precompute_self_scores()` eliminated from batch mode (analytical self-score is O(K) at query time). (5) `bm25_commit_batch_size` config deprecated (instant write visibility, no commit concept). Results: default live throughput improved 3.2× (461→1,460 req/s) without any tuning; batch improved 6.6% (13,776→14,686 rec/s); startup 1.7s faster (no self-score pre-warming). Design docs: `CUSTOM_BM25_DESIGN.md` and `LIVE_MODE_IMPROVEMENTS.md` in project root.
 
+**WAND BM25 implementation** — Implemented Block-Max WAND (Weak AND) scoring in `src/bm25/simple.rs` to replace the old inverted index path. Key innovations: (1) **Compact doc IDs**: Bidirectional `String <-> u32` mapping (`CompactIdMap`) reduces posting entry size from ~28 bytes to 8 bytes (u32 doc_id + u32 tf), saving ~2.2GB at 4.5M scale. (2) **BlockedPostingList**: Posting lists divided into blocks of ~128 entries with precomputed `max_tf` per block. Supports efficient block splitting on insert and block merging on remove. (3) **Block-Max WAND scorer**: Uses per-block `max_tf` to compute upper-bound BM25 scores. Skips documents whose cumulative upper bound can't beat the Kth-best score. Mathematically guaranteed to return same top-K as exhaustive scoring. (4) **Simplified API**: `score_blocked()` no longer takes `query_record` and `query_side` parameters. (5) **Two-path strategy**: Exhaustive (B ≤ 5,000) and WAND (B > 5,000). The old inverted path is deleted. Results: 100k×100k live benchmark shows 1,070 req/s (+3.4% vs exhaustive), p50=6.7ms, p95=24.1ms, BM25 build=309ms (4.7× faster). WAND's main benefit targets 4.5M scale where block sizes exceed 5,000. See [[Key Decisions#WAND BM25 Implementation]].
+
+**OR blocking removed** — `blocking.operator` now only accepts `"and"`. `"or"` is rejected at validation with a clear error message. Removed `BlockingOperator::Or` enum, `or_indices` field, and all OR branches from `matching/blocking.rs`. Removed OR SQL path in `store/sqlite.rs`. Removed `blocking_hash_changes_on_operator` test from `vectordb/manifest.rs`. Updated `docs/configuration.md` and `docs/accuracy-and-tuning.md`. Rationale: OR blocking created overlapping blocks incompatible with per-block candidate generation (both ANN and BM25). Never used in production configs. See [[Discarded Ideas#OR blocking mode]].
+
+**WAND BM25 implementation + OR blocking removal** — Completed WAND early-termination scoring for large BM25 blocks (B > 5,000) with compact doc IDs and block-max upper bounds. Removed OR blocking mode (incompatible with per-block candidate generation). 396 tests pass, zero clippy warnings. See [[Key Decisions#WAND BM25 Implementation]] and [[Discarded Ideas#OR blocking mode]].
+
 ### In Progress
 
 **CI/CD** — `.github/workflows/ci.yml` + `release.yml` created (macOS ARM, Linux glibc x86_64, Windows MSVC). Requires GitHub remote to activate. Homebrew/Scoop auto-update hooks not yet wired.
@@ -491,6 +499,7 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 2. External vector DB — Qdrant/Milvus (VectorDB trait is the interface).
 3. Pipeline parallelization — rayon::scope for encode/store/BM25/synonym branches (see `LIVE_MODE_IMPROVEMENTS.md`).
 4. Benchmark data regeneration script.
+5. GPU/ANE encoding on Apple Silicon — CoreML EP for high-concurrency (c≥50) batched encoding.
 
 ---
 

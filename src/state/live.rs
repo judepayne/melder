@@ -837,13 +837,11 @@ impl LiveMatchState {
                 store.as_ref(),
                 Side::A,
                 &config.bm25_fields,
-                &config.blocking.fields,
             );
             let idx_b = crate::bm25::simple::SimpleBm25::build(
                 store.as_ref(),
                 Side::B,
                 &config.bm25_fields,
-                &config.blocking.fields,
             );
             info!(
                 a_records = store.len(Side::A),
@@ -898,9 +896,9 @@ impl LiveMatchState {
 
     /// Initialise the encoding coordinator if `encoder_batch_wait_ms > 0`.
     ///
-    /// **Must be called from within a tokio runtime** (the coordinator
-    /// spawns a background task). Call this via `Arc::get_mut` before
-    /// the `Arc<LiveMatchState>` is shared with the session / handlers.
+    /// The coordinator uses a plain OS thread (no tokio runtime required).
+    /// Call this via `Arc::get_mut` before the `Arc<LiveMatchState>` is
+    /// shared with the session / handlers.
     pub fn init_coordinator(&mut self) {
         let batch_wait_ms = self.config.performance.encoder_batch_wait_ms.unwrap_or(0);
         if batch_wait_ms > 0 {

@@ -476,4 +476,69 @@ The custom implementation eliminates the architectural mismatch. DashMap's lock-
 
 ---
 
+## WAND BM25 Implementation
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+SimpleBm25 replaced Tantivy with a DashMap-based scorer, achieving 3.2× throughput improvement. However, at extreme scale (4.5M records), posting lists can exceed 5,000 entries, requiring evaluation of thousands of candidates per query. The exhaustive scoring path becomes a bottleneck.
+
+**Decision:**
+Implement Block-Max WAND (Weak AND) early-termination scoring in `src/bm25/simple.rs` to skip documents whose cumulative upper-bound BM25 score cannot beat the Kth-best score found so far.
+
+**Key Innovations:**
+
+1. **Compact doc IDs**: Bidirectional `String <-> u32` mapping (`CompactIdMap`) reduces posting entry size from ~28 bytes to 8 bytes (u32 doc_id + u32 tf). Saves ~2.2GB at 4.5M scale.
+
+2. **BlockedPostingList**: Posting lists divided into blocks of ~128 entries with precomputed `max_tf` per block. Supports efficient block splitting on insert and block merging on remove.
+
+3. **Block-Max WAND scorer**: Uses per-block `max_tf` to compute upper-bound BM25 scores. Skips documents whose cumulative upper bound can't beat the Kth-best score. Mathematically guaranteed to return same top-K as exhaustive scoring.
+
+4. **Simplified API**: `score_blocked()` no longer takes `query_record` and `query_side` parameters (block_key removed from posting lists).
+
+5. **Two-path strategy**: Exhaustive (B ≤ 5,000) and WAND (B > 5,000). The old inverted path is deleted.
+
+**Results:**
+- 100k×100k live benchmark: 1,070 req/s (+3.4% vs exhaustive), p50=6.7ms, p95=24.1ms, BM25 build=309ms (4.7× faster)
+- WAND's main benefit targets 4.5M scale where block sizes exceed 5,000
+- Exhaustive path remains for small blocks (simpler, no overhead)
+
+**Why WAND:**
+Block-Max WAND is a proven technique from information retrieval (used in Lucene, Elasticsearch). The per-block upper bounds are tight enough to skip 90-99% of posting entries at scale without sacrificing correctness. The dual-path strategy keeps small blocks simple while enabling scalability.
+
+**Related:** [[Key Decisions#Replace Tantivy BM25 Index with Custom DashMap Based SimpleBm25]]
+
+---
+
+## OR Blocking Removed
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+The blocking index supported two modes: AND (all blocking fields must match) and OR (any blocking field matches). OR blocking created overlapping blocks that were incompatible with per-block candidate generation strategies (both ANN and BM25). The feature was never used in production configs.
+
+**Decision:**
+Remove OR blocking entirely. `blocking.operator` now only accepts `"and"`. Reject `"or"` at validation with a clear error message.
+
+**Changes:**
+- Removed `BlockingOperator::Or` enum variant
+- Removed `or_indices` field from `BlockingIndex`
+- Removed all OR branches from `matching/blocking.rs`
+- Removed OR SQL path in `store/sqlite.rs`
+- Removed `blocking_hash_changes_on_operator` test from `vectordb/manifest.rs`
+- Updated `docs/configuration.md` and `docs/accuracy-and-tuning.md`
+
+**Why:**
+OR blocking creates overlapping blocks where a single record can match multiple blocking keys. This is incompatible with per-block candidate generation:
+- **ANN**: Candidates are selected per-block; overlapping blocks create ambiguity about which block a candidate belongs to
+- **BM25 WAND**: Block-max upper bounds assume non-overlapping blocks; overlapping blocks break the guarantee
+
+AND blocking (all fields must match) is the correct model for entity resolution: a record must match on all blocking criteria to be a candidate.
+
+**Related:** [[Discarded Ideas#OR blocking mode]]
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.
