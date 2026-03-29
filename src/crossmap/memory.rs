@@ -179,8 +179,14 @@ impl CrossMapOps for MemoryCrossMap {
 
     fn remove(&self, a_id: &str, b_id: &str) {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        g.a_to_b.remove(a_id);
-        g.b_to_a.remove(b_id);
+        // Only remove if the pair actually matches — prevents corrupting
+        // two unrelated mappings when called with a mismatched pair.
+        // Consistent with SqliteCrossMap::remove which uses
+        // `WHERE a_id = ?1 AND b_id = ?2`.
+        if g.a_to_b.get(a_id).map(String::as_str) == Some(b_id) {
+            g.a_to_b.remove(a_id);
+            g.b_to_a.remove(b_id);
+        }
     }
 
     fn remove_if_exact(&self, a_id: &str, b_id: &str) -> bool {

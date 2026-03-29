@@ -541,4 +541,147 @@ AND blocking (all fields must match) is the correct model for entity resolution:
 
 ---
 
+## Batch Pre-Match Uses claim() Not add()
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+Both common ID pre-match and exact prefilter phases in batch mode used `crossmap.add()` to confirm matches. The `add()` method bypasses bijection enforcement — it does not check if either side is already claimed. Under Rayon parallelism, two B records with the same common ID could both overwrite the same A mapping. The exact prefilter's `has_a()` guard was a TOCTOU race: one thread could check `has_a()`, find it unclaimed, then lose the race to another thread that claims it first.
+
+**Decision:**
+Replace all `add()` calls in batch pre-match phases with `claim()`. The `claim()` method atomically checks both directions before inserting, enforcing the bijection invariant under concurrent access.
+
+**Changes:**
+- Common ID pre-match: `crossmap.add(a_id, b_id)` → `crossmap.claim(a_id, b_id)`
+- Exact prefilter: `crossmap.add(a_id, b_id)` → `crossmap.claim(a_id, b_id)`
+- Removed `has_a()` guard from exact prefilter (redundant with `claim()`)
+
+**Why:**
+`claim()` is the only safe way to enforce the bijection invariant under Rayon parallelism. The TOCTOU gap in the old code could produce duplicate claims, violating Constitution §3. The atomic check-and-insert in `claim()` makes the invariant trivially correct.
+
+**Related:** [[Constitution#3 CrossMap Bijection 1 1 Under One Lock]]
+
+---
+
+## confirm_match Breaks Existing Pairs Before Inserting
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+The `confirm_match` API endpoint allows manual confirmation of a match pair. The old implementation used `crossmap.add()`, which would silently overwrite an existing mapping if either `a_id` or `b_id` was already claimed. This violated the bijection invariant — the old partner would remain in the crossmap but become unreachable.
+
+**Decision:**
+Manual confirmation is an explicit operator action, so it always succeeds. If `a_id` or `b_id` already has a crossmap partner, break the old pair first (via `take_a`/`take_b`) and re-mark the old partner as unmatched before inserting the new pair.
+
+**Changes:**
+- `confirm_match()` in `src/session/mod.rs`: check if `a_id` or `b_id` is already claimed
+- If claimed, call `crossmap.take_a(a_id)` or `crossmap.take_b(b_id)` to get the old partner
+- Mark the old partner as unmatched in the store
+- Then call `crossmap.claim(a_id, b_id)` to insert the new pair
+
+**Why:**
+This follows the same pattern as the common_id auto-match path in `upsert_record_inner`. Manual confirmation should be idempotent and always succeed. Breaking the old pair ensures the bijection invariant is maintained and the old partner is not orphaned.
+
+**Related:** [[Constitution#3 CrossMap Bijection 1 1 Under One Lock]]
+
+---
+
+## WAL Compact Holds Writer Lock for Entire Operation
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+The WAL `compact()` method flushed the buffer, read events, wrote a temp file, renamed it over the original, and only then re-acquired the writer lock. Any concurrent `append()` between flush and lock re-acquisition would write to the old (renamed-away) file handle, silently losing events. This could happen under concurrent live-mode upserts during a compaction.
+
+**Decision:**
+Hold the `Mutex<File>` writer lock for the entire compaction operation, blocking concurrent appends until the writer is safely swapped to the new file.
+
+**Changes:**
+- `compact()` in `src/state/upsert_log.rs`: acquire writer lock at the start
+- Perform all operations (flush, read, write temp, rename) while holding the lock
+- Release lock only after the writer is swapped to the new file
+
+**Why:**
+Holding the lock for the entire operation eliminates the TOCTOU gap. Concurrent appends are blocked until the writer is safely swapped, guaranteeing no events are lost. The lock contention is minimal — compaction is infrequent (typically once per session).
+
+**Related:** [[State & Persistence#WAL]]
+
+---
+
+## CompactIdMap Uses DashMap entry() for Atomic ID Assignment
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+The `CompactIdMap::get_or_insert()` method used a get()-then-insert() pattern: check if the string ID exists in `str_to_u32`, and if not, allocate a new compact ID. Under concurrent BM25 upserts, two threads calling `get_or_insert("same_id")` could both miss the get() check and allocate different compact IDs. The second insert would silently overwrite the first in `str_to_u32`, but the first thread's compact ID would remain in posting lists and never match the allowed set in WAND queries, causing silent data loss.
+
+**Decision:**
+Replace the get()-then-insert() pattern with `DashMap::entry().or_insert_with()`, which provides atomic get-or-create semantics. Only one thread can win the insert; the other receives the existing ID.
+
+**Changes:**
+- `CompactIdMap::get_or_insert()` in `src/bm25/simple.rs`: use `entry().or_insert_with()` instead of separate get/insert calls
+
+**Why:**
+`DashMap::entry()` provides atomic get-or-create semantics without external locks. The TOCTOU gap in the old code could produce duplicate compact IDs, causing silent data loss in posting lists. The atomic operation makes the invariant trivially correct.
+
+**Related:** [[Key Decisions#WAND BM25 Implementation]]
+
+---
+
+## BlockingIndex Partial-Key Filter Matches Batch-Mode Semantics
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+The `BlockingIndex::query()` method in live mode had a critical bug: when any single blocking field was empty in the query record, it returned ALL pool records, defeating blocking entirely. This was inconsistent with batch-mode `passes_blocking()` which skips empty constraints and filters on the remaining fields.
+
+**Decision:**
+When some blocking fields are empty in a live-mode query, skip the empty constraints and filter on the remaining fields. When ALL fields are empty, all records are still returned (no filtering possible).
+
+**Changes:**
+- `BlockingIndex::query()` in `src/matching/blocking.rs`: iterate over blocking fields, skip empty values, apply constraints only for non-empty fields
+- Matches the batch-mode `passes_blocking()` linear scan semantics exactly
+
+**Why:**
+Blocking should be a hard filter based on available data. If a field is empty, we have no constraint to apply — we should not fall back to returning everything. This fix ensures live-mode and batch-mode blocking behave identically, maintaining the principle that "the same pipeline runs in all modes."
+
+**Related:** [[Constitution#2 One Scoring Pipeline]]
+
+---
+
+## SessionError Split into Typed Variants with HTTP Status Mapping
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+`SessionError::MissingField` was overloaded for 5+ semantically different error kinds: actual missing field, record not found, pair not found, empty batch, batch too large, encoding failures. This made it impossible for HTTP handlers to distinguish between "bad input" (400) and "not found" (404) responses. All errors were mapped to 400 Bad Request.
+
+**Decision:**
+Split `SessionError` into typed variants with explicit HTTP status codes:
+- `MissingField` → 400 Bad Request (actual missing field in record)
+- `NotFound` → 404 Not Found (record or pair not found)
+- `BatchValidation` → 422 Unprocessable Entity (empty batch, batch too large)
+- `Encoder` → 500 Internal Server Error (encoding failures)
+
+Added `status_code()` method on `SessionError` and `run_blocking_session` handler helper to use it.
+
+**Changes:**
+- `src/error.rs`: split `SessionError` enum into 4 variants with distinct meanings
+- `src/session/mod.rs`: use correct error variant at each error site
+- `src/api/handlers.rs`: call `error.status_code()` to map to HTTP response
+- New `run_blocking_session` helper for handlers that need blocking-aware error mapping
+
+**Why:**
+Clients need to distinguish between "bad input" and "not found" responses. A 404 tells the client "this record doesn't exist, try a different ID"; a 400 tells the client "your request is malformed, fix the input." The split enables proper error handling in client code and improves API usability.
+
+**Related:** [[Constitution#2 One Scoring Pipeline]]
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

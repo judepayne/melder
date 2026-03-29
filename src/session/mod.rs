@@ -673,8 +673,7 @@ impl Session {
             let _span = info_span!("bm25_score").entered();
             let query_text = opp_bm25.query_text_for(&record, side);
             let self_score = opp_bm25.analytical_self_score(&query_text);
-            let raw_results =
-                opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
+            let raw_results = opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
             let scored: Vec<(String, f64)> = raw_results
                 .into_iter()
                 .map(|(cid, raw)| {
@@ -832,11 +831,9 @@ impl Session {
         let opp = side.opposite();
 
         // Check the record exists
-        let record = store
-            .get(side, id)
-            .ok_or_else(|| SessionError::MissingField {
-                field: format!("record {} not found on side {:?}", id, side),
-            })?;
+        let record = store.get(side, id).ok_or_else(|| SessionError::NotFound {
+            message: format!("record {} not found on side {:?}", id, side),
+        })?;
 
         // Break any crossmap pair
         let paired = match side {
@@ -998,7 +995,13 @@ impl Session {
         let mut combined_vec: Vec<f32> = Vec::new();
         let mut blocked_ids: Vec<String> = Vec::new();
 
-        if needs_encoding {
+        if needs_encoding && self.state.coordinator.is_none() {
+            // Parallel path: encoding dominates, hide blocking query
+            // underneath. Only used when encoding goes through the pool
+            // directly (no coordinator). When the coordinator is active,
+            // rayon workers would block on the coordinator channel while
+            // fastembed (which also uses rayon internally) tries to use
+            // the same thread pool — causing a deadlock.
             let record_ref = &record;
             let mut encode_error: Option<SessionError> = None;
 
@@ -1027,6 +1030,16 @@ impl Session {
             if let Some(e) = encode_error {
                 return Err(e);
             }
+        } else if needs_encoding {
+            // Coordinator path: run encoding sequentially to avoid
+            // rayon deadlock. Blocking query runs after.
+            combined_vec = self.encode_combined(&record, emb_specs, is_a_side)?;
+            let _span = info_span!("blocking_query").entered();
+            blocked_ids = if blocking_enabled {
+                store.blocking_query(&record, side, opp)
+            } else {
+                store.ids(opp)
+            };
         } else {
             let _span = info_span!("blocking_query").entered();
             blocked_ids = if blocking_enabled {
@@ -1037,12 +1050,9 @@ impl Session {
         }
 
         // --- Sequential tail ---
-        if !combined_vec.is_empty()
-            && let Some(ref idx) = this_side.combined_index
-        {
-            let _ = idx.upsert(id, &combined_vec, &record, side);
-        }
-
+        // Note: try_match is read-only — do NOT upsert the encoded vector
+        // into the index. Use the freshly-encoded vector for the query, or
+        // fall back to an existing cached vector if encoding was skipped.
         let query_combined_vec = if !combined_vec.is_empty() {
             combined_vec
         } else {
@@ -1057,8 +1067,7 @@ impl Session {
         let (bm25_cand_ids, bm25_scores_map) = if let Some(opp_bm25) = opp_bm25 {
             let query_text = opp_bm25.query_text_for(&record, side);
             let self_score = opp_bm25.analytical_self_score(&query_text);
-            let raw_results =
-                opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
+            let raw_results = opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
             let scored: Vec<(String, f64)> = raw_results
                 .into_iter()
                 .map(|(cid, raw)| {
@@ -1135,22 +1144,39 @@ impl Session {
         })
     }
 
-    /// Confirm a match: add to crossmap.
+    /// Confirm a match: insert into crossmap, breaking any existing pairs
+    /// for either side first.
+    ///
+    /// Manual confirmation is an explicit operator action, so it always
+    /// succeeds (unlike `claim()` which fails if either side is taken).
+    /// If `a_id` or `b_id` already has a crossmap partner, that old pair
+    /// is broken and the old partner is marked unmatched before inserting
+    /// the new pair. This preserves the bijection invariant (Constitution §3).
     pub fn confirm_match(&self, a_id: &str, b_id: &str) -> Result<ConfirmResponse, SessionError> {
         let store = &self.state.store;
 
         // Validate both IDs exist
         if !store.contains(Side::A, a_id) {
-            return Err(SessionError::MissingField {
-                field: format!("a_id '{}' not found", a_id),
+            return Err(SessionError::NotFound {
+                message: format!("a_id '{}' not found", a_id),
             });
         }
         if !store.contains(Side::B, b_id) {
-            return Err(SessionError::MissingField {
-                field: format!("b_id '{}' not found", b_id),
+            return Err(SessionError::NotFound {
+                message: format!("b_id '{}' not found", b_id),
             });
         }
 
+        // Break any existing pair for a_id (e.g. a_id was matched to B-other).
+        if let Some(old_b) = self.state.crossmap.take_a(a_id) {
+            store.mark_unmatched(Side::B, &old_b);
+        }
+        // Break any existing pair for b_id (e.g. b_id was matched to A-other).
+        if let Some(old_a) = self.state.crossmap.take_b(b_id) {
+            store.mark_unmatched(Side::A, &old_a);
+        }
+
+        // Now insert the new pair — both sides are guaranteed free.
         self.state.crossmap.add(a_id, b_id);
         store.mark_matched(Side::A, a_id);
         store.mark_matched(Side::B, b_id);
@@ -1219,8 +1245,8 @@ impl Session {
         // Validate the pair exists
         let existing = self.state.crossmap.get_b(a_id);
         if existing.as_deref() != Some(b_id) {
-            return Err(SessionError::MissingField {
-                field: format!("crossmap pair ({}, {}) not found", a_id, b_id),
+            return Err(SessionError::NotFound {
+                message: format!("crossmap pair ({}, {}) not found", a_id, b_id),
             });
         }
 
@@ -1259,11 +1285,9 @@ impl Session {
         let opp = side.opposite();
 
         // Look up the record
-        let record = store
-            .get(side, id)
-            .ok_or_else(|| SessionError::MissingField {
-                field: format!("record {} not found on side {:?}", id, side),
-            })?;
+        let record = store.get(side, id).ok_or_else(|| SessionError::NotFound {
+            message: format!("record {} not found on side {:?}", id, side),
+        })?;
 
         // Check crossmap
         let crossmap = match side {
@@ -1323,13 +1347,13 @@ impl Session {
         records: Vec<Record>,
     ) -> Result<BatchUpsertResponse, SessionError> {
         if records.is_empty() {
-            return Err(SessionError::MissingField {
-                field: "records (empty array)".into(),
+            return Err(SessionError::BatchValidation {
+                message: "records array is empty".into(),
             });
         }
         if records.len() > Self::MAX_BATCH_SIZE {
-            return Err(SessionError::MissingField {
-                field: format!(
+            return Err(SessionError::BatchValidation {
+                message: format!(
                     "batch size {} exceeds maximum of {}",
                     records.len(),
                     Self::MAX_BATCH_SIZE
@@ -1419,13 +1443,13 @@ impl Session {
         records: Vec<Record>,
     ) -> Result<BatchMatchResponse, SessionError> {
         if records.is_empty() {
-            return Err(SessionError::MissingField {
-                field: "records (empty array)".into(),
+            return Err(SessionError::BatchValidation {
+                message: "records array is empty".into(),
             });
         }
         if records.len() > Self::MAX_BATCH_SIZE {
-            return Err(SessionError::MissingField {
-                field: format!(
+            return Err(SessionError::BatchValidation {
+                message: format!(
                     "batch size {} exceeds maximum of {}",
                     records.len(),
                     Self::MAX_BATCH_SIZE
@@ -1512,13 +1536,13 @@ impl Session {
         ids: Vec<String>,
     ) -> Result<BatchRemoveResponse, SessionError> {
         if ids.is_empty() {
-            return Err(SessionError::MissingField {
-                field: "ids (empty array)".into(),
+            return Err(SessionError::BatchValidation {
+                message: "ids array is empty".into(),
             });
         }
         if ids.len() > Self::MAX_BATCH_SIZE {
-            return Err(SessionError::MissingField {
-                field: format!(
+            return Err(SessionError::BatchValidation {
+                message: format!(
                     "batch size {} exceeds maximum of {}",
                     ids.len(),
                     Self::MAX_BATCH_SIZE
@@ -1729,8 +1753,7 @@ impl Session {
         let (bm25_cand_ids, bm25_scores_map) = if let Some(ref pool_bm25) = pool_state.bm25_index {
             let query_text = pool_bm25.query_text_for(&record, side);
             let self_score = pool_bm25.analytical_self_score(&query_text);
-            let raw_results =
-                pool_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates);
+            let raw_results = pool_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates);
             let scored: Vec<(String, f64)> = raw_results
                 .into_iter()
                 .map(|(cid, raw)| {
@@ -1886,9 +1909,10 @@ impl Session {
 fn melder_to_session_err(e: crate::error::MelderError) -> SessionError {
     match e {
         crate::error::MelderError::Encoder(enc) => SessionError::Encoder(enc),
-        other => SessionError::MissingField {
-            field: format!("encoding failed: {}", other),
-        },
+        other => SessionError::Encoder(crate::error::EncoderError::Inference(format!(
+            "encoding failed: {}",
+            other
+        ))),
     }
 }
 

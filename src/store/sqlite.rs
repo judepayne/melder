@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::config::{BlockingConfig, BlockingFieldPair};
 use crate::models::{Record, Side};
@@ -275,11 +275,7 @@ fn blocking_values(
                 .get(field)
                 .map(|s| s.trim().to_lowercase())
                 .unwrap_or_default();
-            if val.is_empty() {
-                None
-            } else {
-                Some((i, val))
-            }
+            if val.is_empty() { None } else { Some((i, val)) }
         })
         .collect()
 }
@@ -586,11 +582,7 @@ impl RecordStore for SqliteStore {
                     .get(field)
                     .map(|s| s.trim().to_lowercase())
                     .unwrap_or_default();
-                if val.is_empty() {
-                    None
-                } else {
-                    Some((i, val))
-                }
+                if val.is_empty() { None } else { Some((i, val)) }
             })
             .collect();
 

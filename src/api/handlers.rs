@@ -113,6 +113,23 @@ where
     }
 }
 
+/// Run a blocking closure that returns `SessionError` and use the error's
+/// own status code for the HTTP response.
+async fn run_blocking_session<F, T>(f: F) -> axum::response::Response
+where
+    F: FnOnce() -> Result<T, SessionError> + Send + 'static,
+    T: serde::Serialize + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(val)) => json_ok(val),
+        Ok(Err(e)) => {
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
+            error_response(status, &e.to_string()).into_response()
+        }
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handler helpers — one per operation family, parameterised by Side
 // ---------------------------------------------------------------------------
@@ -151,27 +168,20 @@ async fn match_handler(side: Side, session: AppState, record: Record) -> axum::r
 
 async fn remove_handler(side: Side, session: AppState, id: String) -> axum::response::Response {
     let s = side_str(side);
-    run_blocking(
-        move || {
-            let r = session.remove_record(side, &id);
-            if r.is_ok() {
-                info!(side = s, id = %id, "remove");
-            } else {
-                warn!(side = s, id = %id, "remove failed");
-            }
-            r
-        },
-        StatusCode::NOT_FOUND,
-    )
+    run_blocking_session(move || {
+        let r = session.remove_record(side, &id);
+        if r.is_ok() {
+            info!(side = s, id = %id, "remove");
+        } else {
+            warn!(side = s, id = %id, "remove failed");
+        }
+        r
+    })
     .await
 }
 
 async fn query_handler(side: Side, session: AppState, id: String) -> axum::response::Response {
-    run_blocking(
-        move || session.query_record(side, &id),
-        StatusCode::NOT_FOUND,
-    )
-    .await
+    run_blocking_session(move || session.query_record(side, &id)).await
 }
 
 async fn add_batch_handler(
@@ -349,18 +359,15 @@ pub async fn crossmap_confirm(
     let b_id = body.b_id;
     let a_log = a_id.clone();
     let b_log = b_id.clone();
-    run_blocking(
-        move || {
-            let r = session.confirm_match(&a_id, &b_id);
-            if r.is_ok() {
-                info!(a_id = %a_log, b_id = %b_log, "crossmap confirm");
-            } else {
-                warn!(a_id = %a_log, b_id = %b_log, "crossmap confirm failed");
-            }
-            r
-        },
-        StatusCode::BAD_REQUEST,
-    )
+    run_blocking_session(move || {
+        let r = session.confirm_match(&a_id, &b_id);
+        if r.is_ok() {
+            info!(a_id = %a_log, b_id = %b_log, "crossmap confirm");
+        } else {
+            warn!(a_id = %a_log, b_id = %b_log, "crossmap confirm failed");
+        }
+        r
+    })
     .await
 }
 
@@ -378,11 +385,7 @@ pub async fn crossmap_lookup(
         }
     };
     let id = params.id;
-    run_blocking(
-        move || session.lookup_crossmap(&id, side),
-        StatusCode::BAD_REQUEST,
-    )
-    .await
+    run_blocking_session(move || session.lookup_crossmap(&id, side)).await
 }
 
 /// POST /api/v1/crossmap/break
@@ -394,18 +397,15 @@ pub async fn crossmap_break(
     let b_id = body.b_id;
     let a_log = a_id.clone();
     let b_log = b_id.clone();
-    run_blocking(
-        move || {
-            let r = session.break_crossmap(&a_id, &b_id);
-            if r.is_ok() {
-                info!(a_id = %a_log, b_id = %b_log, "crossmap break");
-            } else {
-                warn!(a_id = %a_log, b_id = %b_log, "crossmap break failed");
-            }
-            r
-        },
-        StatusCode::BAD_REQUEST,
-    )
+    run_blocking_session(move || {
+        let r = session.break_crossmap(&a_id, &b_id);
+        if r.is_ok() {
+            info!(a_id = %a_log, b_id = %b_log, "crossmap break");
+        } else {
+            warn!(a_id = %a_log, b_id = %b_log, "crossmap break failed");
+        }
+        r
+    })
     .await
 }
 

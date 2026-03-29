@@ -117,7 +117,13 @@ pub fn run_batch(
                 if !b_val.is_empty()
                     && let Some(a_id) = a_common_index.get(b_val)
                 {
-                    crossmap.add(a_id, b_id);
+                    // Use claim() to atomically enforce the bijection
+                    // invariant (Constitution §3). If either side is
+                    // already mapped, skip — the record will go through
+                    // normal scoring instead.
+                    if !crossmap.claim(a_id, b_id) {
+                        continue;
+                    }
                     let a_rec = store.get(Side::A, a_id);
                     let mr = MatchResult {
                         query_id: b_id.clone(),
@@ -191,10 +197,14 @@ pub fn run_batch(
                 })
                 .collect();
 
-            if let Some(a_id) = store.exact_lookup(Side::A, &kvs)
-                && !crossmap.has_a(&a_id)
-            {
-                crossmap.add(&a_id, b_id);
+            if let Some(a_id) = store.exact_lookup(Side::A, &kvs) {
+                // Use claim() to atomically enforce the bijection
+                // invariant (Constitution §3). The old has_a() check was
+                // a TOCTOU race under Rayon parallelism — claim() checks
+                // both directions atomically.
+                if !crossmap.claim(&a_id, b_id) {
+                    continue;
+                }
                 let a_rec = store.get(Side::A, &a_id);
                 matched.push(MatchResult {
                     query_id: b_id.clone(),
@@ -240,11 +250,7 @@ pub fn run_batch(
         let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
-            let idx = crate::bm25::simple::SimpleBm25::build(
-                store,
-                Side::A,
-                &config.bm25_fields,
-            );
+            let idx = crate::bm25::simple::SimpleBm25::build(store, Side::A, &config.bm25_fields);
             eprintln!(
                 "Built BM25 index for {} A records in {:.1}ms",
                 store.len(Side::A),
@@ -345,11 +351,7 @@ pub fn run_batch(
             let (bm25_cand_ids, bm25_scores_map) = if let Some(ref bm25) = bm25_index_a {
                 let query_text = bm25.query_text_for(&b_record, Side::B);
                 let self_score = bm25.analytical_self_score(&query_text);
-                let raw_results = bm25.score_blocked(
-                    &query_text,
-                    &blocked_ids,
-                    bm25_candidates_n,
-                );
+                let raw_results = bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
                 let scored: Vec<(String, f64)> = raw_results
                     .into_iter()
                     .map(|(cid, raw)| {

@@ -108,6 +108,24 @@ pub enum SessionError {
     #[error("empty id in record")]
     EmptyId,
 
+    #[error("not found: {message}")]
+    NotFound { message: String },
+
+    #[error("batch validation error: {message}")]
+    BatchValidation { message: String },
+
     #[error("encoder error: {0}")]
     Encoder(#[from] EncoderError),
+}
+
+impl SessionError {
+    /// Suggested HTTP status code for this error variant.
+    pub fn status_code(&self) -> u16 {
+        match self {
+            SessionError::MissingField { .. } | SessionError::EmptyId => 400,
+            SessionError::NotFound { .. } => 404,
+            SessionError::BatchValidation { .. } => 422,
+            SessionError::Encoder(_) => 500,
+        }
+    }
 }

@@ -131,14 +131,41 @@ impl BlockingIndex {
     ///
     /// `query_side` is the side of the query record. The index contains
     /// records from the *opposite* side.
+    ///
+    /// When all key components are present, performs a direct O(1) lookup.
+    /// When some components are empty (missing query fields), skips those
+    /// constraints and filters on the remaining fields — matching the
+    /// `passes_blocking` linear-scan behavior used in batch mode.
+    /// When all components are empty, returns all IDs (no filtering possible).
     pub fn query(&self, query_record: &Record, query_side: Side) -> HashSet<String> {
         let key = self.composite_key_for_query(query_record, query_side);
-        // If any key component is empty (missing query value), return
-        // all IDs (can't filter on missing data)
-        if key.iter().any(|v| v.is_empty()) {
+
+        // Fast path: all key components present — direct lookup.
+        if key.iter().all(|v| !v.is_empty()) {
+            return self.index.get(&key).cloned().unwrap_or_default();
+        }
+
+        // If all components are empty, return everything (no filtering
+        // possible — matches batch mode behavior for fully missing data).
+        if key.iter().all(|v| v.is_empty()) {
             return self.all_ids();
         }
-        self.index.get(&key).cloned().unwrap_or_default()
+
+        // Partial key: some fields present, some missing. Iterate all
+        // index entries and match only on the non-empty positions. This
+        // is consistent with passes_blocking which skips empty constraints.
+        let non_empty: Vec<(usize, &str)> = key
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(i, v)| (i, v.as_str()))
+            .collect();
+
+        self.index
+            .iter()
+            .filter(|(idx_key, _)| non_empty.iter().all(|&(i, qval)| idx_key[i] == qval))
+            .flat_map(|(_, ids)| ids.iter().cloned())
+            .collect()
     }
 
     fn composite_key(&self, record: &Record, side: Side) -> Vec<String> {
@@ -320,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn index_missing_query_value_returns_all() {
+    fn index_all_fields_missing_returns_all() {
         let fields = vec![BlockingFieldPair {
             field_a: "country_code".to_string(),
             field_b: "domicile".to_string(),
@@ -331,9 +358,61 @@ mod tests {
         idx.insert("A-1", &rec, Side::A);
         idx.insert("A-2", &rec, Side::A);
 
-        // Missing domicile → returns all
+        // All blocking fields missing → returns all IDs
         let query = make_record(&[("other_field", "x")]);
         let results = idx.query(&query, Side::B);
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn index_partial_key_filters_on_available_fields() {
+        // Multi-field blocking: country + sector
+        let fields = vec![
+            BlockingFieldPair {
+                field_a: "country_code".to_string(),
+                field_b: "domicile".to_string(),
+            },
+            BlockingFieldPair {
+                field_a: "sector".to_string(),
+                field_b: "industry".to_string(),
+            },
+        ];
+        let mut idx = BlockingIndex::new(fields);
+
+        // A-1: GB + Finance, A-2: GB + Energy, A-3: US + Finance
+        idx.insert(
+            "A-1",
+            &make_record(&[("country_code", "GB"), ("sector", "Finance")]),
+            Side::A,
+        );
+        idx.insert(
+            "A-2",
+            &make_record(&[("country_code", "GB"), ("sector", "Energy")]),
+            Side::A,
+        );
+        idx.insert(
+            "A-3",
+            &make_record(&[("country_code", "US"), ("sector", "Finance")]),
+            Side::A,
+        );
+
+        // Query with country=GB but missing industry → filters on country only
+        let query = make_record(&[("domicile", "GB")]);
+        let results = idx.query(&query, Side::B);
+        assert_eq!(
+            results.len(),
+            2,
+            "partial key (country only) should match 2 GB records, got {:?}",
+            results
+        );
+        assert!(results.contains("A-1"));
+        assert!(results.contains("A-2"));
+        assert!(!results.contains("A-3"));
+
+        // Query with both fields → exact match
+        let query2 = make_record(&[("domicile", "GB"), ("industry", "Finance")]);
+        let results2 = idx.query(&query2, Side::B);
+        assert_eq!(results2.len(), 1, "full key should match exactly 1");
+        assert!(results2.contains("A-1"));
     }
 }

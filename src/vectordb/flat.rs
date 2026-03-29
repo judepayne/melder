@@ -285,11 +285,17 @@ pub fn save_index(path: &Path, index: &VecIndex) -> Result<(), IndexError> {
     file.write_all(&n.to_le_bytes())?;
     file.write_all(&d.to_le_bytes())?;
 
-    // Write vectors as raw f32 bytes (little-endian)
+    // Write vectors as f32 little-endian bytes.
+    // Uses safe per-element conversion, matching the load path which uses
+    // f32::from_le_bytes(). The previous unsafe raw-pointer cast wrote
+    // native endianness, which would silently produce corrupt caches on
+    // big-endian platforms.
     let vectors = index.vectors();
-    let byte_slice =
-        unsafe { std::slice::from_raw_parts(vectors.as_ptr() as *const u8, vectors.len() * 4) };
-    file.write_all(byte_slice)?;
+    let mut vec_buf = Vec::with_capacity(vectors.len() * 4);
+    for &v in vectors {
+        vec_buf.extend_from_slice(&v.to_le_bytes());
+    }
+    file.write_all(&vec_buf)?;
 
     // Write IDs as newline-separated strings
     for id in index.ids() {

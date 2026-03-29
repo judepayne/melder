@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::trace::TraceLayer;
@@ -12,6 +13,14 @@ use tracing::info;
 use crate::session::Session;
 
 use super::handlers;
+
+/// Maximum request body size (10 MB).
+///
+/// Batch endpoints accept up to 1,000 records, each of which is a
+/// `HashMap<String, String>`. With typical record sizes of a few KB,
+/// 10 MB is generous while still protecting against accidental or
+/// malicious multi-GB payloads.
+const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 /// Build the axum Router with all API routes.
 ///
@@ -29,6 +38,7 @@ pub fn build_router(session: Arc<Session>) -> Router {
         .route("/api/v1/health", get(handlers::health))
         .route("/api/v1/status", get(handlers::status))
         // Middleware
+        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .layer(CatchPanicLayer::new())
         .layer(TraceLayer::new_for_http())
         // State

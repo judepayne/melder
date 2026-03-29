@@ -344,9 +344,22 @@ impl UpsertLog {
     /// per side+id), keep all CrossMap events in order.
     ///
     /// Rewrites the file atomically (temp + rename).
+    ///
+    /// Holds the writer lock for the entire operation so that concurrent
+    /// `append()` calls block until compaction is complete and the writer
+    /// has been swapped to the new file. Without this, writes between
+    /// `flush()` and the writer swap would go to the old (renamed-away)
+    /// file and be silently lost.
     pub fn compact(&self, a_id_field: &str, b_id_field: &str) -> io::Result<()> {
-        // Flush current buffer first
-        self.flush()?;
+        // Hold the writer lock for the entire compaction to prevent
+        // concurrent append() calls from writing to a stale file handle.
+        let mut w = self
+            .writer
+            .lock()
+            .map_err(|e| io::Error::other(e.to_string()))?;
+
+        // Flush current buffer first (under the lock).
+        w.flush()?;
 
         // Read all events from the current WAL file only
         let events = Self::replay_file(&self.path)?;
@@ -429,28 +442,24 @@ impl UpsertLog {
         let temp_path = self.path.with_extension("wal.tmp");
         {
             let file = File::create(&temp_path)?;
-            let mut writer = BufWriter::new(file);
+            let mut tmp_writer = BufWriter::new(file);
             for event in &compacted {
                 let line = serde_json::to_string(event)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                writer.write_all(line.as_bytes())?;
-                writer.write_all(b"\n")?;
+                tmp_writer.write_all(line.as_bytes())?;
+                tmp_writer.write_all(b"\n")?;
             }
-            writer.flush()?;
+            tmp_writer.flush()?;
         }
 
         // Atomic rename (cross-platform: see rename_replacing)
         rename_replacing(&temp_path, &self.path)?;
 
-        // Reopen the file for appending (the old file handle is now stale)
+        // Reopen the file for appending and swap the writer (still under lock).
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
-        let mut w = self
-            .writer
-            .lock()
-            .map_err(|e| io::Error::other(e.to_string()))?;
         *w = BufWriter::new(file);
 
         info!(

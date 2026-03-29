@@ -11,8 +11,8 @@
 //! `max_tf` per block for WAND upper-bound pruning.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 
@@ -58,19 +58,22 @@ impl CompactIdMap {
     }
 
     /// Get or assign a compact ID for a string.
+    ///
+    /// Uses `DashMap::entry()` for atomic get-or-create — two concurrent
+    /// calls with the same `id` will always return the same compact ID.
+    /// The previous `get()`-then-`insert()` pattern had a TOCTOU race
+    /// where two threads could allocate different compact IDs for the
+    /// same string, causing orphan entries in posting lists.
     fn get_or_insert(&self, id: &str) -> u32 {
-        if let Some(existing) = self.str_to_u32.get(id) {
-            return *existing;
-        }
-        let compact = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.str_to_u32.insert(id.to_string(), compact);
-        let mut vec = self.u32_to_str.write().unwrap_or_else(|e| e.into_inner());
-        // Ensure the vec is large enough.
-        if compact as usize >= vec.len() {
-            vec.resize(compact as usize + 1, String::new());
-        }
-        vec[compact as usize] = id.to_string();
-        compact
+        *self.str_to_u32.entry(id.to_string()).or_insert_with(|| {
+            let compact = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let mut vec = self.u32_to_str.write().unwrap_or_else(|e| e.into_inner());
+            if compact as usize >= vec.len() {
+                vec.resize(compact as usize + 1, String::new());
+            }
+            vec[compact as usize] = id.to_string();
+            compact
+        })
     }
 
     /// Look up the string ID for a compact ID.
