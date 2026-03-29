@@ -95,6 +95,7 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
         if let Err(e) = state.wal.compact(a_id_field, b_id_field) {
             warn!(error = %e, "wal compact failed");
         }
+        state.wal.cleanup_old_files();
 
         // Final crossmap flush
         state.mark_crossmap_dirty(); // force flush

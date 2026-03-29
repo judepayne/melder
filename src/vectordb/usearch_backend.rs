@@ -102,8 +102,6 @@ struct BlockState {
     id_to_key: HashMap<String, u64>,
     /// u64 key → String ID.
     key_to_id: HashMap<u64, String>,
-    /// Tracks which side each record belongs to (for post-filtering).
-    id_to_side: HashMap<String, Side>,
 }
 
 impl BlockState {
@@ -126,7 +124,6 @@ impl BlockState {
             index,
             id_to_key: HashMap::new(),
             key_to_id: HashMap::new(),
-            id_to_side: HashMap::new(),
         })
     }
 
@@ -300,7 +297,6 @@ impl VectorDB for UsearchVectorDB {
                     .unwrap_or_else(|e| e.into_inner());
                 if let Some(old_key) = old_state.id_to_key.remove(id) {
                     old_state.key_to_id.remove(&old_key);
-                    old_state.id_to_side.remove(id);
                     // Mark removed in usearch (orphan retention — vector stays).
                     let _ = old_state.index.remove(old_key);
                 }
@@ -340,7 +336,6 @@ impl VectorDB for UsearchVectorDB {
         let id_owned = id.to_string();
         state.id_to_key.insert(id_owned.clone(), usearch_key);
         state.key_to_id.insert(usearch_key, id_owned.clone());
-        state.id_to_side.insert(id_owned.clone(), side);
 
         drop(state);
         drop(blocks);
@@ -371,7 +366,6 @@ impl VectorDB for UsearchVectorDB {
 
         if let Some(usearch_key) = state.id_to_key.remove(id) {
             state.key_to_id.remove(&usearch_key);
-            state.id_to_side.remove(id);
             // Mark removed in usearch (vector stays as orphan).
             let _ = state.index.remove(usearch_key);
         }
@@ -606,19 +600,6 @@ impl VectorDB for UsearchVectorDB {
                 key: block_key.clone(),
                 id_to_key: state.id_to_key.clone(),
                 key_to_id: state.key_to_id.clone(),
-                id_to_side: state
-                    .id_to_side
-                    .iter()
-                    .map(|(k, v)| {
-                        (
-                            k.clone(),
-                            match v {
-                                Side::A => "a".to_string(),
-                                Side::B => "b".to_string(),
-                            },
-                        )
-                    })
-                    .collect(),
             });
         }
 
@@ -730,20 +711,10 @@ impl UsearchVectorDB {
                     .map_err(|e| VectorDBError::Backend(e.to_string()))?;
             }
 
-            let id_to_side: HashMap<String, Side> = bm
-                .id_to_side
-                .iter()
-                .map(|(k, v)| {
-                    let side = if v == "b" { Side::B } else { Side::A };
-                    (k.clone(), side)
-                })
-                .collect();
-
             let state = BlockState {
                 index,
                 id_to_key: bm.id_to_key.clone(),
                 key_to_id: bm.key_to_id.clone(),
-                id_to_side,
             };
 
             let new_idx = blocks_vec.len();
@@ -802,5 +773,4 @@ struct BlockManifest {
     key: BlockKey,
     id_to_key: HashMap<String, u64>,
     key_to_id: HashMap<u64, String>,
-    id_to_side: HashMap<String, String>,
 }

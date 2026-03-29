@@ -6,8 +6,8 @@
 //!      `blocked_ids` is passed in as a pre-queried slice.
 //!   2. Independent candidate generation — each method runs in parallel:
 //!      - ANN search (O(log N) HNSW, `ann_candidates`)
-//!      - BM25 search (O(log N) Tantivy, `bm25_candidates`)
-//!      - (Future: synonym lookup, etc.)
+//!      - BM25 search (Block-Max WAND via SimpleBm25, `bm25_candidates`)
+//!      - Synonym lookup (inverted index)
 //!   3. Union — deduplicate candidates by ID across all generators.
 //!   4. Full scoring — score candidates on all match_fields, classify, sort,
 //!      truncate to `top_n`.
@@ -237,7 +237,7 @@ fn score_candidate(
     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
 ) -> MatchResult {
     // Decompose combined vecs → per-field cosine similarities.
-    let emb_scores: Option<HashMap<String, f64>> = if has_emb_specs {
+    let emb_scores: Option<HashMap<(&str, &str), f64>> = if has_emb_specs {
         pool_combined_index
             .and_then(|idx| idx.get(&cand.id).ok().flatten())
             .map(|pool_vec| decompose_emb_scores(query_combined_vec, &pool_vec, emb_specs))
@@ -323,11 +323,11 @@ pub fn synonym_candidate_stage(
 ///
 /// Returns a `HashMap<"field_a/field_b", cosᵢ>` compatible with
 /// `scoring::score_pair`'s `precomputed_emb_scores` argument.
-fn decompose_emb_scores(
+fn decompose_emb_scores<'a>(
     query_combined: &[f32],
     pool_combined: &[f32],
-    emb_specs: &[(String, String, f64)],
-) -> HashMap<String, f64> {
+    emb_specs: &'a [(String, String, f64)],
+) -> HashMap<(&'a str, &'a str), f64> {
     if emb_specs.is_empty() || query_combined.is_empty() || pool_combined.is_empty() {
         return HashMap::new();
     }
@@ -357,14 +357,17 @@ fn decompose_emb_scores(
             0.0
         };
 
-        let key = format!("{}/{}", field_a, field_b);
-        scores.insert(key, cos);
+        scores.insert((field_a.as_str(), field_b.as_str()), cos);
     }
 
     scores
 }
 
 /// Apply output_mapping to a matched record: rename fields per config.
+/// Rename fields in a matched record per output_mapping config.
+///
+/// Each mapping renames `from` → `to`: the original key is removed
+/// and the new key is inserted with the same value.
 fn apply_output_mapping(record: &Record, config: &Config) -> Record {
     if config.output_mapping.is_empty() {
         return record.clone();
@@ -372,8 +375,8 @@ fn apply_output_mapping(record: &Record, config: &Config) -> Record {
 
     let mut result = record.clone();
     for mapping in &config.output_mapping {
-        if let Some(val) = record.get(&mapping.from) {
-            result.insert(mapping.to.clone(), val.clone());
+        if let Some(val) = result.remove(&mapping.from) {
+            result.insert(mapping.to.clone(), val);
         }
     }
     result
@@ -506,7 +509,7 @@ mod tests {
         let specs = vec![("f_a".to_string(), "f_b".to_string(), w)];
         let scores = decompose_emb_scores(&q, &p, &specs);
 
-        let cos = *scores.get("f_a/f_b").unwrap();
+        let cos = *scores.get(&("f_a", "f_b")).unwrap();
         assert!(cos.abs() < 0.001, "expected ~0.0, got {}", cos);
         let _ = dim;
     }
@@ -520,7 +523,7 @@ mod tests {
         let specs = vec![("f_a".to_string(), "f_b".to_string(), w)];
         let scores = decompose_emb_scores(&scaled, &scaled, &specs);
 
-        let cos = *scores.get("f_a/f_b").unwrap();
+        let cos = *scores.get(&("f_a", "f_b")).unwrap();
         assert!((cos - 1.0).abs() < 0.001, "expected ~1.0, got {}", cos);
     }
 
@@ -548,8 +551,8 @@ mod tests {
         ];
         let scores = decompose_emb_scores(&q, &p, &specs);
 
-        let cos1 = *scores.get("f1_a/f1_b").unwrap();
-        let cos2 = *scores.get("f2_a/f2_b").unwrap();
+        let cos1 = *scores.get(&("f1_a", "f1_b")).unwrap();
+        let cos2 = *scores.get(&("f2_a", "f2_b")).unwrap();
 
         assert!(
             (cos1 - 1.0).abs() < 0.001,

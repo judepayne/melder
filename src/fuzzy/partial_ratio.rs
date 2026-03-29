@@ -28,13 +28,13 @@ pub(crate) fn partial_ratio_normalized(a: &str, b: &str) -> f64 {
         return 1.0;
     }
 
-    let (shorter, longer) = if a.chars().count() <= b.chars().count() {
-        (a, b)
+    let a_len = a.chars().count();
+    let b_len = b.chars().count();
+    let (shorter, longer, short_len) = if a_len <= b_len {
+        (a, b, a_len)
     } else {
-        (b, a)
+        (b, a, b_len)
     };
-
-    let short_len = shorter.chars().count();
     if short_len == 0 {
         return 0.0;
     }

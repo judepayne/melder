@@ -30,7 +30,7 @@ pub(crate) fn token_sort_ratio_normalized(a: &str, b: &str) -> f64 {
 
 fn sort_tokens(s: &str) -> String {
     let mut tokens: Vec<&str> = s.split_whitespace().collect();
-    tokens.sort();
+    tokens.sort_unstable();
     tokens.join(" ")
 }
 

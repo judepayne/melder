@@ -733,9 +733,8 @@ impl Session {
         // 10. Claim loop: try candidates in ranked order.
         let _span = info_span!("claim_loop").entered();
         let mut classification = "no_match".to_string();
-        let mut _claimed_idx: Option<usize> = None;
 
-        for (i, result) in results.iter().enumerate() {
+        for result in &results {
             if result.score < config.thresholds.review_floor {
                 break;
             }
@@ -766,7 +765,6 @@ impl Session {
                     }
                     self.state.mark_crossmap_dirty();
                     classification = "auto".to_string();
-                    _claimed_idx = Some(i);
                     break;
                 }
                 continue;

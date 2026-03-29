@@ -23,6 +23,12 @@ pub fn score(scorer: &str, a: &str, b: &str) -> f64 {
         "partial_ratio" => partial_ratio(a, b),
         "token_sort" | "token_sort_ratio" => token_sort_ratio(a, b),
         "wratio" => wratio(a, b),
-        _ => wratio(a, b), // default fallback
+        unknown => {
+            tracing::warn!(
+                scorer = unknown,
+                "unknown fuzzy scorer, falling back to wratio"
+            );
+            wratio(a, b)
+        }
     }
 }

@@ -259,6 +259,24 @@ impl UpsertLog {
         paths
     }
 
+    /// Remove old WAL files that aren't the current one.
+    ///
+    /// After compaction, all events are in the current WAL file. Old
+    /// timestamped files from previous server runs are no longer needed
+    /// and would grow unbounded across restarts.
+    pub fn cleanup_old_files(&self) {
+        let all_files = Self::find_wal_files(&self.base_path);
+        for file in &all_files {
+            if *file != self.path {
+                if let Err(e) = fs::remove_file(file) {
+                    warn!(path = %file.display(), error = %e, "failed to remove old WAL file");
+                } else {
+                    info!(path = %file.display(), "removed old WAL file");
+                }
+            }
+        }
+    }
+
     /// Replay all events from a single WAL file.
     ///
     /// Tolerates a truncated last line (logs a warning, skips it).

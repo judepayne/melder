@@ -81,6 +81,7 @@ pub fn cmd_enroll(config_path: &Path, port: u16) {
         if let Err(e) = state.wal.compact(id_field, id_field) {
             warn!(error = %e, "wal compact failed");
         }
+        state.wal.cleanup_old_files();
 
         // Save combined embedding index caches
         if let Err(e) = state.save_combined_index_caches() {

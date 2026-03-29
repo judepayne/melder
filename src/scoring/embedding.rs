@@ -11,6 +11,13 @@
 /// Otherwise falls back to an iterator loop that LLVM auto-vectorizes.
 #[inline]
 pub fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(
+        a.len(),
+        b.len(),
+        "dot_product_f32: length mismatch ({} vs {})",
+        a.len(),
+        b.len()
+    );
     #[cfg(feature = "simd")]
     {
         use simsimd::SpatialSimilarity;

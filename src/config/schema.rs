@@ -17,6 +17,9 @@ pub enum Mode {
 }
 
 /// Top-level configuration parsed from YAML.
+///
+/// Note: `deny_unknown_fields` is intentionally not used because configs
+/// may contain extension fields (e.g. `sidecar`) read by external tooling.
 #[derive(Debug, Deserialize)]
 pub struct Config {
     /// Operating mode. Set by the CLI subcommand, not from YAML.

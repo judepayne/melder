@@ -31,7 +31,7 @@ pub fn score_pair(
     query_record: &Record,
     candidate_record: &Record,
     match_fields: &[MatchField],
-    precomputed_emb_scores: Option<&std::collections::HashMap<String, f64>>,
+    precomputed_emb_scores: Option<&std::collections::HashMap<(&str, &str), f64>>,
     precomputed_bm25_score: Option<f64>,
     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
 ) -> ScoreResult {
@@ -62,16 +62,18 @@ pub fn score_pair(
                     fuzzy::score(scorer, a_val, b_val)
                 }
                 "embedding" => {
-                    // Use precomputed score if available
-                    let key = format!("{}/{}", mf.field_a, mf.field_b);
+                    // Tuple key avoids a format!() allocation per candidate.
                     precomputed_emb_scores
-                        .and_then(|m| m.get(&key))
+                        .and_then(|m| m.get(&(mf.field_a.as_str(), mf.field_b.as_str())))
                         .copied()
                         .unwrap_or(0.0)
                 }
                 "numeric" => numeric_score(a_val, b_val),
                 "synonym" => crate::synonym::scorer::score(a_val, b_val, 3, synonym_dictionary),
-                _ => 0.0,
+                unknown => {
+                    tracing::warn!(method = unknown, "unknown scoring method, returning 0.0");
+                    0.0
+                }
             }
         };
 
@@ -325,7 +327,7 @@ mod tests {
             fields: None,
         }];
         let mut emb = HashMap::new();
-        emb.insert("legal_name/counterparty_name".to_string(), 0.92);
+        emb.insert(("legal_name", "counterparty_name"), 0.92);
 
         let result = score_pair(&b, &a, &fields, Some(&emb), None, None);
         assert!((result.total - 0.92).abs() < f64::EPSILON);
