@@ -35,19 +35,15 @@ match_fields:
     field_b: counterparty_name
     method: embedding
     weight: 0.55
-  - field_a: short_name
-    field_b: counterparty_name
-    method: fuzzy
-    scorer: partial_ratio
-    weight: 0.20
-  - field_a: country_code
-    field_b: domicile
-    method: exact
-    weight: 0.20
   - field_a: lei
     field_b: lei_code
     method: exact
     weight: 0.05
+  - method: bm25
+    weight: 0.40
+    fields:
+      - field_a: registered_address
+        field_b: counterparty_address
 
 thresholds:
   auto_match: 0.85

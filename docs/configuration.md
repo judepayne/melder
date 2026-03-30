@@ -347,6 +347,29 @@ per slot). Higher values increase encoding throughput at the cost of RAM.
 4 is a good starting point on machines with 4+ cores; 1 is fine for
 small datasets.
 
+> [!TIP]
+> **Tuning `encoder_pool_size` on multi-core machines.** Each ONNX
+> session internally spawns its own thread pool for intra-op parallelism.
+> By default ONNX Runtime sets the number of intra-op threads to the
+> total number of physical cores. With `encoder_pool_size: 4` on a
+> 20-core machine, that means 4 sessions × 20 threads = 80 logical
+> threads competing for 20 cores — significant contention.
+>
+> For best throughput, aim for `pool_size × intra_op_threads ≈ physical
+> cores`. You can control the per-session thread count with the
+> **`ORT_NUM_THREADS`** environment variable:
+>
+> ```bash
+> # 10 sessions × 2 threads = 20 threads on a 20-core machine
+> ORT_NUM_THREADS=2 meld serve --config config.yaml --port 8080
+> ```
+>
+> As a rule of thumb: raise `encoder_pool_size` to match your HTTP
+> concurrency (or close to it), and lower `ORT_NUM_THREADS` so the
+> product stays near your physical core count. This eliminates both
+> mutex contention (requests waiting for a free encoder slot) and CPU
+> contention (too many intra-op threads fighting for cores).
+
 **`quantized`** — load the INT8 quantised variant of the ONNX model
 instead of the full FP32 model. Roughly doubles encoding speed with
 negligible quality loss. Supported for `all-MiniLM-L6-v2` and

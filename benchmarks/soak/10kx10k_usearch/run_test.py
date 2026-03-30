@@ -230,13 +230,13 @@ def main() -> None:
     parser.add_argument(
         "--min-sleep",
         type=int,
-        default=60,
+        default=10,
         help="Minimum sleep between bursts (seconds)",
     )
     parser.add_argument(
         "--max-sleep",
         type=int,
-        default=600,
+        default=60,
         help="Maximum sleep between bursts (seconds)",
     )
     parser.add_argument(
@@ -422,7 +422,7 @@ def main() -> None:
             # Diagnostics
             # ------------------------------------------------------------------
             health = get_health(base_url)
-            healthy = health.get("status") == "ok"
+            healthy = health.get("status") == "ready"
             records_a = health.get("records_a", -1)
             records_b = health.get("records_b", -1)
             crossmap_entries = health.get("crossmap_entries", -1)

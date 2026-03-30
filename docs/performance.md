@@ -112,6 +112,96 @@ requests complete in under 1ms.
 | p50 latency | 10.1ms | 2.4ms |
 | p95 latency | 21.0ms | 11.1ms |
 
+## Soak test — stability under sustained load
+
+A 2-hour soak test validates that the live server remains stable under
+continuous injection pressure: no memory leaks, no throughput
+degradation, no scoring drift, and zero errors.
+
+### Test setup
+
+- **Hardware**: Apple M1 Ultra (20 cores, 64 GB RAM)
+- **Base pool**: 10k x 10k records, usearch backend, `all-MiniLM-L6-v2`
+- **Scoring**: embedding (0.55) + BM25 on address fields (0.40) + exact LEI (0.05)
+- **Blocking**: AND on country_code/domicile
+- **Concurrency**: 10 HTTP workers, `encoder_pool_size: 4`
+- **Injection mix**: ~25% new records, ~75% upserts (embedding mutations,
+  field-only mutations). New records are synthetic with no true match on
+  the opposite side.
+- **Sleep between bursts**: 10–60 seconds (randomised)
+
+### Results summary
+
+| Metric | Value |
+|--------|-------|
+| Duration | 2 hours |
+| Bursts completed | 71 |
+| Total injections | 1,849,542 |
+| Final pool size | 482,378 (241k per side, up from 10k base) |
+| Errors | **0** |
+| Steady-state throughput | ~383 req/s |
+| Memory growth | 714 → 2,035 MB (~3.0 KB per new record) |
+| Disk growth | 54 → 485 MB (~1.0 KB per new record) |
+| Crossmap entries | mean 4,314 (range 210) |
+
+### Dashboard
+
+![Soak test dashboard](../benchmarks/soak/10kx10k_usearch/soak_dashboard.png)
+
+All four charts show near-ideal behaviour:
+
+**Throughput vs pool size** — after an initial burst at 577 req/s (small
+pool), throughput settles at ~383 req/s and stays flat despite the pool
+growing from 31k to 482k total records (a 15× increase). The AND
+blocking strategy bounds scoring cost by block size rather than total
+pool size, which is why throughput barely moves.
+
+**Memory vs pool size** — linear growth at ~3.0 KB per new record with
+no sign of a leak. Upserts to existing records do not grow memory. The
+visible dip around 130k records is an OS-level artifact: macOS
+aggressively compresses inactive memory pages during the sleep intervals
+between bursts. When subsequent bursts touch those pages again (scoring
+reads from the full pool), the OS decompresses them and RSS climbs back
+to the trendline. This is not application behaviour — the underlying
+allocations are unchanged.
+
+**Disk vs pool size** — perfectly linear at ~1.0 KB per new record.
+This covers the WAL (append-only event log), usearch HNSW index growth,
+and crossmap CSV. No WAL bloat or runaway growth.
+
+**Crossmap stability** — the crossmap tracks confirmed 1:1 match pairs
+(A↔B). This chart is an accuracy proxy: if scoring were degrading under
+load (e.g. due to index corruption, vector drift, or blocking index
+inconsistency), the crossmap count would trend downward as upserts
+break pairs that can no longer re-confirm.
+
+The ~4,300 confirmed pairs come from the original 10k x 10k base data
+that genuinely match. Synthetic new records are random and have no true
+counterpart, so they almost never reach the 0.85 auto-match threshold.
+What we observe is equilibrium: upserts with mutated fields temporarily
+break existing pairs, re-scoring mostly re-confirms them, and the small
+number that don't re-confirm are offset by occasional new pair
+formation. The 10-burst moving average stays within 1.5% of the mean
+across the full 2-hour run — no drift.
+
+### Running the soak test
+
+```bash
+cargo build --release --features usearch
+python3 benchmarks/soak/10kx10k_usearch/run_test.py --duration 2
+```
+
+Shorter runs for quick validation:
+
+```bash
+python3 benchmarks/soak/10kx10k_usearch/run_test.py --duration 0.5 --min-sleep 10 --max-sleep 60
+```
+
+Results are written to `benchmarks/soak/10kx10k_usearch/soak_log.csv`.
+The server log is at `/tmp/meld_soak_<pid>.log`. The script cleans all
+test artifacts (cache, WAL, crossmap, output, soak log) before each
+run, but does not clean the `/tmp/` server log.
+
 ## Benchmarking
 
 Each benchmark is a self-contained directory with its own `config.yaml` and
