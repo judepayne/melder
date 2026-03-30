@@ -838,4 +838,107 @@ Enums provide compile-time type safety and serde provides load-time validation. 
 
 ---
 
+## A4: Lock Ordering Documentation for UsearchVectorDB
+
+**Date:** 2026-03-30
+**Status:** Accepted
+
+**Context:**
+The `UsearchVectorDB` struct in `src/vectordb/usearch_backend.rs` manages multiple nested locks: `block_router` (RwLock), `blocks` (DashMap), per-block `record_block` (RwLock), and `text_hashes` (DashMap). Without documented lock ordering, concurrent code could accidentally acquire locks in different orders, risking deadlock.
+
+**Decision:**
+Add a `## Lock ordering` section to the module-level doc comment documenting the canonical lock acquisition order.
+
+**Implementation:**
+- Module doc comment in `src/vectordb/usearch_backend.rs` now includes:
+  ```
+  ## Lock ordering
+  
+  Canonical lock acquisition order (to prevent deadlock):
+  1. block_router (RwLock)
+  2. blocks (DashMap)
+  3. blocks[i] (RwLock per block)
+  4. record_block (RwLock)
+  5. text_hashes (DashMap)
+  
+  next_key (AtomicU64) is lock-free and can be accessed at any point.
+  ```
+
+**Why:**
+Documentation prevents future deadlock bugs. The ordering reflects the nesting structure: outer locks first, then inner locks. The AtomicU64 note clarifies that it doesn't participate in the ordering.
+
+**Related:** [[Key Decisions#WAND BM25 Implementation]]
+
+---
+
+## A5: DashMap TOCTOU Race Fix in BM25 `decrement_stats()`
+
+**Date:** 2026-03-30
+**Status:** Accepted
+
+**Context:**
+The `SimpleBm25::decrement_stats()` method in `src/bm25/simple.rs` had two TOCTOU (Time-Of-Check-Time-Of-Use) races under concurrent upsert/remove operations:
+
+1. **Race 1 (doc_freq)**: `doc_freq.get_mut()` to decrement, then separate `doc_freq.remove()` to delete if zero. Between the two calls, another thread could insert a new entry, causing the remove to delete the new entry instead of the old one.
+
+2. **Race 2 (postings)**: `postings.get_mut()` to remove a doc ID from the list, then `drop(list)` to release the reference, then `postings.remove()` to delete the empty list. Between drop and remove, another thread could insert a new entry into the list, causing the remove to delete the new entry.
+
+Both races could cause stale IDF statistics or lost posting entries, silently corrupting the BM25 index.
+
+**Decision:**
+Replace both get-then-remove patterns with atomic check-and-remove operations using DashMap 6's `remove_if_mut()` API.
+
+**Implementation:**
+- **Race 1 fix**: `doc_freq.remove_if_mut(term, |_, v| *v == 0)` — atomically checks if the value is zero and removes it under a single shard lock.
+- **Race 2 fix**: `postings.remove_if_mut(block_key, |_, list| list.is_empty())` — atomically checks if the list is empty and removes it under a single shard lock.
+
+**Why:**
+`remove_if_mut()` provides atomic check-and-remove semantics without external locks. The TOCTOU gap in the old code could produce silent data loss. The atomic operation makes the invariant trivially correct.
+
+**Related:** [[Key Decisions#Replace Tantivy BM25 Index with Custom DashMap Based SimpleBm25]]
+
+---
+
+## A6: Batch Error Handling Consistency
+
+**Date:** 2026-03-30
+**Status:** Accepted
+
+**Context:**
+Batch endpoints (`enroll_batch`, `remove_batch`) and their HTTP handlers had inconsistent error handling:
+- `enroll_batch` used fail-fast (`?`), unlike `upsert_batch`/`match_batch` which collected per-item errors
+- `enroll_batch` was missing empty/MAX_BATCH_SIZE validation guards
+- `enroll()` WAL append used `let _ =` (silent error), unlike `upsert_record_inner` which logged errors
+- `remove_batch` masked all errors as "not_found", hiding actual store/IO errors
+- HTTP handlers used hardcoded `StatusCode::BAD_REQUEST` for all errors, unable to distinguish 400 vs 404 vs 422 vs 500
+
+**Decision:**
+Standardize error handling across all batch endpoints and HTTP handlers to match the established patterns in `upsert_batch`/`match_batch`.
+
+**Implementation:**
+
+1. **`enroll_batch` fail-fast → per-item collection**: Changed from `?` to collecting errors per item. Failed items get `enrolled: false` with error message in `id` field, matching `upsert_batch`/`match_batch` semantics.
+
+2. **`enroll_batch` validation guards**: Added empty batch check and MAX_BATCH_SIZE check (matching other batch functions).
+
+3. **`enroll()` WAL append logging**: Changed `let _ =` to `if let Err(e) { warn!(...) }` to match `upsert_record_inner` policy.
+
+4. **`remove_batch` error distinction**: Changed from masking all errors as "not_found" to distinguishing `NotFound` (→ "not_found" status) from actual errors (→ "error: ..." status). Store/IO errors now surfaced instead of hidden.
+
+5. **HTTP handlers status code mapping**: Changed 7 hardcoded `StatusCode::BAD_REQUEST` calls to use `e.status_code()` method. Now:
+   - `BatchValidation` → 422 Unprocessable Entity
+   - `Encoder` errors → 500 Internal Server Error
+   - `Store` errors → 500 Internal Server Error
+   - `NotFound` → 404 Not Found
+   - `MissingField` → 400 Bad Request
+   
+   Affected handlers: `upsert_handler`, `match_handler`, `add_batch_handler`, `match_batch_handler`, `remove_batch_handler`, `enroll`, `enroll_batch`.
+
+**Why:**
+Consistency across batch endpoints makes the API predictable. Per-item error collection allows partial success (some items succeed, others fail with details). Proper HTTP status codes enable client-side error handling (retry on 500, fix input on 400, etc.). Logging errors prevents silent failures.
+
+**Related:** [[Key Decisions#SessionError Split into Typed Variants with HTTP Status Mapping]]
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

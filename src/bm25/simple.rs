@@ -382,33 +382,34 @@ impl SimpleBm25 {
     }
 
     /// Decrement corpus stats and remove posting entries for a document.
+    ///
+    /// Uses `remove_if` / `remove_if_mut` to atomically check-and-remove
+    /// within a single shard lock, avoiding TOCTOU races with concurrent
+    /// `upsert()` calls on the same term.
     fn decrement_stats(&self, meta: &DocMeta) {
         self.total_docs.fetch_sub(1, Ordering::Relaxed);
         self.total_tokens
             .fetch_sub(meta.length as u64, Ordering::Relaxed);
 
         for term in meta.terms.keys() {
-            // Decrement doc_freq; remove entry if it reaches 0.
-            let mut remove_key = false;
-            if let Some(mut df) = self.doc_freq.get_mut(term) {
+            // Decrement doc_freq; atomically remove entry if it reaches 0.
+            // remove_if_mut holds the shard lock for the entire check+remove,
+            // so a concurrent upsert's entry().and_modify() cannot slip in
+            // between the decrement decision and the removal.
+            self.doc_freq.remove_if_mut(term, |_key, df| {
                 if *df <= 1 {
-                    remove_key = true;
+                    true // remove the entry
                 } else {
                     *df -= 1;
+                    false // keep the entry with decremented value
                 }
-            }
-            if remove_key {
-                self.doc_freq.remove(term);
-            }
+            });
 
-            // Remove from posting list.
-            if let Some(mut list) = self.postings.get_mut(term) {
+            // Remove from posting list; drop the whole entry if empty.
+            self.postings.remove_if_mut(term, |_key, list| {
                 list.remove(meta.compact_id);
-                if list.is_empty() {
-                    drop(list);
-                    self.postings.remove(term);
-                }
-            }
+                list.is_empty()
+            });
         }
     }
 

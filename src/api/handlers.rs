@@ -144,7 +144,8 @@ async fn upsert_handler(side: Side, session: AppState, record: Record) -> axum::
         }
         Ok(Err(e)) => {
             warn!(side = s, error = %e, "add failed");
-            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
+            error_response(status, &e.to_string()).into_response()
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
@@ -160,7 +161,8 @@ async fn match_handler(side: Side, session: AppState, record: Record) -> axum::r
         }
         Ok(Err(e)) => {
             warn!(side = s, error = %e, "try_match failed");
-            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
+            error_response(status, &e.to_string()).into_response()
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
@@ -199,7 +201,8 @@ async fn add_batch_handler(
         }
         Ok(Err(e)) => {
             warn!(side = s, error = %e, "add-batch failed");
-            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
+            error_response(status, &e.to_string()).into_response()
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
@@ -220,7 +223,8 @@ async fn match_batch_handler(
         }
         Ok(Err(e)) => {
             warn!(side = s, error = %e, "match-batch failed");
-            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
+            error_response(status, &e.to_string()).into_response()
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
@@ -241,7 +245,8 @@ async fn remove_batch_handler(
         }
         Ok(Err(e)) => {
             warn!(side = s, error = %e, "remove-batch failed");
-            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
+            error_response(status, &e.to_string()).into_response()
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
@@ -430,7 +435,8 @@ pub async fn enroll(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "enroll failed");
-            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
+            error_response(status, &e.to_string()).into_response()
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
@@ -450,7 +456,8 @@ pub async fn enroll_batch(
         }
         Ok(Err(e)) => {
             warn!(error = %e, "enroll-batch failed");
-            error_response(StatusCode::BAD_REQUEST, &e.to_string()).into_response()
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
+            error_response(status, &e.to_string()).into_response()
         }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }

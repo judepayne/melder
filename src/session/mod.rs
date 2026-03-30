@@ -1566,9 +1566,16 @@ impl Session {
         for id in &ids {
             match self.remove_record(side, id) {
                 Ok(r) => results.push(r),
-                Err(_) => {
+                Err(e) => {
+                    // Surface the actual error rather than masking store/IO
+                    // errors as "not_found". NotFound is a legitimate status;
+                    // other errors indicate infrastructure problems.
+                    let status = match &e {
+                        SessionError::NotFound { .. } => "not_found".to_string(),
+                        other => format!("error: {}", other),
+                    };
                     results.push(RemoveResponse {
-                        status: "not_found".to_string(),
+                        status,
                         id: id.clone(),
                         side,
                         crossmap_broken: vec![],
@@ -1856,7 +1863,9 @@ impl Session {
         }
 
         // WAL append
-        let _ = self.state.wal.append_upsert(side, &record);
+        if let Err(e) = self.state.wal.append_upsert(side, &record) {
+            tracing::warn!(error = %e, "WAL append failed for enroll upsert");
+        }
 
         // Insert into store
         store.insert(side, &id, &record)?;
@@ -1912,10 +1921,39 @@ impl Session {
     ///
     /// Each record is scored against the pool (including previously enrolled
     /// records from this batch), then added to the pool.
+    ///
+    /// Per-item errors are collected into the response (with `enrolled: false`)
+    /// rather than aborting the entire batch. This matches the error handling
+    /// policy of `upsert_batch` and `match_batch`.
     pub fn enroll_batch(&self, records: Vec<Record>) -> Result<BatchEnrollResponse, SessionError> {
+        if records.is_empty() {
+            return Err(SessionError::BatchValidation {
+                message: "records array is empty".into(),
+            });
+        }
+        if records.len() > Self::MAX_BATCH_SIZE {
+            return Err(SessionError::BatchValidation {
+                message: format!(
+                    "batch size {} exceeds maximum of {}",
+                    records.len(),
+                    Self::MAX_BATCH_SIZE
+                ),
+            });
+        }
+
         let mut results = Vec::with_capacity(records.len());
         for record in records {
-            results.push(self.enroll(record)?);
+            match self.enroll(record) {
+                Ok(resp) => results.push(resp),
+                Err(e) => {
+                    tracing::warn!(error = %e, "enroll-batch item failed");
+                    results.push(EnrollResponse {
+                        id: format!("error: {}", e),
+                        enrolled: false,
+                        edges: vec![],
+                    });
+                }
+            }
         }
         Ok(BatchEnrollResponse { results })
     }

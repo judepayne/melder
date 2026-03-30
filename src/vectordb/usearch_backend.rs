@@ -14,6 +14,21 @@
 //! marks it removed in usearch, but the vector data persists in the HNSW graph.
 //! This is intentional — search is scale-insensitive (O(log N)) and orphan
 //! vectors are harmless noise.
+//!
+//! ## Lock ordering
+//!
+//! When acquiring multiple locks, always follow this order to prevent
+//! deadlocks. Never acquire a higher-numbered lock while holding a
+//! lower-numbered one.
+//!
+//! 1. `block_router` — maps block keys to block indices
+//! 2. `blocks` — the `Vec` of per-block `RwLock<BlockState>`s
+//! 3. `blocks[i]` — individual block state (index + key maps)
+//! 4. `record_block` — maps record IDs to their block index
+//! 5. `text_hashes` — text-hash sidecar store
+//!
+//! The `next_key` field is an `AtomicU64` (lock-free) and can be accessed
+//! at any point regardless of which locks are held.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
