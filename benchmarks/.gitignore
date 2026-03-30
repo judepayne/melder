@@ -15,6 +15,10 @@
 **/*.index.texthash
 **/manifest.json
 
+# Soak test runtime artifacts
+**/extra_ids_*.txt
+**/soak_log.csv
+
 # Emacs lockfiles
 \#*\#
 

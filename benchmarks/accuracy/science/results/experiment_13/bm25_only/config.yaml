@@ -1,0 +1,46 @@
+job:
+  name: experiment_13_bm25_only
+  description: 'Exp 13: 100% BM25 only'
+datasets:
+  a:
+    path: benchmarks/accuracy/science/master/dataset_a.csv
+    id_field: entity_id
+    format: csv
+  b:
+    path: benchmarks/accuracy/science/holdout/dataset_b.csv
+    id_field: counterparty_id
+    format: csv
+cross_map:
+  backend: local
+  path: benchmarks/accuracy/science/results/experiment_13/bm25_only/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+blocking:
+  enabled: true
+  operator: and
+  fields:
+  - field_a: country_code
+    field_b: domicile
+thresholds:
+  auto_match: 0.88
+  review_floor: 0.6
+output:
+  results_path: benchmarks/accuracy/science/results/experiment_13/bm25_only/output/results.csv
+  review_path: benchmarks/accuracy/science/results/experiment_13/bm25_only/output/review.csv
+  unmatched_path: benchmarks/accuracy/science/results/experiment_13/bm25_only/output/unmatched.csv
+performance:
+  encoder_pool_size: 4
+top_n: 5
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: benchmarks/accuracy/science/results/experiment_13/bm25_only/cache/a
+  b_cache_dir: benchmarks/accuracy/science/results/experiment_13/bm25_only/cache/b
+bm25_candidates: 50
+bm25_fields:
+- field_a: legal_name
+  field_b: counterparty_name
+- field_a: registered_address
+  field_b: counterparty_address
+match_fields:
+- method: bm25
+  weight: 1.0

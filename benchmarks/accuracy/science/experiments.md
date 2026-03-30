@@ -1749,3 +1749,121 @@ The overlap zone (0.54–0.58) contains just 2 matched records and 8 unmatched r
 | **Exp 12: Arctic-xs + 50% BM25 + synonym** | **0.0003** | **100.0%** | **0** | **22M** |
 
 The full progression from experiment 1 to experiment 12: overlap reduced from 0.168 (untrained BGE-small, catastrophic forgetting) to 0.0003 (Arctic-embed-xs + BM25 + synonym). A 560× improvement in population separation through systematic, controlled experimentation — changing one variable at a time and measuring the impact.
+
+## Experiment 13: BM25-only vs 50/50 composite — population separation comparison
+
+How much does the fine-tuned embedding actually contribute on top of BM25? Experiments 10–12 always tested BM25 as an additive complement to embeddings. This experiment isolates BM25's standalone performance and compares it head-to-head against the 50/50 composite, using the same holdout dataset and evaluation framework.
+
+Two runs:
+
+- **Run A (composite):** 50% BM25 + 50% embedding (name_emb=0.30, addr_emb=0.20) + synonym 0.20. Uses fine-tuned Arctic-embed-xs R22 from experiment 9. This is the full experiment 12 pipeline minus the synonym weight adjustment.
+- **Run B (BM25 only):** 100% BM25, no embeddings, no vector index. BM25 indexes both name and address fields.
+
+Both runs use blocking on country, thresholds auto_match=0.88 / review_floor=0.60.
+
+```yaml
+status: done
+model: experiment 9 R22 (Arctic-embed-xs, 22M) — Run A only
+run_a: name_emb=0.30, addr_emb=0.20, bm25=0.50, synonym=0.20
+run_b: bm25=1.00 (no embeddings, no synonym)
+```
+
+**Command:**
+```bash
+python benchmarks/accuracy/science/run_experiment13.py --best-round 22
+```
+
+**Hypothesis:** BM25 alone will achieve reasonable recall — it handles exact and near-exact name matches well via IDF weighting. But population separation (overlap coefficient) will be substantially worse than the composite, because BM25 cannot distinguish semantically similar names with different surface forms (acronyms, qualifier swaps, word reordering). The embedding provides the semantic signal that separates these populations. The comparison will quantify exactly how much separation the embedding adds.
+
+**Key comparison points:**
+- Exp 10 (40% BM25): overlap 0.002, combined recall 99.8%
+- Exp 12 (50% BM25 + synonym): overlap 0.0003, combined recall 100.0%
+- This exp Run A (50% BM25 + embedding + synonym): overlap ?
+- This exp Run B (100% BM25): overlap ?
+
+### Results
+
+**Holdout accuracy:**
+
+| | Composite (50/50 + synonym) | BM25 Only | Delta |
+|---|---|---|---|
+| **Ceiling** | 6,024 | 6,024 | |
+| **Auto-matched** | 6,096 | 6,269 | +173 |
+| Clean | 5,282 | 5,508 | +226 |
+| Ambiguous | 814 | 761 | -53 |
+| Not a match | 0 | 0 | 0 |
+| **Review** | 971 | 800 | -171 |
+| Clean | 742 | 515 | -227 |
+| Ambiguous | 204 | 256 | +52 |
+| Not a match | 25 | 29 | +4 |
+| **Unmatched** | 2,933 | 2,931 | -2 |
+| Missed (clean) | 0 | 1 | +1 |
+| Missed (ambiguous) | 0 | 1 | +1 |
+| Not a match | 2,933 | 2,929 | -4 |
+| **Precision** | 86.7% | 87.9% | +1.2pp |
+| **Recall (vs ceiling)** | 87.7% | 91.4% | +3.7pp |
+| **Combined recall** | 100.0% | 100.0% | 0 |
+
+**Overlap:**
+
+| Composite | BM25 Only | Ratio |
+|---|---|---|
+| 0.0097 | 0.0476 | 4.9x worse |
+
+**Throughput:**
+
+| Composite | BM25 Only | Speedup |
+|---|---|---|
+| 9,178 rec/s | 21,045 rec/s | 2.3x faster |
+
+**Score distribution charts (bucket=0.02, overlap zone only):**
+
+Composite — overlap zone 0.64–0.76 (0.12 score-space wide):
+```
+  0.64 ▒░                       ambig=1, unmatched=4
+  0.66 █▒░                      matched=1, ambig=2, unmatched=3
+  0.68 █▒░                      matched=11, ambig=2, unmatched=2
+  0.70 █▒                       matched=9, ambig=5
+  0.72 ██▒░                     matched=21, ambig=5, unmatched=1
+  0.74 ██▒░                     matched=21, ambig=4, unmatched=1
+```
+
+BM25 only — overlap zone 0.52–0.78 (0.26 score-space wide):
+```
+  0.52 █░                       matched=1, unmatched=9
+  0.54 ░                        unmatched=9
+  0.56 ░                        unmatched=9
+  0.58 ▒░                       ambig=1, unmatched=5
+  0.60 █░      review_floor     matched=3, unmatched=8
+  0.62 █▒░                      matched=2, ambig=2, unmatched=2
+  0.64 █░                       matched=3, unmatched=6
+  0.66 █▒░                      matched=2, ambig=4, unmatched=4
+  0.68 █▒░                      matched=3, ambig=1, unmatched=2
+  0.70 █▒░                      matched=5, ambig=7, unmatched=2
+  0.72 ██▒░                     matched=12, ambig=3, unmatched=1
+  0.74 █▒░                      matched=8, ambig=8, unmatched=2
+  0.76 ██▒▒░                    matched=16, ambig=13, unmatched=2
+```
+
+**Overlap zone summary:**
+
+| | Composite | BM25 Only |
+|---|---|---|
+| Overlap range | 0.64–0.76 | 0.52–0.78 |
+| Width (score-space) | 0.12 | 0.26 |
+| Total records in zone | 93 | 155 |
+| Unmatched contaminants | 11 | 61 |
+
+### Observations
+
+1. **BM25 alone is remarkably effective.** It achieves 100% combined recall, zero false positives in auto-match, and higher auto-match count (6,269 vs 6,096). BM25's IDF weighting naturally handles the long tail of exact and near-exact name matches that the embedding + synonym composite moves into review.
+
+2. **The embedding's value is population separation, not recall.** Both methods hit 100% combined recall and 0 auto-match FPs. The composite's contribution is a 4.9x tighter overlap (0.0097 vs 0.0476) — the unmatched population dies out 0.14 points sooner in score-space. This means a human reviewer would encounter 5.5x fewer false matches in the ambiguous zone.
+
+3. **BM25's overlap zone is twice as wide.** The composite confines overlap to a 0.12-wide band (0.64–0.76) with only 11 unmatched contaminants. BM25 spreads overlap across 0.26 of score-space (0.52–0.78) with 61 unmatched records mixed in. This is because BM25 cannot separate entities that share common terms — "Roberts and Sons AB" and "Patterson and Sons AB" both score well on shared tokens ("and", "Sons", "AB").
+
+4. **BM25 is 2.3x faster.** No embedding encoding overhead. For use cases where throughput matters more than review queue quality, BM25-only is viable.
+
+5. **Synonym contributes more than expected at this weight split.** Compared to the earlier run without synonym (overlap 0.0246), adding synonym at 0.20 nearly halved the overlap (0.0097). The synonym index resolves acronym cases that both BM25 and embeddings struggle with.
+
+6. **For production:** The composite pipeline (embedding + BM25 + synonym) is the right choice when review queue quality matters — fewer false matches for human reviewers. BM25-only is appropriate for high-throughput bulk deduplication where a slightly noisier review queue is acceptable.
