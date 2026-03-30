@@ -85,11 +85,15 @@ pub fn select_candidates(
             return results
                 .into_iter()
                 .filter_map(|r| {
-                    pool_store.get(pool_side, &r.id).map(|record| Candidate {
-                        id: r.id.clone(),
-                        record,
-                        combined_dot: r.score as f64,
-                    })
+                    pool_store
+                        .get(pool_side, &r.id)
+                        .ok()
+                        .flatten()
+                        .map(|record| Candidate {
+                            id: r.id.clone(),
+                            record,
+                            combined_dot: r.score as f64,
+                        })
                 })
                 .collect();
         }
@@ -111,7 +115,7 @@ pub fn select_candidates(
     let mut scored: Vec<Candidate> = blocked_ids
         .par_iter()
         .filter_map(|id| {
-            let record = pool_store.get(pool_side, id)?;
+            let record = pool_store.get(pool_side, id).ok().flatten()?;
             let pool_vec = idx.get(id).ok().flatten().unwrap_or_default();
             let dot: f32 = if pool_vec.len() == query_combined_vec.len() {
                 dot_product_f32(query_combined_vec, &pool_vec)
@@ -178,8 +182,8 @@ mod tests {
     #[test]
     fn no_embeddings_returns_empty() {
         let store = make_store();
-        store.insert(Side::A, "r1", &make_record("r1"));
-        store.insert(Side::A, "r2", &make_record("r2"));
+        store.insert(Side::A, "r1", &make_record("r1")).unwrap();
+        store.insert(Side::A, "r2", &make_record("r2")).unwrap();
 
         let blocked_ids = vec!["r1".to_string(), "r2".to_string()];
         let query_record = make_record("query");
@@ -218,9 +222,9 @@ mod tests {
         idx.upsert("r2", &v2, &dummy, Side::A).unwrap();
 
         let store = make_store();
-        store.insert(Side::A, "r0", &make_record("r0"));
-        store.insert(Side::A, "r1", &make_record("r1"));
-        store.insert(Side::A, "r2", &make_record("r2"));
+        store.insert(Side::A, "r0", &make_record("r0")).unwrap();
+        store.insert(Side::A, "r1", &make_record("r1")).unwrap();
+        store.insert(Side::A, "r2", &make_record("r2")).unwrap();
 
         let blocked_ids = vec!["r0".to_string(), "r1".to_string(), "r2".to_string()];
         let query_record = make_record("query");
@@ -259,7 +263,7 @@ mod tests {
             let id = format!("r{}", i);
             let v = unit_vec(dim, i as u64);
             idx.upsert(&id, &v, &dummy, Side::A).unwrap();
-            store.insert(Side::A, &id, &make_record(&id));
+            store.insert(Side::A, &id, &make_record(&id)).unwrap();
             blocked_ids.push(id);
         }
 

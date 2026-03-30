@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::config::Config;
+use crate::config::{Config, MatchMethod};
 use crate::error::DataError;
 use crate::models::{MatchResult, Record, Side};
 
@@ -28,7 +28,7 @@ pub fn write_results_csv(
     for mf in &config.match_fields {
         // BM25 match fields have empty field_a/field_b; use "bm25" for the
         // column header to match the FieldScore keys produced by score_pair.
-        let (col_a, col_b) = if mf.method == "bm25" {
+        let (col_a, col_b) = if mf.method == MatchMethod::Bm25 {
             ("bm25", "bm25")
         } else {
             (mf.field_a.as_str(), mf.field_b.as_str())
@@ -53,7 +53,7 @@ pub fn write_results_csv(
         // Add field scores. BM25 FieldScores use field_a="bm25", field_b="bm25"
         // (not the empty strings from the MatchField), so match on those.
         for mf in &config.match_fields {
-            let (fa, fb) = if mf.method == "bm25" {
+            let (fa, fb) = if mf.method == MatchMethod::Bm25 {
                 ("bm25".to_string(), "bm25".to_string())
             } else {
                 (mf.field_a.clone(), mf.field_b.clone())

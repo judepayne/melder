@@ -75,7 +75,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         };
         print_dry_run(
             &state.config,
-            state.store.len(Side::A),
+            state.store.len(Side::A).unwrap_or(0),
             b_count,
             &crossmap,
             limit,
@@ -124,7 +124,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
 
     // Insert B records into the store
     for (id, rec) in &b_records_map {
-        state.store.insert(Side::B, id, rec);
+        let _ = state.store.insert(Side::B, id, rec);
     }
     drop(b_records_map); // free memory
 

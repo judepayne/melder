@@ -13,7 +13,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::bm25::scorer::normalise_bm25;
-use crate::config::Config;
+use crate::config::{Config, MatchMethod};
 use crate::crossmap::CrossMapOps;
 use crate::error::MelderError;
 use crate::matching::pipeline;
@@ -70,7 +70,7 @@ pub fn run_batch(
     let start = Instant::now();
 
     // Get B IDs from the store (already loaded by caller).
-    let b_ids = store.ids(Side::B);
+    let b_ids = store.ids(Side::B)?;
 
     let total_b = if let Some(lim) = limit {
         lim.min(b_ids.len())
@@ -94,8 +94,8 @@ pub fn run_batch(
     ) {
         let cid_start = Instant::now();
         let mut a_common_index: HashMap<String, String> = HashMap::new();
-        for a_id in store.ids(Side::A) {
-            if let Some(a_rec) = store.get(Side::A, &a_id)
+        for a_id in store.ids(Side::A)? {
+            if let Ok(Some(a_rec)) = store.get(Side::A, &a_id)
                 && let Some(val) = a_rec.get(a_cid_field)
             {
                 let val = val.trim();
@@ -110,7 +110,7 @@ pub fn run_batch(
             if crossmap.has_b(b_id) {
                 continue;
             }
-            if let Some(b_rec) = store.get(Side::B, b_id)
+            if let Ok(Some(b_rec)) = store.get(Side::B, b_id)
                 && let Some(b_val) = b_rec.get(b_cid_field)
             {
                 let b_val = b_val.trim();
@@ -124,7 +124,7 @@ pub fn run_batch(
                     if !crossmap.claim(a_id, b_id) {
                         continue;
                     }
-                    let a_rec = store.get(Side::A, a_id);
+                    let a_rec = store.get(Side::A, a_id).ok().flatten();
                     let mr = MatchResult {
                         query_id: b_id.clone(),
                         matched_id: a_id.clone(),
@@ -171,7 +171,7 @@ pub fn run_batch(
             .collect();
 
         // Build the A-side index (HashMap for MemoryStore, SQL index for SQLite).
-        store.build_exact_index(Side::A, &a_field_names);
+        store.build_exact_index(Side::A, &a_field_names)?;
 
         let mut exact_count = 0usize;
         for b_id in b_ids.iter().take(total_b) {
@@ -179,8 +179,8 @@ pub fn run_batch(
                 continue;
             }
             let b_rec = match store.get(Side::B, b_id) {
-                Some(r) => r,
-                None => continue,
+                Ok(Some(r)) => r,
+                _ => continue,
             };
 
             // Build (a_field, b_value) pairs for lookup — we query A using B's values.
@@ -197,7 +197,7 @@ pub fn run_batch(
                 })
                 .collect();
 
-            if let Some(a_id) = store.exact_lookup(Side::A, &kvs) {
+            if let Ok(Some(a_id)) = store.exact_lookup(Side::A, &kvs) {
                 // Use claim() to atomically enforce the bijection
                 // invariant (Constitution §3). The old has_a() check was
                 // a TOCTOU race under Rayon parallelism — claim() checks
@@ -205,7 +205,7 @@ pub fn run_batch(
                 if !crossmap.claim(&a_id, b_id) {
                     continue;
                 }
-                let a_rec = store.get(Side::A, &a_id);
+                let a_rec = store.get(Side::A, &a_id).ok().flatten();
                 matched.push(MatchResult {
                     query_id: b_id.clone(),
                     matched_id: a_id,
@@ -235,7 +235,7 @@ pub fn run_batch(
     for b_id in b_ids_slice {
         if crossmap.has_b(b_id) {
             skipped += 1;
-        } else if store.contains(Side::B, b_id) {
+        } else if store.contains(Side::B, b_id).unwrap_or(false) {
             work_ids.push(b_id.as_str());
         }
     }
@@ -247,13 +247,16 @@ pub fn run_batch(
     // Uses SimpleBm25 — no RwLock, no commit, no self-score pre-computation
     // (analytical self-score is O(K) at query time).
     let bm25_index_a: Option<crate::bm25::simple::SimpleBm25> = {
-        let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
+        let has_bm25 = config
+            .match_fields
+            .iter()
+            .any(|mf| mf.method == MatchMethod::Bm25);
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
             let idx = crate::bm25::simple::SimpleBm25::build(store, Side::A, &config.bm25_fields);
             eprintln!(
                 "Built BM25 index for {} A records in {:.1}ms",
-                store.len(Side::A),
+                store.len(Side::A).unwrap_or(0),
                 bm25_start.elapsed().as_secs_f64() * 1000.0
             );
             Some(idx)
@@ -308,7 +311,7 @@ pub fn run_batch(
     let outcomes: Vec<RecordOutcome> = work_ids
         .par_iter()
         .filter_map(|b_id| {
-            let b_record = store.get(Side::B, b_id)?;
+            let b_record = store.get(Side::B, b_id).ok()??;
 
             // Progress reporting (atomic, lock-free)
             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
@@ -333,9 +336,11 @@ pub fn run_batch(
 
             // Pre-query the blocking index via the store.
             let blocked_ids: Vec<String> = if config.blocking.enabled {
-                store.blocking_query(&b_record, Side::B, Side::A)
+                store
+                    .blocking_query(&b_record, Side::B, Side::A)
+                    .unwrap_or_default()
             } else {
-                store.ids(Side::A)
+                store.ids(Side::A).unwrap_or_default()
             };
 
             // Fetch the query combined vec from the B-side index.
@@ -382,23 +387,24 @@ pub fn run_batch(
                 Vec::new()
             };
 
-            let results = pipeline::score_pool(
-                b_id,
-                &b_record,
-                Side::B,
-                &query_combined_vec,
+            let scoring_query = pipeline::ScoringQuery {
+                id: b_id,
+                record: &b_record,
+                side: Side::B,
+                combined_vec: &query_combined_vec,
+            };
+            let scoring_pool = pipeline::ScoringPool {
                 store,
-                Side::A,
-                combined_index_a,
-                &blocked_ids,
-                config,
-                ann_candidates,
-                top_n,
-                &bm25_cand_ids,
-                &bm25_scores_map,
-                &synonym_cand_ids,
-                synonym_dict.as_deref(),
-            );
+                side: Side::A,
+                combined_index: combined_index_a,
+                blocked_ids: &blocked_ids,
+                bm25_candidate_ids: &bm25_cand_ids,
+                bm25_scores_map: &bm25_scores_map,
+                synonym_candidate_ids: &synonym_cand_ids,
+                synonym_dictionary: synonym_dict.as_deref(),
+            };
+            let results =
+                pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
 
             // Claim loop: try each auto-match candidate in ranked order.
             // Uses crossmap.claim() so concurrent threads can't double-match.
@@ -422,7 +428,7 @@ pub fn run_batch(
                     if crossmap.claim(a_id, b_id) {
                         // Attach matched record
                         if result.matched_record.is_none() {
-                            result.matched_record = store.get(Side::A, a_id);
+                            result.matched_record = store.get(Side::A, a_id).ok().flatten();
                         }
                         outcome = Some(RecordOutcome::Auto(result));
                         break;

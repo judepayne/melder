@@ -16,19 +16,14 @@ pub use self::ratio::ratio;
 pub use self::token_sort::token_sort_ratio;
 pub use self::wratio::wratio;
 
-/// Dispatch to a named scorer.
-pub fn score(scorer: &str, a: &str, b: &str) -> f64 {
+use crate::config::FuzzyScorer;
+
+/// Dispatch to the configured fuzzy scorer.
+pub fn score(scorer: FuzzyScorer, a: &str, b: &str) -> f64 {
     match scorer {
-        "ratio" => ratio(a, b),
-        "partial_ratio" => partial_ratio(a, b),
-        "token_sort" | "token_sort_ratio" => token_sort_ratio(a, b),
-        "wratio" => wratio(a, b),
-        unknown => {
-            tracing::warn!(
-                scorer = unknown,
-                "unknown fuzzy scorer, falling back to wratio"
-            );
-            wratio(a, b)
-        }
+        FuzzyScorer::Ratio => ratio(a, b),
+        FuzzyScorer::PartialRatio => partial_ratio(a, b),
+        FuzzyScorer::TokenSort => token_sort_ratio(a, b),
+        FuzzyScorer::Wratio => wratio(a, b),
     }
 }

@@ -6,13 +6,7 @@ use std::path::Path;
 use crate::error::ConfigError;
 
 use super::enroll_schema::EnrollConfig;
-use super::schema::{BlockingFieldPair, Config, DatasetConfig};
-
-/// Valid match methods.
-const VALID_METHODS: &[&str] = &["exact", "fuzzy", "embedding", "numeric", "bm25", "synonym"];
-
-/// Valid fuzzy scorers.
-const VALID_SCORERS: &[&str] = &["wratio", "partial_ratio", "token_sort", "ratio"];
+use super::schema::{BlockingFieldPair, Config, DatasetConfig, FuzzyScorer, MatchMethod};
 
 /// Valid cross-map backends.
 const VALID_BACKENDS: &[&str] = &["local"];
@@ -102,8 +96,8 @@ fn apply_defaults(cfg: &mut Config) {
 
     // fuzzy scorer defaults
     for mf in &mut cfg.match_fields {
-        if mf.method == "fuzzy" && mf.scorer.as_deref().unwrap_or("").is_empty() {
-            mf.scorer = Some("wratio".into());
+        if mf.method == MatchMethod::Fuzzy && mf.scorer.is_none() {
+            mf.scorer = Some(FuzzyScorer::Wratio);
         }
     }
 }
@@ -195,13 +189,15 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // 15-19. validate each match field + accumulate weight sum
+    //
+    // Note: method and scorer are validated at serde parse time (enum
+    // deserialization rejects unknown variants). No require_one_of needed.
     let mut weight_sum = 0.0_f64;
     let mut bm25_count = 0usize;
     for (i, mf) in cfg.match_fields.iter().enumerate() {
         let prefix = format!("match_fields[{}]", i);
-        require_one_of(&mf.method, VALID_METHODS, &format!("{}.method", prefix))?;
 
-        if mf.method == "bm25" {
+        if mf.method == MatchMethod::Bm25 {
             // BM25 takes no field_a/field_b — reject if set.
             if !mf.field_a.is_empty() || !mf.field_b.is_empty() {
                 return Err(ConfigError::InvalidValue {
@@ -216,13 +212,6 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
             require_non_empty(&mf.field_b, &format!("{}.field_b", prefix))?;
         }
 
-        if mf.method == "fuzzy"
-            && let Some(ref scorer) = mf.scorer
-            && !scorer.is_empty()
-        {
-            require_one_of(scorer, VALID_SCORERS, &format!("{}.scorer", prefix))?;
-        }
-
         if mf.weight < 0.0 {
             return Err(ConfigError::InvalidValue {
                 field: format!("{}.weight", prefix),
@@ -233,7 +222,7 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         // the scorer excludes synonym from the normalisation denominator
         // when it scores 0.0 (which is ~99% of pairs). This makes synonym
         // purely additive — it only affects the composite when it fires.
-        if mf.method != "synonym" {
+        if mf.method != MatchMethod::Synonym {
             weight_sum += mf.weight;
         }
     }
@@ -250,7 +239,7 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     let has_inline_bm25_fields = cfg
         .match_fields
         .iter()
-        .any(|mf| mf.method == "bm25" && mf.fields.is_some());
+        .any(|mf| mf.method == MatchMethod::Bm25 && mf.fields.is_some());
     if has_inline_bm25_fields && !cfg.bm25_fields.is_empty() {
         return Err(ConfigError::InvalidValue {
             field: "bm25_fields".into(),
@@ -261,7 +250,10 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // Validate inline BM25 fields (if provided on the match_fields entry).
-    if let Some(bm25_mf) = cfg.match_fields.iter().find(|mf| mf.method == "bm25")
+    if let Some(bm25_mf) = cfg
+        .match_fields
+        .iter()
+        .find(|mf| mf.method == MatchMethod::Bm25)
         && let Some(ref fields) = bm25_mf.fields
     {
         for (i, pair) in fields.iter().enumerate() {
@@ -280,7 +272,10 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
 
     // Candidate count constraints — each generator is independent.
     let has_bm25 = bm25_count > 0;
-    let has_embedding = cfg.match_fields.iter().any(|mf| mf.method == "embedding");
+    let has_embedding = cfg
+        .match_fields
+        .iter()
+        .any(|mf| mf.method == MatchMethod::Embedding);
     let top_n = cfg.top_n.unwrap_or(5);
     let ann_candidates = cfg.ann_candidates.unwrap_or(50);
     let bm25_candidates = cfg.bm25_candidates.unwrap_or(10);
@@ -485,13 +480,15 @@ fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // 5. validate each match field + accumulate weight sum
+    //
+    // Note: method and scorer are validated at serde parse time (enum
+    // deserialization rejects unknown variants). No require_one_of needed.
     let mut weight_sum = 0.0_f64;
     let mut bm25_count = 0usize;
     for (i, mf) in cfg.match_fields.iter().enumerate() {
         let prefix = format!("match_fields[{}]", i);
-        require_one_of(&mf.method, VALID_METHODS, &format!("{}.method", prefix))?;
 
-        if mf.method == "bm25" {
+        if mf.method == MatchMethod::Bm25 {
             if !mf.field_a.is_empty() || !mf.field_b.is_empty() {
                 return Err(ConfigError::InvalidValue {
                     field: prefix.to_string(),
@@ -505,20 +502,13 @@ fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
             require_non_empty(&mf.field_a, &format!("{}.field", prefix))?;
         }
 
-        if mf.method == "fuzzy"
-            && let Some(ref scorer) = mf.scorer
-            && !scorer.is_empty()
-        {
-            require_one_of(scorer, VALID_SCORERS, &format!("{}.scorer", prefix))?;
-        }
-
         if mf.weight < 0.0 {
             return Err(ConfigError::InvalidValue {
                 field: format!("{}.weight", prefix),
                 message: "must be >= 0".into(),
             });
         }
-        if mf.method != "synonym" {
+        if mf.method != MatchMethod::Synonym {
             weight_sum += mf.weight;
         }
     }
@@ -534,7 +524,7 @@ fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
     let has_inline_bm25_fields = cfg
         .match_fields
         .iter()
-        .any(|mf| mf.method == "bm25" && mf.fields.is_some());
+        .any(|mf| mf.method == MatchMethod::Bm25 && mf.fields.is_some());
     if has_inline_bm25_fields && !cfg.bm25_fields.is_empty() {
         return Err(ConfigError::InvalidValue {
             field: "bm25_fields".into(),
@@ -544,7 +534,10 @@ fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
 
     // Candidate count constraints
     let has_bm25 = bm25_count > 0;
-    let has_embedding = cfg.match_fields.iter().any(|mf| mf.method == "embedding");
+    let has_embedding = cfg
+        .match_fields
+        .iter()
+        .any(|mf| mf.method == MatchMethod::Embedding);
     let top_n = cfg.top_n.unwrap_or(5);
     let ann_candidates = cfg.ann_candidates.unwrap_or(50);
     let bm25_candidates = cfg.bm25_candidates.unwrap_or(10);
@@ -771,7 +764,7 @@ fn derive_bm25_fields(cfg: &mut Config) {
     let inline_fields: Option<Vec<super::schema::Bm25FieldPair>> = cfg
         .match_fields
         .iter()
-        .find(|mf| mf.method == "bm25")
+        .find(|mf| mf.method == MatchMethod::Bm25)
         .and_then(|mf| mf.fields.clone());
 
     if let Some(fields) = inline_fields {
@@ -788,7 +781,7 @@ fn derive_bm25_fields(cfg: &mut Config) {
     cfg.bm25_fields = cfg
         .match_fields
         .iter()
-        .filter(|mf| mf.method == "fuzzy" || mf.method == "embedding")
+        .filter(|mf| mf.method == MatchMethod::Fuzzy || mf.method == MatchMethod::Embedding)
         .map(|mf| super::schema::Bm25FieldPair {
             field_a: mf.field_a.clone(),
             field_b: mf.field_b.clone(),
@@ -809,7 +802,7 @@ fn derive_synonym_fields(cfg: &mut Config) {
     cfg.synonym_fields = cfg
         .match_fields
         .iter()
-        .filter(|mf| mf.method == "synonym")
+        .filter(|mf| mf.method == MatchMethod::Synonym)
         .map(|mf| super::schema::SynonymFieldConfig {
             field_a: mf.field_a.clone(),
             field_b: mf.field_b.clone(),
@@ -840,7 +833,7 @@ fn derive_required_fields(cfg: &mut Config) {
 
     // match fields (skip BM25 — no field_a/field_b)
     for mf in &cfg.match_fields {
-        if mf.method == "bm25" {
+        if mf.method == MatchMethod::Bm25 {
             continue;
         }
         seen_a.insert(mf.field_a.clone());
@@ -1050,6 +1043,7 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
 
     #[test]
     fn validation_invalid_method() {
+        // Invalid method names are now rejected at serde parse time.
         let yaml = r#"
 job:
   name: test
@@ -1063,13 +1057,12 @@ match_fields:
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
 output: { results_path: r, review_path: rv, unmatched_path: u }
 "#;
-        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
-        normalise_blocking(&mut cfg);
-        apply_defaults(&mut cfg);
-        let err = validate(&cfg).unwrap_err();
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err(), "invalid method should fail at parse time");
+        let err = result.unwrap_err().to_string();
         assert!(
-            err.to_string().contains("match_fields[0].method"),
-            "got: {}",
+            err.contains("magic") || err.contains("unknown variant"),
+            "error should mention the invalid value, got: {}",
             err
         );
     }
@@ -1273,7 +1266,7 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
         normalise_blocking(&mut cfg);
         apply_defaults(&mut cfg);
         validate(&cfg).unwrap();
-        assert_eq!(cfg.match_fields[0].scorer, Some("wratio".into()));
+        assert_eq!(cfg.match_fields[0].scorer, Some(FuzzyScorer::Wratio));
     }
 
     #[test]

@@ -102,7 +102,7 @@ impl SynonymIndex {
         dictionary: Option<Arc<SynonymDictionary>>,
     ) -> Self {
         let mut idx = Self::new(dictionary);
-        store.for_each_record(side, &mut |id, record| {
+        let _ = store.for_each_record(side, &mut |id, record| {
             idx.index_record(id, record, side, synonym_fields);
         });
         idx
@@ -305,11 +305,13 @@ mod tests {
     #[test]
     fn build_and_lookup_acronym() {
         let store = make_store();
-        store.insert(
-            Side::A,
-            "a1",
-            &make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]),
-        );
+        store
+            .insert(
+                Side::A,
+                "a1",
+                &make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]),
+            )
+            .unwrap();
 
         let idx = SynonymIndex::build(&store, Side::A, &make_config(), None);
         assert!(!idx.is_empty(), "index should have entries");
@@ -327,7 +329,9 @@ mod tests {
     fn reverse_lookup() {
         let store = make_store();
         // A record has the short name; query will be the full name
-        store.insert(Side::A, "a1", &make_record(&[("legal_name", "HWAG")]));
+        store
+            .insert(Side::A, "a1", &make_record(&[("legal_name", "HWAG")]))
+            .unwrap();
 
         let idx = SynonymIndex::build(&store, Side::A, &make_config(), None);
 
@@ -348,11 +352,13 @@ mod tests {
     #[test]
     fn field_filtering() {
         let store = make_store();
-        store.insert(
-            Side::A,
-            "a1",
-            &make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]),
-        );
+        store
+            .insert(
+                Side::A,
+                "a1",
+                &make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]),
+            )
+            .unwrap();
 
         let idx = SynonymIndex::build(&store, Side::A, &make_config(), None);
 
@@ -424,11 +430,13 @@ mod tests {
     #[test]
     fn deduplicates_results() {
         let store = make_store();
-        store.insert(
-            Side::A,
-            "a1",
-            &make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]),
-        );
+        store
+            .insert(
+                Side::A,
+                "a1",
+                &make_record(&[("legal_name", "Harris, Watkins and Goodwin BV")]),
+            )
+            .unwrap();
 
         let idx = SynonymIndex::build(&store, Side::A, &make_config(), None);
 

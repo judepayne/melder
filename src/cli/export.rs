@@ -598,10 +598,10 @@ live:
             let rec_b1 = make_record(&[("counterparty_id", "B-1"), ("cpty_name", "Acme Corp")]);
             let rec_b2 = make_record(&[("counterparty_id", "B-2"), ("cpty_name", "Globex Inc")]);
 
-            store.insert(Side::A, "A-1", &rec_a1);
-            store.insert(Side::A, "A-2", &rec_a2);
-            store.insert(Side::B, "B-1", &rec_b1);
-            store.insert(Side::B, "B-2", &rec_b2);
+            store.insert(Side::A, "A-1", &rec_a1).unwrap();
+            store.insert(Side::A, "A-2", &rec_a2).unwrap();
+            store.insert(Side::B, "B-1", &rec_b1).unwrap();
+            store.insert(Side::B, "B-2", &rec_b2).unwrap();
 
             // A-1 ↔ B-1 confirmed; A-2 and B-2 are unmatched.
             crossmap.add("A-1", "B-1");

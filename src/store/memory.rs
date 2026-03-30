@@ -9,6 +9,7 @@ use std::sync::RwLock;
 use dashmap::{DashMap, DashSet};
 
 use crate::config::BlockingConfig;
+use crate::error::StoreError;
 use crate::matching::blocking::BlockingIndex;
 use crate::models::{Record, Side};
 
@@ -126,28 +127,28 @@ impl std::fmt::Debug for MemoryStore {
 impl RecordStore for MemoryStore {
     // --- Records ---
 
-    fn get(&self, side: Side, id: &str) -> Option<Record> {
-        self.records(side).get(id).map(|r| r.value().clone())
+    fn get(&self, side: Side, id: &str) -> Result<Option<Record>, StoreError> {
+        Ok(self.records(side).get(id).map(|r| r.value().clone()))
     }
 
-    fn insert(&self, side: Side, id: &str, record: &Record) -> Option<Record> {
-        self.records(side).insert(id.to_string(), record.clone())
+    fn insert(&self, side: Side, id: &str, record: &Record) -> Result<Option<Record>, StoreError> {
+        Ok(self.records(side).insert(id.to_string(), record.clone()))
     }
 
-    fn remove(&self, side: Side, id: &str) -> Option<Record> {
-        self.records(side).remove(id).map(|(_, v)| v)
+    fn remove(&self, side: Side, id: &str) -> Result<Option<Record>, StoreError> {
+        Ok(self.records(side).remove(id).map(|(_, v)| v))
     }
 
-    fn contains(&self, side: Side, id: &str) -> bool {
-        self.records(side).contains_key(id)
+    fn contains(&self, side: Side, id: &str) -> Result<bool, StoreError> {
+        Ok(self.records(side).contains_key(id))
     }
 
-    fn len(&self, side: Side) -> usize {
-        self.records(side).len()
+    fn len(&self, side: Side) -> Result<usize, StoreError> {
+        Ok(self.records(side).len())
     }
 
-    fn ids(&self, side: Side) -> Vec<String> {
-        self.records(side).iter().map(|e| e.key().clone()).collect()
+    fn ids(&self, side: Side) -> Result<Vec<String>, StoreError> {
+        Ok(self.records(side).iter().map(|e| e.key().clone()).collect())
     }
 
     fn get_many_fields(
@@ -155,91 +156,113 @@ impl RecordStore for MemoryStore {
         side: Side,
         ids: &[String],
         _fields: &[String],
-    ) -> Vec<(String, Record)> {
+    ) -> Result<Vec<(String, Record)>, StoreError> {
         // In-memory: no deserialization cost, return full records.
         self.get_many(side, ids)
     }
 
-    fn for_each_record(&self, side: Side, f: &mut dyn FnMut(&str, &Record)) {
+    fn for_each_record(
+        &self,
+        side: Side,
+        f: &mut dyn FnMut(&str, &Record),
+    ) -> Result<(), StoreError> {
         for entry in self.records(side).iter() {
             f(entry.key(), entry.value());
         }
+        Ok(())
     }
 
     // --- Blocking ---
 
-    fn blocking_insert(&self, side: Side, id: &str, record: &Record) {
+    fn blocking_insert(&self, side: Side, id: &str, record: &Record) -> Result<(), StoreError> {
         let mut bi = self
             .blocking(side)
             .write()
             .unwrap_or_else(|e| e.into_inner());
         bi.insert(id, record, side);
+        Ok(())
     }
 
-    fn blocking_remove(&self, side: Side, id: &str, record: &Record) {
+    fn blocking_remove(&self, side: Side, id: &str, record: &Record) -> Result<(), StoreError> {
         let mut bi = self
             .blocking(side)
             .write()
             .unwrap_or_else(|e| e.into_inner());
         bi.remove(id, record, side);
+        Ok(())
     }
 
-    fn blocking_query(&self, record: &Record, query_side: Side, pool_side: Side) -> Vec<String> {
+    fn blocking_query(
+        &self,
+        record: &Record,
+        query_side: Side,
+        pool_side: Side,
+    ) -> Result<Vec<String>, StoreError> {
         let bi = self
             .blocking(pool_side)
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        bi.query(record, query_side).into_iter().collect()
+        Ok(bi.query(record, query_side).into_iter().collect())
     }
 
     // --- Unmatched ---
 
-    fn mark_unmatched(&self, side: Side, id: &str) {
+    fn mark_unmatched(&self, side: Side, id: &str) -> Result<(), StoreError> {
         self.unmatched(side).insert(id.to_string());
+        Ok(())
     }
 
-    fn mark_matched(&self, side: Side, id: &str) {
+    fn mark_matched(&self, side: Side, id: &str) -> Result<(), StoreError> {
         self.unmatched(side).remove(id);
+        Ok(())
     }
 
-    fn is_unmatched(&self, side: Side, id: &str) -> bool {
-        self.unmatched(side).contains(id)
+    fn is_unmatched(&self, side: Side, id: &str) -> Result<bool, StoreError> {
+        Ok(self.unmatched(side).contains(id))
     }
 
-    fn unmatched_count(&self, side: Side) -> usize {
-        self.unmatched(side).len()
+    fn unmatched_count(&self, side: Side) -> Result<usize, StoreError> {
+        Ok(self.unmatched(side).len())
     }
 
-    fn unmatched_ids(&self, side: Side) -> Vec<String> {
+    fn unmatched_ids(&self, side: Side) -> Result<Vec<String>, StoreError> {
         let mut ids: Vec<String> = self
             .unmatched(side)
             .iter()
             .map(|r| r.key().clone())
             .collect();
         ids.sort();
-        ids
+        Ok(ids)
     }
 
     // --- Common ID index ---
 
-    fn common_id_insert(&self, side: Side, common_id: &str, record_id: &str) {
+    fn common_id_insert(
+        &self,
+        side: Side,
+        common_id: &str,
+        record_id: &str,
+    ) -> Result<(), StoreError> {
         self.common_ids(side)
             .insert(common_id.to_string(), record_id.to_string());
+        Ok(())
     }
 
-    fn common_id_lookup(&self, side: Side, common_id: &str) -> Option<String> {
-        self.common_ids(side)
+    fn common_id_lookup(&self, side: Side, common_id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .common_ids(side)
             .get(common_id)
-            .map(|e| e.value().clone())
+            .map(|e| e.value().clone()))
     }
 
-    fn common_id_remove(&self, side: Side, common_id: &str) {
+    fn common_id_remove(&self, side: Side, common_id: &str) -> Result<(), StoreError> {
         self.common_ids(side).remove(common_id);
+        Ok(())
     }
 
     // --- Exact prefilter ---
 
-    fn build_exact_index(&self, side: Side, field_names: &[String]) {
+    fn build_exact_index(&self, side: Side, field_names: &[String]) -> Result<(), StoreError> {
         let exact = match side {
             Side::A => &self.a_exact,
             Side::B => &self.b_exact,
@@ -253,11 +276,16 @@ impl RecordStore for MemoryStore {
                 exact.insert(key, id.clone());
             }
         });
+        Ok(())
     }
 
-    fn exact_lookup(&self, side: Side, kvs: &[(String, String)]) -> Option<String> {
+    fn exact_lookup(
+        &self,
+        side: Side,
+        kvs: &[(String, String)],
+    ) -> Result<Option<String>, StoreError> {
         if kvs.is_empty() {
-            return None;
+            return Ok(None);
         }
         // Build composite key from query values — same separator and lowercasing
         // as make_exact_key used when building the index.
@@ -265,7 +293,7 @@ impl RecordStore for MemoryStore {
         for (_, v) in kvs {
             let v = v.trim();
             if v.is_empty() {
-                return None; // AND: any empty value → no match
+                return Ok(None); // AND: any empty value → no match
             }
             parts.push(v.to_lowercase());
         }
@@ -274,20 +302,32 @@ impl RecordStore for MemoryStore {
             Side::A => &self.a_exact,
             Side::B => &self.b_exact,
         };
-        exact.get(&key).map(|e| e.value().clone())
+        Ok(exact.get(&key).map(|e| e.value().clone()))
     }
 
     // --- Review persistence (no-op for memory — DashMap is source of truth) ---
 
-    fn persist_review(&self, _key: &str, _id: &str, _side: Side, _candidate_id: &str, _score: f64) {
+    fn persist_review(
+        &self,
+        _key: &str,
+        _id: &str,
+        _side: Side,
+        _candidate_id: &str,
+        _score: f64,
+    ) -> Result<(), StoreError> {
+        Ok(())
     }
 
-    fn remove_reviews_for_id(&self, _id: &str) {}
+    fn remove_reviews_for_id(&self, _id: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
 
-    fn remove_reviews_for_pair(&self, _a_id: &str, _b_id: &str) {}
+    fn remove_reviews_for_pair(&self, _a_id: &str, _b_id: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
 
-    fn load_reviews(&self) -> Vec<(String, String, Side, String, f64)> {
-        vec![]
+    fn load_reviews(&self) -> Result<Vec<super::ReviewEntry>, StoreError> {
+        Ok(vec![])
     }
 }
 
@@ -350,8 +390,8 @@ mod tests {
     fn insert_and_get() {
         let store = make_store();
         let rec = make_record(&[("id", "1"), ("name", "Foo")]);
-        assert!(store.insert(Side::A, "1", &rec).is_none());
-        let got = store.get(Side::A, "1").unwrap();
+        assert!(store.insert(Side::A, "1", &rec).unwrap().is_none());
+        let got = store.get(Side::A, "1").unwrap().unwrap();
         assert_eq!(got.get("name").unwrap(), "Foo");
     }
 
@@ -360,38 +400,52 @@ mod tests {
         let store = make_store();
         let rec1 = make_record(&[("id", "1"), ("name", "Foo")]);
         let rec2 = make_record(&[("id", "1"), ("name", "Bar")]);
-        store.insert(Side::A, "1", &rec1);
-        let old = store.insert(Side::A, "1", &rec2).unwrap();
+        store.insert(Side::A, "1", &rec1).unwrap();
+        let old = store.insert(Side::A, "1", &rec2).unwrap().unwrap();
         assert_eq!(old.get("name").unwrap(), "Foo");
-        assert_eq!(store.get(Side::A, "1").unwrap().get("name").unwrap(), "Bar");
+        assert_eq!(
+            store
+                .get(Side::A, "1")
+                .unwrap()
+                .unwrap()
+                .get("name")
+                .unwrap(),
+            "Bar"
+        );
     }
 
     #[test]
     fn remove_returns_old() {
         let store = make_store();
         let rec = make_record(&[("id", "1"), ("name", "Foo")]);
-        store.insert(Side::B, "1", &rec);
-        let removed = store.remove(Side::B, "1").unwrap();
+        store.insert(Side::B, "1", &rec).unwrap();
+        let removed = store.remove(Side::B, "1").unwrap().unwrap();
         assert_eq!(removed.get("name").unwrap(), "Foo");
-        assert!(!store.contains(Side::B, "1"));
+        assert!(!store.contains(Side::B, "1").unwrap());
     }
 
     #[test]
     fn contains_and_len() {
         let store = make_store();
-        assert!(!store.contains(Side::A, "x"));
-        assert_eq!(store.len(Side::A), 0);
-        store.insert(Side::A, "x", &make_record(&[("id", "x")]));
-        assert!(store.contains(Side::A, "x"));
-        assert_eq!(store.len(Side::A), 1);
+        assert!(!store.contains(Side::A, "x").unwrap());
+        assert_eq!(store.len(Side::A).unwrap(), 0);
+        store
+            .insert(Side::A, "x", &make_record(&[("id", "x")]))
+            .unwrap();
+        assert!(store.contains(Side::A, "x").unwrap());
+        assert_eq!(store.len(Side::A).unwrap(), 1);
     }
 
     #[test]
     fn ids_returns_all() {
         let store = make_store();
-        store.insert(Side::A, "a", &make_record(&[("id", "a")]));
-        store.insert(Side::A, "b", &make_record(&[("id", "b")]));
-        let mut ids = store.ids(Side::A);
+        store
+            .insert(Side::A, "a", &make_record(&[("id", "a")]))
+            .unwrap();
+        store
+            .insert(Side::A, "b", &make_record(&[("id", "b")]))
+            .unwrap();
+        let mut ids = store.ids(Side::A).unwrap();
         ids.sort();
         assert_eq!(ids, vec!["a", "b"]);
     }
@@ -399,9 +453,11 @@ mod tests {
     #[test]
     fn sides_are_independent() {
         let store = make_store();
-        store.insert(Side::A, "1", &make_record(&[("id", "1")]));
-        assert!(store.contains(Side::A, "1"));
-        assert!(!store.contains(Side::B, "1"));
+        store
+            .insert(Side::A, "1", &make_record(&[("id", "1")]))
+            .unwrap();
+        assert!(store.contains(Side::A, "1").unwrap());
+        assert!(!store.contains(Side::B, "1").unwrap());
     }
 
     // --- Blocking ---
@@ -411,18 +467,18 @@ mod tests {
         let store = make_store();
         let rec_gb = make_record(&[("country", "GB")]);
         let rec_us = make_record(&[("country", "US")]);
-        store.blocking_insert(Side::A, "a1", &rec_gb);
-        store.blocking_insert(Side::A, "a2", &rec_gb);
-        store.blocking_insert(Side::A, "a3", &rec_us);
+        store.blocking_insert(Side::A, "a1", &rec_gb).unwrap();
+        store.blocking_insert(Side::A, "a2", &rec_gb).unwrap();
+        store.blocking_insert(Side::A, "a3", &rec_us).unwrap();
 
         // Query from B side looking for GB records in A
         let query = make_record(&[("domicile", "GB")]);
-        let hits = store.blocking_query(&query, Side::B, Side::A);
+        let hits = store.blocking_query(&query, Side::B, Side::A).unwrap();
         assert_eq!(hits.len(), 2, "expected 2 GB hits, got {:?}", hits);
 
         // Remove one and re-query
-        store.blocking_remove(Side::A, "a1", &rec_gb);
-        let hits = store.blocking_query(&query, Side::B, Side::A);
+        store.blocking_remove(Side::A, "a1", &rec_gb).unwrap();
+        let hits = store.blocking_query(&query, Side::B, Side::A).unwrap();
         assert_eq!(hits.len(), 1, "expected 1 GB hit after remove");
     }
 
@@ -431,21 +487,21 @@ mod tests {
     #[test]
     fn unmatched_lifecycle() {
         let store = make_store();
-        store.mark_unmatched(Side::A, "x");
-        assert!(store.is_unmatched(Side::A, "x"));
-        assert_eq!(store.unmatched_count(Side::A), 1);
-        store.mark_matched(Side::A, "x");
-        assert!(!store.is_unmatched(Side::A, "x"));
-        assert_eq!(store.unmatched_count(Side::A), 0);
+        store.mark_unmatched(Side::A, "x").unwrap();
+        assert!(store.is_unmatched(Side::A, "x").unwrap());
+        assert_eq!(store.unmatched_count(Side::A).unwrap(), 1);
+        store.mark_matched(Side::A, "x").unwrap();
+        assert!(!store.is_unmatched(Side::A, "x").unwrap());
+        assert_eq!(store.unmatched_count(Side::A).unwrap(), 0);
     }
 
     #[test]
     fn unmatched_ids_sorted() {
         let store = make_store();
-        store.mark_unmatched(Side::B, "c");
-        store.mark_unmatched(Side::B, "a");
-        store.mark_unmatched(Side::B, "b");
-        assert_eq!(store.unmatched_ids(Side::B), vec!["a", "b", "c"]);
+        store.mark_unmatched(Side::B, "c").unwrap();
+        store.mark_unmatched(Side::B, "a").unwrap();
+        store.mark_unmatched(Side::B, "b").unwrap();
+        assert_eq!(store.unmatched_ids(Side::B).unwrap(), vec!["a", "b", "c"]);
     }
 
     // --- Common ID ---
@@ -453,13 +509,18 @@ mod tests {
     #[test]
     fn common_id_lifecycle() {
         let store = make_store();
-        store.common_id_insert(Side::A, "LEI-123", "a1");
+        store.common_id_insert(Side::A, "LEI-123", "a1").unwrap();
         assert_eq!(
-            store.common_id_lookup(Side::A, "LEI-123"),
+            store.common_id_lookup(Side::A, "LEI-123").unwrap(),
             Some("a1".to_string())
         );
-        store.common_id_remove(Side::A, "LEI-123");
-        assert!(store.common_id_lookup(Side::A, "LEI-123").is_none());
+        store.common_id_remove(Side::A, "LEI-123").unwrap();
+        assert!(
+            store
+                .common_id_lookup(Side::A, "LEI-123")
+                .unwrap()
+                .is_none()
+        );
     }
 
     // --- from_records ---
@@ -482,12 +543,12 @@ mod tests {
         );
 
         let store = MemoryStore::from_records(a, b, &make_blocking_config());
-        assert_eq!(store.len(Side::A), 2);
-        assert_eq!(store.len(Side::B), 1);
+        assert_eq!(store.len(Side::A).unwrap(), 2);
+        assert_eq!(store.len(Side::B).unwrap(), 1);
 
         // Blocking should work: query from B for GB records in A
         let query = make_record(&[("domicile", "GB")]);
-        let hits = store.blocking_query(&query, Side::B, Side::A);
+        let hits = store.blocking_query(&query, Side::B, Side::A).unwrap();
         assert_eq!(hits.len(), 1, "expected 1 GB hit from A-side blocking");
     }
 }

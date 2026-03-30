@@ -32,13 +32,37 @@ use std::collections::HashMap;
 
 use tracing::info_span;
 
-use crate::config::Config;
+use crate::config::{Config, MatchMethod};
 use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::scoring;
 use crate::scoring::embedding::dot_product_f32;
 use crate::store::RecordStore;
 use crate::vectordb::VectorDB;
+
+/// The record being scored against the pool.
+pub struct ScoringQuery<'a> {
+    pub id: &'a str,
+    pub record: &'a Record,
+    pub side: Side,
+    pub combined_vec: &'a [f32],
+}
+
+/// The pool (opposite side) and pre-computed candidate sets to score against.
+pub struct ScoringPool<'a> {
+    pub store: &'a dyn RecordStore,
+    pub side: Side,
+    pub combined_index: Option<&'a dyn VectorDB>,
+    pub blocked_ids: &'a [String],
+    /// Pre-computed BM25 candidate IDs (from caller).
+    pub bm25_candidate_ids: &'a [String],
+    /// Pre-computed BM25 scores keyed by pool record ID.
+    pub bm25_scores_map: &'a HashMap<String, f64>,
+    /// Pre-computed synonym candidate IDs (from caller).
+    pub synonym_candidate_ids: &'a [String],
+    /// Optional synonym dictionary for per-field synonym scoring.
+    pub synonym_dictionary: Option<&'a crate::synonym::dictionary::SynonymDictionary>,
+}
 
 /// Score a single query record against the opposite-side pool.
 ///
@@ -48,41 +72,28 @@ use crate::vectordb::VectorDB;
 /// `top_n` entries.
 ///
 /// BM25 and synonym candidate generation is handled by the *caller* — this
-/// function receives pre-computed candidate IDs and BM25 scores. ANN
-/// candidate generation still runs internally.
-#[allow(clippy::too_many_arguments)]
+/// function receives pre-computed candidate IDs and BM25 scores via
+/// `ScoringPool`. ANN candidate generation still runs internally.
 pub fn score_pool(
-    query_id: &str,
-    query_record: &Record,
-    query_side: Side,
-    query_combined_vec: &[f32],
-    pool_store: &dyn RecordStore,
-    pool_side: Side,
-    pool_combined_index: Option<&dyn VectorDB>,
-    blocked_ids: &[String],
+    query: &ScoringQuery<'_>,
+    pool: &ScoringPool<'_>,
     config: &Config,
     ann_candidates: usize,
     top_n: usize,
-    // Pre-computed BM25 candidates (from caller).
-    bm25_candidate_ids: &[String],
-    bm25_scores_map: &HashMap<String, f64>,
-    // Pre-computed synonym candidates (from caller).
-    synonym_candidate_ids: &[String],
-    synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
 ) -> Vec<MatchResult> {
-    if blocked_ids.is_empty() {
+    if pool.blocked_ids.is_empty() {
         return Vec::new();
     }
 
-    let has_embeddings = !query_combined_vec.is_empty();
+    let has_embeddings = !query.combined_vec.is_empty();
 
     // Pool-side fields needed for scoring (used by get_many_fields to
     // avoid full JSON deserialization in SQLite).
     let scoring_fields: Vec<String> = config
         .match_fields
         .iter()
-        .filter(|mf| mf.method != "bm25" && mf.method != "embedding")
-        .map(|mf| match pool_side {
+        .filter(|mf| mf.method != MatchMethod::Bm25 && mf.method != MatchMethod::Embedding)
+        .map(|mf| match pool.side {
             Side::A => mf.field_a.clone(),
             Side::B => mf.field_b.clone(),
         })
@@ -97,21 +108,17 @@ pub fn score_pool(
     let ann_cands = {
         let _span = info_span!("ann_candidates").entered();
         candidates::select_candidates(
-            query_combined_vec,
+            query.combined_vec,
             ann_candidates,
-            pool_combined_index,
-            blocked_ids,
-            pool_store,
-            pool_side,
-            query_record,
-            query_side,
+            pool.combined_index,
+            pool.blocked_ids,
+            pool.store,
+            pool.side,
+            query.record,
+            query.side,
             &config.vector_backend,
         )
     };
-
-    // BM25 and synonym candidates are pre-computed by the caller.
-    let bm25_cand_ids = bm25_candidate_ids;
-    let synonym_cand_ids = synonym_candidate_ids;
 
     // --- Stage 3: Union candidates ---
     //
@@ -123,7 +130,11 @@ pub fn score_pool(
     // Collect non-ANN candidate IDs (BM25 + synonym), deduplicated.
     let mut extra_ids: Vec<String> = Vec::new();
     let mut extra_id_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for id in bm25_cand_ids.iter().chain(synonym_cand_ids.iter()) {
+    for id in pool
+        .bm25_candidate_ids
+        .iter()
+        .chain(pool.synonym_candidate_ids.iter())
+    {
         if !ann_id_set.contains(id.as_str()) && extra_id_set.insert(id.clone()) {
             extra_ids.push(id.clone());
         }
@@ -134,9 +145,13 @@ pub fn score_pool(
         Vec::new()
     } else {
         let records = if scoring_fields.is_empty() {
-            pool_store.get_many(pool_side, &extra_ids)
+            pool.store
+                .get_many(pool.side, &extra_ids)
+                .unwrap_or_default()
         } else {
-            pool_store.get_many_fields(pool_side, &extra_ids, &scoring_fields)
+            pool.store
+                .get_many_fields(pool.side, &extra_ids, &scoring_fields)
+                .unwrap_or_default()
         };
         records
             .into_iter()
@@ -156,7 +171,7 @@ pub fn score_pool(
     // Self-match exclusion: when query_side == pool_side (enroll mode),
     // the query record may appear in the pool index. Filter it out before
     // scoring so a record never matches itself.
-    let filter_self = query_side == pool_side;
+    let filter_self = query.side == pool.side;
 
     // --- Stage 4: Full scoring with per-field decomposition ---
     let _span = info_span!("full_scoring").entered();
@@ -168,21 +183,21 @@ pub fn score_pool(
     // Score all candidates through the same path.
     for cand in ann_cands.iter().chain(extra_cands.iter()) {
         // Skip self-match in enroll mode
-        if filter_self && cand.id == query_id {
+        if filter_self && cand.id == query.id {
             continue;
         }
         results.push(score_candidate(
             cand,
-            query_id,
-            query_record,
-            query_side,
-            query_combined_vec,
-            pool_combined_index,
+            query.id,
+            query.record,
+            query.side,
+            query.combined_vec,
+            pool.combined_index,
             config,
-            bm25_scores_map,
+            pool.bm25_scores_map,
             &emb_specs,
             has_emb_specs,
-            synonym_dictionary,
+            pool.synonym_dictionary,
         ));
     }
 
@@ -633,64 +648,66 @@ output:
     fn score_pool_empty_blocked_ids_returns_empty() {
         let store = make_store();
         let config = make_config_exact("name", "name");
-        let query = make_record(&[("id", "q1"), ("name", "Foo")]);
+        let record = make_record(&[("id", "q1"), ("name", "Foo")]);
         let empty_bm25: HashMap<String, f64> = HashMap::new();
 
-        let results = score_pool(
-            "q1",
-            &query,
-            Side::B,
-            &[],
-            &store,
-            Side::A,
-            None,
-            &[],
-            &config,
-            50,
-            5,
-            &[],
-            &empty_bm25,
-            &[],
-            None,
-        );
+        let q = ScoringQuery {
+            id: "q1",
+            record: &record,
+            side: Side::B,
+            combined_vec: &[],
+        };
+        let p = ScoringPool {
+            store: &store,
+            side: Side::A,
+            combined_index: None,
+            blocked_ids: &[],
+            bm25_candidate_ids: &[],
+            bm25_scores_map: &empty_bm25,
+            synonym_candidate_ids: &[],
+            synonym_dictionary: None,
+        };
 
+        let results = score_pool(&q, &p, &config, 50, 5);
         assert!(results.is_empty(), "empty blocked_ids → no results");
     }
 
     #[test]
     fn score_pool_no_embeddings_no_bm25_returns_empty() {
         let store = make_store();
-        store.insert(
-            Side::A,
-            "a1",
-            &make_record(&[("id", "a1"), ("name", "Foo Corp")]),
-        );
+        store
+            .insert(
+                Side::A,
+                "a1",
+                &make_record(&[("id", "a1"), ("name", "Foo Corp")]),
+            )
+            .unwrap();
 
         let config = make_config_exact("name", "name");
-        let query = make_record(&[("id", "q1"), ("name", "Foo Corp")]);
+        let record = make_record(&[("id", "q1"), ("name", "Foo Corp")]);
         let blocked = vec!["a1".to_string()];
         let empty_bm25: HashMap<String, f64> = HashMap::new();
 
+        let q = ScoringQuery {
+            id: "q1",
+            record: &record,
+            side: Side::B,
+            combined_vec: &[],
+        };
+        let p = ScoringPool {
+            store: &store,
+            side: Side::A,
+            combined_index: None,
+            blocked_ids: &blocked,
+            bm25_candidate_ids: &[],
+            bm25_scores_map: &empty_bm25,
+            synonym_candidate_ids: &[],
+            synonym_dictionary: None,
+        };
+
         // No embeddings (empty vec), no BM25 candidates → both generators
         // return empty → union is empty → no results.
-        let results = score_pool(
-            "q1",
-            &query,
-            Side::B,
-            &[],
-            &store,
-            Side::A,
-            None,
-            &blocked,
-            &config,
-            50,
-            5,
-            &[],
-            &empty_bm25,
-            &[],
-            None,
-        );
-
+        let results = score_pool(&q, &p, &config, 50, 5);
         assert!(
             results.is_empty(),
             "no candidate generators configured → no results"
@@ -706,8 +723,8 @@ output:
         // Insert two A records with identical names to the query.
         let a1 = make_record(&[("id", "a1"), ("name", "Foo Corp")]);
         let a2 = make_record(&[("id", "a2"), ("name", "Bar Inc")]);
-        store.insert(Side::A, "a1", &a1);
-        store.insert(Side::A, "a2", &a2);
+        store.insert(Side::A, "a1", &a1).unwrap();
+        store.insert(Side::A, "a2", &a2).unwrap();
 
         let v1 = unit_vec(dim, 1);
         let v2 = unit_vec(dim, 2);
@@ -715,29 +732,29 @@ output:
         idx.upsert("a2", &v2, &a2, Side::A).unwrap();
 
         let config = make_config_exact("name", "name");
-        let query = make_record(&[("id", "q1"), ("name", "Foo Corp")]);
+        let record = make_record(&[("id", "q1"), ("name", "Foo Corp")]);
         let blocked = vec!["a1".to_string(), "a2".to_string()];
         let query_vec = unit_vec(dim, 1); // identical to a1
         let empty_bm25: HashMap<String, f64> = HashMap::new();
 
-        let results = score_pool(
-            "q1",
-            &query,
-            Side::B,
-            &query_vec,
-            &store,
-            Side::A,
-            Some(&idx as &dyn VectorDB),
-            &blocked,
-            &config,
-            50,
-            5,
-            &[],
-            &empty_bm25,
-            &[],
-            None,
-        );
+        let q = ScoringQuery {
+            id: "q1",
+            record: &record,
+            side: Side::B,
+            combined_vec: &query_vec,
+        };
+        let p = ScoringPool {
+            store: &store,
+            side: Side::A,
+            combined_index: Some(&idx as &dyn VectorDB),
+            blocked_ids: &blocked,
+            bm25_candidate_ids: &[],
+            bm25_scores_map: &empty_bm25,
+            synonym_candidate_ids: &[],
+            synonym_dictionary: None,
+        };
 
+        let results = score_pool(&q, &p, &config, 50, 5);
         assert!(
             !results.is_empty(),
             "ANN should surface candidates for scoring"
@@ -763,37 +780,38 @@ output:
         let a1 = make_record(&[("id", "a1"), ("name", "Acme Corp")]);
         let a2 = make_record(&[("id", "a2"), ("name", "Other Ltd")]);
         let a3 = make_record(&[("id", "a3"), ("name", "Acme Corp")]);
-        store.insert(Side::A, "a1", &a1);
-        store.insert(Side::A, "a2", &a2);
-        store.insert(Side::A, "a3", &a3);
+        store.insert(Side::A, "a1", &a1).unwrap();
+        store.insert(Side::A, "a2", &a2).unwrap();
+        store.insert(Side::A, "a3", &a3).unwrap();
 
         for (id, seed, rec) in [("a1", 1u64, &a1), ("a2", 2, &a2), ("a3", 3, &a3)] {
             idx.upsert(id, &unit_vec(dim, seed), rec, Side::A).unwrap();
         }
 
         let config = make_config_exact("name", "name");
-        let query = make_record(&[("id", "q1"), ("name", "Acme Corp")]);
+        let record = make_record(&[("id", "q1"), ("name", "Acme Corp")]);
         let blocked = vec!["a1".to_string(), "a2".to_string(), "a3".to_string()];
         let query_vec = unit_vec(dim, 99);
         let empty_bm25: HashMap<String, f64> = HashMap::new();
 
-        let results = score_pool(
-            "q1",
-            &query,
-            Side::B,
-            &query_vec,
-            &store,
-            Side::A,
-            Some(&idx as &dyn VectorDB),
-            &blocked,
-            &config,
-            50,
-            5,
-            &[],
-            &empty_bm25,
-            &[],
-            None,
-        );
+        let q = ScoringQuery {
+            id: "q1",
+            record: &record,
+            side: Side::B,
+            combined_vec: &query_vec,
+        };
+        let p = ScoringPool {
+            store: &store,
+            side: Side::A,
+            combined_index: Some(&idx as &dyn VectorDB),
+            blocked_ids: &blocked,
+            bm25_candidate_ids: &[],
+            bm25_scores_map: &empty_bm25,
+            synonym_candidate_ids: &[],
+            synonym_dictionary: None,
+        };
+
+        let results = score_pool(&q, &p, &config, 50, 5);
 
         // Results must be sorted descending by score.
         for w in results.windows(2) {
@@ -817,35 +835,35 @@ output:
         for i in 0..10 {
             let id = format!("a{}", i);
             let rec = make_record(&[("id", &id), ("name", &format!("Corp {}", i))]);
-            store.insert(Side::A, &id, &rec);
+            store.insert(Side::A, &id, &rec).unwrap();
             idx.upsert(&id, &unit_vec(dim, i as u64), &rec, Side::A)
                 .unwrap();
             blocked.push(id);
         }
 
         let config = make_config_exact("name", "name");
-        let query = make_record(&[("id", "q1"), ("name", "Corp 0")]);
+        let record = make_record(&[("id", "q1"), ("name", "Corp 0")]);
         let query_vec = unit_vec(dim, 99);
         let empty_bm25: HashMap<String, f64> = HashMap::new();
 
-        let results = score_pool(
-            "q1",
-            &query,
-            Side::B,
-            &query_vec,
-            &store,
-            Side::A,
-            Some(&idx as &dyn VectorDB),
-            &blocked,
-            &config,
-            50,
-            3, // top_n = 3
-            &[],
-            &empty_bm25,
-            &[],
-            None,
-        );
+        let q = ScoringQuery {
+            id: "q1",
+            record: &record,
+            side: Side::B,
+            combined_vec: &query_vec,
+        };
+        let p = ScoringPool {
+            store: &store,
+            side: Side::A,
+            combined_index: Some(&idx as &dyn VectorDB),
+            blocked_ids: &blocked,
+            bm25_candidate_ids: &[],
+            bm25_scores_map: &empty_bm25,
+            synonym_candidate_ids: &[],
+            synonym_dictionary: None,
+        };
 
+        let results = score_pool(&q, &p, &config, 50, 3);
         assert!(
             results.len() <= 3,
             "top_n=3 should truncate, got {}",

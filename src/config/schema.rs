@@ -16,6 +16,76 @@ pub enum Mode {
     Enroll,
 }
 
+/// Scoring method for a match field.
+///
+/// Deserialized directly from YAML — invalid method names are rejected at
+/// parse time (serde error) rather than at validation time. This eliminates
+/// the class of bugs where a typo like `method: fussy` silently falls through
+/// to a default scorer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchMethod {
+    Exact,
+    Fuzzy,
+    Embedding,
+    Numeric,
+    Bm25,
+    Synonym,
+}
+
+impl MatchMethod {
+    /// String representation matching the YAML/JSON field value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MatchMethod::Exact => "exact",
+            MatchMethod::Fuzzy => "fuzzy",
+            MatchMethod::Embedding => "embedding",
+            MatchMethod::Numeric => "numeric",
+            MatchMethod::Bm25 => "bm25",
+            MatchMethod::Synonym => "synonym",
+        }
+    }
+}
+
+impl std::fmt::Display for MatchMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Fuzzy string similarity scorer.
+///
+/// Deserialized from YAML — invalid scorer names are rejected at parse time.
+/// `token_sort_ratio` is accepted as an alias for `token_sort` (the canonical
+/// name) for backward compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FuzzyScorer {
+    Wratio,
+    PartialRatio,
+    #[serde(alias = "token_sort_ratio")]
+    TokenSort,
+    Ratio,
+}
+
+impl FuzzyScorer {
+    /// String representation matching the YAML/JSON field value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FuzzyScorer::Wratio => "wratio",
+            FuzzyScorer::PartialRatio => "partial_ratio",
+            FuzzyScorer::TokenSort => "token_sort",
+            FuzzyScorer::Ratio => "ratio",
+        }
+    }
+}
+
+impl std::fmt::Display for FuzzyScorer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Top-level configuration parsed from YAML.
 ///
 /// Note: `deny_unknown_fields` is intentionally not used because configs
@@ -277,11 +347,12 @@ pub struct MatchField {
     /// Empty for `method: bm25` when using inline `fields`.
     #[serde(default)]
     pub field_b: String,
-    /// "exact" | "fuzzy" | "embedding" | "numeric" | "bm25" | "synonym"
-    pub method: String,
-    /// For fuzzy: "wratio" | "partial_ratio" | "token_sort_ratio" | "ratio"
+    /// Scoring method. Invalid values are rejected at YAML parse time.
+    pub method: MatchMethod,
+    /// Fuzzy scorer variant. Only meaningful when `method == Fuzzy`.
+    /// Defaults to `Wratio` at config load time if omitted.
     #[serde(default)]
-    pub scorer: Option<String>,
+    pub scorer: Option<FuzzyScorer>,
     pub weight: f64,
     /// For `method: bm25` only — which text fields the BM25 index covers.
     /// Preferred over the top-level `bm25_fields` section. When set here,
@@ -506,7 +577,7 @@ mod tests {
         assert_eq!(config.embeddings.model, "all-MiniLM-L6-v2");
         assert!(config.blocking.enabled);
         assert_eq!(config.match_fields.len(), 4);
-        assert_eq!(config.match_fields[0].method, "embedding");
+        assert_eq!(config.match_fields[0].method, MatchMethod::Embedding);
         assert!((config.match_fields[0].weight - 0.55).abs() < f64::EPSILON);
         assert!((config.thresholds.auto_match - 0.85).abs() < f64::EPSILON);
         assert!((config.thresholds.review_floor - 0.60).abs() < f64::EPSILON);

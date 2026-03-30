@@ -417,7 +417,7 @@ impl Session {
         let mut old_mapping: Option<OldMapping> = None;
         let mut status = "added";
 
-        if store.contains(side, &id) {
+        if store.contains(side, &id)? {
             status = "updated";
 
             // Clear stale review entries for this record (re-upsert
@@ -436,8 +436,8 @@ impl Session {
                     Side::B => (paired_id.clone(), id.clone()),
                 };
                 // Add both back to unmatched
-                store.mark_unmatched(Side::A, &a_id);
-                store.mark_unmatched(Side::B, &b_id);
+                store.mark_unmatched(Side::A, &a_id)?;
+                store.mark_unmatched(Side::B, &b_id)?;
 
                 // WAL
                 if let Err(e) = self.state.wal.append(&WalEvent::CrossMapBreak {
@@ -452,8 +452,8 @@ impl Session {
             }
 
             // Remove old record from blocking index
-            if let Some(old_rec) = store.get(side, &id) {
-                store.blocking_remove(side, &id, &old_rec);
+            if let Some(old_rec) = store.get(side, &id)? {
+                store.blocking_remove(side, &id, &old_rec)?;
             }
         }
 
@@ -463,13 +463,13 @@ impl Session {
         }
 
         // 4. Insert/replace record
-        store.insert(side, &id, &record);
+        store.insert(side, &id, &record)?;
 
         // 5. Add to unmatched
-        store.mark_unmatched(side, &id);
+        store.mark_unmatched(side, &id)?;
 
         // 6. Update blocking index
-        store.blocking_insert(side, &id, &record);
+        store.blocking_insert(side, &id, &record)?;
 
         // 6b-6c + 8 + 9: Parallel pipeline.
         //
@@ -538,9 +538,11 @@ impl Session {
                     }
                     let _span = info_span!("blocking_query").entered();
                     *blocked_out = if blocking_enabled {
-                        store.blocking_query(record_ref, side, opp)
+                        store
+                            .blocking_query(record_ref, side, opp)
+                            .unwrap_or_default()
                     } else {
-                        store.ids(opp)
+                        store.ids(opp).unwrap_or_default()
                     };
                 });
             });
@@ -562,9 +564,9 @@ impl Session {
             }
             let _span = info_span!("blocking_query").entered();
             blocked_ids = if blocking_enabled {
-                store.blocking_query(&record, side, opp)
+                store.blocking_query(&record, side, opp)?
             } else {
-                store.ids(opp)
+                store.ids(opp)?
             };
         } else {
             // Sequential path: no encoding, avoid rayon overhead.
@@ -578,9 +580,9 @@ impl Session {
             }
             let _span = info_span!("blocking_query").entered();
             blocked_ids = if blocking_enabled {
-                store.blocking_query(&record, side, opp)
+                store.blocking_query(&record, side, opp)?
             } else {
-                store.ids(opp)
+                store.ids(opp)?
             };
         }
 
@@ -588,22 +590,22 @@ impl Session {
         if let Some(cid_field) = this_cid_field
             && let Some(cid_val) = record.get(cid_field)
         {
-            let cid_val = cid_val.trim();
+            let cid_val: &str = cid_val.trim();
             if !cid_val.is_empty() {
-                store.common_id_insert(side, cid_val, &id);
+                store.common_id_insert(side, cid_val, &id)?;
 
-                if let Some(opp_id) = store.common_id_lookup(opp, cid_val) {
+                if let Some(opp_id) = store.common_id_lookup(opp, cid_val)? {
                     if let Some(old_opp) = match side {
                         Side::A => self.state.crossmap.take_a(&id),
                         Side::B => self.state.crossmap.take_b(&id),
                     } {
-                        store.mark_unmatched(opp, &old_opp);
+                        store.mark_unmatched(opp, &old_opp)?;
                     }
                     if let Some(old_this) = match side {
                         Side::A => self.state.crossmap.take_b(&opp_id),
                         Side::B => self.state.crossmap.take_a(&opp_id),
                     } {
-                        store.mark_unmatched(side, &old_this);
+                        store.mark_unmatched(side, &old_this)?;
                     }
 
                     let (a_id, b_id) = match side {
@@ -611,8 +613,8 @@ impl Session {
                         Side::B => (opp_id.clone(), id.clone()),
                     };
                     self.state.crossmap.add(&a_id, &b_id);
-                    store.mark_matched(Side::A, &a_id);
-                    store.mark_matched(Side::B, &b_id);
+                    store.mark_matched(Side::A, &a_id)?;
+                    store.mark_matched(Side::B, &b_id)?;
 
                     if let Err(e) = self.state.wal.append(&WalEvent::CrossMapConfirm {
                         a_id: a_id.clone(),
@@ -631,7 +633,7 @@ impl Session {
                         field_scores: vec![],
                     });
 
-                    let opp_record = store.get(opp, &opp_id);
+                    let opp_record = store.get(opp, &opp_id)?;
                     let match_entry = MatchEntry {
                         id: opp_id,
                         score: 1.0,
@@ -712,23 +714,24 @@ impl Session {
         };
 
         let _span = info_span!("score_pool").entered();
-        let results = pipeline::score_pool(
-            &id,
-            &record,
+        let scoring_query = pipeline::ScoringQuery {
+            id: &id,
+            record: &record,
             side,
-            &query_combined_vec,
-            store.as_ref(),
-            opp,
-            opp_side.combined_index.as_deref(),
-            &blocked_ids,
-            config,
-            ann_candidates,
-            top_n,
-            &bm25_cand_ids,
-            &bm25_scores_map,
-            &synonym_cand_ids,
-            self.state.synonym_dictionary.as_deref(),
-        );
+            combined_vec: &query_combined_vec,
+        };
+        let scoring_pool = pipeline::ScoringPool {
+            store: store.as_ref(),
+            side: opp,
+            combined_index: opp_side.combined_index.as_deref(),
+            blocked_ids: &blocked_ids,
+            bm25_candidate_ids: &bm25_cand_ids,
+            bm25_scores_map: &bm25_scores_map,
+            synonym_candidate_ids: &synonym_cand_ids,
+            synonym_dictionary: self.state.synonym_dictionary.as_deref(),
+        };
+        let results =
+            pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
 
         // 10. Claim loop: try candidates in ranked order.
         let _span = info_span!("claim_loop").entered();
@@ -744,8 +747,8 @@ impl Session {
                     Side::B => (result.matched_id.clone(), id.clone()),
                 };
                 if self.state.crossmap.claim(&a_id, &b_id) {
-                    store.mark_matched(Side::A, &a_id);
-                    store.mark_matched(Side::B, &b_id);
+                    store.mark_matched(Side::A, &a_id)?;
+                    store.mark_matched(Side::B, &b_id)?;
 
                     // Hook: on_confirm (auto-match via claim)
                     self.send_hook(crate::hooks::HookEvent::Confirm {
@@ -837,7 +840,7 @@ impl Session {
         let opp = side.opposite();
 
         // Check the record exists
-        let record = store.get(side, id).ok_or_else(|| SessionError::NotFound {
+        let record = store.get(side, id)?.ok_or_else(|| SessionError::NotFound {
             message: format!("record {} not found on side {:?}", id, side),
         })?;
 
@@ -851,7 +854,7 @@ impl Session {
                 Side::A => self.state.crossmap.remove(id, &paired_id),
                 Side::B => self.state.crossmap.remove(&paired_id, id),
             }
-            store.mark_unmatched(opp, &paired_id);
+            store.mark_unmatched(opp, &paired_id)?;
             self.state.mark_crossmap_dirty();
             vec![paired_id]
         } else {
@@ -862,7 +865,7 @@ impl Session {
         self.state.drain_reviews_for_id(id);
 
         // Remove from blocking index
-        store.blocking_remove(side, id, &record);
+        store.blocking_remove(side, id, &record)?;
 
         // Remove from combined index
         if let Some(ref idx) = self.state.side(side).combined_index {
@@ -881,7 +884,7 @@ impl Session {
         }
 
         // Remove from unmatched set
-        store.mark_matched(side, id);
+        store.mark_matched(side, id)?;
 
         // Remove from common_id_index if configured
         let cid_field = match side {
@@ -893,12 +896,12 @@ impl Session {
         {
             let cid_val = cid_val.trim();
             if !cid_val.is_empty() {
-                store.common_id_remove(side, cid_val);
+                store.common_id_remove(side, cid_val)?;
             }
         }
 
         // Remove from records
-        store.remove(side, id);
+        store.remove(side, id)?;
 
         // Append to WAL
         if let Err(e) = self.state.wal.append(&WalEvent::RemoveRecord {
@@ -966,7 +969,7 @@ impl Session {
         };
 
         if let Some(paired_id) = existing {
-            let matched_record = store.get(opp, &paired_id);
+            let matched_record = store.get(opp, &paired_id)?;
 
             let entry = MatchEntry {
                 id: paired_id.clone(),
@@ -1026,9 +1029,11 @@ impl Session {
                 s.spawn(move |_| {
                     let _span = info_span!("blocking_query").entered();
                     *blocked_out = if blocking_enabled {
-                        store.blocking_query(record_ref, side, opp)
+                        store
+                            .blocking_query(record_ref, side, opp)
+                            .unwrap_or_default()
                     } else {
-                        store.ids(opp)
+                        store.ids(opp).unwrap_or_default()
                     };
                 });
             });
@@ -1042,16 +1047,16 @@ impl Session {
             combined_vec = self.encode_combined(&record, emb_specs, is_a_side)?;
             let _span = info_span!("blocking_query").entered();
             blocked_ids = if blocking_enabled {
-                store.blocking_query(&record, side, opp)
+                store.blocking_query(&record, side, opp)?
             } else {
-                store.ids(opp)
+                store.ids(opp)?
             };
         } else {
             let _span = info_span!("blocking_query").entered();
             blocked_ids = if blocking_enabled {
-                store.blocking_query(&record, side, opp)
+                store.blocking_query(&record, side, opp)?
             } else {
-                store.ids(opp)
+                store.ids(opp)?
             };
         }
 
@@ -1103,23 +1108,24 @@ impl Session {
             Vec::new()
         };
 
-        let results = pipeline::score_pool(
+        let scoring_query = pipeline::ScoringQuery {
             id,
-            &record,
+            record: &record,
             side,
-            &query_combined_vec,
-            store.as_ref(),
-            opp,
-            opp_side.combined_index.as_deref(),
-            &blocked_ids,
-            config,
-            ann_candidates,
-            top_n,
-            &bm25_cand_ids,
-            &bm25_scores_map,
-            &synonym_cand_ids,
-            self.state.synonym_dictionary.as_deref(),
-        );
+            combined_vec: &query_combined_vec,
+        };
+        let scoring_pool = pipeline::ScoringPool {
+            store: store.as_ref(),
+            side: opp,
+            combined_index: opp_side.combined_index.as_deref(),
+            blocked_ids: &blocked_ids,
+            bm25_candidate_ids: &bm25_cand_ids,
+            bm25_scores_map: &bm25_scores_map,
+            synonym_candidate_ids: &synonym_cand_ids,
+            synonym_dictionary: self.state.synonym_dictionary.as_deref(),
+        };
+        let results =
+            pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
 
         let classification = results
             .first()
@@ -1162,12 +1168,12 @@ impl Session {
         let store = &self.state.store;
 
         // Validate both IDs exist
-        if !store.contains(Side::A, a_id) {
+        if !store.contains(Side::A, a_id)? {
             return Err(SessionError::NotFound {
                 message: format!("a_id '{}' not found", a_id),
             });
         }
-        if !store.contains(Side::B, b_id) {
+        if !store.contains(Side::B, b_id)? {
             return Err(SessionError::NotFound {
                 message: format!("b_id '{}' not found", b_id),
             });
@@ -1175,17 +1181,17 @@ impl Session {
 
         // Break any existing pair for a_id (e.g. a_id was matched to B-other).
         if let Some(old_b) = self.state.crossmap.take_a(a_id) {
-            store.mark_unmatched(Side::B, &old_b);
+            store.mark_unmatched(Side::B, &old_b)?;
         }
         // Break any existing pair for b_id (e.g. b_id was matched to A-other).
         if let Some(old_a) = self.state.crossmap.take_b(b_id) {
-            store.mark_unmatched(Side::A, &old_a);
+            store.mark_unmatched(Side::A, &old_a)?;
         }
 
         // Now insert the new pair — both sides are guaranteed free.
         self.state.crossmap.add(a_id, b_id);
-        store.mark_matched(Side::A, a_id);
-        store.mark_matched(Side::B, b_id);
+        store.mark_matched(Side::A, a_id)?;
+        store.mark_matched(Side::B, b_id)?;
 
         // Drain any review entries involving either ID.
         self.state.drain_reviews_for_pair(a_id, b_id);
@@ -1224,7 +1230,7 @@ impl Session {
         };
 
         if let Some(ref pid) = paired_id {
-            let matched_record = store.get(opp, pid);
+            let matched_record = store.get(opp, pid)?;
 
             Ok(LookupResponse {
                 id: id.to_string(),
@@ -1258,8 +1264,8 @@ impl Session {
 
         self.state.crossmap.remove(a_id, b_id);
 
-        store.mark_unmatched(Side::A, a_id);
-        store.mark_unmatched(Side::B, b_id);
+        store.mark_unmatched(Side::A, a_id)?;
+        store.mark_unmatched(Side::B, b_id)?;
 
         // Drain any review entries involving either ID.
         self.state.drain_reviews_for_pair(a_id, b_id);
@@ -1291,7 +1297,7 @@ impl Session {
         let opp = side.opposite();
 
         // Look up the record
-        let record = store.get(side, id).ok_or_else(|| SessionError::NotFound {
+        let record = store.get(side, id)?.ok_or_else(|| SessionError::NotFound {
             message: format!("record {} not found on side {:?}", id, side),
         })?;
 
@@ -1299,7 +1305,7 @@ impl Session {
         let crossmap = match side {
             Side::A => {
                 if let Some(b_id) = self.state.crossmap.get_b(id) {
-                    let paired_record = store.get(opp, &b_id);
+                    let paired_record = store.get(opp, &b_id)?;
                     QueryCrossmap {
                         status: "matched".to_string(),
                         paired_id: Some(b_id),
@@ -1315,7 +1321,7 @@ impl Session {
             }
             Side::B => {
                 if let Some(a_id) = self.state.crossmap.get_a(id) {
-                    let paired_record = store.get(opp, &a_id);
+                    let paired_record = store.get(opp, &a_id)?;
                     QueryCrossmap {
                         status: "matched".to_string(),
                         paired_id: Some(a_id),
@@ -1581,8 +1587,8 @@ impl Session {
         HealthResponse {
             status: "ready".to_string(),
             model: self.state.config.embeddings.model.clone(),
-            records_a: store.len(Side::A),
-            records_b: store.len(Side::B),
+            records_a: store.len(Side::A).unwrap_or(0),
+            records_b: store.len(Side::B).unwrap_or(0),
             crossmap_entries: cm_len,
         }
     }
@@ -1660,7 +1666,7 @@ impl Session {
         include_records: bool,
     ) -> UnmatchedResponse {
         let store = &self.state.store;
-        let ids = store.unmatched_ids(side); // already sorted
+        let ids = store.unmatched_ids(side).unwrap_or_default(); // already sorted
         let total = ids.len();
 
         let start = match cursor {
@@ -1677,7 +1683,7 @@ impl Session {
             .iter()
             .map(|id| {
                 let record = if include_records {
-                    store.get(side, id)
+                    store.get(side, id).unwrap_or(None)
                 } else {
                     None
                 };
@@ -1705,11 +1711,11 @@ impl Session {
     /// Return crossmap coverage statistics.
     pub fn crossmap_stats(&self) -> CrossmapStatsResponse {
         let store = &self.state.store;
-        let records_a = store.len(Side::A);
-        let records_b = store.len(Side::B);
+        let records_a = store.len(Side::A).unwrap_or(0);
+        let records_b = store.len(Side::B).unwrap_or(0);
         let crossmap_pairs = self.state.crossmap.len();
-        let unmatched_a = store.unmatched_count(Side::A);
-        let unmatched_b = store.unmatched_count(Side::B);
+        let unmatched_a = store.unmatched_count(Side::A).unwrap_or(0);
+        let unmatched_b = store.unmatched_count(Side::B).unwrap_or(0);
         let matched_a = records_a.saturating_sub(unmatched_a);
         let matched_b = records_b.saturating_sub(unmatched_b);
         let coverage_a = if records_a > 0 {
@@ -1779,9 +1785,9 @@ impl Session {
         let bm25_candidates = config.bm25_candidates.unwrap_or(10);
 
         let blocked_ids: Vec<String> = if config.blocking.enabled {
-            store.blocking_query(&record, side, side)
+            store.blocking_query(&record, side, side)?
         } else {
-            store.ids(side)
+            store.ids(side)?
         };
 
         let pool_state = &self.state.a;
@@ -1824,39 +1830,40 @@ impl Session {
             Vec::new()
         };
 
-        let results = pipeline::score_pool(
-            &id,
-            &record,
+        let scoring_query = pipeline::ScoringQuery {
+            id: &id,
+            record: &record,
             side,
-            &combined_vec,
-            store.as_ref(),
+            combined_vec: &combined_vec,
+        };
+        let scoring_pool = pipeline::ScoringPool {
+            store: store.as_ref(),
             side, // pool_side = same side
-            pool_state.combined_index.as_deref(),
-            &blocked_ids,
-            config,
-            ann_candidates,
-            top_n,
-            &bm25_cand_ids,
-            &bm25_scores_map,
-            &synonym_cand_ids,
-            synonym_dict,
-        );
+            combined_index: pool_state.combined_index.as_deref(),
+            blocked_ids: &blocked_ids,
+            bm25_candidate_ids: &bm25_cand_ids,
+            bm25_scores_map: &bm25_scores_map,
+            synonym_candidate_ids: &synonym_cand_ids,
+            synonym_dictionary: synonym_dict,
+        };
+        let results =
+            pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
 
         // 3. Add record to pool
         // Handle upsert: remove old blocking entry if exists
-        if let Some(old_rec) = store.get(side, &id) {
-            store.blocking_remove(side, &id, &old_rec);
+        if let Some(old_rec) = store.get(side, &id)? {
+            store.blocking_remove(side, &id, &old_rec)?;
         }
 
         // WAL append
         let _ = self.state.wal.append_upsert(side, &record);
 
         // Insert into store
-        store.insert(side, &id, &record);
-        store.mark_unmatched(side, &id);
+        store.insert(side, &id, &record)?;
+        store.mark_unmatched(side, &id)?;
 
         // Update blocking index
-        store.blocking_insert(side, &id, &record);
+        store.blocking_insert(side, &id, &record)?;
 
         // Update BM25 index (SimpleBm25: lock-free, instant visibility)
         if let Some(ref bm25) = pool_state.bm25_index {

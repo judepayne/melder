@@ -24,7 +24,7 @@ pub fn cmd_cache_build(config_path: &Path) {
             println!("Cache build complete:");
             println!(
                 "  A-side: {} records, {} combined index vecs",
-                state.store.len(crate::models::Side::A),
+                state.store.len(crate::models::Side::A).unwrap_or(0),
                 state
                     .combined_index_a
                     .as_ref()
@@ -34,7 +34,7 @@ pub fn cmd_cache_build(config_path: &Path) {
             if state.ids_b.is_some() {
                 println!(
                     "  B-side: {} records, {} combined index vecs",
-                    state.store.len(crate::models::Side::B),
+                    state.store.len(crate::models::Side::B).unwrap_or(0),
                     state
                         .combined_index_b
                         .as_ref()

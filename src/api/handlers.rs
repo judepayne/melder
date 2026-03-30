@@ -474,7 +474,7 @@ pub async fn enroll_query(
 
 /// GET /api/v1/enroll/count
 pub async fn enroll_count(State(session): State<AppState>) -> axum::response::Response {
-    json_ok(serde_json::json!({ "count": session.state.store.len(Side::A) }))
+    json_ok(serde_json::json!({ "count": session.state.store.len(Side::A).unwrap_or(0) }))
 }
 
 // ---------------------------------------------------------------------------

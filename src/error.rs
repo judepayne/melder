@@ -19,6 +19,9 @@ pub enum MelderError {
     #[error("index error: {0}")]
     Index(#[from] IndexError),
 
+    #[error("store error: {0}")]
+    Store(#[from] StoreError),
+
     #[error("crossmap error: {0}")]
     CrossMap(#[from] CrossMapError),
 
@@ -101,6 +104,18 @@ pub enum CrossMapError {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("sqlite error: {0}")]
+    Sqlite(String),
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(e: rusqlite::Error) -> Self {
+        StoreError::Sqlite(e.to_string())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum SessionError {
     #[error("missing required field '{field}' in record")]
     MissingField { field: String },
@@ -116,6 +131,9 @@ pub enum SessionError {
 
     #[error("encoder error: {0}")]
     Encoder(#[from] EncoderError),
+
+    #[error("store error: {0}")]
+    Store(#[from] StoreError),
 }
 
 impl SessionError {
@@ -125,7 +143,7 @@ impl SessionError {
             SessionError::MissingField { .. } | SessionError::EmptyId => 400,
             SessionError::NotFound { .. } => 404,
             SessionError::BatchValidation { .. } => 422,
-            SessionError::Encoder(_) => 500,
+            SessionError::Encoder(_) | SessionError::Store(_) => 500,
         }
     }
 }

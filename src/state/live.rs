@@ -13,7 +13,7 @@ use std::time::Instant;
 use dashmap::DashMap;
 use tracing::{info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, MatchMethod};
 use crate::crossmap::{CrossMapOps, MemoryCrossMap};
 use crate::data;
 use crate::encoder::EncoderPool;
@@ -265,10 +265,10 @@ impl LiveMatchState {
         let total = start.elapsed();
         info!(
             label,
-            a_records = store.len(Side::A),
-            a_unmatched = store.unmatched_count(Side::A),
-            b_records = store.len(Side::B),
-            b_unmatched = store.unmatched_count(Side::B),
+            a_records = store.len(Side::A).unwrap_or(0),
+            a_unmatched = store.unmatched_count(Side::A).unwrap_or(0),
+            b_records = store.len(Side::B).unwrap_or(0),
+            b_unmatched = store.unmatched_count(Side::B).unwrap_or(0),
             crossmap_pairs = crossmap.len(),
             elapsed_s = format!("{:.1}", total.as_secs_f64()),
             "live state loaded"
@@ -276,7 +276,7 @@ impl LiveMatchState {
 
         // Load review queue from the store (WAL replay or SQLite read)
         let review_queue: DashMap<String, ReviewEntry> = DashMap::new();
-        for (key, id, side, candidate_id, score) in store.load_reviews() {
+        for (key, id, side, candidate_id, score) in store.load_reviews()? {
             review_queue.insert(
                 key,
                 ReviewEntry {
@@ -382,14 +382,14 @@ impl LiveMatchState {
         };
 
         // Build unmatched sets
-        for id in store.ids(Side::A) {
+        for id in store.ids(Side::A).unwrap_or_default() {
             if !crossmap.has_a(&id) {
-                store.mark_unmatched(Side::A, &id);
+                let _ = store.mark_unmatched(Side::A, &id);
             }
         }
-        for id in store.ids(Side::B) {
+        for id in store.ids(Side::B).unwrap_or_default() {
             if !crossmap.has_b(&id) {
-                store.mark_unmatched(Side::B, &id);
+                let _ = store.mark_unmatched(Side::B, &id);
             }
         }
 
@@ -484,8 +484,8 @@ impl LiveMatchState {
         let crossmap: Box<dyn CrossMapOps> = Box::new(MemoryCrossMap::new());
 
         // Mark all A records as unmatched (no crossmap)
-        for id in store.ids(Side::A) {
-            store.mark_unmatched(Side::A, &id);
+        for id in store.ids(Side::A).unwrap_or_default() {
+            let _ = store.mark_unmatched(Side::A, &id);
         }
 
         // WAL replay (enroll events are stored as A-side upserts)
@@ -556,12 +556,12 @@ impl LiveMatchState {
                     };
                     if let Some(id) = record.get(id_field) {
                         // Remove old record from blocking index before overwrite
-                        if let Some(old_rec) = store.get(*side, id) {
-                            store.blocking_remove(*side, id, &old_rec);
+                        if let Some(old_rec) = store.get(*side, id).ok().flatten() {
+                            let _ = store.blocking_remove(*side, id, &old_rec);
                         }
 
-                        store.insert(*side, id, record);
-                        store.blocking_insert(*side, id, record);
+                        let _ = store.insert(*side, id, record);
+                        let _ = store.blocking_insert(*side, id, record);
 
                         // Re-encode combined vector only if not already
                         // present in the cached index (saved at shutdown).
@@ -597,10 +597,10 @@ impl LiveMatchState {
                         Side::B => combined_index_b,
                     };
                     // Remove from blocking index (needs record data)
-                    if let Some(rec) = store.get(*side, id) {
-                        store.blocking_remove(*side, id, &rec);
+                    if let Some(rec) = store.get(*side, id).ok().flatten() {
+                        let _ = store.blocking_remove(*side, id, &rec);
                     }
-                    store.remove(*side, id);
+                    let _ = store.remove(*side, id);
                     // Remove from combined index
                     if let Some(idx) = side_idx {
                         let _ = idx.remove(id);
@@ -630,20 +630,20 @@ impl LiveMatchState {
         }
 
         // Rebuild unmatched sets after WAL replay
-        for id in store.unmatched_ids(Side::A) {
-            store.mark_matched(Side::A, &id);
+        for id in store.unmatched_ids(Side::A).unwrap_or_default() {
+            let _ = store.mark_matched(Side::A, &id);
         }
-        for id in store.unmatched_ids(Side::B) {
-            store.mark_matched(Side::B, &id);
+        for id in store.unmatched_ids(Side::B).unwrap_or_default() {
+            let _ = store.mark_matched(Side::B, &id);
         }
-        for id in store.ids(Side::A) {
+        for id in store.ids(Side::A).unwrap_or_default() {
             if !crossmap.has_a(&id) {
-                store.mark_unmatched(Side::A, &id);
+                let _ = store.mark_unmatched(Side::A, &id);
             }
         }
-        for id in store.ids(Side::B) {
+        for id in store.ids(Side::B).unwrap_or_default() {
             if !crossmap.has_b(&id) {
-                store.mark_unmatched(Side::B, &id);
+                let _ = store.mark_unmatched(Side::B, &id);
             }
         }
         info!("WAL replay complete");
@@ -682,12 +682,12 @@ impl LiveMatchState {
             // Populate SqliteStore with records + blocking
             let pop_start = Instant::now();
             for (id, record) in &records_a_map {
-                store.insert(Side::A, id, record);
-                store.blocking_insert(Side::A, id, record);
+                let _ = store.insert(Side::A, id, record);
+                let _ = store.blocking_insert(Side::A, id, record);
             }
             for (id, record) in &records_b_map {
-                store.insert(Side::B, id, record);
-                store.blocking_insert(Side::B, id, record);
+                let _ = store.insert(Side::B, id, record);
+                let _ = store.blocking_insert(Side::B, id, record);
             }
             info!(
                 elapsed_s = format!("{:.1}", pop_start.elapsed().as_secs_f64()),
@@ -710,18 +710,18 @@ impl LiveMatchState {
             }
 
             // Build unmatched sets
-            for id in store.ids(Side::A) {
+            for id in store.ids(Side::A).unwrap_or_default() {
                 if crossmap.has_a(&id) {
-                    store.mark_matched(Side::A, &id);
+                    let _ = store.mark_matched(Side::A, &id);
                 } else {
-                    store.mark_unmatched(Side::A, &id);
+                    let _ = store.mark_unmatched(Side::A, &id);
                 }
             }
-            for id in store.ids(Side::B) {
+            for id in store.ids(Side::B).unwrap_or_default() {
                 if crossmap.has_b(&id) {
-                    store.mark_matched(Side::B, &id);
+                    let _ = store.mark_matched(Side::B, &id);
                 } else {
-                    store.mark_unmatched(Side::B, &id);
+                    let _ = store.mark_unmatched(Side::B, &id);
                 }
             }
 
@@ -730,23 +730,35 @@ impl LiveMatchState {
         } else {
             // --- Warm start: everything is already in SQLite ---
             info!(
-                a_records = store.len(Side::A),
-                b_records = store.len(Side::B),
+                a_records = store.len(Side::A).unwrap_or(0),
+                b_records = store.len(Side::B).unwrap_or(0),
                 crossmap_pairs = crossmap.len(),
                 "sqlite warm start"
             );
         }
 
         // Collect records from the store for the vector cache builder.
-        let ids_a = store.ids(Side::A);
-        let ids_b = store.ids(Side::B);
+        let ids_a = store.ids(Side::A).unwrap_or_default();
+        let ids_b = store.ids(Side::B).unwrap_or_default();
         let records_a_map: std::collections::HashMap<String, crate::models::Record> = ids_a
             .iter()
-            .filter_map(|id| store.get(Side::A, id).map(|r| (id.clone(), r)))
+            .filter_map(|id| {
+                store
+                    .get(Side::A, id)
+                    .ok()
+                    .flatten()
+                    .map(|r| (id.clone(), r))
+            })
             .collect();
         let records_b_map: std::collections::HashMap<String, crate::models::Record> = ids_b
             .iter()
-            .filter_map(|id| store.get(Side::B, id).map(|r| (id.clone(), r)))
+            .filter_map(|id| {
+                store
+                    .get(Side::B, id)
+                    .ok()
+                    .flatten()
+                    .map(|r| (id.clone(), r))
+            })
             .collect();
 
         // Build embedding indices (source is SQLite, not a file — no fingerprint)
@@ -789,25 +801,25 @@ impl LiveMatchState {
     /// Build common_id_index from the store for each side (if configured).
     fn build_common_id_index(store: &Arc<dyn RecordStore>, config: &Config) {
         if let Some(ref cid_field) = config.datasets.a.common_id_field {
-            for id in store.ids(Side::A) {
-                if let Some(rec) = store.get(Side::A, &id)
+            for id in store.ids(Side::A).unwrap_or_default() {
+                if let Some(rec) = store.get(Side::A, &id).ok().flatten()
                     && let Some(val) = rec.get(cid_field)
                 {
                     let val = val.trim();
                     if !val.is_empty() {
-                        store.common_id_insert(Side::A, val, &id);
+                        let _ = store.common_id_insert(Side::A, val, &id);
                     }
                 }
             }
         }
         if let Some(ref cid_field) = config.datasets.b.common_id_field {
-            for id in store.ids(Side::B) {
-                if let Some(rec) = store.get(Side::B, &id)
+            for id in store.ids(Side::B).unwrap_or_default() {
+                if let Some(rec) = store.get(Side::B, &id).ok().flatten()
                     && let Some(val) = rec.get(cid_field)
                 {
                     let val = val.trim();
                     if !val.is_empty() {
-                        store.common_id_insert(Side::B, val, &id);
+                        let _ = store.common_id_insert(Side::B, val, &id);
                     }
                 }
             }
@@ -830,7 +842,10 @@ impl LiveMatchState {
         ),
         MelderError,
     > {
-        let has_bm25 = config.match_fields.iter().any(|mf| mf.method == "bm25");
+        let has_bm25 = config
+            .match_fields
+            .iter()
+            .any(|mf| mf.method == MatchMethod::Bm25);
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
             let idx_a = crate::bm25::simple::SimpleBm25::build(
@@ -844,8 +859,8 @@ impl LiveMatchState {
                 &config.bm25_fields,
             );
             info!(
-                a_records = store.len(Side::A),
-                b_records = store.len(Side::B),
+                a_records = store.len(Side::A).unwrap_or(0),
+                b_records = store.len(Side::B).unwrap_or(0),
                 elapsed_ms = format!("{:.1}", bm25_start.elapsed().as_secs_f64() * 1000.0),
                 "built BM25 indices"
             );
@@ -974,7 +989,7 @@ impl LiveMatchState {
 
     /// Insert a review entry into the queue (and persist via RecordStore).
     pub fn insert_review(&self, key: String, entry: ReviewEntry) {
-        self.store.persist_review(
+        let _ = self.store.persist_review(
             &key,
             &entry.id,
             entry.side,
@@ -988,7 +1003,7 @@ impl LiveMatchState {
     pub fn drain_reviews_for_id(&self, id: &str) {
         self.review_queue
             .retain(|_, v| v.id != id && v.candidate_id != id);
-        self.store.remove_reviews_for_id(id);
+        let _ = self.store.remove_reviews_for_id(id);
     }
 
     /// Drain review entries involving either ID (on crossmap confirm/break).
@@ -996,7 +1011,7 @@ impl LiveMatchState {
         self.review_queue.retain(|_, v| {
             !((v.id == a_id || v.candidate_id == a_id) || (v.id == b_id || v.candidate_id == b_id))
         });
-        self.store.remove_reviews_for_pair(a_id, b_id);
+        let _ = self.store.remove_reviews_for_pair(a_id, b_id);
     }
 
     /// Save combined embedding index caches to disk.

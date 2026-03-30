@@ -1,7 +1,7 @@
 pub mod embedding;
 pub mod exact;
 
-use crate::config::MatchField;
+use crate::config::{FuzzyScorer, MatchField, MatchMethod};
 use crate::fuzzy;
 use crate::models::{Classification, FieldScore, MatchResult, Record, Side};
 
@@ -41,7 +41,7 @@ pub fn score_pair(
     let mut total_weight = 0.0_f64; // denominator (excludes synonym)
 
     for mf in match_fields {
-        let score = if mf.method == "bm25" {
+        let score = if mf.method == MatchMethod::Bm25 {
             // BM25 score is precomputed by the pipeline, like embedding scores.
             // No per-field record values — BM25 operates across all text fields.
             precomputed_bm25_score.unwrap_or(0.0)
@@ -55,40 +55,39 @@ pub fn score_pair(
                 .map(|s| s.as_str())
                 .unwrap_or("");
 
-            match mf.method.as_str() {
-                "exact" => exact::score(a_val, b_val),
-                "fuzzy" => {
-                    let scorer = mf.scorer.as_deref().unwrap_or("wratio");
+            match mf.method {
+                MatchMethod::Exact => exact::score(a_val, b_val),
+                MatchMethod::Fuzzy => {
+                    let scorer = mf.scorer.unwrap_or(FuzzyScorer::Wratio);
                     fuzzy::score(scorer, a_val, b_val)
                 }
-                "embedding" => {
+                MatchMethod::Embedding => {
                     // Tuple key avoids a format!() allocation per candidate.
                     precomputed_emb_scores
                         .and_then(|m| m.get(&(mf.field_a.as_str(), mf.field_b.as_str())))
                         .copied()
                         .unwrap_or(0.0)
                 }
-                "numeric" => numeric_score(a_val, b_val),
-                "synonym" => crate::synonym::scorer::score(a_val, b_val, 3, synonym_dictionary),
-                unknown => {
-                    tracing::warn!(method = unknown, "unknown scoring method, returning 0.0");
-                    0.0
+                MatchMethod::Numeric => numeric_score(a_val, b_val),
+                MatchMethod::Synonym => {
+                    crate::synonym::scorer::score(a_val, b_val, 3, synonym_dictionary)
                 }
+                MatchMethod::Bm25 => unreachable!("handled above"),
             }
         };
 
         let fs = FieldScore {
-            field_a: if mf.method == "bm25" {
+            field_a: if mf.method == MatchMethod::Bm25 {
                 "bm25".to_string()
             } else {
                 mf.field_a.clone()
             },
-            field_b: if mf.method == "bm25" {
+            field_b: if mf.method == MatchMethod::Bm25 {
                 "bm25".to_string()
             } else {
                 mf.field_b.clone()
             },
-            method: mf.method.clone(),
+            method: mf.method.as_str().to_string(),
             score,
             weight: mf.weight,
         };
@@ -97,7 +96,7 @@ pub fn score_pair(
         // +0.0 when it doesn't. Its contribution is never diluted by weight
         // normalization — only the base (non-synonym) methods normalize among
         // themselves.
-        if mf.method == "synonym" {
+        if mf.method == MatchMethod::Synonym {
             synonym_bonus += score * mf.weight;
         } else {
             base_weighted_sum += score * mf.weight;
@@ -186,7 +185,7 @@ mod tests {
             MatchField {
                 field_a: "country_code".into(),
                 field_b: "domicile".into(),
-                method: "exact".into(),
+                method: MatchMethod::Exact,
                 scorer: None,
                 weight: 0.20,
                 fields: None,
@@ -194,15 +193,15 @@ mod tests {
             MatchField {
                 field_a: "short_name".into(),
                 field_b: "counterparty_name".into(),
-                method: "fuzzy".into(),
-                scorer: Some("partial_ratio".into()),
+                method: MatchMethod::Fuzzy,
+                scorer: Some(FuzzyScorer::PartialRatio),
                 weight: 0.20,
                 fields: None,
             },
             MatchField {
                 field_a: "lei".into(),
                 field_b: "lei_code".into(),
-                method: "exact".into(),
+                method: MatchMethod::Exact,
                 scorer: None,
                 weight: 0.05,
                 fields: None,
@@ -321,7 +320,7 @@ mod tests {
         let fields = vec![MatchField {
             field_a: "legal_name".into(),
             field_b: "counterparty_name".into(),
-            method: "embedding".into(),
+            method: MatchMethod::Embedding,
             scorer: None,
             weight: 1.0,
             fields: None,
@@ -341,7 +340,7 @@ mod tests {
             MatchField {
                 field_a: "country_code".into(),
                 field_b: "domicile".into(),
-                method: "exact".into(),
+                method: MatchMethod::Exact,
                 scorer: None,
                 weight: 0.7,
                 fields: None,
@@ -349,7 +348,7 @@ mod tests {
             MatchField {
                 field_a: String::new(),
                 field_b: String::new(),
-                method: "bm25".into(),
+                method: MatchMethod::Bm25,
                 scorer: None,
                 weight: 0.3,
                 fields: None,
@@ -380,7 +379,7 @@ mod tests {
         let fields = vec![MatchField {
             field_a: String::new(),
             field_b: String::new(),
-            method: "bm25".into(),
+            method: MatchMethod::Bm25,
             scorer: None,
             weight: 1.0,
             fields: None,

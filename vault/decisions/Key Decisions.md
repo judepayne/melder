@@ -739,4 +739,103 @@ Clients need to distinguish between "bad input" and "not found" responses. A 404
 
 ---
 
+## RecordStore Trait Returns Result<T, StoreError>
+
+**Date:** 2026-03-29
+**Status:** Accepted
+
+**Context:**
+The `RecordStore` trait had 26 methods returning bare types (`Option<Record>`, `bool`, `usize`, `Vec<String>`, `()`). The `SqliteStore` implementation wrapped all SQL operations in `.expect()` calls — 35 total — which would panic on disk errors (full disk, WAL corruption, etc.). This violated the principle that the server should never panic on recoverable errors.
+
+**Decision:**
+All 26 `RecordStore` trait methods now return `Result<T, StoreError>`. The `MemoryStore` implementation wraps every infallible return in `Ok()`. The `SqliteStore` implementation replaces 35 `.expect()` calls with `?` propagation.
+
+**Error Handling Strategy:**
+- **Callers in Result-returning functions** (most of session, pipeline, batch): use `?` propagation
+- **Callers in non-Result contexts** (Debug::fmt, health(), tracing macros): use `.unwrap_or(0)` / `.unwrap_or_default()`
+- **Callers in closures that can't use ?** (.filter_map, rayon::scope): use `.ok().flatten()` or `.unwrap_or_default()`
+
+**Implementation:**
+- New `StoreError` enum in `src/error.rs` with `From<rusqlite::Error>` impl
+- `#[from]` added to both `SessionError` and `MelderError` for seamless `?` propagation through the call chain
+- ~135 call sites updated across 13 files: session/mod.rs (56), state/live.rs (39), batch/engine.rs (15), matching/pipeline.rs (8), matching/candidates.rs (8), state/state.rs (4), cli/ (6), api/handlers.rs (1), bm25/simple.rs (2), synonym/index.rs (5)
+- `ReviewEntry` type alias added to reduce complex type signatures
+
+**Why:**
+This eliminates all potential server panics from SQL errors (disk full, WAL corruption, etc.). Errors are now propagated cleanly to the caller, which can decide whether to retry, return a 500 error, or log and continue. The trait abstraction ensures both MemoryStore and SqliteStore handle errors consistently.
+
+**Related:** [[Key Decisions#SqliteStore SqliteCrossMap for Durable Live Mode]]
+
+---
+
+## A1: Parameter Object for score_pool()
+
+**Date:** 2026-03-30
+**Status:** Accepted
+
+**Context:**
+The `score_pool()` function in `src/matching/pipeline.rs` is the single entry point for all scoring in batch, live upsert, and try-match modes. Over time, it accumulated 14 parameters:
+- Query side: `query_id`, `query_record`, `query_side`, `combined_vec`
+- Pool side: `pool_store`, `pool_side`, `combined_index`, `blocked_ids`, `bm25_candidate_ids`, `bm25_scores_map`, `synonym_candidate_ids`, `synonym_dictionary`
+- Config: `config`, `ann_candidates`, `top_n`
+
+This signature was difficult to extend without breaking all call sites. Adding a new parameter required updating 9 call sites (4 production + 5 test).
+
+**Decision:**
+Introduce two parameter objects: `ScoringQuery` and `ScoringPool`. These group logically related parameters and make the function signature stable for future extensions.
+
+**Implementation:**
+- `ScoringQuery` struct: `id`, `record`, `side`, `combined_vec` (the record being scored)
+- `ScoringPool` struct: `store`, `side`, `combined_index`, `blocked_ids`, `bm25_candidate_ids`, `bm25_scores_map`, `synonym_candidate_ids`, `synonym_dictionary` (the pool being scored against)
+- New signature: `score_pool(query: &ScoringQuery, pool: &ScoringPool, config: &Config, ann_candidates: usize, top_n: usize)`
+- Reduced from 14 parameters to 5
+
+**Changes:**
+- `src/matching/pipeline.rs`: added `ScoringQuery` and `ScoringPool` structs, updated `score_pool()` signature
+- `src/session/mod.rs`: 3 call sites updated (upsert_record_inner, try_match_inner)
+- `src/batch/engine.rs`: 1 call site updated (main scoring loop)
+- 5 test call sites updated
+- Removed `#[allow(clippy::too_many_arguments)]` — no longer needed
+
+**Why:**
+Parameter objects are a standard refactoring pattern for functions with many parameters. They improve readability, make the function signature stable for future extensions, and reduce the cognitive load on callers. Adding a new parameter now requires only updating the struct definition and the function body — call sites are unaffected.
+
+**Related:** [[Constitution#2 One Scoring Pipeline]]
+
+---
+
+## A3: Load-Time Rejection of Unknown Scorer/Method Names
+
+**Date:** 2026-03-30
+**Status:** Accepted
+
+**Context:**
+Previously, invalid scorer and method names were accepted at config load time and only rejected at runtime with a `warn!` fallback. For example, a typo like `method: "fuzzy"` (should be `wratio`) would silently fall back to `wratio` with a warning. This made configs fragile — typos were invisible until the config was actually used.
+
+**Decision:**
+Use Rust enums with serde deserialization to reject invalid values at YAML parse time, before the config is used.
+
+**Implementation:**
+- New `MatchMethod` enum in `src/config/schema.rs`: `Exact`, `Fuzzy`, `Embedding`, `Numeric`, `Bm25`, `Synonym`
+- New `FuzzyScorer` enum in `src/config/schema.rs`: `Wratio`, `PartialRatio`, `TokenSort`, `Ratio`
+- Both use `#[derive(Deserialize)]` with `#[serde(rename_all = "snake_case")]` — invalid values rejected at YAML parse time
+- `FuzzyScorer::TokenSort` has `#[serde(alias = "token_sort_ratio")]` for backward compatibility (fixes the validation/dispatch discrepancy)
+- Changed `MatchField.method` from `String` to `MatchMethod`
+- Changed `MatchField.scorer` from `Option<String>` to `Option<FuzzyScorer>`
+- Same changes for `EnrollMatchField` in `enroll_schema.rs`
+- Removed `VALID_METHODS` and `VALID_SCORERS` constants from `loader.rs`
+- Removed `require_one_of` calls for method/scorer (serde does this now)
+
+**Changes:**
+- ~56 string comparison sites across 10+ files updated to use enum variants
+- Removed runtime `warn!` fallback branches in `scoring/mod.rs` and `fuzzy/mod.rs` — unreachable with enum dispatch
+- `FieldScore.method` stays as `String` (API serialization boundary — no change to JSON output)
+
+**Why:**
+Enums provide compile-time type safety and serde provides load-time validation. Invalid values are caught immediately when the config is parsed, not later when the config is used. This makes configs more robust and error messages clearer. The backward-compatibility alias for `token_sort_ratio` ensures existing configs continue to work.
+
+**Related:** [[Constitution#2 One Scoring Pipeline]]
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

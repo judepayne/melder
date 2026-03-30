@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, params};
 
 use crate::config::{BlockingConfig, BlockingFieldPair};
+use crate::error::StoreError;
 use crate::models::{Record, Side};
 
 use super::RecordStore;
@@ -72,8 +73,8 @@ impl SqliteStore {
 impl std::fmt::Debug for SqliteStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteStore")
-            .field("a_records", &self.len(Side::A))
-            .field("b_records", &self.len(Side::B))
+            .field("a_records", &self.len(Side::A).unwrap_or(0))
+            .field("b_records", &self.len(Side::B).unwrap_or(0))
             .field("reader_pool_size", &self.reader_pool.readers.len())
             .finish()
     }
@@ -285,7 +286,7 @@ fn blocking_values(
 impl RecordStore for SqliteStore {
     // --- Records (reads → reader pool, writes → writer) ---
 
-    fn get(&self, side: Side, id: &str) -> Option<Record> {
+    fn get(&self, side: Side, id: &str) -> Result<Option<Record>, StoreError> {
         let conn = self.reader_pool.acquire();
         let columns = self.columns(side);
         let col_list = if columns.is_empty() {
@@ -305,13 +306,14 @@ impl RecordStore for SqliteStore {
             col_list,
             side_prefix(side)
         );
-        conn.query_row(&sql, params![id], |row| {
-            Ok(record_from_row(columns, row, 1))
-        })
-        .ok()
+        Ok(conn
+            .query_row(&sql, params![id], |row| {
+                Ok(record_from_row(columns, row, 1))
+            })
+            .ok())
     }
 
-    fn insert(&self, side: Side, id: &str, record: &Record) -> Option<Record> {
+    fn insert(&self, side: Side, id: &str, record: &Record) -> Result<Option<Record>, StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         let columns = self.columns(side);
@@ -358,13 +360,12 @@ impl RecordStore for SqliteStore {
             .iter()
             .map(|v| v as &dyn rusqlite::types::ToSql)
             .collect();
-        conn.execute(&sql, param_refs.as_slice())
-            .expect("insert record");
+        conn.execute(&sql, param_refs.as_slice())?;
 
-        old
+        Ok(old)
     }
 
-    fn remove(&self, side: Side, id: &str) -> Option<Record> {
+    fn remove(&self, side: Side, id: &str) -> Result<Option<Record>, StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         let columns = self.columns(side);
@@ -394,39 +395,39 @@ impl RecordStore for SqliteStore {
             conn.execute(
                 &format!("DELETE FROM {}_records WHERE id = ?1", prefix),
                 params![id],
-            )
-            .expect("delete record");
+            )?;
         }
 
-        old
+        Ok(old)
     }
 
-    fn contains(&self, side: Side, id: &str) -> bool {
+    fn contains(&self, side: Side, id: &str) -> Result<bool, StoreError> {
         let conn = self.reader_pool.acquire();
         let sql = format!("SELECT 1 FROM {}_records WHERE id = ?1", side_prefix(side));
-        conn.query_row(&sql, params![id], |_| Ok(())).is_ok()
+        Ok(conn.query_row(&sql, params![id], |_| Ok(())).is_ok())
     }
 
-    fn len(&self, side: Side) -> usize {
+    fn len(&self, side: Side) -> Result<usize, StoreError> {
         let conn = self.reader_pool.acquire();
         let sql = format!("SELECT COUNT(*) FROM {}_records", side_prefix(side));
-        conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
-            .unwrap_or(0) as usize
+        let count = conn.query_row(&sql, [], |row| row.get::<_, i64>(0))?;
+        Ok(count as usize)
     }
 
-    fn ids(&self, side: Side) -> Vec<String> {
+    fn ids(&self, side: Side) -> Result<Vec<String>, StoreError> {
         let conn = self.reader_pool.acquire();
         let sql = format!("SELECT id FROM {}_records", side_prefix(side));
-        let mut stmt = conn.prepare(&sql).expect("prepare ids query");
-        stmt.query_map([], |row| row.get(0))
-            .expect("query ids")
+        let mut stmt = conn.prepare(&sql)?;
+        let ids = stmt
+            .query_map([], |row| row.get(0))?
             .filter_map(|r| r.ok())
-            .collect()
+            .collect();
+        Ok(ids)
     }
 
-    fn get_many(&self, side: Side, ids: &[String]) -> Vec<(String, Record)> {
+    fn get_many(&self, side: Side, ids: &[String]) -> Result<Vec<(String, Record)>, StoreError> {
         if ids.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let conn = self.reader_pool.acquire();
         let prefix = side_prefix(side);
@@ -453,18 +454,18 @@ impl RecordStore for SqliteStore {
                 prefix,
                 placeholders.join(",")
             );
-            let mut stmt = conn.prepare(&sql).expect("prepare get_many query");
+            let mut stmt = conn.prepare(&sql)?;
             let params: Vec<&dyn rusqlite::types::ToSql> = chunk
                 .iter()
                 .map(|id| id as &dyn rusqlite::types::ToSql)
                 .collect();
-            let mut rows = stmt.query(params.as_slice()).expect("execute get_many");
-            while let Some(row) = rows.next().expect("next row") {
-                let id: String = row.get(0).expect("get id");
+            let mut rows = stmt.query(params.as_slice())?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
                 results.push((id, record_from_row(columns, row, 1)));
             }
         }
-        results
+        Ok(results)
     }
 
     fn get_many_fields(
@@ -472,9 +473,9 @@ impl RecordStore for SqliteStore {
         side: Side,
         ids: &[String],
         fields: &[String],
-    ) -> Vec<(String, Record)> {
+    ) -> Result<Vec<(String, Record)>, StoreError> {
         if ids.is_empty() || fields.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let conn = self.reader_pool.acquire();
         let prefix = side_prefix(side);
@@ -495,23 +496,25 @@ impl RecordStore for SqliteStore {
                 prefix,
                 placeholders.join(",")
             );
-            let mut stmt = conn.prepare(&sql).expect("prepare get_many_fields query");
+            let mut stmt = conn.prepare(&sql)?;
             let params: Vec<&dyn rusqlite::types::ToSql> = chunk
                 .iter()
                 .map(|id| id as &dyn rusqlite::types::ToSql)
                 .collect();
-            let mut rows = stmt
-                .query(params.as_slice())
-                .expect("execute get_many_fields");
-            while let Some(row) = rows.next().expect("next row") {
-                let id: String = row.get(0).expect("get id");
+            let mut rows = stmt.query(params.as_slice())?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
                 results.push((id, record_from_row(fields, row, 1)));
             }
         }
-        results
+        Ok(results)
     }
 
-    fn for_each_record(&self, side: Side, f: &mut dyn FnMut(&str, &Record)) {
+    fn for_each_record(
+        &self,
+        side: Side,
+        f: &mut dyn FnMut(&str, &Record),
+    ) -> Result<(), StoreError> {
         let conn = self.reader_pool.acquire();
         let columns = self.columns(side);
         let col_list = if columns.is_empty() {
@@ -527,18 +530,19 @@ impl RecordStore for SqliteStore {
             )
         };
         let sql = format!("SELECT {} FROM {}_records", col_list, side_prefix(side));
-        let mut stmt = conn.prepare(&sql).expect("prepare for_each_record query");
-        let mut rows = stmt.query([]).expect("query for_each_record");
-        while let Some(row) = rows.next().expect("next row") {
-            let id: String = row.get(0).expect("get id");
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
             let record = record_from_row(columns, row, 1);
             f(&id, &record);
         }
+        Ok(())
     }
 
     // --- Blocking (reads → reader pool, writes → writer) ---
 
-    fn blocking_insert(&self, side: Side, id: &str, record: &Record) {
+    fn blocking_insert(&self, side: Side, id: &str, record: &Record) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         let values = blocking_values(record, &self.blocking_config.fields, side);
@@ -550,22 +554,27 @@ impl RecordStore for SqliteStore {
                     prefix
                 ),
                 params![id, field_index as i64, value],
-            )
-            .expect("insert blocking key");
+            )?;
         }
+        Ok(())
     }
 
-    fn blocking_remove(&self, side: Side, id: &str, _record: &Record) {
+    fn blocking_remove(&self, side: Side, id: &str, _record: &Record) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
             &format!("DELETE FROM {}_blocking_keys WHERE record_id = ?1", prefix),
             params![id],
-        )
-        .expect("delete blocking keys");
+        )?;
+        Ok(())
     }
 
-    fn blocking_query(&self, record: &Record, query_side: Side, pool_side: Side) -> Vec<String> {
+    fn blocking_query(
+        &self,
+        record: &Record,
+        query_side: Side,
+        pool_side: Side,
+    ) -> Result<Vec<String>, StoreError> {
         let conn = self.reader_pool.acquire();
         let fields = &self.blocking_config.fields;
         let prefix = side_prefix(pool_side);
@@ -588,12 +597,12 @@ impl RecordStore for SqliteStore {
 
         if query_values.is_empty() {
             let sql = format!("SELECT id FROM {}_records", prefix);
-            let mut stmt = conn.prepare(&sql).expect("prepare all-ids query");
-            return stmt
-                .query_map([], |row| row.get(0))
-                .expect("query all ids")
+            let mut stmt = conn.prepare(&sql)?;
+            let ids = stmt
+                .query_map([], |row| row.get(0))?
                 .filter_map(|r| r.ok())
                 .collect();
+            return Ok(ids);
         }
 
         let conditions: Vec<String> = query_values
@@ -610,21 +619,22 @@ impl RecordStore for SqliteStore {
             query_values.len()
         );
 
-        let mut stmt = conn.prepare(&sql).expect("prepare blocking query");
+        let mut stmt = conn.prepare(&sql)?;
         let param_values: Vec<&dyn rusqlite::types::ToSql> = query_values
             .iter()
             .map(|(_, v)| v as &dyn rusqlite::types::ToSql)
             .collect();
 
-        stmt.query_map(param_values.as_slice(), |row| row.get(0))
-            .expect("execute blocking query")
+        let ids = stmt
+            .query_map(param_values.as_slice(), |row| row.get(0))?
             .filter_map(|r| r.ok())
-            .collect()
+            .collect();
+        Ok(ids)
     }
 
     // --- Unmatched (reads → reader pool, writes → writer) ---
 
-    fn mark_unmatched(&self, side: Side, id: &str) {
+    fn mark_unmatched(&self, side: Side, id: &str) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
@@ -633,49 +643,55 @@ impl RecordStore for SqliteStore {
                 prefix
             ),
             params![id],
-        )
-        .expect("mark unmatched");
+        )?;
+        Ok(())
     }
 
-    fn mark_matched(&self, side: Side, id: &str) {
+    fn mark_matched(&self, side: Side, id: &str) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
             &format!("DELETE FROM {}_unmatched WHERE id = ?1", prefix),
             params![id],
-        )
-        .expect("mark matched");
+        )?;
+        Ok(())
     }
 
-    fn is_unmatched(&self, side: Side, id: &str) -> bool {
+    fn is_unmatched(&self, side: Side, id: &str) -> Result<bool, StoreError> {
         let conn = self.reader_pool.acquire();
         let sql = format!(
             "SELECT 1 FROM {}_unmatched WHERE id = ?1",
             side_prefix(side)
         );
-        conn.query_row(&sql, params![id], |_| Ok(())).is_ok()
+        Ok(conn.query_row(&sql, params![id], |_| Ok(())).is_ok())
     }
 
-    fn unmatched_count(&self, side: Side) -> usize {
+    fn unmatched_count(&self, side: Side) -> Result<usize, StoreError> {
         let conn = self.reader_pool.acquire();
         let sql = format!("SELECT COUNT(*) FROM {}_unmatched", side_prefix(side));
-        conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
-            .unwrap_or(0) as usize
+        let count = conn.query_row(&sql, [], |row| row.get::<_, i64>(0))?;
+        Ok(count as usize)
     }
 
-    fn unmatched_ids(&self, side: Side) -> Vec<String> {
+    fn unmatched_ids(&self, side: Side) -> Result<Vec<String>, StoreError> {
         let conn = self.reader_pool.acquire();
         let sql = format!("SELECT id FROM {}_unmatched ORDER BY id", side_prefix(side));
-        let mut stmt = conn.prepare(&sql).expect("prepare unmatched query");
-        stmt.query_map([], |row| row.get(0))
-            .expect("query unmatched")
+        let mut stmt = conn.prepare(&sql)?;
+        let ids = stmt
+            .query_map([], |row| row.get(0))?
             .filter_map(|r| r.ok())
-            .collect()
+            .collect();
+        Ok(ids)
     }
 
     // --- Common ID index (reads → reader pool, writes → writer) ---
 
-    fn common_id_insert(&self, side: Side, common_id: &str, record_id: &str) {
+    fn common_id_insert(
+        &self,
+        side: Side,
+        common_id: &str,
+        record_id: &str,
+    ) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
@@ -684,35 +700,36 @@ impl RecordStore for SqliteStore {
                 prefix
             ),
             params![common_id, record_id],
-        )
-        .expect("insert common id");
+        )?;
+        Ok(())
     }
 
-    fn common_id_lookup(&self, side: Side, common_id: &str) -> Option<String> {
+    fn common_id_lookup(&self, side: Side, common_id: &str) -> Result<Option<String>, StoreError> {
         let conn = self.reader_pool.acquire();
         let sql = format!(
             "SELECT record_id FROM {}_common_ids WHERE common_id = ?1",
             side_prefix(side)
         );
-        conn.query_row(&sql, params![common_id], |row| row.get(0))
-            .ok()
+        Ok(conn
+            .query_row(&sql, params![common_id], |row| row.get(0))
+            .ok())
     }
 
-    fn common_id_remove(&self, side: Side, common_id: &str) {
+    fn common_id_remove(&self, side: Side, common_id: &str) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = side_prefix(side);
         conn.execute(
             &format!("DELETE FROM {}_common_ids WHERE common_id = ?1", prefix),
             params![common_id],
-        )
-        .expect("remove common id");
+        )?;
+        Ok(())
     }
 
     // --- Exact prefilter ---
 
-    fn build_exact_index(&self, side: Side, field_names: &[String]) {
+    fn build_exact_index(&self, side: Side, field_names: &[String]) -> Result<(), StoreError> {
         if field_names.is_empty() {
-            return;
+            return Ok(());
         }
         let prefix = side_prefix(side);
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
@@ -727,16 +744,21 @@ impl RecordStore for SqliteStore {
             cols.join(", ")
         );
         conn.execute_batch(&sql).ok();
+        Ok(())
     }
 
-    fn exact_lookup(&self, side: Side, kvs: &[(String, String)]) -> Option<String> {
+    fn exact_lookup(
+        &self,
+        side: Side,
+        kvs: &[(String, String)],
+    ) -> Result<Option<String>, StoreError> {
         if kvs.is_empty() {
-            return None;
+            return Ok(None);
         }
         // Any empty value means no match (AND semantics).
         let vals: Vec<&str> = kvs.iter().map(|(_, v)| v.trim()).collect();
         if vals.iter().any(|v| v.is_empty()) {
-            return None;
+            return Ok(None);
         }
 
         let prefix = side_prefix(side);
@@ -771,56 +793,65 @@ impl RecordStore for SqliteStore {
                 })
             }
         };
-        result.ok()
+        Ok(result.ok())
     }
 
     // --- Review persistence (reads → reader pool, writes → writer) ---
 
-    fn persist_review(&self, key: &str, id: &str, side: Side, candidate_id: &str, score: f64) {
+    fn persist_review(
+        &self,
+        key: &str,
+        id: &str,
+        side: Side,
+        candidate_id: &str,
+        score: f64,
+    ) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let side_str = match side {
             Side::A => "a",
             Side::B => "b",
         };
-        let _ = conn.execute(
+        conn.execute(
             "INSERT OR REPLACE INTO reviews (key, id, side, candidate_id, score) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![key, id, side_str, candidate_id, score],
-        );
+        )?;
+        Ok(())
     }
 
-    fn remove_reviews_for_id(&self, id: &str) {
+    fn remove_reviews_for_id(&self, id: &str) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = conn.execute(
+        conn.execute(
             "DELETE FROM reviews WHERE id = ?1 OR candidate_id = ?1",
             params![id],
-        );
+        )?;
+        Ok(())
     }
 
-    fn remove_reviews_for_pair(&self, a_id: &str, b_id: &str) {
+    fn remove_reviews_for_pair(&self, a_id: &str, b_id: &str) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = conn.execute(
+        conn.execute(
             "DELETE FROM reviews WHERE id = ?1 OR candidate_id = ?1 OR id = ?2 OR candidate_id = ?2",
             params![a_id, b_id],
-        );
+        )?;
+        Ok(())
     }
 
-    fn load_reviews(&self) -> Vec<(String, String, Side, String, f64)> {
+    fn load_reviews(&self) -> Result<Vec<super::ReviewEntry>, StoreError> {
         let conn = self.reader_pool.acquire();
-        let mut stmt = conn
-            .prepare("SELECT key, id, side, candidate_id, score FROM reviews")
-            .expect("prepare reviews query");
-        stmt.query_map([], |row| {
-            let key: String = row.get(0)?;
-            let id: String = row.get(1)?;
-            let side_str: String = row.get(2)?;
-            let candidate_id: String = row.get(3)?;
-            let score: f64 = row.get(4)?;
-            let side = if side_str == "a" { Side::A } else { Side::B };
-            Ok((key, id, side, candidate_id, score))
-        })
-        .expect("query reviews")
-        .filter_map(|r| r.ok())
-        .collect()
+        let mut stmt = conn.prepare("SELECT key, id, side, candidate_id, score FROM reviews")?;
+        let reviews = stmt
+            .query_map([], |row| {
+                let key: String = row.get(0)?;
+                let id: String = row.get(1)?;
+                let side_str: String = row.get(2)?;
+                let candidate_id: String = row.get(3)?;
+                let score: f64 = row.get(4)?;
+                let side = if side_str == "a" { Side::A } else { Side::B };
+                Ok((key, id, side, candidate_id, score))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(reviews)
     }
 }
 
@@ -983,8 +1014,8 @@ mod tests {
     fn insert_and_get() {
         let store = make_store();
         let rec = make_record(&[("name", "Alice")]);
-        assert!(store.insert(Side::A, "1", &rec).is_none());
-        let got = store.get(Side::A, "1").unwrap();
+        assert!(store.insert(Side::A, "1", &rec).unwrap().is_none());
+        let got = store.get(Side::A, "1").unwrap().unwrap();
         assert_eq!(got.get("name").unwrap(), "Alice");
     }
 
@@ -993,42 +1024,50 @@ mod tests {
         let store = make_store();
         let r1 = make_record(&[("name", "Alice")]);
         let r2 = make_record(&[("name", "Bob")]);
-        assert!(store.insert(Side::A, "1", &r1).is_none());
-        let old = store.insert(Side::A, "1", &r2).unwrap();
+        assert!(store.insert(Side::A, "1", &r1).unwrap().is_none());
+        let old = store.insert(Side::A, "1", &r2).unwrap().unwrap();
         assert_eq!(old.get("name").unwrap(), "Alice");
-        assert_eq!(store.get(Side::A, "1").unwrap().get("name").unwrap(), "Bob");
+        assert_eq!(
+            store
+                .get(Side::A, "1")
+                .unwrap()
+                .unwrap()
+                .get("name")
+                .unwrap(),
+            "Bob"
+        );
     }
 
     #[test]
     fn remove_returns_old() {
         let store = make_store();
         let rec = make_record(&[("name", "Alice")]);
-        store.insert(Side::A, "1", &rec);
-        let old = store.remove(Side::A, "1").unwrap();
+        store.insert(Side::A, "1", &rec).unwrap();
+        let old = store.remove(Side::A, "1").unwrap().unwrap();
         assert_eq!(old.get("name").unwrap(), "Alice");
-        assert!(store.get(Side::A, "1").is_none());
-        assert!(store.remove(Side::A, "1").is_none());
+        assert!(store.get(Side::A, "1").unwrap().is_none());
+        assert!(store.remove(Side::A, "1").unwrap().is_none());
     }
 
     #[test]
     fn contains_and_len() {
         let store = make_store();
-        assert!(!store.contains(Side::A, "1"));
-        assert_eq!(store.len(Side::A), 0);
+        assert!(!store.contains(Side::A, "1").unwrap());
+        assert_eq!(store.len(Side::A).unwrap(), 0);
         let rec = make_record(&[("name", "Alice")]);
-        store.insert(Side::A, "1", &rec);
-        assert!(store.contains(Side::A, "1"));
-        assert_eq!(store.len(Side::A), 1);
+        store.insert(Side::A, "1", &rec).unwrap();
+        assert!(store.contains(Side::A, "1").unwrap());
+        assert_eq!(store.len(Side::A).unwrap(), 1);
     }
 
     #[test]
     fn ids_returns_all() {
         let store = make_store();
         let rec = make_record(&[("name", "x")]);
-        store.insert(Side::A, "2", &rec);
-        store.insert(Side::A, "1", &rec);
-        store.insert(Side::A, "3", &rec);
-        let mut ids = store.ids(Side::A);
+        store.insert(Side::A, "2", &rec).unwrap();
+        store.insert(Side::A, "1", &rec).unwrap();
+        store.insert(Side::A, "3", &rec).unwrap();
+        let mut ids = store.ids(Side::A).unwrap();
         ids.sort();
         assert_eq!(ids, vec!["1", "2", "3"]);
     }
@@ -1037,11 +1076,11 @@ mod tests {
     fn sides_are_independent() {
         let store = make_store();
         let rec = make_record(&[("name", "x")]);
-        store.insert(Side::A, "1", &rec);
-        assert!(store.contains(Side::A, "1"));
-        assert!(!store.contains(Side::B, "1"));
-        assert_eq!(store.len(Side::A), 1);
-        assert_eq!(store.len(Side::B), 0);
+        store.insert(Side::A, "1", &rec).unwrap();
+        assert!(store.contains(Side::A, "1").unwrap());
+        assert!(!store.contains(Side::B, "1").unwrap());
+        assert_eq!(store.len(Side::A).unwrap(), 1);
+        assert_eq!(store.len(Side::B).unwrap(), 0);
     }
 
     #[test]
@@ -1049,9 +1088,9 @@ mod tests {
         // SqliteStore doesn't have from_records, so test insert + blocking
         let store = make_store();
         let rec = make_record(&[("name", "Alice"), ("country_a", "US")]);
-        store.insert(Side::A, "1", &rec);
-        store.blocking_insert(Side::A, "1", &rec);
-        assert_eq!(store.len(Side::A), 1);
+        store.insert(Side::A, "1", &rec).unwrap();
+        store.blocking_insert(Side::A, "1", &rec).unwrap();
+        assert_eq!(store.len(Side::A).unwrap(), 1);
     }
 
     #[test]
@@ -1075,20 +1114,20 @@ mod tests {
         // Insert A-side records with blocking keys
         let r1 = make_record(&[("name", "Alice"), ("country_a", "US")]);
         let r2 = make_record(&[("name", "Bob"), ("country_a", "UK")]);
-        store.insert(Side::A, "1", &r1);
-        store.blocking_insert(Side::A, "1", &r1);
-        store.insert(Side::A, "2", &r2);
-        store.blocking_insert(Side::A, "2", &r2);
+        store.insert(Side::A, "1", &r1).unwrap();
+        store.blocking_insert(Side::A, "1", &r1).unwrap();
+        store.insert(Side::A, "2", &r2).unwrap();
+        store.blocking_insert(Side::A, "2", &r2).unwrap();
 
         // Query from B-side: country_b = "us" should match record 1
         let query = make_record(&[("country_b", "US")]);
-        let results = store.blocking_query(&query, Side::B, Side::A);
+        let results = store.blocking_query(&query, Side::B, Side::A).unwrap();
         assert_eq!(results.len(), 1, "should find 1 match for US");
         assert_eq!(results[0], "1");
 
         // Remove blocking keys for record 1
-        store.blocking_remove(Side::A, "1", &r1);
-        let results2 = store.blocking_query(&query, Side::B, Side::A);
+        store.blocking_remove(Side::A, "1", &r1).unwrap();
+        let results2 = store.blocking_query(&query, Side::B, Side::A).unwrap();
         assert!(results2.is_empty(), "should find 0 after remove");
 
         std::mem::forget(dir);
@@ -1097,35 +1136,35 @@ mod tests {
     #[test]
     fn unmatched_lifecycle() {
         let store = make_store();
-        assert_eq!(store.unmatched_count(Side::A), 0);
-        store.mark_unmatched(Side::A, "1");
-        store.mark_unmatched(Side::A, "2");
-        assert_eq!(store.unmatched_count(Side::A), 2);
-        assert!(store.is_unmatched(Side::A, "1"));
-        store.mark_matched(Side::A, "1");
-        assert!(!store.is_unmatched(Side::A, "1"));
-        assert_eq!(store.unmatched_count(Side::A), 1);
+        assert_eq!(store.unmatched_count(Side::A).unwrap(), 0);
+        store.mark_unmatched(Side::A, "1").unwrap();
+        store.mark_unmatched(Side::A, "2").unwrap();
+        assert_eq!(store.unmatched_count(Side::A).unwrap(), 2);
+        assert!(store.is_unmatched(Side::A, "1").unwrap());
+        store.mark_matched(Side::A, "1").unwrap();
+        assert!(!store.is_unmatched(Side::A, "1").unwrap());
+        assert_eq!(store.unmatched_count(Side::A).unwrap(), 1);
     }
 
     #[test]
     fn unmatched_ids_sorted() {
         let store = make_store();
-        store.mark_unmatched(Side::A, "c");
-        store.mark_unmatched(Side::A, "a");
-        store.mark_unmatched(Side::A, "b");
-        assert_eq!(store.unmatched_ids(Side::A), vec!["a", "b", "c"]);
+        store.mark_unmatched(Side::A, "c").unwrap();
+        store.mark_unmatched(Side::A, "a").unwrap();
+        store.mark_unmatched(Side::A, "b").unwrap();
+        assert_eq!(store.unmatched_ids(Side::A).unwrap(), vec!["a", "b", "c"]);
     }
 
     #[test]
     fn common_id_lifecycle() {
         let store = make_store();
-        store.common_id_insert(Side::A, "CID-1", "REC-1");
+        store.common_id_insert(Side::A, "CID-1", "REC-1").unwrap();
         assert_eq!(
-            store.common_id_lookup(Side::A, "CID-1"),
+            store.common_id_lookup(Side::A, "CID-1").unwrap(),
             Some("REC-1".to_string())
         );
-        store.common_id_remove(Side::A, "CID-1");
-        assert!(store.common_id_lookup(Side::A, "CID-1").is_none());
+        store.common_id_remove(Side::A, "CID-1").unwrap();
+        assert!(store.common_id_lookup(Side::A, "CID-1").unwrap().is_none());
     }
 
     #[test]
@@ -1145,22 +1184,27 @@ mod tests {
         {
             let (store, _, _conn) = open_sqlite(&path, &bc, None, &cols, &[]).unwrap();
             let rec = make_record(&[("name", "Alice")]);
-            store.insert(Side::A, "1", &rec);
-            store.mark_unmatched(Side::A, "1");
-            store.common_id_insert(Side::A, "CID-1", "1");
+            store.insert(Side::A, "1", &rec).unwrap();
+            store.mark_unmatched(Side::A, "1").unwrap();
+            store.common_id_insert(Side::A, "CID-1", "1").unwrap();
         }
 
         // Reopen and verify
         {
             let (store, _, _conn) = open_sqlite(&path, &bc, None, &cols, &[]).unwrap();
-            assert_eq!(store.len(Side::A), 1);
+            assert_eq!(store.len(Side::A).unwrap(), 1);
             assert_eq!(
-                store.get(Side::A, "1").unwrap().get("name").unwrap(),
+                store
+                    .get(Side::A, "1")
+                    .unwrap()
+                    .unwrap()
+                    .get("name")
+                    .unwrap(),
                 "Alice"
             );
-            assert!(store.is_unmatched(Side::A, "1"));
+            assert!(store.is_unmatched(Side::A, "1").unwrap());
             assert_eq!(
-                store.common_id_lookup(Side::A, "CID-1"),
+                store.common_id_lookup(Side::A, "CID-1").unwrap(),
                 Some("1".to_string())
             );
         }

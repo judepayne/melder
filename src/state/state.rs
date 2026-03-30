@@ -39,7 +39,7 @@ pub struct MatchState {
 impl std::fmt::Debug for MatchState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MatchState")
-            .field("records_a", &self.store.len(Side::A))
+            .field("records_a", &self.store.len(Side::A).unwrap_or(0))
             .field(
                 "combined_index_a",
                 &self.combined_index_a.as_ref().map(|i| i.len()),
@@ -47,7 +47,7 @@ impl std::fmt::Debug for MatchState {
             .field(
                 "records_b",
                 &if self.ids_b.is_some() {
-                    Some(self.store.len(Side::B))
+                    Some(self.store.len(Side::B).unwrap_or(0))
                 } else {
                     None
                 },
@@ -155,9 +155,9 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
     eprintln!(
         "State loaded in {:.1}s (A: {} records{})",
         total.as_secs_f64(),
-        store.len(Side::A),
+        store.len(Side::A).unwrap_or(0),
         if ids_b.is_some() {
-            format!(", B: {} records", store.len(Side::B))
+            format!(", B: {} records", store.len(Side::B).unwrap_or(0))
         } else {
             String::new()
         },

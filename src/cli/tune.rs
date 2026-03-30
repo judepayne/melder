@@ -468,7 +468,7 @@ fn print_overlap_record(
     // Line 3: actual field values from B record (query)
     if let Some(st) = store {
         let query_side = mr.query_side;
-        if let Some(b_rec) = st.get(query_side, &mr.query_id) {
+        if let Ok(Some(b_rec)) = st.get(query_side, &mr.query_id) {
             print!("      query:  ");
             let mut first = true;
             for fs in &mr.field_scores {
@@ -501,7 +501,7 @@ fn print_overlap_record(
             Side::A => Side::B,
             Side::B => Side::A,
         };
-        if let Some(a_rec) = st.get(match_side, &mr.matched_id) {
+        if let Ok(Some(a_rec)) = st.get(match_side, &mr.matched_id) {
             print!("      match:  ");
             let mut first = true;
             for fs in &mr.field_scores {
@@ -668,7 +668,7 @@ fn run_pipeline(
     };
 
     for (id, rec) in &b_records_map {
-        state.store.insert(Side::B, id, rec);
+        let _ = state.store.insert(Side::B, id, rec);
     }
     drop(b_records_map);
 

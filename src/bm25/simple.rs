@@ -308,7 +308,7 @@ impl SimpleBm25 {
     /// Bulk-build from a `RecordStore`.
     pub fn build(store: &dyn RecordStore, side: Side, fields: &[Bm25FieldPair]) -> Self {
         let idx = Self::new(fields, side);
-        store.for_each_record(side, &mut |id, record| {
+        let _ = store.for_each_record(side, &mut |id, record| {
             idx.upsert(id, record);
         });
         idx
@@ -970,7 +970,7 @@ mod tests {
     fn make_store(data: Vec<(&str, Record)>, side: Side) -> MemoryStore {
         let store = MemoryStore::new(&BlockingConfig::default());
         for (id, rec) in data {
-            store.insert(side, id, &rec);
+            store.insert(side, id, &rec).unwrap();
         }
         store
     }

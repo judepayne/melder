@@ -33,7 +33,7 @@ use texthash::compute_text_hash;
 use tracing::{info, warn};
 
 use crate::config::Config;
-use crate::config::schema::BlockingConfig;
+use crate::config::schema::{BlockingConfig, MatchMethod};
 use crate::encoder::EncoderPool;
 use crate::error::MelderError;
 use crate::models::{Record, Side};
@@ -281,7 +281,7 @@ pub fn embedding_field_specs(config: &Config) -> Vec<(String, String, f64)> {
     config
         .match_fields
         .iter()
-        .filter(|mf| mf.method == "embedding")
+        .filter(|mf| mf.method == MatchMethod::Embedding)
         .map(|mf| (mf.field_a.clone(), mf.field_b.clone(), mf.weight))
         .collect()
 }

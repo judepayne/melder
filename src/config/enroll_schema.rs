@@ -23,10 +23,11 @@ pub struct EnrollMatchField {
     /// Empty for `method: bm25` when using inline `fields`.
     #[serde(default)]
     pub field: String,
-    /// "exact" | "fuzzy" | "embedding" | "numeric" | "bm25" | "synonym"
-    pub method: String,
+    /// Scoring method. Invalid values are rejected at YAML parse time.
+    pub method: super::schema::MatchMethod,
+    /// Fuzzy scorer variant. Only meaningful when `method == Fuzzy`.
     #[serde(default)]
-    pub scorer: Option<String>,
+    pub scorer: Option<super::schema::FuzzyScorer>,
     pub weight: f64,
     /// For `method: bm25` only — which fields the BM25 index covers.
     #[serde(default)]
