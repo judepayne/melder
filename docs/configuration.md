@@ -50,13 +50,18 @@ cross_map:
 # Used by any match field with method: embedding. Model weights (~90 MB) are
 # downloaded automatically from HuggingFace on first run.
 embeddings:
-  model: all-MiniLM-L6-v2          # HuggingFace model name or local ONNX path.
-                                    #   Supported models and their dimensions:
-                                    #     all-MiniLM-L6-v2   — 384-dim, fast, good default
-                                    #     all-MiniLM-L12-v2  — 384-dim, slightly better, ~2x slower
-                                    #     bge-small-en-v1.5  — 384-dim, English-optimised
-                                    #     bge-base-en-v1.5   — 768-dim, higher capacity
-                                    #     bge-large-en-v1.5  — 1024-dim, highest quality, ~4x slower
+  model: all-MiniLM-L6-v2          # Model name, local path, or "builtin".
+                                    #   Resolution order:
+                                    #     "builtin"          — use the model compiled into the
+                                    #                          binary (requires --features builtin-model)
+                                    #     Local path          — ./models/my-model or /abs/path/model.onnx
+                                    #     user/repo           — downloaded from HuggingFace Hub
+                                    #     Named model         — fastembed built-in:
+                                    #       all-MiniLM-L6-v2   — 384-dim, fast, good default
+                                    #       all-MiniLM-L12-v2  — 384-dim, slightly better, ~2x slower
+                                    #       bge-small-en-v1.5  — 384-dim, English-optimised
+                                    #       bge-base-en-v1.5   — 768-dim, higher capacity
+                                    #       bge-large-en-v1.5  — 1024-dim, highest quality, ~4x slower
   a_cache_dir: cache/a             # directory for the A-side combined embedding index.
                                     #   Created automatically on first run; loaded on subsequent
                                     #   runs to skip re-encoding.

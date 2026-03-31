@@ -28,8 +28,8 @@
 //! each request but increases throughput by amortising ONNX overhead.
 //! Sequential workloads (c=1) should leave this disabled (default: 0).
 
-use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 

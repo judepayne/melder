@@ -7,14 +7,17 @@
 ```bash
 cargo build --release
 
-# With HNSW vector index + BM25 (recommended for production)
-cargo build --release --features usearch,bm25
+# With HNSW vector index (recommended for production)
+cargo build --release --features usearch
 
 # With Parquet support
-cargo build --release --features parquet-format
+cargo build --release --features usearch,parquet-format
+
+# With builtin embedding model (self-contained binary, no network needed at runtime)
+cargo build --release --features usearch,builtin-model
 
 # All features together
-cargo build --release --features usearch,bm25,parquet-format
+cargo build --release --features usearch,parquet-format,builtin-model
 ```
 
 The binary is produced at `./target/release/meld` (Windows:
@@ -26,22 +29,19 @@ directly.
 | Feature | What it does |
 |---------|-------------|
 | `usearch` | Enables the HNSW approximate nearest-neighbour graph index for O(log N) candidate search instead of the flat backend's O(N) brute-force scan. Up to 5x faster at scale. |
-| `bm25` | Adds IDF-weighted token matching via a Tantivy index. Suppresses common-token noise from untrained embedding models (e.g. "Holdings", "International"). Can be used as a scoring term alongside embedding, or as the sole candidate filter when no embedding fields are configured (fast start, no ONNX model, no vector index). |
 | `parquet-format` | Enables reading Parquet files as input datasets. All column types (string, integer, float, boolean) are converted to strings internally. Snappy-compressed Parquet files are supported. |
+| `builtin-model` | Compiles an embedding model into the binary so no network access or model download is needed at runtime. Set `model: builtin` in config to use it. See [Builtin model](#builtin-model) below. |
 
 > [!TIP]
-> On macOS and Linux, always build with `--features usearch,bm25`. The
+> On macOS and Linux, always build with `--features usearch`. The
 > usearch backend uses an HNSW graph index for O(log N) candidate
-> search instead of the flat backend's O(N) brute-force scan. BM25
-> adds IDF-weighted token matching that compensates for common-token
-> noise in untrained embedding models. At 100k records, usearch is the
-> difference between a 12-second warm run and a 4-minute one — see
-> [Performance](performance.md) for full numbers.
+> search instead of the flat backend's O(N) brute-force scan. At 100k
+> records, usearch is the difference between a 12-second warm run and a
+> 4-minute one — see [Performance](performance.md) for full numbers.
 >
 > On Windows, `usearch` currently has a known MSVC build bug (AVX-512
 > FP16 intrinsics and a missing POSIX constant) and must be omitted.
-> The flat backend works correctly — just slower at scale. BM25 works
-> on all platforms.
+> The flat backend works correctly — just slower at scale.
 
 ## Model download
 
@@ -49,12 +49,50 @@ The ONNX model is downloaded automatically on first run to
 `~/.cache/fastembed/` on Linux/macOS or `%LOCALAPPDATA%\fastembed\` on
 Windows.
 
+## Builtin model
+
+Build with `--features builtin-model` to compile an embedding model
+directly into the binary. The resulting binary needs no network access
+and no model files on disk — ideal for air-gapped, containerised, or
+edge deployments.
+
+```bash
+# Default: embeds themelder/arctic-embed-xs-entity-resolution from HuggingFace
+cargo build --release --features usearch,builtin-model
+
+# Custom model from HuggingFace
+MELDER_BUILTIN_MODEL=sentence-transformers/all-MiniLM-L6-v2 \
+    cargo build --release --features usearch,builtin-model
+
+# Custom model from a local directory
+MELDER_BUILTIN_MODEL=./models/my-fine-tuned-model \
+    cargo build --release --features usearch,builtin-model
+```
+
+The model directory must contain the standard HuggingFace ONNX export
+files: `model.onnx`, `tokenizer.json`, `config.json`,
+`special_tokens_map.json`, and `tokenizer_config.json`.
+
+To use the builtin model at runtime, set `model: builtin` in your
+config:
+
+```yaml
+embeddings:
+  model: builtin
+```
+
+The binary size increases by the size of the ONNX model (~90 MB for
+arctic-embed-xs). The model is downloaded once at build time and cached
+in the Cargo build directory — subsequent builds reuse the cached files.
+
 ## Environment variables
 
-- `RUST_LOG=melder=debug` — enable debug logging
-- `RUST_LOG=melder=info` — default log level
-- `RAYON_NUM_THREADS` — batch scoring thread count (defaults to logical CPU count if unset)
-- `--log-format json` — JSON structured log output (for production)
+| Variable | Purpose |
+|----------|---------|
+| `RUST_LOG=melder=debug` | Enable debug logging |
+| `RUST_LOG=melder=info` | Default log level |
+| `RAYON_NUM_THREADS` | Batch scoring thread count (defaults to logical CPU count) |
+| `MELDER_BUILTIN_MODEL` | Build-time only. HuggingFace repo ID or local path for the model to embed when `--features builtin-model` is enabled. Defaults to `themelder/arctic-embed-xs-entity-resolution`. |
 
 ## Windows
 

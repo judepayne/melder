@@ -1867,3 +1867,157 @@ BM25 only — overlap zone 0.52–0.78 (0.26 score-space wide):
 5. **Synonym contributes more than expected at this weight split.** Compared to the earlier run without synonym (overlap 0.0246), adding synonym at 0.20 nearly halved the overlap (0.0097). The synonym index resolves acronym cases that both BM25 and embeddings struggle with.
 
 6. **For production:** The composite pipeline (embedding + BM25 + synonym) is the right choice when review queue quality matters — fewer false matches for human reviewers. BM25-only is appropriate for high-throughput bulk deduplication where a slightly noisier review queue is acceptable.
+
+## Experiment 14: INT8 quantization of Arctic-embed-xs R22
+
+Can the production model (Arctic-embed-xs R22, 86 MB fp32) be quantized to INT8 (22 MB) without accuracy loss? A 3.9x reduction in model size would significantly reduce the binary size for builtin-model deployments (125 MB → ~60 MB) and could improve inference throughput on architectures with native INT8 support.
+
+The quantized model was produced by ONNX Runtime dynamic quantization (`quantize_dynamic`, `QUInt8` weight type). No calibration data required — weights are quantized at export time, activations quantized on the fly at inference.
+
+```yaml
+status: done
+model: experiment 9 R22 (Arctic-embed-xs, 22M) — INT8 quantized
+result: not viable for production
+```
+
+**Configuration:** Identical to experiment 12 (the production configuration):
+- name_emb=0.30, addr_emb=0.20, BM25=0.50, synonym=0.20
+- auto_match=0.88, review_floor=0.60
+
+**Command:**
+```bash
+python benchmarks/accuracy/science/run_experiment14.py
+```
+
+### Results
+
+| Metric | Exp 12 (fp32) | Exp 14 (INT8) | Delta |
+|---|---|---|---|
+| Model size | 86 MB | 22 MB | -74% |
+| Auto-matched | 5,826 | 6,071 | +245 |
+| Auto FP (unmatched) | 0 | 0 | 0 |
+| Review | 1,214 | 997 | -217 |
+| Review FP (unmatched) | 0 | 26 | **+26** |
+| Missed matches | 1 | 0 | -1 |
+| Combined recall | 99.98% | 100.00% | +0.02% |
+| **Overlap coefficient** | **0.0000** | **0.0132** | **+0.0132** |
+| Scoring throughput | — | 8,376 rec/s | — |
+
+### Score distributions
+
+**Experiment 12 (fp32) — overlap zone (0.01 buckets):**
+```
+  0.52 ░
+  0.53 ░
+  0.54 ░
+  0.55 ░
+  0.56 
+  0.57 █░
+  0.58 ░
+  0.59 █░
+  0.60 
+  0.61 █
+  0.62 █
+  0.63 █
+  0.64 ██
+  0.65 ██
+  0.66 █
+  0.67 ██
+  0.68 ██
+  0.69 ███
+  0.70 ████
+  0.71 ███
+  0.72 ████
+  0.73 ██████
+  0.74 █████████
+  0.75 ███████████
+  0.76 ███████████████
+```
+
+The unmatched population (░) dies out at 0.58. Clean gap to matched (█) starting at 0.61.
+
+**Experiment 14 (INT8) — overlap zone (0.01 buckets):**
+```
+  0.52 ░░░
+  0.53 ░░░
+  0.54 ░░
+  0.55 ░
+  0.56 ░░
+  0.57 ░
+  0.58 ░
+  0.59 ░
+  0.60 ░
+  0.61 ░
+  0.62 ░
+  0.63 ░
+  0.64 █░
+  0.65 █░
+  0.66 █░
+  0.67 █
+  0.68 █░
+  0.69 █
+  0.70 ██
+  0.71 █
+  0.72 ██░
+  0.73 ███
+  0.74 ███░
+  0.75 █████
+  0.76 █████
+```
+
+The unmatched population (░) now extends to 0.74. The two populations are interleaved across the 0.64–0.74 band.
+
+### Analysis of the overlap zone (0.63–0.75)
+
+**14 unmatched records** (should not be in review):
+
+All 14 are the military/diplomatic address template pattern — the same failure mode that experiment 12 eliminated with BM25 50%:
+- PSC/Box/APO addresses (6 records)
+- Unit/Box/DPO addresses (7 records)
+- USS/FPO address (1 record)
+
+All share common legal suffixes in the name ("LLC Capital", "and Sons Capital", "PLC NV") and structurally identical address templates with different box numbers. With fp32 embeddings, BM25's IDF weighting pushed these below the review floor. With INT8 embeddings, the slightly noisier vectors give these non-matches ~0.10–0.15 higher composite scores, placing them above the review floor.
+
+| # | Score | A name | B name | Address pattern |
+|---|---|---|---|---|
+| 1 | 0.750 | Henderson LLC Capital | Smith LLC Capital | PSC/Box/APO |
+| 2 | 0.721 | Garcia and Sons Capital | Higgins and Sons Capital | Unit/Box/DPO |
+| 3 | 0.689 | Stewart-Martin SAS | Martin LLC Capital | Unit/Box/DPO |
+| ... | ... | ... | ... | ... |
+| 14 | 0.637 | Cummings Ltd Ltd | King Ltd & Partners | PSC/Box/APO |
+
+**82 matched records** (correctly in review):
+
+All 82 are acronym cases — B-side name is a 2-3 letter acronym ("FLG", "MI", "EC", "SS") matched against a full A-side name ("Foster Ltd GmbH", "Matthews Inc NV"). These score low because no embedding model can resolve acronyms; they are entirely dependent on address similarity and BM25.
+
+These records were in the same zone in experiment 12 — the quantization did not affect them. The problem is exclusively on the non-match side.
+
+### Synonym weight boost (0.20 → 0.35)
+
+A second run with synonym weight increased to 0.35 was tested to see if boosting the acronym signal could lift the matched population out of the overlap zone.
+
+Result: 23 more acronym cases promoted to auto-match (6,094 vs 6,071), but the 26 unmatched records in review were unchanged. This is expected — the synonym scorer only fires when it finds an acronym/abbreviation to resolve. For the false matches ("Henderson LLC Capital" vs "Smith LLC Capital"), there is no acronym relationship, so the synonym scorer contributes zero and its weight is excluded from normalisation. The overlap zone is unaffected.
+
+### Observations
+
+1. **INT8 quantization degrades the embedding discriminator in the overlap zone.** The fp32 model gave BM25 enough separation to push template-address non-matches below the review floor. The INT8 model's slightly noisier vectors erode that margin, placing 26 non-matches back into review. The overlap coefficient went from 0.0000 to 0.0132.
+
+2. **The model is too small to quantize gracefully.** Arctic-embed-xs has only 22M parameters across 6 transformer layers. With so few parameters, each weight carries significant information — quantizing from 32-bit to 8-bit loses precision that the model has no redundancy to absorb. Larger models (110M+ params) have enough capacity that quantization noise is distributed across many more parameters and the impact on any single comparison is smaller.
+
+3. **The failure mode is specific and predictable.** Only the template-address non-matches are affected — the same 14 entity pairs that experiments 10-12 worked to suppress. The quantization doesn't cause new failure modes; it simply weakens the embedding signal enough that BM25's IDF correction can no longer fully compensate.
+
+4. **Compensating with other scorers doesn't help.** Boosting synonym weight doesn't affect non-matches (synonym doesn't fire for them). BM25 weight is already at 50%. The only lever that could fix this is a better embedding — which is what the fp32 model provides.
+
+5. **Recall is not affected.** Combined recall actually improved slightly (100.00% vs 99.98%) — the quantized model found the one match that fp32 missed. The problem is exclusively population separation, not recall.
+
+### Conclusion
+
+**INT8 quantization of Arctic-embed-xs R22 is not viable for production.** The 3.9x model compression (86 → 22 MB) comes at the cost of losing the zero-overlap property that experiments 10-12 achieved. The fp32 model remains the production recommendation.
+
+For deployments where binary size matters (builtin-model), the 86 MB fp32 model adds ~88 MB to the binary. This is acceptable for most deployment scenarios. If further compression is needed, a better path would be quantizing a larger model (e.g. BGE-base at 110M params) that has enough redundancy to absorb quantization noise — though this would require re-running the full training loop.
+
+| Configuration | Overlap | Combined recall | Review FPs (unmatched) | Model size |
+|---|---|---|---|---|
+| Exp 12: fp32 + 50% BM25 + synonym 0.20 | **0.0000** | 99.98% | **0** | 86 MB |
+| Exp 14: INT8 + 50% BM25 + synonym 0.20 | 0.0132 | 100.00% | 26 | 22 MB |
+| Exp 14: INT8 + 50% BM25 + synonym 0.35 | 0.0132 | 100.00% | 26 | 22 MB |

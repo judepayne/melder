@@ -5,19 +5,23 @@
 //! state. Model weights are memory-mapped by the OS, so multiple instances
 //! share the same physical pages.
 //!
-//! Supports two model sources:
+//! Supports three model sources:
 //! - Named models (e.g. `"all-MiniLM-L6-v2"`) — downloaded by fastembed on
 //!   first use and cached on disk.
 //! - Local paths (e.g. `"./models/round_1"` or `"/abs/path/model.onnx"`) —
 //!   loaded directly from disk using fastembed's `UserDefinedEmbeddingModel`
 //!   API. The directory must contain `model.onnx` plus the four standard
 //!   HuggingFace tokenizer files.
+//! - Builtin model (`"builtin"`) — compiled into the binary when built with
+//!   `--features builtin-model`. Zero network access, zero disk dependency.
+//!   The model is specified at build time via `MELDER_BUILTIN_MODEL` env var
+//!   (defaults to `themelder/arctic-embed-xs-entity-resolution`).
 
 pub mod coordinator;
 
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use fastembed::{
     EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
@@ -99,6 +103,28 @@ fn model_dim(model: &EmbeddingModel) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Builtin model (compiled into the binary)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "builtin-model")]
+mod builtin {
+    pub const MODEL_ONNX: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/builtin_model/model.onnx"));
+    pub const TOKENIZER: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/builtin_model/tokenizer.json"));
+    pub const CONFIG: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/builtin_model/config.json"));
+    pub const SPECIAL_TOKENS: &[u8] = include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/builtin_model/special_tokens_map.json"
+    ));
+    pub const TOKENIZER_CONFIG: &[u8] = include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/builtin_model/tokenizer_config.json"
+    ));
+}
+
+// ---------------------------------------------------------------------------
 // Local path detection and loading
 // ---------------------------------------------------------------------------
 
@@ -125,7 +151,14 @@ fn is_local_model_path(model_name: &str) -> bool {
 /// parse required. Returns `None` if the file is absent or the key is missing.
 fn detect_dim_from_config(config_path: impl AsRef<Path>) -> Option<usize> {
     let bytes = std::fs::read(config_path).ok()?;
-    let text = std::str::from_utf8(&bytes).ok()?;
+    detect_dim_from_bytes(&bytes)
+}
+
+/// Read the embedding output dimension from `config.json` bytes.
+///
+/// Looks for `"hidden_size": N` with a minimal text scan.
+fn detect_dim_from_bytes(bytes: &[u8]) -> Option<usize> {
+    let text = std::str::from_utf8(bytes).ok()?;
     let key = "\"hidden_size\"";
     let pos = text.find(key)?;
     let after = text[pos + key.len()..].trim_start();
@@ -164,10 +197,13 @@ impl std::fmt::Debug for EncoderPool {
 impl EncoderPool {
     /// Create a new encoder pool.
     ///
-    /// `model_name` accepts either a HuggingFace model name (e.g.
-    /// `"all-MiniLM-L6-v2"`) or a local path to a directory or `.onnx` file
-    /// produced by `optimum-cli export onnx`. Local paths are detected
-    /// automatically — see [`is_local_model_path`].
+    /// `model_name` resolution order:
+    /// 1. `"builtin"` — load from bytes compiled into the binary (requires
+    ///    `--features builtin-model`).
+    /// 2. Local path (absolute, `./`, `../`, `.onnx` suffix, or resolves on
+    ///    disk) — loaded directly from the filesystem.
+    /// 3. HuggingFace repo ID (contains `/`) — downloaded from the Hub.
+    /// 4. Named fastembed model (e.g. `"all-MiniLM-L6-v2"`).
     ///
     /// For named models: `pool_size` instances are created; the first run may
     /// download the model (~90 MB fp32 / ~23 MB quantised).
@@ -175,11 +211,27 @@ impl EncoderPool {
     /// For local paths: `quantized` is ignored (use the `.onnx` file you
     /// want directly); `pool_size` instances share the loaded bytes.
     pub fn new(model_name: &str, pool_size: usize, quantized: bool) -> Result<Self, EncoderError> {
+        // 1. Builtin model — compiled into the binary.
+        if model_name == "builtin" {
+            #[cfg(feature = "builtin-model")]
+            {
+                return Self::new_from_builtin(pool_size);
+            }
+            #[cfg(not(feature = "builtin-model"))]
+            {
+                return Err(EncoderError::ModelNotFound {
+                    model: "builtin model requested but binary was not built with \
+                            --features builtin-model"
+                        .to_string(),
+                });
+            }
+        }
+
+        // 2. Local filesystem path.
         if is_local_model_path(model_name) {
             return Self::new_from_local_path(model_name, pool_size);
         }
-        // If the name looks like a HuggingFace repo ID (contains `/` but
-        // isn't a local path), download it from the Hub and load locally.
+        // 3. HuggingFace repo ID (contains `/` but isn't a local path).
         if model_name.contains('/') {
             return Self::new_from_hub(model_name, pool_size);
         }
@@ -243,6 +295,48 @@ impl EncoderPool {
         info!(path = %dir.display(), "model cached");
 
         Self::new_from_local_path(dir.to_str().unwrap_or(repo_id), pool_size)
+    }
+
+    /// Build an `EncoderPool` from model bytes embedded in the binary.
+    ///
+    /// The model files are compiled in via `include_bytes!()` when the
+    /// `builtin-model` feature is enabled. No filesystem or network access.
+    #[cfg(feature = "builtin-model")]
+    fn new_from_builtin(pool_size: usize) -> Result<Self, EncoderError> {
+        info!("loading builtin embedding model");
+
+        let tokenizer_files = TokenizerFiles {
+            tokenizer_file: builtin::TOKENIZER.to_vec(),
+            config_file: builtin::CONFIG.to_vec(),
+            special_tokens_map_file: builtin::SPECIAL_TOKENS.to_vec(),
+            tokenizer_config_file: builtin::TOKENIZER_CONFIG.to_vec(),
+        };
+
+        // Detect dim from the embedded config.json.
+        let dim = detect_dim_from_bytes(builtin::CONFIG).unwrap_or(384);
+
+        let user_model =
+            UserDefinedEmbeddingModel::new(builtin::MODEL_ONNX.to_vec(), tokenizer_files)
+                .with_pooling(Pooling::Mean);
+
+        let pool_size = pool_size.max(1);
+        let mut encoders = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            let te = TextEmbedding::try_new_from_user_defined(
+                user_model.clone(),
+                InitOptionsUserDefined::new(),
+            )
+            .map_err(|e| EncoderError::Inference(e.to_string()))?;
+            encoders.push(Mutex::new(te));
+        }
+
+        info!(dim, pool_size, "builtin model loaded");
+
+        Ok(Self {
+            encoders,
+            dim,
+            next_fallback: AtomicUsize::new(0),
+        })
     }
 
     /// Build an `EncoderPool` from a local directory or `.onnx` file.
