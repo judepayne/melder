@@ -35,5 +35,6 @@ __pycache__/
 .DS_Store
 
 TODO.md
+melder-train.md
 *.d2
 *~

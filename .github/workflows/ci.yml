@@ -61,3 +61,162 @@ jobs:
 
       - name: cargo clippy --all-features
         run: cargo clippy --all-features -- -D warnings
+
+  perf:
+    name: Performance regression check
+    needs: test
+    runs-on: ubuntu-latest
+
+    # ----------------------------------------------------------------
+    # Minimum throughput thresholds (step i: set to 0 to observe CI
+    # hardware numbers; step ii: set to 50% of observed baseline).
+    # ----------------------------------------------------------------
+    env:
+      BATCH_MIN_THROUGHPUT: "0"    # records/sec — set after first run
+      LIVE_MIN_THROUGHPUT: "0"     # req/s — set after first run
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: perf-build
+
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/huggingface
+          key: fastembed-model-${{ runner.os }}
+
+      - name: Install Python dependencies for data generation
+        run: pip install faker pandas pyarrow
+
+      - name: Generate 10k benchmark data
+        run: python3 benchmarks/data/generate.py --size 10000 --out benchmarks/data
+
+      - name: Build release binary
+        run: cargo build --release --features usearch
+
+      # ----------------------------------------------------------------
+      # Batch benchmark (cold, 10k x 10k, usearch)
+      # ----------------------------------------------------------------
+      - name: Prepare batch benchmark dirs
+        run: |
+          rm -rf benchmarks/batch/10kx10k_usearch/cold/cache
+          rm -rf benchmarks/batch/10kx10k_usearch/cold/output
+          mkdir -p benchmarks/batch/10kx10k_usearch/cold/cache
+          mkdir -p benchmarks/batch/10kx10k_usearch/cold/output
+          rm -f benchmarks/batch/10kx10k_usearch/cold/crossmap.csv
+
+      - name: Run batch benchmark
+        id: batch
+        run: |
+          OUTPUT=$(./target/release/meld run \
+            --config benchmarks/batch/10kx10k_usearch/cold/config.yaml \
+            --verbose 2>&1)
+          echo "$OUTPUT"
+
+          # Parse: "  Throughput:   12345 records/sec"
+          THROUGHPUT=$(echo "$OUTPUT" | grep -oP 'Throughput:\s+\K[0-9]+')
+          echo "throughput=${THROUGHPUT}" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "====================================="
+          echo "BATCH THROUGHPUT: ${THROUGHPUT} rec/s"
+          echo "====================================="
+
+      - name: Check batch throughput threshold
+        run: |
+          ACTUAL=${{ steps.batch.outputs.throughput }}
+          MIN=${{ env.BATCH_MIN_THROUGHPUT }}
+          echo "Batch throughput: ${ACTUAL} rec/s (minimum: ${MIN})"
+          if [ "$MIN" -gt 0 ] && [ "$ACTUAL" -lt "$MIN" ]; then
+            echo "FAIL: Batch throughput ${ACTUAL} is below minimum ${MIN}"
+            exit 1
+          fi
+
+      # ----------------------------------------------------------------
+      # Live benchmark (cold, 10k x 10k, 3k inject, usearch)
+      # ----------------------------------------------------------------
+      - name: Prepare live benchmark dirs
+        run: |
+          rm -rf benchmarks/live/10kx10k_inject3k_usearch/cold/cache
+          rm -rf benchmarks/live/10kx10k_inject3k_usearch/cold/output
+          mkdir -p benchmarks/live/10kx10k_inject3k_usearch/cold/cache
+          mkdir -p benchmarks/live/10kx10k_inject3k_usearch/cold/output
+          rm -rf benchmarks/live/10kx10k_inject3k_usearch/cold/wal
+          mkdir -p benchmarks/live/10kx10k_inject3k_usearch/cold/wal
+          rm -f benchmarks/live/10kx10k_inject3k_usearch/cold/crossmap.csv
+
+      - name: Run live benchmark
+        id: live
+        run: |
+          # Start server in background
+          ./target/release/meld serve \
+            --config benchmarks/live/10kx10k_inject3k_usearch/cold/config.yaml \
+            --port 8090 \
+            > /tmp/meld_perf_server.log 2>&1 &
+          SERVER_PID=$!
+
+          # Wait for health endpoint
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:8090/api/v1/health > /dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! curl -sf http://localhost:8090/api/v1/health > /dev/null 2>&1; then
+            echo "Server failed to start"
+            cat /tmp/meld_perf_server.log
+            kill $SERVER_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Server ready."
+
+          # Run injection test
+          OUTPUT=$(python3 benchmarks/scripts/live_concurrent_test.py \
+            --no-serve \
+            --port 8090 \
+            --iterations 3000 \
+            --concurrency 10 \
+            --a-path benchmarks/data/dataset_a_10k.csv \
+            --b-path benchmarks/data/dataset_b_10k.csv 2>&1)
+          echo "$OUTPUT"
+
+          # Stop server
+          kill $SERVER_PID 2>/dev/null || true
+          wait $SERVER_PID 2>/dev/null || true
+
+          # Parse: "Total: 3,000 requests in 12.34s  →  243.1 req/s"
+          THROUGHPUT=$(echo "$OUTPUT" | grep -oP '→\s+\K[0-9]+(\.[0-9]+)?' | head -1)
+          # Truncate to integer for threshold comparison
+          THROUGHPUT_INT=$(echo "$THROUGHPUT" | cut -d. -f1)
+          echo "throughput=${THROUGHPUT_INT}" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "====================================="
+          echo "LIVE THROUGHPUT: ${THROUGHPUT} req/s"
+          echo "====================================="
+
+      - name: Check live throughput threshold
+        run: |
+          ACTUAL=${{ steps.live.outputs.throughput }}
+          MIN=${{ env.LIVE_MIN_THROUGHPUT }}
+          echo "Live throughput: ${ACTUAL} req/s (minimum: ${MIN})"
+          if [ "$MIN" -gt 0 ] && [ "$ACTUAL" -lt "$MIN" ]; then
+            echo "FAIL: Live throughput ${ACTUAL} is below minimum ${MIN}"
+            exit 1
+          fi
+
+      - name: Performance summary
+        if: always()
+        run: |
+          echo ""
+          echo "========================================="
+          echo "  PERFORMANCE REGRESSION CHECK SUMMARY"
+          echo "========================================="
+          echo "  Batch: ${{ steps.batch.outputs.throughput }} rec/s (min: ${{ env.BATCH_MIN_THROUGHPUT }})"
+          echo "  Live:  ${{ steps.live.outputs.throughput }} req/s (min: ${{ env.LIVE_MIN_THROUGHPUT }})"
+          echo "========================================="
