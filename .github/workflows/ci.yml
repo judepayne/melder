@@ -68,12 +68,12 @@ jobs:
     runs-on: ubuntu-latest
 
     # ----------------------------------------------------------------
-    # Minimum throughput thresholds (step i: set to 0 to observe CI
-    # hardware numbers; step ii: set to 50% of observed baseline).
+    # Minimum throughput thresholds — 70% of observed baseline on
+    # GitHub ubuntu-latest (2026-03-31: batch=12984, live=535).
     # ----------------------------------------------------------------
     env:
-      BATCH_MIN_THROUGHPUT: "0"    # records/sec — set after first run
-      LIVE_MIN_THROUGHPUT: "0"     # req/s — set after first run
+      BATCH_MIN_THROUGHPUT: "9000"    # records/sec (70% of 12984)
+      LIVE_MIN_THROUGHPUT: "375"      # req/s (70% of 535)
 
     steps:
       - uses: actions/checkout@v6
