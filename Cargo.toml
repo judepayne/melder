@@ -25,6 +25,9 @@ rapidfuzz = "0.5"
 # Embedding inference
 fastembed = "5"
 
+# ONNX Runtime (direct dep for GPU execution provider types; version must match fastembed's pin)
+ort = { version = "=2.0.0-rc.11", default-features = false, optional = true }
+
 # Async runtime + HTTP server
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
@@ -61,11 +64,15 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 anyhow = "1"
 thiserror = "2"
 
+# POSIX FFI (used for stderr suppression on macOS with gpu-encode)
+libc = "0.2"
+
 [features]
 parquet-format = ["dep:parquet", "dep:arrow"]
 usearch = ["dep:usearch"]
 simd = ["dep:simsimd"]
 builtin-model = []
+gpu-encode = ["dep:ort", "fastembed/ort-load-dynamic"]
 
 
 [build-dependencies]

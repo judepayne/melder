@@ -342,6 +342,17 @@ performance:
                                     #   Higher values improve recall at the cost of slower search.
                                     #   0 = usearch default. Typical range: 16-256.
                                     #   Must be >= ann_candidates. No effect with the flat backend.
+  encoder_device: gpu               # optional (default: not set = CPU) — ONNX encoding device.
+                                    #   "cpu"  — use CPU for encoding (default behaviour).
+                                    #   "gpu"  — use CoreML (macOS) or CUDA (Linux).
+                                    #   Requires building with --features gpu-encode.
+                                    #   Batch mode only — ignored in live mode with a warning.
+  encoder_batch_size: 256           # optional — number of texts per ONNX inference call.
+                                    #   Default: 64 (CPU), 256 (GPU).
+                                    #   GPU benefits from larger batches to amortise kernel launch
+                                    #   overhead. Values above 256 risk GPU memory pressure at
+                                    #   higher pool sizes.
+                                    #   Batch mode only.
 ```
 
 ### Performance field reference
@@ -445,6 +456,53 @@ searching for the top-k nearest neighbours. Higher values improve recall
 At 1M+ records, tuning this upward can meaningfully improve recall. No
 effect with the `flat` backend. Changing this value does **not**
 invalidate caches — it only affects search-time behaviour.
+
+**`encoder_device`** — ONNX encoding device for batch mode. When set
+to `"gpu"`, embedding inference is offloaded to CoreML (macOS) or
+CUDA (Linux). Requires building with `--features gpu-encode`. See
+[Building: GPU encoding](building.md#gpu-encoding) for platform setup.
+
+Ignored in live mode (`meld serve`) — GPU encoding does not improve
+single-record latency because the kernel launch overhead exceeds the
+compute savings at batch size 1. If set in a live-mode config, the melder
+prints a warning and falls back to CPU.
+
+> [!TIP]
+> **Tuning GPU encoding for maximum throughput.** GPU encoding
+> benefits from multiple concurrent ONNX sessions to keep the GPU fed
+> while CPU cores handle tokenisation. The optimal settings depend on
+> your hardware:
+>
+> - **`encoder_pool_size`**: set to ~60% of your CPU core count. Each
+>   session needs CPU time for tokenisation and data marshalling; too
+>   many sessions starve the CPU, too few leave the GPU idle.
+>
+> - **`encoder_batch_size`**: 256 is optimal for most configurations.
+>   Larger batches (512) cause GPU memory pressure when combined with
+>   many concurrent sessions. Smaller batches (64) underutilise the GPU.
+>
+> - Avoid a `pool_size x batch_size` product above ~3,000. Beyond that,
+>   concurrent GPU memory usage degrades throughput sharply.
+>
+> Benchmarked on M1 Ultra (20 cores, 64 GPU cores, 64 GB) with
+> all-MiniLM-L6-v2 on a 1M x 1M dataset:
+>
+> | pool | batch | rec/s | vs CPU baseline |
+> |-----:|------:|------:|:---:|
+> | 12 | 256 | **1,828** | **8.7x** |
+> | 8 | 256 | 1,677 | 8.0x |
+> | 16 | 128 | 1,718 | 8.2x |
+> | 12 | 512 | 765 | 3.6x (memory pressure) |
+> | 16 | 512 | 473 | 2.3x (memory pressure) |
+>
+> When `encoder_device` is `"gpu"` and `encoder_pool_size` is not set,
+> the melder defaults to ~60% of available CPU cores and logs the chosen
+> value.
+
+**`encoder_batch_size`** — number of texts sent per ONNX inference
+call during batch encoding. Default: 64 for CPU (tuned for Apple
+Silicon cache locality), 256 for GPU (amortises kernel launch overhead).
+Batch mode only.
 
 Batch scoring thread count is controlled by the `RAYON_NUM_THREADS`
 environment variable (defaults to logical CPU count if unset).

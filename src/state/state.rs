@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::config::Config;
 use crate::data;
-use crate::encoder::EncoderPool;
+use crate::encoder::{EncoderOptions, EncoderPool};
 use crate::error::MelderError;
 use crate::models::Side;
 use crate::store::RecordStore;
@@ -65,16 +65,37 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
     let start = Instant::now();
 
     // 1. Create encoder pool
-    let pool_size = config.performance.encoder_pool_size.unwrap_or(1);
+    let gpu = config.performance.encoder_device.as_deref() == Some("gpu");
+    let pool_size = config.performance.encoder_pool_size.unwrap_or_else(|| {
+        if gpu {
+            // ~60% of CPU cores keeps GPU fed without starving tokenisation.
+            let cores = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            let default = ((cores as f64 * 0.6).round() as usize).max(2);
+            eprintln!(
+                "NOTE: encoder_pool_size not set — defaulting to {} for GPU \
+                 (~60% of {} cores). Set explicitly to tune.",
+                default, cores
+            );
+            default
+        } else {
+            1
+        }
+    });
     eprintln!(
-        "Initializing encoder pool (model={}, pool_size={})...",
-        config.embeddings.model, pool_size
-    );
-    let encoder_pool = EncoderPool::new(
-        &config.embeddings.model,
+        "Initializing encoder pool (model={}, pool_size={}, device={})...",
+        config.embeddings.model,
         pool_size,
-        config.performance.quantized,
-    )
+        if gpu { "gpu" } else { "cpu" }
+    );
+    let encoder_pool = EncoderPool::new(EncoderOptions {
+        model_name: config.embeddings.model.clone(),
+        pool_size,
+        quantized: config.performance.quantized,
+        gpu,
+        encode_batch_size: config.performance.encoder_batch_size,
+    })
     .map_err(MelderError::Encoder)?;
     eprintln!(
         "Encoder ready (dim={}), took {:.1}s",

@@ -20,6 +20,9 @@ const VALID_VECTOR_QUANTIZATIONS: &[&str] = &["f32", "f16", "bf16"];
 /// Valid vector index load modes.
 const VALID_VECTOR_INDEX_MODES: &[&str] = &["load", "mmap"];
 
+/// Valid encoder device targets.
+const VALID_ENCODER_DEVICES: &[&str] = &["cpu", "gpu"];
+
 /// Valid data formats.
 const VALID_FORMATS: &[&str] = &["csv", "parquet", "jsonl"];
 
@@ -404,6 +407,27 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         });
     }
 
+    // 29b. encoder_device
+    if let Some(ref dev) = cfg.performance.encoder_device {
+        require_one_of(dev, VALID_ENCODER_DEVICES, "performance.encoder_device")?;
+        if dev == "gpu" && !cfg!(feature = "gpu-encode") {
+            return Err(ConfigError::InvalidValue {
+                field: "performance.encoder_device".into(),
+                message: "GPU encoding requires building with --features gpu-encode".into(),
+            });
+        }
+    }
+
+    // 29c. encoder_batch_size
+    if let Some(bs) = cfg.performance.encoder_batch_size
+        && bs < 1
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "performance.encoder_batch_size".into(),
+            message: "must be >= 1".into(),
+        });
+    }
+
     // 29. vector_backend
     require_one_of(&cfg.vector_backend, VALID_VECTOR_BACKENDS, "vector_backend")?;
     if cfg.vector_backend == "usearch" && !cfg!(feature = "usearch") {
@@ -645,6 +669,27 @@ fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
         });
     }
 
+    // 10b. encoder_device
+    if let Some(ref dev) = cfg.performance.encoder_device {
+        require_one_of(dev, VALID_ENCODER_DEVICES, "performance.encoder_device")?;
+        if dev == "gpu" && !cfg!(feature = "gpu-encode") {
+            return Err(ConfigError::InvalidValue {
+                field: "performance.encoder_device".into(),
+                message: "GPU encoding requires building with --features gpu-encode".into(),
+            });
+        }
+    }
+
+    // 10c. encoder_batch_size
+    if let Some(bs) = cfg.performance.encoder_batch_size
+        && bs < 1
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "performance.encoder_batch_size".into(),
+            message: "must be >= 1".into(),
+        });
+    }
+
     // 11. vector_backend
     require_one_of(&cfg.vector_backend, VALID_VECTOR_BACKENDS, "vector_backend")?;
     if cfg.vector_backend == "usearch" && !cfg!(feature = "usearch") {
@@ -794,9 +839,14 @@ fn derive_bm25_fields(cfg: &mut Config) {
 /// When the user omits `synonym_fields`, derive them from `method: synonym`
 /// entries in `match_fields` with default generators (acronym, min_length=3).
 /// When set explicitly, the user controls generator options.
+///
+/// Warns when an explicit `synonym_fields` section is redundant — i.e. it
+/// matches exactly what auto-derivation would produce. This nudges users
+/// toward the simpler config form.
 fn derive_synonym_fields(cfg: &mut Config) {
     if !cfg.synonym_fields.is_empty() {
-        // User provided explicit synonym_fields — keep them.
+        // User provided explicit synonym_fields — check if redundant.
+        warn_if_synonym_fields_redundant(cfg);
         return;
     }
     cfg.synonym_fields = cfg
@@ -809,6 +859,45 @@ fn derive_synonym_fields(cfg: &mut Config) {
             generators: super::schema::default_synonym_generators(),
         })
         .collect();
+}
+
+/// Warn when an explicit `synonym_fields` section duplicates what would be
+/// auto-derived from `method: synonym` entries in `match_fields`.
+fn warn_if_synonym_fields_redundant(cfg: &Config) {
+    let derived: Vec<(&str, &str)> = cfg
+        .match_fields
+        .iter()
+        .filter(|mf| mf.method == MatchMethod::Synonym)
+        .map(|mf| (mf.field_a.as_str(), mf.field_b.as_str()))
+        .collect();
+
+    if cfg.synonym_fields.len() != derived.len() {
+        return; // Different count — not redundant.
+    }
+
+    let all_default_generators = cfg.synonym_fields.iter().all(|sf| {
+        sf.generators.len() == 1
+            && sf.generators[0].gen_type == "acronym"
+            && sf.generators[0].min_length == 3
+    });
+
+    if !all_default_generators {
+        return; // Custom generators — user needs the explicit section.
+    }
+
+    let explicit: Vec<(&str, &str)> = cfg
+        .synonym_fields
+        .iter()
+        .map(|sf| (sf.field_a.as_str(), sf.field_b.as_str()))
+        .collect();
+
+    if explicit == derived {
+        eprintln!(
+            "NOTE: synonym_fields section is redundant — it duplicates what would be \
+             auto-derived from the method: synonym entry in match_fields. \
+             You can safely remove the synonym_fields section."
+        );
+    }
 }
 
 fn derive_required_fields(cfg: &mut Config) {
@@ -2185,6 +2274,70 @@ performance:
     }
 
     #[test]
+    fn synonym_fields_auto_derived_from_match_fields() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: name_a, field_b: name_b, method: embedding, weight: 1.0 }
+  - { field_a: name_a, field_b: name_b, method: synonym, weight: 0.2 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        derive_bm25_fields(&mut cfg);
+        derive_synonym_fields(&mut cfg);
+
+        assert_eq!(cfg.synonym_fields.len(), 1);
+        assert_eq!(cfg.synonym_fields[0].field_a, "name_a");
+        assert_eq!(cfg.synonym_fields[0].field_b, "name_b");
+        assert_eq!(cfg.synonym_fields[0].generators.len(), 1);
+        assert_eq!(cfg.synonym_fields[0].generators[0].gen_type, "acronym");
+        assert_eq!(cfg.synonym_fields[0].generators[0].min_length, 3);
+    }
+
+    #[test]
+    fn synonym_fields_explicit_with_custom_generators_kept() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+synonym_fields:
+  - field_a: name_a
+    field_b: name_b
+    generators:
+      - { type: acronym, min_length: 4 }
+match_fields:
+  - { field_a: name_a, field_b: name_b, method: embedding, weight: 1.0 }
+  - { field_a: name_a, field_b: name_b, method: synonym, weight: 0.2 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { results_path: r, review_path: rv, unmatched_path: u }
+"#;
+        let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        derive_bm25_fields(&mut cfg);
+        derive_synonym_fields(&mut cfg);
+
+        // Explicit with custom min_length should be kept, not overridden
+        assert_eq!(cfg.synonym_fields.len(), 1);
+        assert_eq!(cfg.synonym_fields[0].generators[0].min_length, 4);
+    }
+
+    #[test]
     fn bm25_commit_batch_size_explicit_value() {
         let yaml = r#"
 job:
@@ -2206,5 +2359,142 @@ bm25_commit_batch_size: 100
             Some(100),
             "bm25_commit_batch_size should deserialize explicit value"
         );
+    }
+
+    // --- encoder_device / encoder_batch_size tests ---
+
+    #[test]
+    fn encoder_device_cpu_accepted() {
+        let yaml = format!(
+            "{}\nperformance:\n  encoder_device: cpu\n",
+            base_yaml_with_match_fields(
+                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
+            )
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(cfg.performance.encoder_device.as_deref(), Some("cpu"));
+    }
+
+    #[test]
+    fn encoder_device_invalid_rejected() {
+        let yaml = format!(
+            "{}\nperformance:\n  encoder_device: tpu\n",
+            base_yaml_with_match_fields(
+                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
+            )
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("encoder_device"),
+            "expected encoder_device error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn encoder_device_gpu_without_feature() {
+        let yaml = format!(
+            "{}\nperformance:\n  encoder_device: gpu\n",
+            base_yaml_with_match_fields(
+                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
+            )
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        if cfg!(feature = "gpu-encode") {
+            validate(&cfg).unwrap();
+        } else {
+            let err = validate(&cfg).unwrap_err();
+            assert!(
+                err.to_string().contains("--features gpu-encode"),
+                "expected gpu-encode feature error, got: {}",
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn encoder_batch_size_accepted() {
+        let yaml = format!(
+            "{}\nperformance:\n  encoder_batch_size: 128\n",
+            base_yaml_with_match_fields(
+                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
+            )
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(cfg.performance.encoder_batch_size, Some(128));
+    }
+
+    #[test]
+    fn encoder_device_defaults_to_none() {
+        let yaml = base_yaml_with_match_fields(
+            "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }",
+        );
+        let cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(cfg.performance.encoder_device, None);
+        assert_eq!(cfg.performance.encoder_batch_size, None);
+    }
+
+    #[test]
+    fn encoder_batch_size_zero_rejected() {
+        let yaml = format!(
+            "{}\nperformance:\n  encoder_batch_size: 0\n",
+            base_yaml_with_match_fields(
+                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
+            )
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("encoder_batch_size"),
+            "expected encoder_batch_size error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn encoder_device_gpu_accepted_with_feature() {
+        // When gpu-encode feature IS compiled in, gpu should be accepted
+        let yaml = format!(
+            "{}\nperformance:\n  encoder_device: gpu\n",
+            base_yaml_with_match_fields(
+                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
+            )
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        if cfg!(feature = "gpu-encode") {
+            validate(&cfg).unwrap();
+        }
+        // If feature is not present, the other test covers rejection
+    }
+
+    #[test]
+    fn encoder_device_cpu_with_batch_size_accepted() {
+        let yaml = format!(
+            "{}\nperformance:\n  encoder_device: cpu\n  encoder_batch_size: 32\n",
+            base_yaml_with_match_fields(
+                "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
+            )
+        );
+        let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        normalise_blocking(&mut cfg);
+        apply_defaults(&mut cfg);
+        validate(&cfg).unwrap();
+        assert_eq!(cfg.performance.encoder_device.as_deref(), Some("cpu"));
+        assert_eq!(cfg.performance.encoder_batch_size, Some(32));
     }
 }

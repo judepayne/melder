@@ -38,6 +38,52 @@ crossmappings.
 - The `usearch` backend is an in-process HNSW vector database with
   O(log N) search. Use for any real-world workload.
 
+## GPU-accelerated batch encoding
+
+Embedding encoding is the dominant cost in cold batch runs — at 1M x 1M
+with the production scoring config, encoding accounts for ~72% of total
+wall time. The `gpu-encode` feature offloads ONNX inference to the GPU
+(CoreML on macOS, CUDA on Linux), significantly reducing encoding time.
+
+Encoding also uses parallelised ONNX sessions via Rayon — multiple
+encoder pool slots are exercised concurrently, regardless of whether
+the device is CPU or GPU.
+
+### Encoding throughput (M1 Ultra, 20 cores, 64 GPU cores, 64 GB)
+
+1M x 1M cold batch, all-MiniLM-L6-v2, production scoring config
+(name_emb 0.30, addr_emb 0.20, BM25 0.50, synonym 0.20):
+
+| Configuration | Encoding rate | vs baseline | Projected 1M x 1M encoding time |
+|---|---:|:---:|---:|
+| Sequential CPU (pool=1) | 210 rec/s | 1.0x | ~79 min |
+| Parallel CPU (pool=8) | 369 rec/s | 1.8x | ~45 min |
+| **GPU CoreML (pool=12, batch=256)** | **1,828 rec/s** | **8.7x** | **~18 min** |
+
+### Optimal GPU settings by pool size
+
+Sweep results at 1M scale on M1 Ultra. The sweet spot is
+`pool_size: 12, encoder_batch_size: 256`:
+
+| pool | batch | rec/s | Notes |
+|-----:|------:|------:|-------|
+| 12 | 256 | **1,828** | Best overall |
+| 16 | 128 | 1,718 | |
+| 8 | 256 | 1,677 | |
+| 12 | 128 | 1,590 | |
+| 4 | 256 | 1,152 | GPU underutilised |
+| 12 | 512 | 765 | GPU memory pressure |
+| 16 | 512 | 473 | GPU memory pressure |
+
+**General tuning rule:** set `encoder_pool_size` to ~60% of your CPU
+core count and `encoder_batch_size` to 256. Avoid `pool_size x
+batch_size` products above ~3,000 — beyond that, concurrent GPU memory
+usage causes throughput to collapse.
+
+See [Building: GPU encoding](building.md#gpu-encoding) for setup
+instructions and [Configuration](configuration.md#performance-field-reference)
+for the full field reference.
+
 ## BM25-only batch mode
 
 BM25 + fuzzy + exact scoring, `country_code` blocking. The BM25-only

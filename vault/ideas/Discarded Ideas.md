@@ -70,6 +70,14 @@ Approaches that were considered and rejected. Recorded here to prevent re-attemp
 
 ---
 
+## LSH-Based Blocking
+
+**What**: Use Locality-Sensitive Hashing (MinHash or SimHash) to create a second fuzzy blocking dimension that further subdivides exact-field blocks without losing recall on hard matches (abbreviations, acronyms).
+
+**Why discarded**: Fundamental trade-off between recall and false positive rate. To catch hard matches with Jaccard/cosine similarity < 0.10 (the cases that justify a full scoring pipeline), LSH must be tuned so loosely that 30–76% of unrelated pairs still become candidates, defeating the purpose of blocking. MinHash with R=1 requires 36–56 bands for 95–99% recall on Jaccard 0.08 pairs; SimHash with P=8 bits requires 7 hash tables for 95% recall on cosine 0.65 pairs. Both produce overlapping blocks incompatible with per-block ANN/BM25 indices. The existing architecture (exact-field blocking + ANN + BM25) is superior because it operates on full vector/token representations rather than lossy hashes. See [[LSH Blocking]] for full mathematical analysis.
+
+---
+
 ## OR Blocking Mode
 
 **What**: Support `blocking.operator: "or"` to allow records matching ANY blocking field (not all) to be candidates.

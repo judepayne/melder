@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-03-30 (A1–A6 architectural refactors complete; 397 tests pass, zero clippy warnings)
+Last updated: 2026-04-02 (GPU batch encoding + parallel encode_and_upsert; 404 tests pass, zero clippy warnings)
 
 ---
 
@@ -34,13 +34,14 @@ Binary name: `meld`. Crate name: `melder`. Single Rust crate, no workspace.
 
 ```bash
 cargo build --release --features usearch                  # standard production build
-cargo build --release --features usearch,parquet-format   # all features
+cargo build --release --features usearch,gpu-encode       # production + GPU encoding
+cargo build --release --features usearch,parquet-format   # all I/O features
 cargo build                                               # debug
 cargo test --all-features         # REQUIRED before committing
 cargo fmt -- --check && cargo clippy --all-features       # lint gate
 ```
 
-Feature flags: `usearch` (HNSW ANN), `parquet-format` (Parquet I/O), `simd` (SimSIMD hardware-accelerated dot product). BM25 is now always compiled (no feature gate — uses lock-free `SimpleBm25`, no Tantivy dependency). Mode enum: `Match` (two-sided matching) or `Enroll` (single-pool entity resolution).
+Feature flags: `usearch` (HNSW ANN), `parquet-format` (Parquet I/O), `simd` (SimSIMD hardware-accelerated dot product), `gpu-encode` (CoreML/CUDA GPU encoding for batch mode). BM25 is always compiled (no feature gate — uses lock-free `SimpleBm25`, no Tantivy dependency). Mode enum: `Match` (two-sided matching) or `Enroll` (single-pool entity resolution).
 
 ---
 
@@ -262,7 +263,9 @@ bm25_fields: [ {field_a, field_b} ]    # optional; derived from fuzzy/embedding 
 thresholds: { auto_match: 0.85, review_floor: 0.60 }
 
 performance:
-   encoder_pool_size: 4
+   encoder_pool_size: 4                 # GPU default: ~60% of CPU cores
+   encoder_device: cpu | gpu            # gpu requires --features gpu-encode; batch mode only
+   encoder_batch_size: 64 | 256         # auto: 64 (CPU), 256 (GPU)
    vector_index_mode: load | mmap       # mmap = read-only, batch only, OS-paged
    vector_quantization: f32 | f16 | bf16
    encoder_batch_wait_ms: 0             # >0 only at c≥20 with large models
@@ -382,7 +385,7 @@ Each benchmark subdirectory typically contains: `config.yaml` (melder config), `
 
 **Async**: `main.rs` synchronous; `tokio::runtime::Runtime::new()` created manually. CPU-bound → `tokio::task::spawn_blocking`. Axum handlers return `axum::response::Response`. State via `Arc<Session>` + `Router::with_state()`.
 
-**Feature flags**: `#[cfg(feature = "...")]` on modules, functions, tests, and match arms. Currently: `usearch`, `parquet-format`, `simd`. BM25 is always compiled (no feature gate).
+**Feature flags**: `#[cfg(feature = "...")]` on modules, functions, tests, and match arms. Currently: `usearch`, `parquet-format`, `simd`, `gpu-encode` (CoreML/CUDA encoding). BM25 is always compiled (no feature gate).
 
 **Tests**: `#[cfg(test)] mod tests` at bottom of each source file. No integration test directory — everything in-crate. Table-driven for scorers `(input, expected)`. `make_` helpers. `assert!` with messages. `tempfile::tempdir()` for filesystem. `macro_rules!` for generic test suites. No external test frameworks.
 
@@ -509,6 +512,10 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 
 **Medium-severity fixes from code review (14 items)** — (1) Synonym additive bonus was diluted by weight normalization when non-synonym weights != 1.0 — separated base score and synonym bonus so normalization only applies to base. (2-3) SqliteCrossMap::add() and claim() now use rusqlite Transaction API for automatic rollback on panic, and claim() is wrapped in a proper transaction. (4) Field names validated at config load time with safe-identifier regex to prevent SQL injection via column names. (5) All RwLock .unwrap() calls in flat.rs and usearch_backend.rs replaced with .unwrap_or_else(|e| e.into_inner()) per project convention (~46 sites). (6) WAL flush() now calls sync_all() after BufWriter flush to fsync to stable storage. (7) numeric_score now uses relative tolerance (1e-9) instead of f64::EPSILON for large values. (8) BM25 field scores no longer silently lost in batch CSV — header and lookup now use 'bm25' key matching. (9) derive_required_fields now includes exact_prefilter fields. (10) EncoderPool fallback uses round-robin AtomicUsize counter instead of always blocking on slot 0. (11) EncoderCoordinator batch collection capped at 64 requests to prevent OOM. (12) WAND heap_insert replaced with BinaryHeap for O(log K) per insert instead of O(K log K). (13) Cursor-based pagination for crossmap_pairs, unmatched_records, and review_list — API breaking change: offset param replaced with cursor, response offset field replaced with next_cursor. (14) Hook events now log warn! when dropped due to full channel. M15 (SqliteStore expect → Result) deferred to separate PR. 397 tests pass, zero clippy warnings.
 
+**GPU-accelerated batch encoding** — New `gpu-encode` feature flag enabling CoreML (macOS) and CUDA (Linux) execution providers for ONNX embedding inference in batch mode. Two new config fields: `encoder_device: cpu|gpu` and `encoder_batch_size` in `performance:`. Batch mode only — live mode warns and ignores (GPU doesn't help at batch=1). Key implementation: `EncoderOptions` struct replaces 3-arg `EncoderPool::new()`; execution providers forwarded to all 4 construction paths (named, local, hub, builtin); macOS auto-detects Homebrew onnxruntime; `SuppressStderr` guard silences CoreML framework noise during session creation. Parallel encoding: `encode_and_upsert` now uses `par_chunks` + `AtomicUsize` progress counter — all encoder pool slots exercised concurrently via Rayon. GPU defaults: pool_size ~60% of CPU cores, batch_size 256. Sweep on M1 Ultra 1M x 1M: pool=12 batch=256 achieved **1,828 rec/s** (8.7x vs sequential CPU baseline of 210 rec/s). Config validation rejects `encoder_device: gpu` without the feature flag. 404 tests pass, zero clippy warnings. Documented in `docs/building.md`, `docs/configuration.md`, `docs/performance.md`.
+
+**Config: redundant synonym_fields warning** — Added `warn_if_synonym_fields_redundant()` in config loader. When an explicit `synonym_fields` section duplicates what auto-derivation from `method: synonym` in `match_fields` would produce, prints a note advising removal. Custom generators suppress the warning. Two new tests.
+
 ### In Progress
 
 **CI/CD** — `.github/workflows/ci.yml` + `release.yml` created (macOS ARM, Linux glibc x86_64, Windows MSVC). Requires GitHub remote to activate. Homebrew/Scoop auto-update hooks not yet wired.
@@ -519,7 +526,6 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 2. External vector DB — Qdrant/Milvus (VectorDB trait is the interface).
 3. Pipeline parallelization — rayon::scope for encode/store/BM25/synonym branches (see `LIVE_MODE_IMPROVEMENTS.md`).
 4. Benchmark data regeneration script.
-5. GPU/ANE encoding on Apple Silicon — CoreML EP for high-concurrency (c≥50) batched encoding.
 
 ---
 

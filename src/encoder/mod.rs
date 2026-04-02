@@ -20,16 +20,73 @@
 pub mod coordinator;
 
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fastembed::{
-    EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
-    UserDefinedEmbeddingModel,
+    EmbeddingModel, ExecutionProviderDispatch, InitOptions, InitOptionsUserDefined, Pooling,
+    TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel,
 };
 use tracing::{info, info_span};
 
 use crate::error::EncoderError;
+
+// ---------------------------------------------------------------------------
+// Stderr suppression for CoreML framework noise
+// ---------------------------------------------------------------------------
+
+/// Temporarily suppress stderr output. Returns a guard that restores stderr
+/// on drop. Used to silence CoreML's "Context leak detected" messages during
+/// ONNX session creation.
+#[cfg(all(feature = "gpu-encode", target_os = "macos"))]
+struct SuppressStderr {
+    saved_fd: i32,
+}
+
+#[cfg(all(feature = "gpu-encode", target_os = "macos"))]
+impl SuppressStderr {
+    fn new() -> Option<Self> {
+        unsafe {
+            let saved = libc::dup(2);
+            if saved < 0 {
+                return None;
+            }
+            let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+            if devnull < 0 {
+                libc::close(saved);
+                return None;
+            }
+            libc::dup2(devnull, 2);
+            libc::close(devnull);
+            Some(Self { saved_fd: saved })
+        }
+    }
+}
+
+#[cfg(all(feature = "gpu-encode", target_os = "macos"))]
+impl Drop for SuppressStderr {
+    fn drop(&mut self) {
+        unsafe {
+            libc::dup2(self.saved_fd, 2);
+            libc::close(self.saved_fd);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Encoder options
+// ---------------------------------------------------------------------------
+
+/// Options for constructing an `EncoderPool`.
+pub struct EncoderOptions {
+    pub model_name: String,
+    pub pool_size: usize,
+    pub quantized: bool,
+    /// Use GPU (CoreML on macOS, CUDA on Linux) for ONNX inference.
+    pub gpu: bool,
+    /// ONNX batch size override. None = auto (64 for CPU, 256 for GPU).
+    pub encode_batch_size: Option<usize>,
+}
 
 // ---------------------------------------------------------------------------
 // Named model resolution
@@ -183,6 +240,8 @@ pub struct EncoderPool {
     /// Round-robin counter for fallback slot selection when all slots are
     /// busy via try_lock. Prevents thundering herd on slot 0.
     next_fallback: AtomicUsize,
+    /// ONNX batch size for fastembed encode calls.
+    encode_batch_size: usize,
 }
 
 impl std::fmt::Debug for EncoderPool {
@@ -210,12 +269,32 @@ impl EncoderPool {
     ///
     /// For local paths: `quantized` is ignored (use the `.onnx` file you
     /// want directly); `pool_size` instances share the loaded bytes.
-    pub fn new(model_name: &str, pool_size: usize, quantized: bool) -> Result<Self, EncoderError> {
+    pub fn new(opts: EncoderOptions) -> Result<Self, EncoderError> {
+        let encode_batch_size = opts
+            .encode_batch_size
+            .unwrap_or(if opts.gpu { 256 } else { 64 });
+
+        // With gpu-encode, ort uses load-dynamic for ALL sessions (even CPU).
+        // Ensure the dylib is discoverable before creating any sessions.
+        #[cfg(feature = "gpu-encode")]
+        Self::ensure_ort_dylib()?;
+
+        let eps = Self::build_execution_providers(opts.gpu)?;
+
+        // Suppress CoreML "Context leak detected" stderr noise during
+        // session creation. The guard restores stderr on drop.
+        #[cfg(all(feature = "gpu-encode", target_os = "macos"))]
+        let _stderr_guard = if opts.gpu {
+            SuppressStderr::new()
+        } else {
+            None
+        };
+
         // 1. Builtin model — compiled into the binary.
-        if model_name == "builtin" {
+        if opts.model_name == "builtin" {
             #[cfg(feature = "builtin-model")]
             {
-                return Self::new_from_builtin(pool_size);
+                return Self::new_from_builtin(opts.pool_size, &eps, encode_batch_size);
             }
             #[cfg(not(feature = "builtin-model"))]
             {
@@ -228,22 +307,29 @@ impl EncoderPool {
         }
 
         // 2. Local filesystem path.
-        if is_local_model_path(model_name) {
-            return Self::new_from_local_path(model_name, pool_size);
+        if is_local_model_path(&opts.model_name) {
+            return Self::new_from_local_path(
+                &opts.model_name,
+                opts.pool_size,
+                &eps,
+                encode_batch_size,
+            );
         }
         // 3. HuggingFace repo ID (contains `/` but isn't a local path).
-        if model_name.contains('/') {
-            return Self::new_from_hub(model_name, pool_size);
+        if opts.model_name.contains('/') {
+            return Self::new_from_hub(&opts.model_name, opts.pool_size, &eps, encode_batch_size);
         }
-        let model = resolve_model(model_name, quantized)?;
+        let model = resolve_model(&opts.model_name, opts.quantized)?;
         let dim = model_dim(&model);
-        let pool_size = pool_size.max(1);
+        let pool_size = opts.pool_size.max(1);
 
         let mut encoders = Vec::with_capacity(pool_size);
         for i in 0..pool_size {
-            let show_progress = i == 0; // only show download progress for first instance
+            let show_progress = i == 0;
             let te = TextEmbedding::try_new(
-                InitOptions::new(model.clone()).with_show_download_progress(show_progress),
+                InitOptions::new(model.clone())
+                    .with_show_download_progress(show_progress)
+                    .with_execution_providers(eps.clone()),
             )
             .map_err(|e| EncoderError::Inference(e.to_string()))?;
             encoders.push(Mutex::new(te));
@@ -253,7 +339,91 @@ impl EncoderPool {
             encoders,
             dim,
             next_fallback: AtomicUsize::new(0),
+            encode_batch_size,
         })
+    }
+
+    /// Build the ONNX execution provider list.
+    #[allow(clippy::needless_return)]
+    fn build_execution_providers(
+        gpu: bool,
+    ) -> Result<Vec<ExecutionProviderDispatch>, EncoderError> {
+        if !gpu {
+            return Ok(vec![]);
+        }
+
+        #[cfg(feature = "gpu-encode")]
+        {
+            #[cfg(target_os = "macos")]
+            {
+                use ort::ep::CoreML;
+                use ort::ep::coreml::{ComputeUnits, ModelFormat};
+                info!("GPU encoding enabled: CoreML (MLProgram, CPUAndGPU)");
+                return Ok(vec![
+                    CoreML::default()
+                        .with_compute_units(ComputeUnits::CPUAndGPU)
+                        .with_model_format(ModelFormat::MLProgram)
+                        .build(),
+                ]);
+            }
+            #[cfg(target_os = "linux")]
+            {
+                use ort::ep::CUDA;
+                info!("GPU encoding enabled: CUDA");
+                return Ok(vec![CUDA::default().build()]);
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            {
+                eprintln!(
+                    "WARNING: encoder_device: gpu is not supported on this platform, \
+                     falling back to CPU"
+                );
+                return Ok(vec![]);
+            }
+        }
+
+        #[cfg(not(feature = "gpu-encode"))]
+        {
+            Err(EncoderError::Inference(
+                "GPU encoding requires building with --features gpu-encode".to_string(),
+            ))
+        }
+    }
+
+    /// Ensure the ONNX Runtime dynamic library is discoverable.
+    #[cfg(feature = "gpu-encode")]
+    #[allow(clippy::needless_return)]
+    fn ensure_ort_dylib() -> Result<(), EncoderError> {
+        if std::env::var("ORT_DYLIB_PATH")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let brew_path = "/opt/homebrew/lib/libonnxruntime.dylib";
+            if std::path::Path::new(brew_path).exists() {
+                info!(path = brew_path, "auto-detected onnxruntime via Homebrew");
+                unsafe { std::env::set_var("ORT_DYLIB_PATH", brew_path) };
+                return Ok(());
+            }
+            let intel_path = "/usr/local/lib/libonnxruntime.dylib";
+            if std::path::Path::new(intel_path).exists() {
+                info!(path = intel_path, "auto-detected onnxruntime via Homebrew");
+                unsafe { std::env::set_var("ORT_DYLIB_PATH", intel_path) };
+                return Ok(());
+            }
+            Err(EncoderError::Inference(
+                "onnxruntime not found. Install via `brew install onnxruntime` \
+                 or set ORT_DYLIB_PATH to the libonnxruntime.dylib location"
+                    .to_string(),
+            ))
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        Ok(())
     }
 
     /// Download a model from HuggingFace Hub and load it.
@@ -261,7 +431,12 @@ impl EncoderPool {
     /// Downloads `model.onnx`, `tokenizer.json`, `config.json`,
     /// `special_tokens_map.json`, and `tokenizer_config.json` into the
     /// hf-hub cache directory, then delegates to [`new_from_local_path`].
-    fn new_from_hub(repo_id: &str, pool_size: usize) -> Result<Self, EncoderError> {
+    fn new_from_hub(
+        repo_id: &str,
+        pool_size: usize,
+        eps: &[ExecutionProviderDispatch],
+        encode_batch_size: usize,
+    ) -> Result<Self, EncoderError> {
         use hf_hub::api::sync::Api;
 
         info!(repo_id = repo_id, "downloading model from huggingface hub");
@@ -294,7 +469,12 @@ impl EncoderPool {
 
         info!(path = %dir.display(), "model cached");
 
-        Self::new_from_local_path(dir.to_str().unwrap_or(repo_id), pool_size)
+        Self::new_from_local_path(
+            dir.to_str().unwrap_or(repo_id),
+            pool_size,
+            eps,
+            encode_batch_size,
+        )
     }
 
     /// Build an `EncoderPool` from model bytes embedded in the binary.
@@ -302,7 +482,11 @@ impl EncoderPool {
     /// The model files are compiled in via `include_bytes!()` when the
     /// `builtin-model` feature is enabled. No filesystem or network access.
     #[cfg(feature = "builtin-model")]
-    fn new_from_builtin(pool_size: usize) -> Result<Self, EncoderError> {
+    fn new_from_builtin(
+        pool_size: usize,
+        eps: &[ExecutionProviderDispatch],
+        encode_batch_size: usize,
+    ) -> Result<Self, EncoderError> {
         info!("loading builtin embedding model");
 
         let tokenizer_files = TokenizerFiles {
@@ -312,7 +496,6 @@ impl EncoderPool {
             tokenizer_config_file: builtin::TOKENIZER_CONFIG.to_vec(),
         };
 
-        // Detect dim from the embedded config.json.
         let dim = detect_dim_from_bytes(builtin::CONFIG).unwrap_or(384);
 
         let user_model =
@@ -324,7 +507,7 @@ impl EncoderPool {
         for _ in 0..pool_size {
             let te = TextEmbedding::try_new_from_user_defined(
                 user_model.clone(),
-                InitOptionsUserDefined::new(),
+                InitOptionsUserDefined::new().with_execution_providers(eps.to_vec()),
             )
             .map_err(|e| EncoderError::Inference(e.to_string()))?;
             encoders.push(Mutex::new(te));
@@ -336,6 +519,7 @@ impl EncoderPool {
             encoders,
             dim,
             next_fallback: AtomicUsize::new(0),
+            encode_batch_size,
         })
     }
 
@@ -355,7 +539,12 @@ impl EncoderPool {
     /// When `path` points to a file, its parent directory is used for the
     /// tokenizer files. Mean pooling is always applied — suitable for all
     /// fine-tuned MiniLM / BERT-family models.
-    fn new_from_local_path(path: &str, pool_size: usize) -> Result<Self, EncoderError> {
+    fn new_from_local_path(
+        path: &str,
+        pool_size: usize,
+        eps: &[ExecutionProviderDispatch],
+        encode_batch_size: usize,
+    ) -> Result<Self, EncoderError> {
         let model_path = Path::new(path);
 
         let (dir, onnx_file) = if model_path.is_dir() {
@@ -399,7 +588,7 @@ impl EncoderPool {
         for _ in 0..pool_size {
             let te = TextEmbedding::try_new_from_user_defined(
                 user_model.clone(),
-                InitOptionsUserDefined::new(),
+                InitOptionsUserDefined::new().with_execution_providers(eps.to_vec()),
             )
             .map_err(|e| EncoderError::Inference(e.to_string()))?;
             encoders.push(Mutex::new(te));
@@ -409,32 +598,33 @@ impl EncoderPool {
             encoders,
             dim,
             next_fallback: AtomicUsize::new(0),
+            encode_batch_size,
         })
     }
 
-    /// ONNX batch size for fastembed. Smaller batches improve CPU cache
-    /// locality on Apple Silicon and similar architectures. Benchmarked at
-    /// ~9% faster than fastembed's default of 256 on M3.
-    const ENCODE_BATCH_SIZE: usize = 64;
+    /// Returns the configured ONNX batch size for encoding.
+    pub fn encode_batch_size(&self) -> usize {
+        self.encode_batch_size
+    }
 
     /// Encode texts synchronously. Acquires the first available encoder slot.
     ///
     /// Tries each slot via `try_lock` (round-robin). If all busy, blocks on
-    /// slot 0.
+    /// a round-robin slot to distribute contention evenly.
     pub fn encode(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EncoderError> {
         let _span = info_span!("onnx_encode", n = texts.len()).entered();
         if texts.is_empty() {
             return Ok(vec![]);
         }
 
-        // Convert &[&str] to Vec<String> as required by fastembed
         let text_vec: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        let batch_size = Some(self.encode_batch_size);
 
         // Try round-robin
         for encoder in &self.encoders {
             if let Ok(mut guard) = encoder.try_lock() {
                 return guard
-                    .embed(text_vec, Some(Self::ENCODE_BATCH_SIZE))
+                    .embed(text_vec, batch_size)
                     .map_err(|e| EncoderError::Inference(e.to_string()));
             }
         }
@@ -447,7 +637,7 @@ impl EncoderPool {
             .lock()
             .map_err(|e| EncoderError::Inference(format!("mutex poisoned: {}", e)))?;
         guard
-            .embed(text_vec, Some(Self::ENCODE_BATCH_SIZE))
+            .embed(text_vec, batch_size)
             .map_err(|e| EncoderError::Inference(e.to_string()))
     }
 
@@ -475,9 +665,20 @@ impl EncoderPool {
 mod tests {
     use super::*;
 
+    fn make_pool() -> EncoderPool {
+        EncoderPool::new(EncoderOptions {
+            model_name: "all-MiniLM-L6-v2".to_string(),
+            pool_size: 1,
+            quantized: false,
+            gpu: false,
+            encode_batch_size: None,
+        })
+        .expect("failed to create pool")
+    }
+
     #[test]
     fn create_pool_and_encode() {
-        let pool = EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("failed to create pool");
+        let pool = make_pool();
         assert_eq!(pool.dim(), 384);
         assert_eq!(pool.pool_size(), 1);
 
@@ -491,14 +692,14 @@ mod tests {
 
     #[test]
     fn encode_one() {
-        let pool = EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("failed to create pool");
+        let pool = make_pool();
         let vec = pool.encode_one("hello world").expect("encode_one failed");
         assert_eq!(vec.len(), 384);
     }
 
     #[test]
     fn self_similarity_high() {
-        let pool = EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("failed to create pool");
+        let pool = make_pool();
         let vecs = pool
             .encode(&["hello world", "hello world"])
             .expect("encode failed");
@@ -514,7 +715,7 @@ mod tests {
 
     #[test]
     fn different_sentences_lower_similarity() {
-        let pool = EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("failed to create pool");
+        let pool = make_pool();
         let vecs = pool
             .encode(&["hello world", "quantum physics equations"])
             .expect("encode failed");
@@ -529,14 +730,21 @@ mod tests {
 
     #[test]
     fn empty_input() {
-        let pool = EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("failed to create pool");
+        let pool = make_pool();
         let vecs = pool.encode(&[]).expect("encode empty failed");
         assert!(vecs.is_empty());
     }
 
     #[test]
     fn invalid_model() {
-        let err = EncoderPool::new("nonexistent-model-xyz", 1, false).unwrap_err();
+        let err = EncoderPool::new(EncoderOptions {
+            model_name: "nonexistent-model-xyz".to_string(),
+            pool_size: 1,
+            quantized: false,
+            gpu: false,
+            encode_batch_size: None,
+        })
+        .unwrap_err();
         assert!(matches!(err, EncoderError::ModelNotFound { .. }));
     }
 
@@ -564,7 +772,14 @@ mod tests {
     #[test]
     fn local_path_nonexistent_onnx_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let err = EncoderPool::new(&dir.path().to_string_lossy(), 1, false).unwrap_err();
+        let err = EncoderPool::new(EncoderOptions {
+            model_name: dir.path().to_string_lossy().to_string(),
+            pool_size: 1,
+            quantized: false,
+            gpu: false,
+            encode_batch_size: None,
+        })
+        .unwrap_err();
         assert!(
             matches!(err, EncoderError::ModelNotFound { .. }),
             "expected ModelNotFound, got {:?}",

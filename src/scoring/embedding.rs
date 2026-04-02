@@ -131,8 +131,14 @@ mod tests {
     #[test]
     fn fastembed_self_similarity() {
         // Verify with actual fastembed vectors
-        let pool = crate::encoder::EncoderPool::new("all-MiniLM-L6-v2", 1, false)
-            .expect("pool creation failed");
+        let pool = crate::encoder::EncoderPool::new(crate::encoder::EncoderOptions {
+            model_name: "all-MiniLM-L6-v2".to_string(),
+            pool_size: 1,
+            quantized: false,
+            gpu: false,
+            encode_batch_size: None,
+        })
+        .expect("pool creation failed");
         let vecs = pool
             .encode(&["hello world", "hello world"])
             .expect("encode failed");

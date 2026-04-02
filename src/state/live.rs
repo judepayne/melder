@@ -16,8 +16,8 @@ use tracing::{info, warn};
 use crate::config::{Config, MatchMethod};
 use crate::crossmap::{CrossMapOps, MemoryCrossMap};
 use crate::data;
-use crate::encoder::EncoderPool;
 use crate::encoder::coordinator::EncoderCoordinator;
+use crate::encoder::{EncoderOptions, EncoderPool};
 use crate::error::MelderError;
 use crate::models::Side;
 use crate::state::upsert_log::{UpsertLog, WalEvent};
@@ -125,14 +125,22 @@ impl LiveMatchState {
         let start = Instant::now();
 
         // 1. Init encoder pool
+        if config.performance.encoder_device.as_deref() == Some("gpu") {
+            eprintln!(
+                "NOTE: encoder_device: gpu is ignored in live mode — GPU encoding \
+                 does not improve single-record latency. Using CPU."
+            );
+        }
         let pool_size = config.performance.encoder_pool_size.unwrap_or(1);
         info!(model = %config.embeddings.model, pool_size, "initializing encoder pool");
         let encoder_pool = Arc::new(
-            EncoderPool::new(
-                &config.embeddings.model,
+            EncoderPool::new(EncoderOptions {
+                model_name: config.embeddings.model.clone(),
                 pool_size,
-                config.performance.quantized,
-            )
+                quantized: config.performance.quantized,
+                gpu: false, // Always CPU in live mode.
+                encode_batch_size: config.performance.encoder_batch_size,
+            })
             .map_err(MelderError::Encoder)?,
         );
         let dim = encoder_pool.dim();

@@ -527,6 +527,46 @@ pub struct PerformanceConfig {
     /// Has no effect when `vector_backend` is `flat`.
     #[serde(default)]
     pub expansion_search: Option<usize>,
+    /// ONNX encoding device: `"cpu"` (default) or `"gpu"`.
+    ///
+    /// When set to `"gpu"`, uses CoreML on macOS and CUDA on Linux for
+    /// ONNX embedding inference. Requires building with `--features gpu-encode`.
+    ///
+    /// Only effective in batch mode (`meld run`). Ignored in live mode
+    /// (`meld serve`) where GPU encoding does not improve single-record latency.
+    ///
+    /// ## Tuning guide (GPU mode)
+    ///
+    /// GPU encoding benefits from multiple concurrent ONNX sessions
+    /// (`encoder_pool_size`) to keep the GPU fed while CPU handles
+    /// tokenisation. The optimal settings depend on your hardware:
+    ///
+    /// - **`encoder_pool_size`**: ~60% of CPU core count. Each session
+    ///   needs CPU time for tokenisation; too many sessions starve CPU,
+    ///   too few starve GPU. Example: 12 sessions on a 20-core M1 Ultra.
+    ///
+    /// - **`encoder_batch_size`**: 256 is optimal for most configurations.
+    ///   Larger batches (512) cause GPU memory pressure when combined with
+    ///   many concurrent sessions. Smaller batches (64) underutilise GPU.
+    ///
+    /// - Avoid `pool_size × batch_size` products above ~3,000. Beyond that,
+    ///   concurrent GPU memory usage degrades throughput sharply.
+    ///
+    /// Benchmarked on M1 Ultra (20 cores, 64 GPU cores, 64 GB):
+    /// - pool=12, batch=256: **1,828 rec/s** (8.7× sequential CPU)
+    /// - pool=8, batch=256: 1,677 rec/s
+    /// - pool=16, batch=512: 473 rec/s (memory pressure)
+    #[serde(default)]
+    pub encoder_device: Option<String>,
+    /// Number of texts sent per ONNX inference call during batch encoding.
+    ///
+    /// - Default `64` for CPU (tuned for Apple Silicon cache locality).
+    /// - Default `256` for GPU (amortises kernel launch overhead, avoids
+    ///   GPU memory pressure at higher concurrent session counts).
+    ///
+    /// Only effective in batch mode.
+    #[serde(default)]
+    pub encoder_batch_size: Option<usize>,
 }
 
 /// Pipeline hook configuration — a single long-running subprocess that

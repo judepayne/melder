@@ -22,7 +22,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+
+use rayon::prelude::*;
 
 use manifest::{
     StaleReason, blocking_hash, check_manifest, file_fingerprint, make_manifest, read_manifest,
@@ -682,10 +685,11 @@ fn encode_and_upsert(
     if ids.is_empty() {
         return Ok(());
     }
-    let batch_size = 256;
+    let batch_size = encoder_pool.encode_batch_size().max(64);
     let total = ids.len();
+    let done_counter = AtomicUsize::new(0);
 
-    for (batch_idx, chunk) in ids.chunks(batch_size).enumerate() {
+    ids.par_chunks(batch_size).try_for_each(|chunk| {
         let mut combined_vecs: Vec<Vec<f32>> = vec![Vec::with_capacity(combined_dim); chunk.len()];
 
         for (field_a, field_b, weight) in emb_specs {
@@ -723,7 +727,8 @@ fn encode_and_upsert(
                 .map_err(|e| MelderError::Other(anyhow::anyhow!("{}", e)))?;
         }
 
-        let done = ((batch_idx + 1) * batch_size).min(total);
+        let done = done_counter.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+        // Log progress periodically — roughly every 1024 records.
         if done % 1024 < batch_size || done >= total {
             let pct = done as f64 / total as f64 * 100.0;
             info!(
@@ -734,7 +739,9 @@ fn encode_and_upsert(
                 "embedding encoding progress"
             );
         }
-    }
+
+        Ok::<(), MelderError>(())
+    })?;
 
     Ok(())
 }
@@ -822,8 +829,14 @@ mod combined_tests {
 
     #[test]
     fn encode_combined_vector_empty_specs() {
-        let pool =
-            crate::encoder::EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("encoder init");
+        let pool = crate::encoder::EncoderPool::new(crate::encoder::EncoderOptions {
+            model_name: "all-MiniLM-L6-v2".to_string(),
+            pool_size: 1,
+            quantized: false,
+            gpu: false,
+            encode_batch_size: None,
+        })
+        .expect("encoder init");
         let record: Record = std::collections::HashMap::new();
         let vec = encode_combined_vector(&record, &[], &pool, true).unwrap();
         assert!(vec.is_empty());
@@ -831,8 +844,14 @@ mod combined_tests {
 
     #[test]
     fn encode_combined_vector_single_field_dimension() {
-        let pool =
-            crate::encoder::EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("encoder init");
+        let pool = crate::encoder::EncoderPool::new(crate::encoder::EncoderOptions {
+            model_name: "all-MiniLM-L6-v2".to_string(),
+            pool_size: 1,
+            quantized: false,
+            gpu: false,
+            encode_batch_size: None,
+        })
+        .expect("encoder init");
         let mut record: Record = std::collections::HashMap::new();
         record.insert("legal_name".to_string(), "Acme Corp".to_string());
         let specs = vec![(
@@ -846,8 +865,14 @@ mod combined_tests {
 
     #[test]
     fn encode_combined_vector_two_fields_dimension() {
-        let pool =
-            crate::encoder::EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("encoder init");
+        let pool = crate::encoder::EncoderPool::new(crate::encoder::EncoderOptions {
+            model_name: "all-MiniLM-L6-v2".to_string(),
+            pool_size: 1,
+            quantized: false,
+            gpu: false,
+            encode_batch_size: None,
+        })
+        .expect("encoder init");
         let mut record: Record = std::collections::HashMap::new();
         record.insert("legal_name".to_string(), "Acme Corp".to_string());
         record.insert("short_name".to_string(), "Acme".to_string());
@@ -869,8 +894,14 @@ mod combined_tests {
 
     #[test]
     fn encode_combined_vector_missing_field_no_panic() {
-        let pool =
-            crate::encoder::EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("encoder init");
+        let pool = crate::encoder::EncoderPool::new(crate::encoder::EncoderOptions {
+            model_name: "all-MiniLM-L6-v2".to_string(),
+            pool_size: 1,
+            quantized: false,
+            gpu: false,
+            encode_batch_size: None,
+        })
+        .expect("encoder init");
         let record: Record = std::collections::HashMap::new(); // no fields
         let specs = vec![(
             "legal_name".to_string(),
@@ -885,8 +916,14 @@ mod combined_tests {
     #[test]
     fn encode_combined_vector_dot_product_equals_weighted_cosine_sum() {
         // Mathematical property: dot(combined_A, combined_B) = Σᵢ wᵢ·cosᵢ
-        let pool =
-            crate::encoder::EncoderPool::new("all-MiniLM-L6-v2", 1, false).expect("encoder init");
+        let pool = crate::encoder::EncoderPool::new(crate::encoder::EncoderOptions {
+            model_name: "all-MiniLM-L6-v2".to_string(),
+            pool_size: 1,
+            quantized: false,
+            gpu: false,
+            encode_batch_size: None,
+        })
+        .expect("encoder init");
 
         let w1 = 0.55_f64;
         let w2 = 0.20_f64;

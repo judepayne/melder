@@ -16,8 +16,11 @@ cargo build --release --features usearch,parquet-format
 # With builtin embedding model (self-contained binary, no network needed at runtime)
 cargo build --release --features usearch,builtin-model
 
+# With GPU-accelerated encoding (CoreML on macOS, CUDA on Linux)
+cargo build --release --features usearch,gpu-encode
+
 # All features together
-cargo build --release --features usearch,parquet-format,builtin-model
+cargo build --release --features usearch,parquet-format,builtin-model,gpu-encode
 ```
 
 The binary is produced at `./target/release/meld` (Windows:
@@ -31,6 +34,7 @@ directly.
 | `usearch` | Enables the HNSW approximate nearest-neighbour graph index for O(log N) candidate search instead of the flat backend's O(N) brute-force scan. Up to 5x faster at scale. |
 | `parquet-format` | Enables reading Parquet files as input datasets. All column types (string, integer, float, boolean) are converted to strings internally. Snappy-compressed Parquet files are supported. |
 | `builtin-model` | Compiles an embedding model into the binary so no network access or model download is needed at runtime. Set `model: builtin` in config to use it. See [Builtin model](#builtin-model) below. |
+| `gpu-encode` | Enables GPU-accelerated ONNX encoding for batch mode. Uses CoreML on macOS and CUDA on Linux. Requires the ONNX Runtime shared library at runtime. See [GPU encoding](#gpu-encoding) below. |
 
 > [!TIP]
 > On macOS and Linux, always build with `--features usearch`. The
@@ -85,6 +89,79 @@ The binary size increases by the size of the ONNX model (~90 MB for
 arctic-embed-xs). The model is downloaded once at build time and cached
 in the Cargo build directory — subsequent builds reuse the cached files.
 
+## GPU encoding
+
+Build with `--features gpu-encode` to enable GPU-accelerated ONNX
+encoding for batch mode (`meld run`). This offloads the embedding
+inference to the GPU, dramatically reducing encoding time for large
+datasets.
+
+```bash
+cargo build --release --features usearch,gpu-encode
+```
+
+GPU encoding is **batch mode only**. It is ignored in live mode
+(`meld serve`) where single-record GPU dispatch overhead exceeds
+the compute savings.
+
+### Platform setup
+
+GPU encoding uses dynamic linking against the ONNX Runtime shared
+library. The library must be present at runtime.
+
+**macOS (Apple Silicon).** The melder auto-detects ONNX Runtime
+installed via Homebrew. No manual configuration needed:
+
+```bash
+brew install onnxruntime
+```
+
+If you install ONNX Runtime to a non-standard location, set the
+`ORT_DYLIB_PATH` environment variable:
+
+```bash
+export ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib
+```
+
+The CoreML execution provider is used automatically. It dispatches
+compute across CPU, GPU, and the Neural Engine (ANE) based on the
+model graph.
+
+**Linux (NVIDIA GPU).** Download a CUDA-enabled ONNX Runtime build
+from [Microsoft's releases](https://github.com/microsoft/onnxruntime/releases)
+and set `ORT_DYLIB_PATH`:
+
+```bash
+export ORT_DYLIB_PATH=/path/to/libonnxruntime.so
+```
+
+Requires CUDA toolkit and cuDNN to be installed. The CUDA execution
+provider is used automatically.
+
+**Windows.** GPU encoding is not currently supported on Windows. The
+`gpu-encode` feature will compile but `encoder_device: gpu` in the
+config will fall back to CPU with a warning.
+
+### Configuration
+
+Set `encoder_device: gpu` in the `performance` section of your
+config file:
+
+```yaml
+performance:
+  encoder_device: gpu
+  encoder_pool_size: 12    # ~60% of CPU cores (see tuning guide)
+  encoder_batch_size: 256  # optimal for GPU; default when device is gpu
+```
+
+See [Configuration](configuration.md#performance-field-reference) for
+the full tuning guide including benchmark results.
+
+> [!NOTE]
+> If the binary was built **without** `--features gpu-encode`, setting
+> `encoder_device: gpu` in the config will produce a clear error at
+> startup: _"GPU encoding requires building with --features gpu-encode"_.
+
 ## Environment variables
 
 | Variable | Purpose |
@@ -92,6 +169,7 @@ in the Cargo build directory — subsequent builds reuse the cached files.
 | `RUST_LOG=melder=debug` | Enable debug logging |
 | `RUST_LOG=melder=info` | Default log level |
 | `RAYON_NUM_THREADS` | Batch scoring thread count (defaults to logical CPU count) |
+| `ORT_DYLIB_PATH` | Path to `libonnxruntime.dylib` (macOS) or `libonnxruntime.so` (Linux). Required for `gpu-encode` if ONNX Runtime is not in a standard location. On macOS, Homebrew installs are auto-detected. |
 | `MELDER_BUILTIN_MODEL` | Build-time only. HuggingFace repo ID or local path for the model to embed when `--features builtin-model` is enabled. Defaults to `themelder/arctic-embed-xs-entity-resolution`. |
 
 ## Windows
