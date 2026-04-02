@@ -63,6 +63,7 @@ performance:
   vector_index_mode: "load"
 
 live:
+  skip_initial_match: true
   upsert_log: benchmarks/live/sqlite_cache_sweep/sqlite_cold_setup/wal/events.ndjson
   db_path: benchmarks/live/sqlite_cache_sweep/sqlite_cold_setup/live.db
 

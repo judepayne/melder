@@ -13,6 +13,26 @@ making multi-round training pointless).
 
 ---
 
+## Index
+
+- [Baseline: BGE-small MNRL batch=32](#baseline-bge-small-mnrl-batch32-5-rounds)
+- [Experiment 1: BGE-small MNRL batch=32, 1 epoch](#experiment-1-bge-small-mnrl-batch32-1-epoch-3-rounds)
+- [Experiment 2: BGE-small MNRL batch=32, 1 epoch, LoRA](#experiment-2-bge-small-mnrl-batch32-1-epoch-lora-8-rounds)
+- [Experiment 3: BGE-small, freeze bottom 9 layers](#experiment-3-bge-small-mnrl-batch32-1-epoch-freeze-bottom-9-layers-4-rounds)
+- [Experiment 4: BGE-base MNRL batch=32, 1 epoch, LoRA](#experiment-4-bge-base-mnrl-batch32-1-epoch-lora-12-rounds)
+- [Experiment 5: BGE-base MNRL batch=128, 1 epoch, LoRA](#experiment-5-bge-base-mnrl-batch128-1-epoch-lora-6-rounds)
+- [Experiment 6: BM25 composite scoring](#experiment-6-bm25-composite-scoring-no-training)
+- [Experiment 7: Synonym matching verification](#experiment-7-synonym-matching-verification)
+- [Experiment 8: BGE-small MNRL batch=128, LoRA](#experiment-8-bge-small-mnrl-batch128-1-epoch-lora-18-rounds)
+- [Experiment 9: Arctic-embed-xs MNRL batch=128, LoRA](#experiment-9-snowflake-arctic-embed-xs-mnrl-batch128-1-epoch-lora-18-rounds)
+- [Experiment 10: BM25 + Arctic-embed-xs](#experiment-10-bm25-composite-scoring-with-arctic-embed-xs)
+- [Experiment 11: Synonym + Arctic-embed-xs + BM25](#experiment-11-synonym-matching-with-arctic-embed-xs--bm25)
+- [Experiment 12: Fuzzy name matching](#experiment-12-add-fuzzy-name-matching-to-the-full-pipeline)
+- [Experiment 13: BM25-only vs 50/50 composite](#experiment-13-bm25-only-vs-5050-composite--population-separation-comparison)
+- [Experiment 14: INT8 quantization](#experiment-14-int8-quantization-of-arctic-embed-xs-r22)
+
+---
+
 ## Baseline: BGE-small MNRL batch=32 (5 rounds)
 
 The base BGE-small model (round 0, untrained) plus rounds of MNRL fine-tuning.

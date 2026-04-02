@@ -58,6 +58,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         .as_deref()
         .unwrap_or("crossmap.csv");
     let crossmap = load_crossmap(crossmap_path, &state.config);
+    let exclusions = load_exclusions(&state.config);
 
     // Dry-run
     if dry_run {
@@ -135,6 +136,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         state.combined_index_a.as_deref(),
         combined_index_b.as_deref(),
         &crossmap,
+        &exclusions,
         limit,
         false,
     ) {
@@ -248,6 +250,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         eprintln!("Imported {} crossmap pairs into SQLite", mem_crossmap.len());
     }
     drop(mem_crossmap);
+    let exclusions = load_exclusions(&cfg);
 
     // Dry-run
     if dry_run {
@@ -269,6 +272,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         combined_index_a,
         combined_index_b,
         &sqlite_crossmap,
+        &exclusions,
         limit,
         false,
     ) {
@@ -315,6 +319,31 @@ fn load_crossmap(path: &str, config: &crate::config::Config) -> crate::crossmap:
             crate::crossmap::MemoryCrossMap::new()
         }
     }
+}
+
+fn load_exclusions(config: &crate::config::Config) -> crate::matching::exclusions::Exclusions {
+    use crate::matching::exclusions::Exclusions;
+
+    if let Some(ref p) = config.exclusions.path
+        && !p.is_empty()
+    {
+        match Exclusions::load(
+            Path::new(p),
+            &config.exclusions.a_id_field,
+            &config.exclusions.b_id_field,
+        ) {
+            Ok(ex) => {
+                if !ex.is_empty() {
+                    eprintln!("Loaded exclusions: {} pairs", ex.len());
+                }
+                return ex;
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to load exclusions ({}), starting fresh", e);
+            }
+        }
+    }
+    Exclusions::new()
 }
 
 fn print_dry_run(

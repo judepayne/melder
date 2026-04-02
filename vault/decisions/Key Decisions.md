@@ -941,4 +941,77 @@ Consistency across batch endpoints makes the API predictable. Per-item error col
 
 ---
 
+## Exclusions as a Stateful In-Memory System with WAL Persistence
+
+**Date:** 2026-04-02
+**Status:** Accepted
+
+**Context:**
+Known non-matching pairs need to be tracked to prevent re-matching after human review feedback. The system must:
+1. Load exclusions from a CSV file at startup
+2. Allow runtime addition/removal via API endpoints
+3. Survive restarts without losing exclusions
+4. Break any currently-matched pairs that become excluded
+5. Work in both batch mode (read-only) and live mode (mutable)
+
+**Decision:**
+Implement exclusions as a stateful `RwLock<HashSet<(String, String)>>` in memory, with WAL persistence for crash recovery and CSV flush on shutdown.
+
+**Why not a static-file-only approach:**
+A simpler design would load exclusions from CSV once at startup and never modify them. However, this breaks the human feedback loop: when a human reviews a false positive and marks it as "do not match", the system needs to:
+- Immediately exclude the pair (prevent re-matching on next upsert)
+- Persist the exclusion across restarts (so the decision survives a crash)
+- Break any existing CrossMap match for that pair (clean up stale state)
+
+A static-file-only approach would require manual CSV editing and server restart, which is not practical for a live service.
+
+**Implementation:**
+- `Exclusions` struct in `src/matching/exclusions.rs`: `RwLock<HashSet<(String, String)>>`
+- Load from CSV at startup (step 9 of startup sequence)
+- WAL events: `Exclude` (add pair) and `Unexclude` (remove pair)
+- API endpoints: `POST /api/v1/exclude` and `DELETE /api/v1/exclude` (both match and enroll modes)
+- Pipeline filter: after candidate union, before scoring — O(1) lookup per candidate
+- Batch mode: loads from CSV only (read-only, no API)
+- Live mode: loads from CSV + WAL replay, flushes to CSV on shutdown
+- Hook event: `on_exclude` with `match_was_broken` field (true if a CrossMap pair was broken)
+
+**Why RwLock over DashMap:**
+Exclusions are queried frequently (once per candidate pair during scoring) but modified rarely (only via API). RwLock allows concurrent reads without lock contention. DashMap would add unnecessary per-entry locking overhead.
+
+**Why WAL persistence:**
+The WAL provides crash recovery without requiring a separate durable store. On restart, WAL replay reconstructs the exclusions set to the point of the last shutdown. CSV flush on shutdown provides a human-readable backup and a fast cold-start load path.
+
+**Related:** [[Config Reference#exclusions]], [[API Reference#Exclusion Endpoints]], [[State & Persistence#WAL Event Types]]
+
+---
+
+## Initial Match Pass at Live Startup
+
+**Date:** 2026-04-02
+**Status:** Accepted
+
+**Context:**
+In live mode (`meld serve`), pre-loaded datasets (from CSV/JSONL/Parquet) were not matched at startup. Matching only occurred when records were upserted via the API. This meant users had to either (a) re-upsert all B records via the API to trigger matching, or (b) accept that pre-loaded data was unmatched until new records arrived. Both were illogical workflows.
+
+**Decision:**
+After all datasets are loaded and indices are built, run an initial matching pass that scores all unmatched B records against the A pool before the HTTP server starts listening. Use the same scoring pipeline as live upserts (blocking, BM25, ANN, synonym, exclusions). Reuse the pipeline rather than calling `run_batch()` because live mode already has pre-built BM25/synonym indices that `run_batch()` would duplicate.
+
+**Implementation:**
+- New method: `Session::initial_match_pass()` in `src/session/mod.rs`
+- Called from `src/cli/serve.rs` after session creation, before `start_server()`
+- Skips encoding — records already encoded and in vector index from startup load
+- Crossmap claims written to WAL (crash-safe)
+- Review-band matches added to review queue
+- Hook events (on_confirm) fire normally
+- Progress logged every 1000 records
+- Skips records already in crossmap (from CSV or WAL replay)
+- No-op if either side empty or all B records already matched
+
+**Why Reuse Pipeline Instead of run_batch():**
+`run_batch()` rebuilds BM25 and synonym indices from scratch, which is wasteful when live mode already has these indices built and ready. The pipeline reuses the existing indices, avoiding redundant work and keeping the startup sequence simple.
+
+**Related:** [[State & Persistence#Startup Paths]]
+
+---
+
 See also: [[Discarded Ideas]] for the alternative approaches that were considered and rejected before each of these decisions was made.

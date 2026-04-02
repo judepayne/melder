@@ -59,15 +59,24 @@ What happens at launch depends on the storage backend:
 2. Embedding index caches are loaded from disk (if present and valid)
 3. Blocking indices are built from the dataset records
 4. Crossmap CSV is loaded
-5. All WAL files are replayed in chronological order:
+5. Exclusions CSV is loaded (if configured)
+6. All WAL files are replayed in chronological order:
    - Records are inserted/removed from the in-memory store
    - Blocking indices are updated for each replayed record
    - Crossmap confirms/breaks are applied
+   - Exclusions are applied/removed
    - Embedding vectors already in the cached index are skipped
      (no ONNX re-encoding)
-6. Unmatched sets and common-ID indices are rebuilt from the final state
-7. Review queue is populated from unresolved `ReviewMatch` WAL events
-8. A new timestamped WAL file is opened for the current run
+7. Unmatched sets and common-ID indices are rebuilt from the final state
+8. Review queue is populated from unresolved `ReviewMatch` WAL events
+9. A new timestamped WAL file is opened for the current run
+10. **Initial matching pass** — all unmatched B records are scored against
+    the A pool using the full scoring pipeline (blocking, BM25, ANN,
+    synonym). Auto-matches are claimed in the crossmap and persisted via
+    WAL. Review-band matches are added to the review queue. This ensures
+    pre-loaded datasets are fully matched before the API starts listening.
+    Set `live.skip_initial_match: true` to skip this step and start the
+    API immediately.
 
 ### SQLite — cold start (DB file does not exist)
 

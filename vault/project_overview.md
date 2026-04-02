@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-04-02 (GPU batch encoding + parallel encode_and_upsert; 404 tests pass, zero clippy warnings)
+Last updated: 2026-04-02 (Exclusions system for known non-matches; 417 tests pass, zero clippy warnings)
 
 ---
 
@@ -85,6 +85,7 @@ Full text: `vault/architecture/CONSTITUTION.md`. Violating these is a bug regard
 | `pipeline.rs` | **`score_pool()`** — the one scoring entry point used by all modes. Also `decompose_emb_scores()` |
 | `blocking.rs` | `BlockingIndex` — HashMap keyed by (field_index, value); AND/OR query modes |
 | `candidates.rs` | `get_candidates()` — vector ANN search + blocked-record fallback |
+| `exclusions.rs` | `Exclusions` — RwLock<HashSet<(String,String)>> for known non-matching pairs; filters after candidate union |
 
 ### `src/scoring/`
 
@@ -185,9 +186,10 @@ One file per subcommand: `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.
 4. **Blocking** (`src/matching/blocking.rs`) — `BlockingIndex` lookup; AND mode only (OR removed). In enroll mode, `blocking_query()` takes `pool_side` parameter to exclude self-matches when query_side == pool_side.
 5. **BM25 candidate filter** (optional) — `SimpleBm25` scores blocked candidates; retains `bm25_candidates` top results. Two query paths: exhaustive (B ≤ 5,000) or Block-Max WAND (B > 5,000) for 90-99% fewer evaluations at scale.
 6. **ANN candidate selection** (`src/matching/candidates.rs`) — searches combined embedding index for `top_n` nearest A neighbours. If no embedding fields configured, all blocked records pass through.
-7. **Full scoring** (`src/scoring/mod.rs::score_pair()`) — all `match_fields` scored; embedding cosines decomposed from combined vectors.
-8. **Classification** — `>= auto_match` → Auto; `>= review_floor` → Review; else NoMatch.
-9. **CrossMap claim** — atomic; falls through to next candidate if A already claimed (match mode only).
+7. **Exclusion filter** (`src/matching/exclusions.rs`) — removes known non-matching pairs from candidate set. If an excluded pair is currently in CrossMap, breaks the match first.
+8. **Full scoring** (`src/scoring/mod.rs::score_pair()`) — all `match_fields` scored; embedding cosines decomposed from combined vectors.
+9. **Classification** — `>= auto_match` → Auto; `>= review_floor` → Review; else NoMatch.
+10. **CrossMap claim** — atomic; falls through to next candidate if A already claimed (match mode only).
 
 ### Live upsert (`src/session/mod.rs`, `src/api/handlers.rs`)
 
@@ -204,12 +206,14 @@ One file per subcommand: `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.
 ### Startup paths (`src/state/live.rs::load()`)
 
 **Match mode:**
-- `live.db_path` absent → `load_memory()`: parse CSVs, build indices, optionally replay WAL.
-- `live.db_path` set, DB not found → `load_sqlite()` cold: create DB, stream CSVs into SqliteStore, build indices.
-- `live.db_path` set, DB found → `load_sqlite()` warm: open existing DB (records + crossmap already durable), load reviews, skip WAL.
+- `live.db_path` absent → `load_memory()`: parse CSVs, build indices, optionally replay WAL, run initial match pass, start HTTP server.
+- `live.db_path` set, DB not found → `load_sqlite()` cold: create DB, stream CSVs into SqliteStore, build indices, run initial match pass, start HTTP server.
+- `live.db_path` set, DB found → `load_sqlite()` warm: open existing DB (records + crossmap already durable), load reviews, skip WAL, run initial match pass, start HTTP server.
 
 **Enroll mode:**
 - `load_enroll()`: single-pool startup (A-side only, no B-side, no crossmap). Optional pre-load from `dataset.path`. Indices built once; records added via API.
+
+**Initial match pass** (match mode only): After all indices are built, score all unmatched B records against the A pool using the same scoring pipeline as live upserts (blocking, BM25, ANN, synonym, exclusions). Skips encoding — records already encoded and in vector index. Crossmap claims written to WAL (crash-safe). Review-band matches added to review queue. Progress logged every 1000 records. No-op if either side empty or all B records already matched.
 
 ---
 
@@ -515,6 +519,10 @@ Flags: `--rounds N`, `--size 10000`, `--seed-offset 100`, `--epochs 3`, `--batch
 **GPU-accelerated batch encoding** — New `gpu-encode` feature flag enabling CoreML (macOS) and CUDA (Linux) execution providers for ONNX embedding inference in batch mode. Two new config fields: `encoder_device: cpu|gpu` and `encoder_batch_size` in `performance:`. Batch mode only — live mode warns and ignores (GPU doesn't help at batch=1). Key implementation: `EncoderOptions` struct replaces 3-arg `EncoderPool::new()`; execution providers forwarded to all 4 construction paths (named, local, hub, builtin); macOS auto-detects Homebrew onnxruntime; `SuppressStderr` guard silences CoreML framework noise during session creation. Parallel encoding: `encode_and_upsert` now uses `par_chunks` + `AtomicUsize` progress counter — all encoder pool slots exercised concurrently via Rayon. GPU defaults: pool_size ~60% of CPU cores, batch_size 256. Sweep on M1 Ultra 1M x 1M: pool=12 batch=256 achieved **1,828 rec/s** (8.7x vs sequential CPU baseline of 210 rec/s). Config validation rejects `encoder_device: gpu` without the feature flag. 404 tests pass, zero clippy warnings. Documented in `docs/building.md`, `docs/configuration.md`, `docs/performance.md`.
 
 **Config: redundant synonym_fields warning** — Added `warn_if_synonym_fields_redundant()` in config loader. When an explicit `synonym_fields` section duplicates what auto-derivation from `method: synonym` in `match_fields` would produce, prints a note advising removal. Custom generators suppress the warning. Two new tests.
+
+**Exclusions (Known Non-Matches)** — Stateful system for known non-matching pairs. New `exclusions:` config section with `path`, `a_id_field`, `b_id_field`. New `Exclusions` struct in `src/matching/exclusions.rs` (RwLock<HashSet<(String,String)>>). WAL events: `Exclude`, `Unexclude`. API endpoints: `POST /api/v1/exclude`, `DELETE /api/v1/exclude` (both match and enroll modes). Hook event: `on_exclude` with `match_was_broken` field. Session methods: `exclude()`, `unexclude()`. Pipeline filter after candidate union, before scoring. Batch mode: loads from CSV (read-only). Live mode: loads from CSV + WAL replay, flushes on shutdown. If an excluded pair is currently matched in CrossMap, the match is broken first. 417 tests pass, zero clippy warnings.
+
+**Initial match pass at live startup** — After datasets are loaded and all indices built, `meld serve` now runs an initial matching pass that scores all unmatched B records against the A pool before the HTTP server starts listening. Uses the same scoring pipeline as live upserts (blocking, BM25, ANN, synonym, exclusions). Skips encoding — records already encoded and in vector index from startup load. Crossmap claims written to WAL (crash-safe). Review-band matches added to review queue. Hook events (on_confirm) fire normally. Progress logged every 1000 records. Skips records already in crossmap (from CSV or WAL replay). No-op if either side empty or all B records already matched. Implementation: `Session::initial_match_pass()` in `src/session/mod.rs`, called from `src/cli/serve.rs` after session creation, before `start_server()`. Reuses scoring pipeline rather than calling `run_batch()` because live mode already has pre-built BM25/synonym indices that `run_batch()` would duplicate.
 
 ### In Progress
 

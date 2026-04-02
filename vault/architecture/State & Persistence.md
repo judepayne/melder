@@ -71,6 +71,18 @@ Emitted when a result lands in the review band. No state change on replay — us
 { "ts": "...", "type": "crossmap_break", "a_id": "ENT-1", "b_id": "CP-42" }
 ```
 
+#### `exclude`
+```json
+{ "ts": "...", "type": "exclude", "a_id": "ENT-1", "b_id": "CP-42" }
+```
+Emitted when a pair is added to the exclusions set via `POST /api/v1/exclude`.
+
+#### `unexclude`
+```json
+{ "ts": "...", "type": "unexclude", "a_id": "ENT-1", "b_id": "CP-42" }
+```
+Emitted when a pair is removed from the exclusions set via `DELETE /api/v1/exclude`.
+
 ---
 
 ### WAL Replay Mechanics
@@ -81,6 +93,8 @@ Emitted when a result lands in the review band. No state change on replay — us
 - `crossmap_confirm` → `crossmap.add()` (unconditional; replay is authoritative, not competitive like `claim()`).
 - `crossmap_break` → `crossmap.remove()`.
 - `remove_record` → remove from DashMap, BlockingIndex, combined index; break any associated CrossMap pair.
+- `exclude` → add pair to exclusions set.
+- `unexclude` → remove pair from exclusions set.
 - `review_match` → no live state change; used only for review queue reconstruction at the end of startup.
 
 ---
@@ -135,11 +149,12 @@ This distinction ensures that during WAL replay, already-confirmed pairs are alw
 | 6 | Build A BlockingIndex — iterate all A records |
 | 7 | Build B BlockingIndex — iterate all B records |
 | 8 | Load CrossMap from `crossmap.csv` — silent empty CrossMap if file absent |
-| 9 | Build unmatched sets — A and B record IDs not present in CrossMap |
-| 10 | Open WAL + replay all WAL files — chronological order; `contains()` guard skips re-encoding cached vectors |
-| 11 | Rebuild unmatched sets — CrossMap may have changed during WAL replay |
-| 12 | Build `common_id_index` — reverse index `common_id_value → record_id` per side (only if `common_id_field` configured) |
-| 13 | Rebuild review queue — re-hydrate `review_match` WAL events; drain entries superseded by confirms, breaks, or removes |
+| 9 | Load exclusions from CSV — silent empty set if file absent or not configured |
+| 10 | Build unmatched sets — A and B record IDs not present in CrossMap |
+| 11 | Open WAL + replay all WAL files — chronological order; `contains()` guard skips re-encoding cached vectors; `exclude`/`unexclude` events update exclusions set |
+| 12 | Rebuild unmatched sets — CrossMap may have changed during WAL replay |
+| 13 | Build `common_id_index` — reverse index `common_id_value → record_id` per side (only if `common_id_field` configured) |
+| 14 | Rebuild review queue — re-hydrate `review_match` WAL events; drain entries superseded by confirms, breaks, or removes |
 
 **After startup (separate step):** `init_coordinator()` — spawns the background encoding coordinator task. Must be called from within a tokio runtime after `Arc<LiveMatchState>` is built. Only active if `encoder_batch_wait_ms > 0`.
 

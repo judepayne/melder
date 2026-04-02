@@ -46,6 +46,16 @@ cross_map:
   a_id_field: entity_id             # A-side ID column written into the cross-map output
   b_id_field: counterparty_id       # B-side ID column written into the cross-map output
 
+# --- Exclusions --------------------------------------------------------------
+# Known non-matching pairs to exclude from scoring. Pairs can be loaded from
+# CSV at startup and added/removed at runtime via the API. If an excluded pair
+# is currently matched, the match is broken automatically. The CSV file is
+# updated on shutdown with any runtime changes.
+exclusions:
+  path: exclusions.csv              # optional — omit section or path to disable
+  a_id_field: entity_id             # column name for A-side IDs
+  b_id_field: counterparty_id       # column name for B-side IDs
+
 # --- Embedding model ---------------------------------------------------------
 # Used by any match field with method: embedding. Model weights (~90 MB) are
 # downloaded automatically from HuggingFace on first run.
@@ -302,6 +312,11 @@ live:
                                     #   this pool. Higher values reduce lock contention under load.
   sqlite_pool_worker_cache_mb: 128  # optional (default: 128) — page cache per read connection in MB.
                                     #   Total read cache memory = pool_size × this value.
+  skip_initial_match: false         # optional (default: false) — when false, all unmatched B records
+                                    #   are scored against A at startup before the API begins listening.
+                                    #   Set to true to skip this pass and start accepting requests
+                                    #   immediately. Useful for large datasets where you want the API
+                                    #   up fast and will trigger matching selectively via the API.
 
 # --- Performance tuning ------------------------------------------------------
 # All fields are optional with sensible defaults. Omit the section if unsure.

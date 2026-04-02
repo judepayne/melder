@@ -100,6 +100,8 @@ pub struct Config {
     pub datasets: DatasetsConfig,
     #[serde(default)]
     pub cross_map: CrossMapConfig,
+    #[serde(default)]
+    pub exclusions: ExclusionsConfig,
     pub embeddings: EmbeddingsConfig,
     #[serde(default)]
     pub blocking: BlockingConfig,
@@ -231,6 +233,23 @@ pub struct CrossMapConfig {
     pub path: Option<String>,
     #[serde(default)]
     pub a_id_field: String,
+    #[serde(default)]
+    pub b_id_field: String,
+}
+
+/// Known non-matching pairs to exclude from scoring.
+///
+/// Pairs are loaded from CSV at startup and can be added/removed at runtime
+/// via the API. The CSV is updated on shutdown with any runtime changes.
+#[derive(Debug, Deserialize, Default)]
+pub struct ExclusionsConfig {
+    /// Path to the exclusions CSV file. Omit to disable.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Column name for A-side IDs in the CSV.
+    #[serde(default)]
+    pub a_id_field: String,
+    /// Column name for B-side IDs in the CSV.
     #[serde(default)]
     pub b_id_field: String,
 }
@@ -443,6 +462,13 @@ pub struct LiveConfig {
     /// Default: `None` (use in-memory storage, current behavior).
     #[serde(default)]
     pub db_path: Option<String>,
+    /// Skip the initial matching pass at startup.
+    ///
+    /// When false (default), all unmatched B records are scored against A
+    /// before the API starts listening. Set to true to skip this pass and
+    /// start accepting requests immediately.
+    #[serde(default)]
+    pub skip_initial_match: bool,
     /// SQLite page cache size in megabytes for the write connection.
     ///
     /// Controls `PRAGMA cache_size` for the SQLite write connection. Larger

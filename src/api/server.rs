@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::trace::TraceLayer;
 
@@ -79,6 +79,9 @@ fn build_match_router() -> Router<Arc<Session>> {
         .route("/api/v1/crossmap/stats", get(handlers::crossmap_stats))
         // Review endpoints
         .route("/api/v1/review/list", get(handlers::review_list))
+        // Exclusion endpoints
+        .route("/api/v1/exclude", post(handlers::exclude))
+        .route("/api/v1/exclude", delete(handlers::unexclude))
 }
 
 /// Routes for single-pool enrollment mode.
@@ -89,6 +92,9 @@ fn build_enroll_router() -> Router<Arc<Session>> {
         .route("/api/v1/enroll/remove", post(handlers::enroll_remove))
         .route("/api/v1/enroll/query", get(handlers::enroll_query))
         .route("/api/v1/enroll/count", get(handlers::enroll_count))
+        // Exclusion endpoints (enroll mode)
+        .route("/api/v1/exclude", post(handlers::exclude))
+        .route("/api/v1/exclude", delete(handlers::unexclude))
 }
 
 /// Start the HTTP server on a TCP port.

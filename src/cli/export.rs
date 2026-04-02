@@ -341,6 +341,9 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
                         },
                     );
                 }
+                WalEvent::Exclude { .. } | WalEvent::Unexclude { .. } => {
+                    // Exclusions are not part of the export state.
+                }
             }
         }
     }

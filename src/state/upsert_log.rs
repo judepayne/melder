@@ -98,6 +98,10 @@ pub enum WalEvent {
     CrossMapBreak { a_id: String, b_id: String },
     #[serde(rename = "remove_record")]
     RemoveRecord { side: Side, id: String },
+    #[serde(rename = "exclude")]
+    Exclude { a_id: String, b_id: String },
+    #[serde(rename = "unexclude")]
+    Unexclude { a_id: String, b_id: String },
 }
 
 /// Write-ahead log for crash recovery.
@@ -456,7 +460,9 @@ impl UpsertLog {
                 }
                 WalEvent::CrossMapConfirm { .. }
                 | WalEvent::CrossMapBreak { .. }
-                | WalEvent::ReviewMatch { .. } => {
+                | WalEvent::ReviewMatch { .. }
+                | WalEvent::Exclude { .. }
+                | WalEvent::Unexclude { .. } => {
                     compacted.push(event);
                 }
             }

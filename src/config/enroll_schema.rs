@@ -9,8 +9,8 @@ use crate::error::ConfigError;
 
 use super::schema::{
     BatchConfig, Bm25FieldPair, Config, CrossMapConfig, DatasetConfig, DatasetsConfig,
-    EmbeddingsConfig, HooksConfig, LiveConfig, Mode, OutputConfig, PerformanceConfig,
-    SynonymDictionaryConfig,
+    EmbeddingsConfig, ExclusionsConfig, HooksConfig, LiveConfig, Mode, OutputConfig,
+    PerformanceConfig, SynonymDictionaryConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -146,6 +146,10 @@ pub struct EnrollConfig {
 
     #[serde(default)]
     pub synonym_dictionary: Option<SynonymDictionaryConfig>,
+
+    /// Known non-matching pairs to exclude from scoring.
+    #[serde(default)]
+    pub exclusions: ExclusionsConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +289,7 @@ impl EnrollConfig {
                 b: b_dataset,
             },
             cross_map,
+            exclusions: self.exclusions,
             embeddings,
             blocking,
             exact_prefilter,

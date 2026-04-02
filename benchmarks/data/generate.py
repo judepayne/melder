@@ -518,14 +518,48 @@ def generate_dataset_b(
     records_a: list[dict],
     include_addresses: bool = False,
     preserve_blocking: bool = False,
+    n_exact: int = 0,
 ) -> list[dict]:
+    """Generate B-side records.
+
+    When n_exact > 0, the first n_exact matched records are exact copies
+    of their A counterpart (same field values, B-side field names, no noise).
+    These are marked with _match_type "exact" for test identification.
+    """
     records = []
     b_idx = 0
 
     # --- 70,000 matched records (clear to moderate noise) ---
     a_sample = rng.sample(range(len(records_a)), N_MATCHED)
+    exact_remaining = n_exact
     for a_i in a_sample:
         a = records_a[a_i]
+
+        if exact_remaining > 0:
+            # Exact copy: same field values, B-side field names, no noise
+            rec = {
+                "counterparty_id": f"CP-{b_idx:06d}",
+                "counterparty_name": a["legal_name"],
+                "domicile": a["country_code"],
+                "lei_code": a["lei"],
+                "onboarded_date": (
+                    datetime(2010, 1, 1) + timedelta(days=rng.randint(0, 5000))
+                ).strftime("%Y-%m-%d"),
+                "relationship_manager": fake.name(),
+                "credit_limit_usd": rng.randint(100_000, 100_000_000),
+                "internal_rating": rng.choice(
+                    ["1A", "1B", "2A", "2B", "3A", "3B", "NR"]
+                ),
+                "_true_a_id": a["entity_id"],
+                "_match_type": "exact",
+            }
+            if include_addresses:
+                rec["counterparty_address"] = a.get("registered_address", "")
+            records.append(rec)
+            b_idx += 1
+            exact_remaining -= 1
+            continue
+
         noise_level = rng.choices(["clear", "moderate"], weights=[0.6, 0.4])[0]
         country = a["country_code"]
         # Occasionally use a synonym for the country
@@ -615,6 +649,7 @@ def generate_dataset_b_1to1(
     include_addresses: bool = False,
     pct_matched: float = 0.60,
     pct_ambiguous: float = 0.10,
+    n_exact: int = 0,
 ) -> list[dict]:
     """Generate one B record per A record — strict 1:1 mapping, no collisions.
 
@@ -623,39 +658,66 @@ def generate_dataset_b_1to1(
       - ambiguous (pct_ambiguous, default 10%): heavy noise, ideally review queue
       - unmatched (remainder, default 30%): completely different entity, should not match
 
+    When n_exact > 0, the first n_exact matched records are exact copies
+    of their A counterpart (same field values, B-side field names, no noise).
+    These are marked with _match_type "exact" for test identification.
+
     This eliminates crossmap collisions (two B records competing for the same A)
     and produces a cleaner evaluation signal for training runs.
     """
     records = []
+    exact_remaining = n_exact
 
     for b_idx, a in enumerate(records_a):
         roll = rng.random()
 
         if roll < pct_matched:
-            # --- Matched: light noise, should auto-match ---
-            noise_level = rng.choices(["clear", "moderate"], weights=[0.6, 0.4])[0]
-            lei = a["lei"] if rng.random() < 0.70 else ""
-            rec = {
-                "counterparty_id": f"CP-{b_idx:06d}",
-                "counterparty_name": add_name_noise(a["legal_name"], noise_level),
-                "domicile": a["country_code"],
-                "lei_code": lei,
-                "onboarded_date": (
-                    datetime(2010, 1, 1) + timedelta(days=rng.randint(0, 5000))
-                ).strftime("%Y-%m-%d"),
-                "relationship_manager": fake.name(),
-                "credit_limit_usd": rng.randint(100_000, 100_000_000),
-                "internal_rating": rng.choice(
-                    ["1A", "1B", "2A", "2B", "3A", "3B", "NR"]
-                ),
-                "_true_a_id": a["entity_id"],
-                "_match_type": "matched",
-            }
-            if include_addresses:
-                addr = a.get("registered_address", "")
-                rec["counterparty_address"] = (
-                    add_address_noise(addr) if rng.random() < 0.50 else addr
-                )
+            if exact_remaining > 0:
+                # --- Exact copy: same values, B field names, no noise ---
+                rec = {
+                    "counterparty_id": f"CP-{b_idx:06d}",
+                    "counterparty_name": a["legal_name"],
+                    "domicile": a["country_code"],
+                    "lei_code": a["lei"],
+                    "onboarded_date": (
+                        datetime(2010, 1, 1) + timedelta(days=rng.randint(0, 5000))
+                    ).strftime("%Y-%m-%d"),
+                    "relationship_manager": fake.name(),
+                    "credit_limit_usd": rng.randint(100_000, 100_000_000),
+                    "internal_rating": rng.choice(
+                        ["1A", "1B", "2A", "2B", "3A", "3B", "NR"]
+                    ),
+                    "_true_a_id": a["entity_id"],
+                    "_match_type": "exact",
+                }
+                if include_addresses:
+                    rec["counterparty_address"] = a.get("registered_address", "")
+                exact_remaining -= 1
+            else:
+                # --- Matched: light noise, should auto-match ---
+                noise_level = rng.choices(["clear", "moderate"], weights=[0.6, 0.4])[0]
+                lei = a["lei"] if rng.random() < 0.70 else ""
+                rec = {
+                    "counterparty_id": f"CP-{b_idx:06d}",
+                    "counterparty_name": add_name_noise(a["legal_name"], noise_level),
+                    "domicile": a["country_code"],
+                    "lei_code": lei,
+                    "onboarded_date": (
+                        datetime(2010, 1, 1) + timedelta(days=rng.randint(0, 5000))
+                    ).strftime("%Y-%m-%d"),
+                    "relationship_manager": fake.name(),
+                    "credit_limit_usd": rng.randint(100_000, 100_000_000),
+                    "internal_rating": rng.choice(
+                        ["1A", "1B", "2A", "2B", "3A", "3B", "NR"]
+                    ),
+                    "_true_a_id": a["entity_id"],
+                    "_match_type": "matched",
+                }
+                if include_addresses:
+                    addr = a.get("registered_address", "")
+                    rec["counterparty_address"] = (
+                        add_address_noise(addr) if rng.random() < 0.50 else addr
+                    )
 
         elif roll < pct_matched + pct_ambiguous:
             # --- Ambiguous: heavy noise, ideally lands in review ---
@@ -780,6 +842,7 @@ def generate_b_from_master(
     include_addresses: bool,
     out_dir: str,
     preserve_blocking: bool = False,
+    n_exact: int = 0,
 ) -> list[dict]:
     """Generate a fresh B-side (vendor file) dataset against a fixed A master.
 
@@ -790,6 +853,9 @@ def generate_b_from_master(
     When preserve_blocking is True, matched B records always keep their true
     A record's country code — no records will be structurally blocked. Use
     this for training runs where blocked records add noise to evaluation.
+
+    When n_exact > 0, the first n_exact matched records are exact copies
+    (same field values, B-side field names, no noise), marked _match_type "exact".
 
     Calling this with the same master_a_path but different b_seeds simulates
     successive daily vendor file deliveries against the same reference master —
@@ -813,6 +879,7 @@ def generate_b_from_master(
         records_a,
         include_addresses=include_addresses,
         preserve_blocking=preserve_blocking,
+        n_exact=n_exact,
     )
     write_csv(records_b, os.path.join(out_dir, "dataset_b.csv"))
     return records_b
@@ -826,6 +893,7 @@ def generate_b_from_master_1to1(
     out_dir: str,
     pct_matched: float = 0.60,
     pct_ambiguous: float = 0.10,
+    n_exact: int = 0,
 ) -> list[dict]:
     """Generate a 1:1 B dataset against a fixed A master.
 
@@ -836,6 +904,9 @@ def generate_b_from_master_1to1(
       - pct_matched (default 60%): light noise, should auto-match
       - pct_ambiguous (default 10%): heavy noise, ideally review
       - remainder (default 30%): different entity, should not match
+
+    When n_exact > 0, the first n_exact matched records are exact copies
+    (same field values, B-side field names, no noise), marked _match_type "exact".
 
     Uses only the first n records from the master (or all if n >= len(A)).
     """
@@ -854,6 +925,7 @@ def generate_b_from_master_1to1(
         include_addresses=include_addresses,
         pct_matched=pct_matched,
         pct_ambiguous=pct_ambiguous,
+        n_exact=n_exact,
     )
     write_csv(records_b, os.path.join(out_dir, "dataset_b.csv"))
     return records_b
@@ -864,6 +936,7 @@ def generate_with_seed(
     n: int,
     include_addresses: bool,
     out_dir: str,
+    n_exact: int = 0,
 ) -> tuple[list[dict], list[dict]]:
     """Generate A and B datasets with an explicit seed.
 
@@ -872,6 +945,9 @@ def generate_with_seed(
     and dataset_b.csv to out_dir and returns (records_a, records_b).
 
     Uses the standard 70 / 10 / 20 matched / ambiguous / unmatched split.
+
+    When n_exact > 0, the first n_exact matched B records are exact copies
+    of their A counterpart (no noise), marked _match_type "exact".
     """
     global N_A, N_B, N_MATCHED, N_AMBIGUOUS, N_UNMATCHED
 
@@ -887,7 +963,9 @@ def generate_with_seed(
     os.makedirs(out_dir, exist_ok=True)
 
     records_a = generate_dataset_a(N_A, include_addresses=include_addresses)
-    records_b = generate_dataset_b(records_a, include_addresses=include_addresses)
+    records_b = generate_dataset_b(
+        records_a, include_addresses=include_addresses, n_exact=n_exact
+    )
 
     write_csv(records_a, os.path.join(out_dir, "dataset_a.csv"))
     write_csv(records_b, os.path.join(out_dir, "dataset_b.csv"))
@@ -926,6 +1004,13 @@ def main() -> None:
         default=SEED,
         help="Random seed for reproducible generation (default: %(default)s).",
     )
+    parser.add_argument(
+        "--exact-matches",
+        type=int,
+        default=0,
+        help="Number of matched B records that are exact copies of A (no noise). "
+        "These are marked _match_type 'exact' in the output. Default: 0.",
+    )
     args = parser.parse_args()
 
     rng.seed(args.seed)
@@ -958,8 +1043,17 @@ def main() -> None:
     print("Generating dataset A ...")
     records_a = generate_dataset_a(N_A, include_addresses=args.addresses)
 
+    n_exact = args.exact_matches
+    if n_exact > N_MATCHED:
+        print(
+            f"WARNING: --exact-matches ({n_exact}) exceeds matched count ({N_MATCHED}), capping"
+        )
+        n_exact = N_MATCHED
+
     print("Generating dataset B ...")
-    records_b = generate_dataset_b(records_a, include_addresses=args.addresses)
+    records_b = generate_dataset_b(
+        records_a, include_addresses=args.addresses, n_exact=n_exact
+    )
 
     # Dataset A — all three formats
     print("Writing dataset A ...")
@@ -980,14 +1074,16 @@ def main() -> None:
         writer = csv.writer(f)
         writer.writerow(["entity_id", "counterparty_id"])
         for rec in records_b:
-            if rec["_match_type"] == "matched":
+            if rec["_match_type"] in ("matched", "exact"):
                 writer.writerow([rec["_true_a_id"], rec["counterparty_id"]])
     print(f"  wrote {gt_path}")
+
+    n_exact_actual = sum(1 for r in records_b if r["_match_type"] == "exact")
 
     print("\nDone.")
     print(f"  Dataset A: {len(records_a):,} records")
     print(f"  Dataset B: {len(records_b):,} records")
-    print(f"    matched:    {N_MATCHED:,}")
+    print(f"    matched:    {N_MATCHED:,} (of which {n_exact_actual:,} exact)")
     print(f"    ambiguous:  {N_AMBIGUOUS:,}")
     print(f"    unmatched:  {N_UNMATCHED:,}")
 

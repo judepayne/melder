@@ -689,58 +689,71 @@ fn encode_and_upsert(
     let total = ids.len();
     let done_counter = AtomicUsize::new(0);
 
-    ids.par_chunks(batch_size).try_for_each(|chunk| {
-        let mut combined_vecs: Vec<Vec<f32>> = vec![Vec::with_capacity(combined_dim); chunk.len()];
+    // Use a dedicated thread pool sized to the encoder pool to prevent
+    // deadlock: if we use the global rayon pool, N workers all call
+    // encoder_pool.encode() but only pool_size can acquire a session.
+    // The blocked workers starve ONNX's internal rayon tasks (which need
+    // the same global pool), causing a deadlock.
+    let encode_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(encoder_pool.pool_size())
+        .build()
+        .map_err(|e| MelderError::Other(anyhow::anyhow!("rayon pool build: {}", e)))?;
 
-        for (field_a, field_b, weight) in emb_specs {
-            let field_name = if is_a_side { field_a } else { field_b };
-            let texts: Vec<String> = chunk
-                .iter()
-                .map(|id| {
-                    records
-                        .get(id.as_str())
-                        .expect("id must exist in records")
-                        .get(field_name)
-                        .map(|v| v.trim().to_string())
-                        .unwrap_or_default()
-                })
-                .collect();
+    encode_pool.install(|| {
+        ids.par_chunks(batch_size).try_for_each(|chunk| {
+            let mut combined_vecs: Vec<Vec<f32>> =
+                vec![Vec::with_capacity(combined_dim); chunk.len()];
 
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            let vecs = encoder_pool
-                .encode(&text_refs)
-                .map_err(MelderError::Encoder)?;
+            for (field_a, field_b, weight) in emb_specs {
+                let field_name = if is_a_side { field_a } else { field_b };
+                let texts: Vec<String> = chunk
+                    .iter()
+                    .map(|id| {
+                        records
+                            .get(id.as_str())
+                            .expect("id must exist in records")
+                            .get(field_name)
+                            .map(|v| v.trim().to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect();
 
-            let sqrt_w = weight.sqrt() as f32;
-            for (i, mut vec) in vecs.into_iter().enumerate() {
-                for v in &mut vec {
-                    *v *= sqrt_w;
+                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                let vecs = encoder_pool
+                    .encode(&text_refs)
+                    .map_err(MelderError::Encoder)?;
+
+                let sqrt_w = weight.sqrt() as f32;
+                for (i, mut vec) in vecs.into_iter().enumerate() {
+                    for v in &mut vec {
+                        *v *= sqrt_w;
+                    }
+                    combined_vecs[i].extend_from_slice(&vec);
                 }
-                combined_vecs[i].extend_from_slice(&vec);
             }
-        }
 
-        for (i, id) in chunk.iter().enumerate() {
-            let record = records.get(id.as_str()).unwrap();
-            index
-                .upsert(id, &combined_vecs[i], record, side_enum)
-                .map_err(|e| MelderError::Other(anyhow::anyhow!("{}", e)))?;
-        }
+            for (i, id) in chunk.iter().enumerate() {
+                let record = records.get(id.as_str()).unwrap();
+                index
+                    .upsert(id, &combined_vecs[i], record, side_enum)
+                    .map_err(|e| MelderError::Other(anyhow::anyhow!("{}", e)))?;
+            }
 
-        let done = done_counter.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
-        // Log progress periodically — roughly every 1024 records.
-        if done % 1024 < batch_size || done >= total {
-            let pct = done as f64 / total as f64 * 100.0;
-            info!(
-                side = side_label,
-                encoded = done,
-                total = total,
-                pct = format!("{:.0}", pct).as_str(),
-                "embedding encoding progress"
-            );
-        }
+            let done = done_counter.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+            // Log progress periodically — roughly every 1024 records.
+            if done % 1024 < batch_size || done >= total {
+                let pct = done as f64 / total as f64 * 100.0;
+                info!(
+                    side = side_label,
+                    encoded = done,
+                    total = total,
+                    pct = format!("{:.0}", pct).as_str(),
+                    "embedding encoding progress"
+                );
+            }
 
-        Ok::<(), MelderError>(())
+            Ok::<(), MelderError>(())
+        })
     })?;
 
     Ok(())

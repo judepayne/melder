@@ -40,6 +40,12 @@ pub enum HookEvent {
     },
     /// A previously confirmed match was broken.
     Break { a_id: String, b_id: String },
+    /// A pair was excluded (known non-match).
+    Exclude {
+        a_id: String,
+        b_id: String,
+        match_was_broken: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +76,8 @@ struct HookEventJson<'a> {
     best_candidate_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     field_scores: Option<&'a [FieldScore]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_was_broken: Option<bool>,
 }
 
 impl HookEvent {
@@ -97,6 +105,7 @@ impl HookEvent {
                 } else {
                     Some(field_scores)
                 },
+                match_was_broken: None,
             },
             HookEvent::Review {
                 a_id,
@@ -118,6 +127,7 @@ impl HookEvent {
                 } else {
                     Some(field_scores)
                 },
+                match_was_broken: None,
             },
             HookEvent::NoMatch {
                 side,
@@ -138,6 +148,7 @@ impl HookEvent {
                 best_score: *best_score,
                 best_candidate_id: best_candidate_id.as_deref(),
                 field_scores: None,
+                match_was_broken: None,
             },
             HookEvent::Break { a_id, b_id } => HookEventJson {
                 event_type: "on_break",
@@ -150,6 +161,24 @@ impl HookEvent {
                 best_score: None,
                 best_candidate_id: None,
                 field_scores: None,
+                match_was_broken: None,
+            },
+            HookEvent::Exclude {
+                a_id,
+                b_id,
+                match_was_broken,
+            } => HookEventJson {
+                event_type: "on_exclude",
+                a_id: Some(a_id),
+                b_id: Some(b_id),
+                side: None,
+                id: None,
+                score: None,
+                source: None,
+                best_score: None,
+                best_candidate_id: None,
+                field_scores: None,
+                match_was_broken: Some(*match_was_broken),
             },
         };
         let mut json = serde_json::to_string(&wire).unwrap_or_default();

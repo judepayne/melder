@@ -154,6 +154,21 @@ See [[Key Decisions#Combined Vector Index Single Index Per Side]] for why one co
 
 ---
 
+## Exclusion Filtering
+
+After candidate selection (ANN or blocked records), the pipeline filters out any pairs that are in the exclusions set. Exclusions are known non-matching pairs loaded from a CSV file at startup and optionally modified at runtime via API.
+
+**Mechanics:**
+- Exclusions are stored as a `RwLock<HashSet<(String, String)>>` in `src/matching/exclusions.rs`
+- Lookup is O(1) per candidate pair
+- If an excluded pair is currently matched in the CrossMap, the match is broken first (before the pair is filtered)
+- In batch mode, exclusions are loaded from CSV only (read-only)
+- In live mode, exclusions can be added/removed via `POST /api/v1/exclude` and `DELETE /api/v1/exclude` endpoints; changes are persisted to WAL and flushed to CSV on shutdown
+
+See [[Config Reference#exclusions]] for configuration.
+
+---
+
 ## Common Gotchas
 
 | Situation | Result | Why |

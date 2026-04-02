@@ -211,6 +211,25 @@ Both thresholds are **inclusive** (≥). Below `review_floor` → `Classificatio
 
 ---
 
+## `exclusions`
+
+```yaml
+exclusions:
+  path: "data/exclusions.csv"
+  a_id_field: "entity_id"
+  b_id_field: "vendor_id"
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `path` | Option\<String\> | None | CSV file path containing known non-matching pairs. Omit to disable exclusions. |
+| `a_id_field` | String | required if `path` set | Column header for A-side IDs in the CSV |
+| `b_id_field` | String | required if `path` set | Column header for B-side IDs in the CSV |
+
+**Optional section.** When configured, exclusions are loaded at startup and applied as a filter after candidate generation but before scoring. Excluded pairs are removed from the candidate set. If an excluded pair is currently matched in the CrossMap, the match is broken first. In live mode, exclusions can be added/removed at runtime via API endpoints (`POST /api/v1/exclude`, `DELETE /api/v1/exclude`). Changes are persisted to WAL and flushed to CSV on shutdown. In batch mode, exclusions are loaded from CSV only (read-only, no API).
+
+---
+
 ## `output` (batch mode only)
 
 ```yaml

@@ -236,3 +236,20 @@ Numeric equality. Parses both values as floating-point numbers and
 returns 1.0 if equal (within machine epsilon), 0.0 otherwise. No range
 or tolerance matching — this is currently a stub. Use `exact` for
 numeric identifiers. A future version may add tolerance-based comparison.
+
+---
+
+## Exclusions (Known Non-Matches)
+
+Pairs of records that have been identified as non-matches (e.g. by human
+review) can be excluded from the scoring pipeline entirely. Excluded pairs
+are filtered out after candidate generation and before scoring — they are
+never scored and never claim crossmap slots.
+
+Exclusions can be loaded from a CSV file at startup (via the `exclusions`
+config section) and added/removed at runtime via the `POST /api/v1/exclude`
+and `DELETE /api/v1/exclude` endpoints. Changes are persisted via the WAL
+and flushed to the exclusions CSV on shutdown.
+
+See [Configuration](configuration.md) for the `exclusions` config section
+and [API Reference](api-reference.md) for the endpoint documentation.

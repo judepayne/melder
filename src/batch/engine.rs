@@ -58,12 +58,14 @@ enum RecordOutcome {
 /// phases are skipped — all records go through full scoring. Used by `meld tune`
 /// so that ground-truth pairs receive real scores instead of being short-circuited
 /// at 1.0.
+#[allow(clippy::too_many_arguments)]
 pub fn run_batch(
     config: &Config,
     store: &dyn RecordStore,
     combined_index_a: Option<&dyn VectorDB>,
     combined_index_b: Option<&dyn VectorDB>,
     crossmap: &dyn CrossMapOps,
+    exclusions: &crate::matching::exclusions::Exclusions,
     limit: Option<usize>,
     skip_prematch: bool,
 ) -> Result<BatchResult, MelderError> {
@@ -402,6 +404,7 @@ pub fn run_batch(
                 bm25_scores_map: &bm25_scores_map,
                 synonym_candidate_ids: &synonym_cand_ids,
                 synonym_dictionary: synonym_dict.as_deref(),
+                exclusions,
             };
             let results =
                 pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);

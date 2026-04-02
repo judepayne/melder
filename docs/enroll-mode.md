@@ -98,6 +98,8 @@ not available.
 | POST | `/enroll/remove` | Remove a record from the pool |
 | GET | `/enroll/query?id=X` | Look up a record by ID |
 | GET | `/enroll/count` | Number of records in the pool |
+| POST | `/exclude` | Exclude a pair (known non-match) |
+| DELETE | `/exclude` | Remove an exclusion |
 | GET | `/health` | Health check |
 | GET | `/status` | Server status (uptime, enrollment count) |
 

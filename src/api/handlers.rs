@@ -39,6 +39,12 @@ pub struct BreakRequest {
 }
 
 #[derive(Deserialize)]
+pub struct ExcludeRequest {
+    pub a_id: String,
+    pub b_id: String,
+}
+
+#[derive(Deserialize)]
 pub struct LookupParams {
     pub id: String,
     pub side: String,
@@ -412,6 +418,40 @@ pub async fn crossmap_break(
         r
     })
     .await
+}
+
+// ---------------------------------------------------------------------------
+// Exclusion handlers
+// ---------------------------------------------------------------------------
+
+/// POST /api/v1/exclude
+pub async fn exclude(
+    State(session): State<AppState>,
+    Json(body): Json<ExcludeRequest>,
+) -> axum::response::Response {
+    let a_id = body.a_id;
+    let b_id = body.b_id;
+    let resp = tokio::task::spawn_blocking(move || session.exclude(&a_id, &b_id))
+        .await
+        .unwrap_or_else(|e| {
+            panic!("exclude task panicked: {:?}", e);
+        });
+    json_ok(resp)
+}
+
+/// DELETE /api/v1/exclude
+pub async fn unexclude(
+    State(session): State<AppState>,
+    Json(body): Json<ExcludeRequest>,
+) -> axum::response::Response {
+    let a_id = body.a_id;
+    let b_id = body.b_id;
+    let resp = tokio::task::spawn_blocking(move || session.unexclude(&a_id, &b_id))
+        .await
+        .unwrap_or_else(|e| {
+            panic!("unexclude task panicked: {:?}", e);
+        });
+    json_ok(resp)
 }
 
 // ---------------------------------------------------------------------------

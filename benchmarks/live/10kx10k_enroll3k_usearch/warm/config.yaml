@@ -40,6 +40,7 @@ thresholds:
   review_floor: 0.60
 
 live:
+  skip_initial_match: true
   upsert_log: benchmarks/live/10kx10k_enroll3k_usearch/warm/wal/events.ndjson
 
 performance:

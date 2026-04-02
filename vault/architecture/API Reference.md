@@ -153,6 +153,30 @@ Summary statistics for the CrossMap.
 
 ---
 
+## Exclusion Endpoints
+
+Manage known non-matching pairs. Available in both match and enroll modes.
+
+### `POST /api/v1/exclude`
+
+Add a pair to the exclusions set. If the pair is currently matched in the CrossMap, the match is broken first. Appends an `Exclude` event to the WAL.
+
+**Request:** `{ "a_id": "...", "b_id": "..." }`
+
+**Response:** `ExcludeResponse` with `excluded: true` and `match_was_broken: bool` (true if a CrossMap pair was broken).
+
+---
+
+### `DELETE /api/v1/exclude`
+
+Remove a pair from the exclusions set. Appends an `Unexclude` event to the WAL.
+
+**Request:** `{ "a_id": "...", "b_id": "..." }`
+
+**Response:** `UnexcludeResponse` with `unexcluded: true`.
+
+---
+
 ## Review and Unmatched Endpoints
 
 ### `GET /api/v1/review/list?offset=0&limit=100`

@@ -163,6 +163,14 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     require_non_empty(&cfg.cross_map.a_id_field, "cross_map.a_id_field")?;
     require_non_empty(&cfg.cross_map.b_id_field, "cross_map.b_id_field")?;
 
+    // 10a. exclusions: if path is set, id fields are required
+    if let Some(ref p) = cfg.exclusions.path
+        && !p.is_empty()
+    {
+        require_non_empty(&cfg.exclusions.a_id_field, "exclusions.a_id_field")?;
+        require_non_empty(&cfg.exclusions.b_id_field, "exclusions.b_id_field")?;
+    }
+
     // 11-12. embeddings
     require_non_empty(&cfg.embeddings.model, "embeddings.model")?;
     require_non_empty(&cfg.embeddings.a_cache_dir, "embeddings.a_cache_dir")?;
@@ -489,6 +497,14 @@ fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
     } else if cfg.datasets.a.id_field.is_empty() {
         // No dataset provided — id_field still needed for enroll requests.
         // The user must set id_field somewhere. For now, allow empty (set via dataset).
+    }
+
+    // 2a. exclusions: if path is set, id fields are required
+    if let Some(ref p) = cfg.exclusions.path
+        && !p.is_empty()
+    {
+        require_non_empty(&cfg.exclusions.a_id_field, "exclusions.a_id_field")?;
+        require_non_empty(&cfg.exclusions.b_id_field, "exclusions.b_id_field")?;
     }
 
     // 3. embeddings

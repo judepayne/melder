@@ -73,7 +73,8 @@ batch:
 ```
 
 The database is created fresh each run and deleted on completion — the
-source CSV files and crossmap.csv remain the only persistent state.
+source CSV files, crossmap.csv, and exclusions.csv (if configured) remain
+the only persistent state.
 Records are stored in columnar format (one column per field, no JSON
 serialization) for fast scoring. Data is loaded via streaming — only one
 10K-record chunk is in memory at a time, regardless of dataset size.

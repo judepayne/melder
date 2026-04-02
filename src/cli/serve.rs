@@ -50,6 +50,13 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
         // only after the coordinator is set up).
         let session = std::sync::Arc::new(crate::session::Session::new(state.clone(), hook_tx));
 
+        // Run initial matching pass: score all unmatched B records against A.
+        // This ensures that pre-loaded datasets are matched before the API
+        // starts accepting requests.
+        if !state.config.live.skip_initial_match {
+            session.initial_match_pass();
+        }
+
         // Start background crossmap flusher
         let flush_state = state.clone();
         let flush_secs = state.config.live.crossmap_flush_secs.unwrap_or(5);
@@ -101,6 +108,11 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
         state.mark_crossmap_dirty(); // force flush
         if let Err(e) = state.flush_crossmap() {
             warn!(error = %e, "final crossmap flush failed");
+        }
+
+        // Final exclusions flush
+        if let Err(e) = state.exclusions.flush() {
+            warn!(error = %e, "final exclusions flush failed");
         }
 
         // Save combined embedding index caches

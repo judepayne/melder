@@ -33,6 +33,8 @@ All endpoints are under `/api/v1/`. The server is started with
 | GET | `/a/unmatched` | List A-side record IDs with no crossmap pair (paginated) |
 | GET | `/b/unmatched` | List B-side record IDs with no crossmap pair (paginated) |
 | GET | `/review/list` | List pending review-band matches (paginated) |
+| POST | `/exclude` | Exclude a pair (known non-match). Breaks existing match if present |
+| DELETE | `/exclude` | Remove an exclusion, allowing the pair to match again |
 | GET | `/health` | Health check |
 | GET | `/status` | Detailed server status (record counts, uptime) |
 
@@ -364,3 +366,67 @@ GET /api/v1/review/list?offset=0&limit=20
 Reviews are sorted by score descending (highest-confidence pairs first).
 Confirming or breaking a pair removes it from the review queue.
 Re-upserting a record also clears its stale review entries.
+
+## Excluding a pair (known non-match)
+
+Mark a pair of records as a known non-match. Excluded pairs are never
+scored or returned as candidates, even if they would otherwise match.
+
+If the pair is currently matched to each other in the crossmap, the
+match is broken automatically before the exclusion is applied.
+
+```
+POST /api/v1/exclude
+```
+
+```json
+{ "a_id": "ENT-012", "b_id": "CP-088" }
+```
+
+Response:
+
+```json
+{
+  "excluded": true,
+  "match_was_broken": true,
+  "a_id": "ENT-012",
+  "b_id": "CP-088"
+}
+```
+
+`match_was_broken` is `true` if the pair was previously matched and the
+match was broken as part of this operation. After excluding, both records
+become unmatched and can be re-matched to other records on the next
+upsert or try-match.
+
+Exclusions survive server restarts (persisted via WAL and flushed to the
+exclusions CSV on shutdown).
+
+## Removing an exclusion
+
+Remove an exclusion, allowing the pair to match again.
+
+```
+DELETE /api/v1/exclude
+```
+
+```json
+{ "a_id": "ENT-012", "b_id": "CP-088" }
+```
+
+Response:
+
+```json
+{
+  "removed": true,
+  "a_id": "ENT-012",
+  "b_id": "CP-088"
+}
+```
+
+`removed` is `true` if the pair was previously excluded and has now
+been removed. `false` if the pair was not in the exclusion set.
+
+After removing an exclusion, the pair will be scored normally on the
+next upsert or try-match. It is not automatically re-scored — you need
+to re-upsert one of the records to trigger matching.

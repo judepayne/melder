@@ -63,6 +63,7 @@ performance:
   vector_index_mode: "load"
 
 live:
+  skip_initial_match: true
   upsert_log: benchmarks/live/1Mx1M_inject10k_usearch/warm/wal/events.ndjson
 
 output:

@@ -673,6 +673,7 @@ fn run_pipeline(
     drop(b_records_map);
 
     let crossmap = crate::crossmap::MemoryCrossMap::new();
+    let no_exclusions = crate::matching::exclusions::Exclusions::new();
     if verbose {
         eprintln!("Running batch matching for score analysis...");
     }
@@ -682,6 +683,7 @@ fn run_pipeline(
         state.combined_index_a.as_deref(),
         combined_index_b.as_deref(),
         &crossmap,
+        &no_exclusions,
         None,
         true, // skip pre-match
     ) {

@@ -80,6 +80,7 @@ pub struct LiveMatchState {
     pub a: LiveSideState,
     pub b: LiveSideState,
     pub crossmap: Box<dyn CrossMapOps>,
+    pub exclusions: crate::matching::exclusions::Exclusions,
     pub encoder_pool: Arc<EncoderPool>,
     /// Optional batching coordinator for concurrent encoding.
     /// Created when `performance.encoder_batch_wait_ms > 0`.
@@ -226,6 +227,7 @@ impl LiveMatchState {
         encoder_pool: Arc<EncoderPool>,
         store: Arc<dyn RecordStore>,
         crossmap: Box<dyn CrossMapOps>,
+        exclusions: crate::matching::exclusions::Exclusions,
         combined_index_a: Option<Box<dyn VectorDB>>,
         combined_index_b: Option<Box<dyn VectorDB>>,
         label: &str,
@@ -305,6 +307,7 @@ impl LiveMatchState {
             a: a_side,
             b: b_side,
             crossmap,
+            exclusions,
             encoder_pool,
             coordinator: None,
             wal,
@@ -389,6 +392,9 @@ impl LiveMatchState {
             }
         };
 
+        // Load exclusions
+        let exclusions = Self::load_exclusions(&config);
+
         // Build unmatched sets
         for id in store.ids(Side::A).unwrap_or_default() {
             if !crossmap.has_a(&id) {
@@ -401,7 +407,7 @@ impl LiveMatchState {
             }
         }
 
-        // WAL replay (updates store, crossmap, and vector indices)
+        // WAL replay (updates store, crossmap, exclusions, and vector indices)
         let wal_path = config
             .live
             .upsert_log
@@ -416,6 +422,7 @@ impl LiveMatchState {
                 &config,
                 &store,
                 crossmap.as_ref(),
+                &exclusions,
                 &encoder_pool,
                 combined_index_a.as_deref(),
                 combined_index_b.as_deref(),
@@ -431,6 +438,7 @@ impl LiveMatchState {
             encoder_pool,
             store,
             crossmap,
+            exclusions,
             combined_index_a,
             combined_index_b,
             "",
@@ -491,6 +499,9 @@ impl LiveMatchState {
         // Empty crossmap (not used in enroll mode)
         let crossmap: Box<dyn CrossMapOps> = Box::new(MemoryCrossMap::new());
 
+        // Load exclusions
+        let exclusions = Self::load_exclusions(&config);
+
         // Mark all A records as unmatched (no crossmap)
         for id in store.ids(Side::A).unwrap_or_default() {
             let _ = store.mark_unmatched(Side::A, &id);
@@ -511,6 +522,7 @@ impl LiveMatchState {
                 &config,
                 &store,
                 crossmap.as_ref(),
+                &exclusions,
                 &encoder_pool,
                 combined_index_a.as_deref(),
                 None, // No B-side index
@@ -526,21 +538,24 @@ impl LiveMatchState {
             encoder_pool,
             store,
             crossmap,
+            exclusions,
             combined_index_a,
             None, // No B-side index
             "enroll ",
         )
     }
 
-    /// Replay WAL events into the store, crossmap, and vector indices.
+    /// Replay WAL events into the store, crossmap, exclusions, and vector indices.
     ///
     /// Used only by the memory-backed startup path. The SQLite path skips
     /// WAL replay entirely (state is already durable in the DB).
+    #[allow(clippy::too_many_arguments)]
     fn replay_wal(
         wal_events: &[WalEvent],
         config: &Config,
         store: &Arc<dyn RecordStore>,
         crossmap: &dyn CrossMapOps,
+        exclusions: &crate::matching::exclusions::Exclusions,
         encoder_pool: &Arc<EncoderPool>,
         combined_index_a: Option<&dyn VectorDB>,
         combined_index_b: Option<&dyn VectorDB>,
@@ -626,6 +641,12 @@ impl LiveMatchState {
                             }
                         }
                     }
+                }
+                WalEvent::Exclude { a_id, b_id } => {
+                    exclusions.add(a_id, b_id);
+                }
+                WalEvent::Unexclude { a_id, b_id } => {
+                    exclusions.remove(a_id, b_id);
                 }
             }
         }
@@ -794,12 +815,16 @@ impl LiveMatchState {
             None,
         )?;
 
+        // Load exclusions
+        let exclusions = Self::load_exclusions(&config);
+
         Self::finish(
             config,
             start,
             encoder_pool,
             store,
             crossmap,
+            exclusions,
             combined_index_a,
             combined_index_b,
             "SQLite, ",
@@ -832,6 +857,37 @@ impl LiveMatchState {
                 }
             }
         }
+    }
+
+    /// Load exclusions from CSV if configured. Returns an empty set if not configured
+    /// or the file is missing.
+    fn load_exclusions(config: &Config) -> crate::matching::exclusions::Exclusions {
+        use crate::matching::exclusions::Exclusions;
+
+        if let Some(ref p) = config.exclusions.path
+            && !p.is_empty()
+        {
+            match Exclusions::load(
+                Path::new(p),
+                &config.exclusions.a_id_field,
+                &config.exclusions.b_id_field,
+            ) {
+                Ok(ex) => {
+                    if !ex.is_empty() {
+                        ex.set_flush_path(
+                            Path::new(p),
+                            &config.exclusions.a_id_field,
+                            &config.exclusions.b_id_field,
+                        );
+                    }
+                    return ex;
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to load exclusions, starting fresh");
+                }
+            }
+        }
+        Exclusions::new()
     }
 
     /// Build BM25 indices from the store (if BM25 is configured and enabled).

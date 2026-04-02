@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use tracing::{info_span, warn};
+use tracing::{info, info_span, warn};
 
 use crate::bm25::scorer::normalise_bm25;
 use crate::error::SessionError;
@@ -89,6 +89,21 @@ pub mod response {
     #[derive(Debug, Serialize)]
     pub struct BreakResponse {
         pub status: String,
+        pub a_id: String,
+        pub b_id: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct ExcludeResponse {
+        pub excluded: bool,
+        pub match_was_broken: bool,
+        pub a_id: String,
+        pub b_id: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct UnexcludeResponse {
+        pub removed: bool,
         pub a_id: String,
         pub b_id: String,
     }
@@ -284,6 +299,221 @@ impl Session {
         {
             warn!("hook event dropped: channel full");
         }
+    }
+
+    /// Run an initial matching pass for all unmatched B records against A.
+    ///
+    /// Called at startup after datasets are loaded and indices are built,
+    /// before the HTTP server starts listening. Uses the same scoring
+    /// pipeline and claim logic as live upserts, including WAL writes,
+    /// hooks, and review queue entries.
+    ///
+    /// Skips encoding — records are already in the store and vector index.
+    pub fn initial_match_pass(&self) {
+        let config = &self.state.config;
+        let store = &self.state.store;
+
+        // Only run if both sides have data
+        let a_count = store.len(Side::A).unwrap_or(0);
+        let b_count = store.len(Side::B).unwrap_or(0);
+        if a_count == 0 || b_count == 0 {
+            return;
+        }
+
+        // Collect unmatched B IDs
+        let unmatched_b: Vec<String> = store.unmatched_ids(Side::B).unwrap_or_default();
+        if unmatched_b.is_empty() {
+            info!(
+                a_count,
+                b_count, "initial match: all B records already matched"
+            );
+            return;
+        }
+
+        info!(
+            unmatched = unmatched_b.len(),
+            a_count, b_count, "initial match pass starting"
+        );
+
+        let start = Instant::now();
+        let opp_side = self.state.opposite_side(Side::B); // = A side
+        let opp_bm25 = opp_side.bm25_index.as_ref();
+        let top_n = config.top_n.unwrap_or(5);
+        let ann_candidates = config.ann_candidates.unwrap_or(50);
+        let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
+        let syn_fields = &config.synonym_fields;
+        let b_side = self.state.side(Side::B);
+
+        let mut auto_matched = 0usize;
+        let mut review_count = 0usize;
+        let mut no_match = 0usize;
+
+        for (i, b_id) in unmatched_b.iter().enumerate() {
+            // Progress logging every 1000 records
+            if (i + 1) % 1000 == 0 || i + 1 == unmatched_b.len() {
+                let elapsed = start.elapsed().as_secs_f64();
+                let rate = (i + 1) as f64 / elapsed;
+                info!(
+                    done = i + 1,
+                    total = unmatched_b.len(),
+                    rate = format!("{:.0}", rate),
+                    "initial match progress"
+                );
+            }
+
+            // Skip if already matched (by a prior iteration's claim)
+            if self.state.crossmap.has_b(b_id) {
+                continue;
+            }
+
+            // Get the B record from the store
+            let b_record = match store.get(Side::B, b_id) {
+                Ok(Some(rec)) => rec,
+                _ => continue,
+            };
+
+            // Blocking query
+            let blocked_ids: Vec<String> = if config.blocking.enabled {
+                store
+                    .blocking_query(&b_record, Side::B, Side::A)
+                    .unwrap_or_default()
+            } else {
+                store.ids(Side::A).unwrap_or_default()
+            };
+
+            // Get combined vec from index (already encoded during startup)
+            let query_combined_vec: Vec<f32> = b_side
+                .combined_index
+                .as_ref()
+                .and_then(|idx| idx.get(b_id).ok().flatten())
+                .unwrap_or_default();
+
+            // BM25 candidate generation
+            let (bm25_cand_ids, bm25_scores_map) = if let Some(bm25) = opp_bm25 {
+                let query_text = bm25.query_text_for(&b_record, Side::B);
+                let self_score = bm25.analytical_self_score(&query_text);
+                let raw_results = bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
+                let scored: Vec<(String, f64)> = raw_results
+                    .into_iter()
+                    .map(|(cid, raw)| {
+                        let norm = crate::bm25::scorer::normalise_bm25(raw, self_score);
+                        (cid, norm)
+                    })
+                    .collect();
+                let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
+                let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
+                (ids, map)
+            } else {
+                (Vec::new(), std::collections::HashMap::new())
+            };
+
+            // Synonym candidate generation
+            let opp_syn_guard = opp_side
+                .synonym_index
+                .as_ref()
+                .map(|mtx| mtx.read().unwrap_or_else(|e| e.into_inner()));
+            let synonym_cand_ids = if !syn_fields.is_empty() {
+                if let Some(ref guard) = opp_syn_guard {
+                    pipeline::synonym_candidate_stage(guard, &b_record, Side::B, syn_fields)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            // Score
+            let scoring_query = pipeline::ScoringQuery {
+                id: b_id,
+                record: &b_record,
+                side: Side::B,
+                combined_vec: &query_combined_vec,
+            };
+            let scoring_pool = pipeline::ScoringPool {
+                store: store.as_ref(),
+                side: Side::A,
+                combined_index: opp_side.combined_index.as_deref(),
+                blocked_ids: &blocked_ids,
+                bm25_candidate_ids: &bm25_cand_ids,
+                bm25_scores_map: &bm25_scores_map,
+                synonym_candidate_ids: &synonym_cand_ids,
+                synonym_dictionary: self.state.synonym_dictionary.as_deref(),
+                exclusions: &self.state.exclusions,
+            };
+            let results =
+                pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
+
+            // Claim loop — same logic as upsert_record_inner
+            for result in &results {
+                if result.score < config.thresholds.review_floor {
+                    break;
+                }
+                if result.score >= config.thresholds.auto_match {
+                    let a_id = &result.matched_id;
+                    if self.state.crossmap.claim(a_id, b_id) {
+                        let _ = store.mark_matched(Side::A, a_id);
+                        let _ = store.mark_matched(Side::B, b_id);
+
+                        self.send_hook(crate::hooks::HookEvent::Confirm {
+                            a_id: a_id.clone(),
+                            b_id: b_id.clone(),
+                            score: result.score,
+                            source: "auto".into(),
+                            field_scores: result.field_scores.clone(),
+                        });
+
+                        if let Err(e) = self.state.wal.append(&WalEvent::CrossMapConfirm {
+                            a_id: a_id.clone(),
+                            b_id: b_id.clone(),
+                            score: Some(result.score),
+                        }) {
+                            warn!(error = %e, "WAL append failed for initial match confirm");
+                        }
+                        self.state.mark_crossmap_dirty();
+                        auto_matched += 1;
+                        break;
+                    }
+                    continue;
+                }
+                // Review band
+                if let Err(e) = self.state.wal.append(&WalEvent::ReviewMatch {
+                    id: b_id.clone(),
+                    side: Side::B,
+                    candidate_id: result.matched_id.clone(),
+                    score: result.score,
+                }) {
+                    warn!(error = %e, "WAL append failed for initial match review");
+                }
+                let key = review_queue_key(Side::B, b_id, &result.matched_id);
+                self.state.insert_review(
+                    key,
+                    ReviewEntry {
+                        id: b_id.clone(),
+                        side: Side::B,
+                        candidate_id: result.matched_id.clone(),
+                        score: result.score,
+                    },
+                );
+                review_count += 1;
+                break;
+            }
+            if results.is_empty()
+                || results
+                    .first()
+                    .is_some_and(|r| r.score < config.thresholds.review_floor)
+            {
+                no_match += 1;
+            }
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        info!(
+            auto_matched,
+            review_count,
+            no_match,
+            elapsed_s = format!("{:.1}", elapsed),
+            "initial match pass complete"
+        );
     }
 
     /// Upsert a record into the live state and attempt matching.
@@ -729,6 +959,7 @@ impl Session {
             bm25_scores_map: &bm25_scores_map,
             synonym_candidate_ids: &synonym_cand_ids,
             synonym_dictionary: self.state.synonym_dictionary.as_deref(),
+            exclusions: &self.state.exclusions,
         };
         let results =
             pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
@@ -1123,6 +1354,7 @@ impl Session {
             bm25_scores_map: &bm25_scores_map,
             synonym_candidate_ids: &synonym_cand_ids,
             synonym_dictionary: self.state.synonym_dictionary.as_deref(),
+            exclusions: &self.state.exclusions,
         };
         let results =
             pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
@@ -1289,6 +1521,96 @@ impl Session {
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
         })
+    }
+
+    /// Exclude a pair of records (known non-match).
+    ///
+    /// If the pair is currently matched to each other in the CrossMap, the match
+    /// is broken first. The pair is then added to the exclusions set and will
+    /// never be scored or matched again (until unexcluded).
+    pub fn exclude(&self, a_id: &str, b_id: &str) -> ExcludeResponse {
+        let store = &self.state.store;
+        let mut match_was_broken = false;
+
+        // Check if the pair is currently matched to each other
+        if self.state.crossmap.get_b(a_id).as_deref() == Some(b_id) {
+            // Break the match
+            self.state.crossmap.remove(a_id, b_id);
+            let _ = store.mark_unmatched(Side::A, a_id);
+            let _ = store.mark_unmatched(Side::B, b_id);
+            self.state.drain_reviews_for_pair(a_id, b_id);
+
+            if let Err(e) = self.state.wal.append(&WalEvent::CrossMapBreak {
+                a_id: a_id.to_string(),
+                b_id: b_id.to_string(),
+            }) {
+                warn!(error = %e, "WAL append failed for crossmap break (exclude)");
+            }
+            self.state.mark_crossmap_dirty();
+
+            // Hook: on_break (the match was broken as part of the exclude)
+            self.send_hook(crate::hooks::HookEvent::Break {
+                a_id: a_id.to_string(),
+                b_id: b_id.to_string(),
+            });
+
+            match_was_broken = true;
+        }
+
+        // Add to exclusions
+        self.state.exclusions.add(a_id, b_id);
+
+        // WAL: exclude event
+        if let Err(e) = self.state.wal.append(&WalEvent::Exclude {
+            a_id: a_id.to_string(),
+            b_id: b_id.to_string(),
+        }) {
+            warn!(error = %e, "WAL append failed for exclude");
+        }
+
+        // Hook: on_exclude
+        self.send_hook(crate::hooks::HookEvent::Exclude {
+            a_id: a_id.to_string(),
+            b_id: b_id.to_string(),
+            match_was_broken,
+        });
+
+        info!(a_id, b_id, match_was_broken, "exclude");
+
+        ExcludeResponse {
+            excluded: true,
+            match_was_broken,
+            a_id: a_id.to_string(),
+            b_id: b_id.to_string(),
+        }
+    }
+
+    /// Remove an exclusion for a pair of records.
+    ///
+    /// After unexcluding, the pair can be matched again on the next upsert
+    /// or try-match.
+    pub fn unexclude(&self, a_id: &str, b_id: &str) -> UnexcludeResponse {
+        let was_excluded = self.state.exclusions.contains(a_id, b_id);
+
+        if was_excluded {
+            self.state.exclusions.remove(a_id, b_id);
+
+            // WAL: unexclude event
+            if let Err(e) = self.state.wal.append(&WalEvent::Unexclude {
+                a_id: a_id.to_string(),
+                b_id: b_id.to_string(),
+            }) {
+                warn!(error = %e, "WAL append failed for unexclude");
+            }
+        }
+
+        info!(a_id, b_id, was_excluded, "unexclude");
+
+        UnexcludeResponse {
+            removed: was_excluded,
+            a_id: a_id.to_string(),
+            b_id: b_id.to_string(),
+        }
     }
 
     /// Query a record by ID, returning the record and its crossmap status.
@@ -1852,6 +2174,7 @@ impl Session {
             bm25_scores_map: &bm25_scores_map,
             synonym_candidate_ids: &synonym_cand_ids,
             synonym_dictionary: synonym_dict,
+            exclusions: &self.state.exclusions,
         };
         let results =
             pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);

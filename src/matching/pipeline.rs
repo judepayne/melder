@@ -62,6 +62,8 @@ pub struct ScoringPool<'a> {
     pub synonym_candidate_ids: &'a [String],
     /// Optional synonym dictionary for per-field synonym scoring.
     pub synonym_dictionary: Option<&'a crate::synonym::dictionary::SynonymDictionary>,
+    /// Known non-matching pairs to skip during scoring.
+    pub exclusions: &'a crate::matching::exclusions::Exclusions,
 }
 
 /// Score a single query record against the opposite-side pool.
@@ -184,6 +186,10 @@ pub fn score_pool(
     for cand in ann_cands.iter().chain(extra_cands.iter()) {
         // Skip self-match in enroll mode
         if filter_self && cand.id == query.id {
+            continue;
+        }
+        // Skip known non-matching pairs
+        if !pool.exclusions.is_empty() && pool.exclusions.contains(query.id, &cand.id) {
             continue;
         }
         results.push(score_candidate(
@@ -650,6 +656,7 @@ output:
         let config = make_config_exact("name", "name");
         let record = make_record(&[("id", "q1"), ("name", "Foo")]);
         let empty_bm25: HashMap<String, f64> = HashMap::new();
+        let no_exclusions = crate::matching::exclusions::Exclusions::new();
 
         let q = ScoringQuery {
             id: "q1",
@@ -666,6 +673,7 @@ output:
             bm25_scores_map: &empty_bm25,
             synonym_candidate_ids: &[],
             synonym_dictionary: None,
+            exclusions: &no_exclusions,
         };
 
         let results = score_pool(&q, &p, &config, 50, 5);
@@ -687,6 +695,7 @@ output:
         let record = make_record(&[("id", "q1"), ("name", "Foo Corp")]);
         let blocked = vec!["a1".to_string()];
         let empty_bm25: HashMap<String, f64> = HashMap::new();
+        let no_exclusions = crate::matching::exclusions::Exclusions::new();
 
         let q = ScoringQuery {
             id: "q1",
@@ -703,6 +712,7 @@ output:
             bm25_scores_map: &empty_bm25,
             synonym_candidate_ids: &[],
             synonym_dictionary: None,
+            exclusions: &no_exclusions,
         };
 
         // No embeddings (empty vec), no BM25 candidates → both generators
@@ -736,6 +746,7 @@ output:
         let blocked = vec!["a1".to_string(), "a2".to_string()];
         let query_vec = unit_vec(dim, 1); // identical to a1
         let empty_bm25: HashMap<String, f64> = HashMap::new();
+        let no_exclusions = crate::matching::exclusions::Exclusions::new();
 
         let q = ScoringQuery {
             id: "q1",
@@ -752,6 +763,7 @@ output:
             bm25_scores_map: &empty_bm25,
             synonym_candidate_ids: &[],
             synonym_dictionary: None,
+            exclusions: &no_exclusions,
         };
 
         let results = score_pool(&q, &p, &config, 50, 5);
@@ -793,6 +805,7 @@ output:
         let blocked = vec!["a1".to_string(), "a2".to_string(), "a3".to_string()];
         let query_vec = unit_vec(dim, 99);
         let empty_bm25: HashMap<String, f64> = HashMap::new();
+        let no_exclusions = crate::matching::exclusions::Exclusions::new();
 
         let q = ScoringQuery {
             id: "q1",
@@ -809,6 +822,7 @@ output:
             bm25_scores_map: &empty_bm25,
             synonym_candidate_ids: &[],
             synonym_dictionary: None,
+            exclusions: &no_exclusions,
         };
 
         let results = score_pool(&q, &p, &config, 50, 5);
@@ -845,6 +859,7 @@ output:
         let record = make_record(&[("id", "q1"), ("name", "Corp 0")]);
         let query_vec = unit_vec(dim, 99);
         let empty_bm25: HashMap<String, f64> = HashMap::new();
+        let no_exclusions = crate::matching::exclusions::Exclusions::new();
 
         let q = ScoringQuery {
             id: "q1",
@@ -861,6 +876,7 @@ output:
             bm25_scores_map: &empty_bm25,
             synonym_candidate_ids: &[],
             synonym_dictionary: None,
+            exclusions: &no_exclusions,
         };
 
         let results = score_pool(&q, &p, &config, 50, 3);

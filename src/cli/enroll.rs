@@ -83,6 +83,11 @@ pub fn cmd_enroll(config_path: &Path, port: u16) {
         }
         state.wal.cleanup_old_files();
 
+        // Flush exclusions
+        if let Err(e) = state.exclusions.flush() {
+            warn!(error = %e, "exclusions flush failed");
+        }
+
         // Save combined embedding index caches
         if let Err(e) = state.save_combined_index_caches() {
             warn!(error = %e, "combined index cache save failed");
