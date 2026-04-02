@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  ORT_NUM_THREADS: 1
 
 jobs:
   test:
@@ -29,8 +30,9 @@ jobs:
           path: ~/.cache/huggingface
           key: fastembed-model-${{ runner.os }}
 
-      - name: cargo test --all-features
-        run: cargo test --all-features -- --test-threads=1
+      # gpu-encode excluded: requires platform-specific ORT dylib not on CI.
+      - name: cargo test
+        run: cargo test --features usearch,parquet-format,simd -- --test-threads=1
 
   fmt:
     name: Rustfmt
@@ -59,8 +61,8 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: cargo clippy --all-features
-        run: cargo clippy --all-features -- -D warnings
+      - name: cargo clippy
+        run: cargo clippy --features usearch,parquet-format,simd -- -D warnings
 
   perf:
     name: Performance regression check
