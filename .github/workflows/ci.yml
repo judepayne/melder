@@ -30,7 +30,7 @@ jobs:
           key: fastembed-model-${{ runner.os }}
 
       - name: cargo test --all-features
-        run: cargo test --all-features
+        run: cargo test --all-features -- --test-threads=1
 
   fmt:
     name: Rustfmt
