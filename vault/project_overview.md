@@ -10,7 +10,7 @@ tags: [overview, index, onboarding]
 _Single source of truth for onboarding. Read this at the start of every session.
 Update it (concisely) when completing significant work._
 
-Last updated: 2026-04-02 (Exclusions system for known non-matches; 417 tests pass, zero clippy warnings)
+Last updated: 2026-04-02 (Exclusions system, initial match pass, rayon deadlock fix, accuracy test, competitor analysis; 417 tests pass, zero clippy warnings)
 
 ---
 
@@ -83,7 +83,7 @@ Full text: `vault/architecture/CONSTITUTION.md`. Violating these is a bug regard
 | File | Key items |
 |---|---|
 | `pipeline.rs` | **`score_pool()`** — the one scoring entry point used by all modes. Also `decompose_emb_scores()` |
-| `blocking.rs` | `BlockingIndex` — HashMap keyed by (field_index, value); AND/OR query modes |
+| `blocking.rs` | `BlockingIndex` — HashMap keyed by (field_index, value); AND mode only |
 | `candidates.rs` | `get_candidates()` — vector ANN search + blocked-record fallback |
 | `exclusions.rs` | `Exclusions` — RwLock<HashSet<(String,String)>> for known non-matching pairs; filters after candidate union |
 
@@ -213,7 +213,7 @@ One file per subcommand: `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.
 **Enroll mode:**
 - `load_enroll()`: single-pool startup (A-side only, no B-side, no crossmap). Optional pre-load from `dataset.path`. Indices built once; records added via API.
 
-**Initial match pass** (match mode only): After all indices are built, score all unmatched B records against the A pool using the same scoring pipeline as live upserts (blocking, BM25, ANN, synonym, exclusions). Skips encoding — records already encoded and in vector index. Crossmap claims written to WAL (crash-safe). Review-band matches added to review queue. Progress logged every 1000 records. No-op if either side empty or all B records already matched.
+**Initial match pass** (match mode only): After all indices are built, score all unmatched B records against the A pool using the same scoring pipeline as live upserts (blocking, BM25, ANN, synonym, exclusions). Skips encoding — records already encoded and in vector index. Crossmap claims written to WAL (crash-safe). Review-band matches added to review queue. Hook events (on_confirm) fire normally. Progress logged every 1000 records. No-op if either side empty or all B records already matched. Configurable via `live.skip_initial_match: true` to suppress.
 
 ---
 

@@ -1006,11 +1006,35 @@ After all datasets are loaded and indices are built, run an initial matching pas
 - Progress logged every 1000 records
 - Skips records already in crossmap (from CSV or WAL replay)
 - No-op if either side empty or all B records already matched
+- Configurable via `live.skip_initial_match: true` to suppress
 
 **Why Reuse Pipeline Instead of run_batch():**
 `run_batch()` rebuilds BM25 and synonym indices from scratch, which is wasteful when live mode already has these indices built and ready. The pipeline reuses the existing indices, avoiding redundant work and keeping the startup sequence simple.
 
 **Related:** [[State & Persistence#Startup Paths]]
+
+---
+
+## Dedicated Rayon Pool for Encoding
+
+**Date:** 2026-04-02
+**Status:** Accepted
+
+**Context:**
+The GPU encoding commit (c963a91) changed `encode_and_upsert` from a sequential `for` loop to `par_chunks` on rayon's global thread pool. This introduced a deadlock: with fewer encoder slots than rayon workers, blocked workers starved ONNX's internal rayon tasks. ONNX uses rayon internally for parallelism; when all global workers are blocked waiting on encoder mutex, ONNX's spawned tasks have nowhere to run.
+
+**Decision:**
+Create a dedicated rayon thread pool in `encode_and_upsert` sized to `encoder_pool.pool_size()`. Use this scoped pool for parallel encoding chunks instead of the global pool.
+
+**Implementation:**
+- New `rayon::ThreadPoolBuilder` in `encode_and_upsert` with `num_threads = encoder_pool.pool_size()`
+- `scope()` on the dedicated pool for parallel chunk processing
+- Global pool remains available for other work (e.g., batch scoring)
+
+**Why:**
+The dedicated pool prevents global pool starvation. Workers blocked on encoder mutex can be scheduled on the dedicated pool without blocking ONNX's internal rayon tasks. This is a pre-existing bug since the GPU encoding commit; the fix is minimal and has zero impact on non-GPU paths.
+
+**Related:** [[Key Decisions#GPU-accelerated batch encoding]]
 
 ---
 
