@@ -209,7 +209,7 @@ Holdout results only (fixed seed 9999, same A master across all experiments).
 5. **Embedding-only overlap (0.031) should drop to near-zero with BM25.** Experiment 10 will combine Arctic with BM25 to validate production viability.
 6. **Smallest size, fastest speed.** 22M params vs BGE-small (33M) and BGE-base (110M). Encoding is 2–3× faster than BGE-base.
 
-**Decision:** Arctic-embed-xs replaces BGE-small and BGE-base as the recommended embedding model for melder. See [[Key Decisions#Arctic-embed-xs as Recommended Embedding Model]].
+**Decision:** Arctic-embed-xs replaces BGE-small and BGE-base as the recommended embedding model for melder. See [[decisions/key_decisions#Arctic-embed-xs as Recommended Embedding Model]].
 
 ---
 
@@ -285,7 +285,7 @@ Holdout results only (fixed seed 9999, same A master across all experiments).
 3. **Embedding-only overlap (0.031) → zero with BM25.** The combination is synergistic — embeddings handle semantic similarity, BM25 handles exact token presence.
 4. **This is the final recommended production configuration.** No further tuning needed.
 
-**Decision:** This configuration is the final output of the embedding fine-tuning campaign. All production configs should use this as the baseline. See [[Key Decisions#Production Configuration Arctic-embed-xs R22 50% BM25]].
+**Decision:** This configuration is the final output of the embedding fine-tuning campaign. All production configs should use this as the baseline. See [[decisions/key_decisions#Production Configuration Arctic-embed-xs R22 50% BM25]].
 
 ---
 
@@ -304,3 +304,54 @@ Holdout results only (fixed seed 9999, same A master across all experiments).
 6. **Batch size affects training signal, not capacity ceiling.** Batch=32 achieved overlap 0.081; batch=128 plateaued at 0.070. The 384-dim embedding space is the real bottleneck, not batch size.
 
 7. **Acronym matching is a blind spot for all methods.** No embedding model, BM25, or fuzzy scorer can match "TRMS" to "Taylor, Reeves and Mcdaniel SRL." Documented separately in `vault/ideas/Acronym Matching.md`.
+
+---
+
+## Experiment 13: BM25-only vs 50/50 composite
+
+Tests how much the fine-tuned embedding contributes on top of BM25.
+
+- **Composite (50/50 + synonym):** overlap 0.0097, recall 100%
+- **BM25 only:** overlap 0.0476, recall 100%
+- **Conclusion:** Embedding provides 4.9× better population separation. BM25 alone is 2.3× faster but has 61 unmatched contaminants in overlap zone vs 11 for composite.
+
+| | Composite | BM25 Only |
+|---|---|---|
+| Overlap | 0.0097 | 0.0476 |
+| Combined recall | 100% | 100% |
+| Throughput | 9,178 rec/s | 21,045 rec/s |
+
+---
+
+## Experiment 14: INT8 quantization of Arctic-embed-xs R22
+
+Can the 86 MB fp32 model be quantized to 22 MB INT8 without accuracy loss?
+
+- **Result:** NOT VIABLE
+- fp32 overlap: 0.0000, Review FPs: 0
+- INT8 overlap: 0.0132, Review FPs: 26
+
+**Analysis:** Arctic-embed-xs is too small (22M params) to quantize gracefully. Each weight carries significant information — quantization noise cannot be absorbed. The failure mode is specific: template-address non-matches (PSC/Box/APO, Unit/Box/DPO) that BM25 pushes below review floor with fp32 but re-enter with INT8.
+
+| Config | Overlap | Recall | Review FPs | Size |
+|---|---|---|---|---|
+| fp32 + 50% BM25 + synonym | 0.0000 | 99.98% | 0 | 86 MB |
+| INT8 + 50% BM25 + synonym | 0.0132 | 100% | 26 | 22 MB |
+
+---
+
+## Final Production Configuration
+
+**Arctic-embed-xs R22 + 50% BM25 + synonym 0.20** (from Exp 12)
+
+- Overlap: 0.0003
+- Combined recall: 100%
+- Zero false positives in auto-match and review
+- 22M params, 6 layers — fastest encoding
+
+| Config | Overlap | Recall | Model |
+|---|---|---|---|
+| Exp 9: Arctic-xs embedding only | 0.031 | 99.7% | 22M |
+| Exp 10: Arctic-xs + 40% BM25 | 0.002 | 99.8% | 22M |
+| Exp 11: Arctic-xs + 40% BM25 + synonym | 0.001 | 100% | 22M |
+| **Exp 12: Arctic-xs + 50% BM25 + synonym** | **0.0003** | **100%** | **22M** |

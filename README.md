@@ -131,7 +131,7 @@ Browse all documentation on the **[documentation site](https://judepayne.github.
 
 [Configuration](docs/configuration.md) | [Scoring Methods](docs/scoring.md) | [Accuracy & Tuning](docs/accuracy-and-tuning.md) | [Batch Mode](docs/batch-mode.md) | [Live Mode](docs/live-mode.md) | [Enroll Mode](docs/enroll-mode.md) | [API Reference](docs/api-reference.md) | [CLI Reference](docs/cli-reference.md) | [Hooks](docs/hooks.md) | [Performance](docs/performance.md) | [Vector Caching](docs/vector-caching.md) | [Building](docs/building.md)
 
-**Tutorials:** [Batch Worked Example](examples/batch/README.md) | [Live Worked Example](examples/live/README.md) | [Fine-Tuning Guide](vault/ideas/Fine%20Tuning%20Embeddings.md)
+**Tutorials:** [Batch Worked Example](examples/batch/README.md) | [Live Worked Example](examples/live/README.md) | [Fine-Tuning Guide](vault/training/fine_tuning_guide.md)
 
 ## Project structure
 

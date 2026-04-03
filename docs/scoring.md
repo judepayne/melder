@@ -75,7 +75,7 @@ uses ~50-100MB of RAM.
 > For domain-specific use cases (e.g. counterparty reconciliation),
 > general-purpose models can be fine-tuned on your own matched pairs to
 > improve accuracy. The melder's own crossmap output is the training data
-> source. See [Fine Tuning Embeddings](../vault/ideas/Fine%20Tuning%20Embeddings.md) for a guide,
+> source. See [Fine Tuning Embeddings](../vault/training/fine_tuning_guide.md) for a guide,
 > and [Accuracy & Tuning](accuracy-and-tuning.md) for a worked example showing
 > the impact of fine-tuning.
 

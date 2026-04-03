@@ -1,173 +1,156 @@
 # AGENTS.md
 
-## 1. BOOTSTRAP (Anti-Amnesia)
+Purpose: compact operating instructions for LLM coding agents working in `melder`. Read this before editing code.
 
-**At the start of every session, before writing any code:**
+## 0. Bootstrap
 
-1. Read `vault/project_overview.md` — this is the single source of truth for project state, architecture, module map, pipeline flows, benchmarks layout, current work, and backlog.
-2. If a task touches an area with known historical decisions or rejected approaches, also read `vault/decisions/Key Decisions.md` and/or `vault/ideas/Discarded Ideas.md`.
-3. If a user request contradicts a principle in `vault/architecture/CONSTITUTION.md` (summarised in project_overview.md §2), say so before proceeding.
+Before code changes, read:
+- `vault/project_overview.md` (source of truth: architecture, module map, current state, backlog, benchmarks, training loop)
+- `vault/decisions/key_decisions.md` when touching an area with prior tradeoffs/rejections
+- `vault/ideas/discarded_ideas.md` before reviving an old approach
 
-Do not write code until synchronised with the current project state.
+If a requested change conflicts with the Constitution, say so before proceeding.
 
----
+## 1. Core Identity
 
-## 2. END-OF-SESSION UPDATE
+Melder is a Rust record-matching engine with:
+- batch mode: `meld run` (A=reference pool, B=query side)
+- live mode: `meld serve` (A/B symmetric)
+- enroll mode: single-pool entity resolution
 
-After completing significant work, update `vault/project_overview.md` to reflect:
-- New completed items (move from In Progress / Ready → Completed in §11)
-- Any new backlog items
-- Any new architectural facts (module changes, new config fields, new performance numbers)
-- Changes to the training loop state (§10)
+Single crate, binary `meld`, crate `melder`.
 
-Keep updates concise — do not inflate the file. Delegate detailed ADRs, failed-attempt records, and deep architectural notes to the doc-agent (see §3).
+## 2. Invariants (bugs if violated)
 
----
+1. Batch asymmetry, live symmetry.
+2. One scoring pipeline only: all matching flows through `src/matching/pipeline.rs::score_pool()`.
+3. CrossMap bijection: 1:1 A<->B enforced atomically under one lock / transaction; never bypass `claim()` semantics.
+4. Combined vector identity: concatenated `sqrt(weight)`-scaled normalized field vectors must preserve weighted cosine identity.
 
-## 3. STRATEGIC DELEGATION
+## 3. Build / Test Matrix
 
-You are the 'Thinker,' @doc-agent is the 'Scribe.'
-
-**Trigger events — delegate to doc-agent:**
-- **New Principle**: agree on a new invariant → `vault/architecture/`
-- **Key Decision**: any non-obvious architectural choice → `vault/decisions/Key Decisions.md`
-- **Failed Attempt**: record to prevent re-trying after context compaction → `vault/ideas/Discarded Ideas.md`
-- **Task Updates**: progress on `vault/todo.md` — keep clean and current
-
-**Execution**: `doc-agent: [task details]`
-
----
-
-## 4. Build & Test Commands
+Use these commands unless task scope clearly allows narrower checks:
 
 ```bash
-# Builds
-cargo build                                               # debug
-cargo build --release                                     # release
-cargo build --release --features usearch                  # standard production build
-cargo build --release --features usearch,parquet-format   # all features
+# builds
+cargo build
+cargo build --release
+cargo build --release --features usearch
+cargo build --release --features usearch,parquet-format
+cargo build --release --features usearch,gpu-encode
+cargo build --release --features usearch,builtin-model
 
-# Tests — always run --all-features before committing
-cargo test                        # all tests
-cargo test --all-features         # catches feature-gated failures
-cargo test <name>                 # single test
-cargo test --lib scoring          # module tests
-
-# Lint / Format
-cargo fmt                         # format (no custom rustfmt.toml)
+# quality gates
 cargo fmt -- --check
-cargo clippy --all-features       # no custom .clippy.toml
+cargo clippy --all-features
+cargo test
+cargo test --all-features   # required before commit
 ```
 
----
+Feature flags currently in use:
+- `usearch`: HNSW ANN backend
+- `parquet-format`: Parquet IO
+- `simd`: SimSIMD dot product acceleration
+- `gpu-encode`: GPU ONNX inference in batch mode (CoreML macOS / CUDA Linux)
+- `builtin-model`: embed ONNX weights into binary via `include_bytes!()`
 
-## 5. Code Style
+Rules:
+- `gpu-encode` is batch-mode acceleration; live mode should warn/ignore GPU requests rather than pretending GPU helps at batch=1.
+- `vector_index_mode: mmap` is read-only; valid for batch caches, not mutable live indexing.
+- Before commit, run `cargo test --all-features` unless impossible; say what blocked it.
 
-### Imports
+## 4. Architecture Map
 
-Three groups separated by blank lines: (1) `std`, (2) external crates, (3) `crate::`/`super::`. Alphabetical within each group.
+- `src/main.rs`: CLI dispatch only
+- `src/lib.rs`: module declarations only
+- `src/config/`: YAML schema + validation (`schema.rs`, `loader.rs`, `enroll_schema.rs`)
+- `src/matching/`: pipeline, blocking, candidates, exclusions
+- `src/scoring/`: exact / embedding / numeric / composite scoring
+- `src/fuzzy/`: ratio, partial_ratio, token_sort, wratio
+- `src/encoder/`: ONNX session pool, local/HF/builtin model loading, optional batching coordinator
+- `src/vectordb/`: `VectorDB` trait; flat + usearch backends; manifest + text hash caches
+- `src/store/`: `RecordStore` trait; memory + sqlite implementations
+- `src/crossmap/`: `CrossMapOps`; memory + sqlite bijection implementations
+- `src/bm25/`: `SimpleBm25` scorer, WAND path for large blocks
+- `src/session/`: operational core for live/enroll flows
+- `src/state/`: startup loading, WAL, backend construction
+- `src/batch/`: batch engine + CSV writers
+- `src/api/`: axum router + handlers
+- `src/cli/`: one file per subcommand
 
-```rust
-use std::collections::HashMap;
-use std::sync::Arc;
+## 5. Preferred Design Moves
 
-use axum::extract::{Query, State};
-use serde::Deserialize;
-use tracing::{info, warn};
+- Extend traits rather than leaking backend-specific logic upward.
+- Keep batch/live/enroll behavior aligned through shared pipeline pieces.
+- Reuse existing indices / caches; avoid duplicate scoring paths and duplicate candidate generation logic.
+- Prefer explicit typed config/schema enums over runtime string fallbacks.
+- Prefer correctness-preserving simplifications over clever concurrency.
 
-use crate::models::{Record, Side};
-use crate::session::Session;
-```
+## 6. Code Style
 
-### Naming
+- Imports in 3 groups separated by blank lines: `std`, external crates, `crate::`/`super::`; alphabetical within group.
+- Names: files/modules `snake_case`; structs/enums `CamelCase`; fns `snake_case`; constants `SCREAMING_SNAKE_CASE`; CLI entrypoints `cmd_*`; test helpers `make_*`.
+- `mod.rs`: only `pub mod` / `pub use`; no logic.
+- `lib.rs`: declarations only.
+- Every source file gets `//!`; public functions get `///`; no doc comments on private helpers.
+- Use rustfmt defaults; trailing commas everywhere; `// ---` banners in long files.
 
-- Modules/files: `snake_case`
-- Structs/Enums: `CamelCase`
-- Functions/methods: `snake_case`
-- Constants: `SCREAMING_SNAKE_CASE`
-- CLI command functions: `cmd_` prefix (`cmd_run`, `cmd_serve`)
-- Test helpers: `make_` prefix (`make_record`, `make_pool`)
-- Two-letter acronyms uppercase (`DB`); longer ones title-case (`CrossMap`)
+## 7. Error / Logging / Concurrency Rules
 
-### Error Handling
+- Typed domain errors with `thiserror`; boundary/context with `anyhow` only where appropriate.
+- Functions should usually return `Result<T, SpecificError>`, not `anyhow::Result`.
+- Top-level enums should have `#[from]` conversions for module errors.
+- CLI entrypoints handle errors with `match` + `eprintln!` + `process::exit(1)`.
+- HTTP handlers map errors to `StatusCode` + JSON.
+- Never `unwrap()` except poison recovery: `.unwrap_or_else(|e| e.into_inner())`.
+- `expect()` only for genuinely impossible states.
+- Logging uses `tracing` with structured fields; only `info!` / `warn!`.
+- CPU-bound async work goes through `spawn_blocking`.
 
-`thiserror` for typed domain errors; `anyhow` for ad-hoc context at boundaries.
+## 8. Data / Matching Semantics
 
-- Module error enums use named fields, not tuple variants:
-  ```rust
-  #[error("invalid value for {field}: {message}")]
-  InvalidValue { field: String, message: String },
-  ```
-- Functions return `Result<T, SpecificError>`, not `anyhow::Result`
-- Top-level `MelderError` has `#[from]` for all module errors
-- CLI entry points: `match` + `eprintln!` + `process::exit(1)` — no `?`
-- HTTP handlers: map errors to `StatusCode` + JSON
-- Never `unwrap()` except lock poison recovery: `.unwrap_or_else(|e| e.into_inner())`
-- `expect()` only for truly impossible failures
+- `Record = HashMap<String, String>` remains the core record shape.
+- Empty-vs-empty and empty-vs-nonempty scoring semantics matter; preserve existing behavior.
+- Exact prefilter runs before blocking and can recover cross-block matches.
+- Exclusions filter after candidate union and before scoring; if excluded pair is currently matched, break match first.
+- In match mode, candidate acceptance must respect crossmap bijection.
+- In enroll mode, avoid self-matches when query side equals pool side.
 
-### Types and Derives
+## 9. Storage / Persistence Rules
 
-- Config structs: `#[derive(Debug, Deserialize)]` + `#[serde(default)]`
-- API responses: `#[derive(Debug, Serialize)]`
-- Domain enums: `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]`
-- Core type alias: `pub type Record = HashMap<String, String>`
-- Serde: `rename_all = "snake_case"`, `skip_serializing_if = "Option::is_none"`
-- Struct fields always `pub` — no builder pattern
+- Memory backend: in-RAM + WAL for live durability.
+- SQLite backend: durable source of truth; no fake in-memory shadow invariants.
+- Review persistence, exclusions persistence, and crossmap flushing belong in backend abstractions, not session-level backend checks.
+- Do not reintroduce runtime `uses_sqlite` branching into core logic.
 
-### Structure
+## 10. Encoder / GPU Notes
 
-- `mod.rs` files: only `pub mod` and `pub use` — no logic
-- Business logic lives in named files, never in `mod.rs`
-- `lib.rs`: only module declarations
+- Encoder supports: named fastembed models, HF Hub names, local ONNX paths, and builtin embedded model.
+- Local ONNX path support depends on tokenizer/config sidecar files; preserve that contract.
+- `gpu-encode` must remain batch-oriented and observable: log requested device, selected provider, and fallback/error path clearly.
+- Linux GPU path means CUDA + ONNX Runtime shared-library compatibility; prefer fail-fast or explicit warning over silent CPU fallback.
+- macOS GPU path uses CoreML; keep stderr suppression behavior if still needed for framework noise.
 
-### Formatting
+## 11. Tests
 
-Standard rustfmt defaults (4-space indent, K&R braces). Trailing commas everywhere (structs, enums, function args, match arms). `// ---` banner comments to separate logical sections in long files.
+- All tests live at bottom of source files under `#[cfg(test)] mod tests`; no integration-test sprawl unless already established.
+- Table-driven tests for scorers/config parsing.
+- Feature-gated code needs feature-gated tests.
+- Add assertion messages.
+- Use `tempfile::tempdir()` for filesystem tests.
+- If changing scoring, blocking, crossmap, WAL, sqlite, encoder, or feature-gated behavior, add/adjust tests in the touched module.
 
-### Documentation
+## 12. Docs / Session Hygiene
 
-- `//!` doc comment on every file (1-3 lines minimum)
-- `///` on public functions (imperative summary, then detail)
-- `//` for non-obvious logic
-- No doc comments on private functions or test helpers
+- After significant work, update `vault/project_overview.md` concisely: current state, completed items, new backlog, architecture changes, benchmark/perf facts, training-loop state if relevant.
+- Delegate heavier documentation to doc-agent when available: decisions, failed attempts, todo cleanup, architecture notes.
+- Do not bloat overview with long narratives.
 
-### Logging
+## 13. Practical Guardrails
 
-`tracing` crate, structured key-value style:
-```rust
-info!(side = s, id = %resp.id, matches = resp.matches.len(), "add");
-warn!(side = s, error = %e, "add failed");
-```
-Only `info!` and `warn!` levels. `eprintln!()` for build-time progress — not tracing.
-
-### Async
-
-- `main.rs` synchronous; async runtimes via `tokio::runtime::Runtime::new()`
-- CPU-bound work: `tokio::task::spawn_blocking`
-- Axum handlers return `axum::response::Response` (concrete type)
-- State: `Arc<Session>` via `Router::with_state()`
-- Graceful shutdown: `tokio::select!` on Ctrl-C / SIGTERM
-
-### Concurrency
-
-- `DashMap` for concurrent record stores
-- `RwLock` for indices
-- `std::sync::Mutex` for encoder pool slots
-- Lock poison recovery everywhere: `.unwrap_or_else(|e| e.into_inner())`
-
-### Feature Flags
-
-Current features: `usearch`, `parquet-format`, `bm25`. Guard with `#[cfg(feature = "...")]` on modules, functions, tests, and match arms.
-
----
-
-## 6. Test Conventions
-
-- All tests in `#[cfg(test)] mod tests` at the bottom of each source file — no integration test directory
-- Table-driven tests for scorers: `vec` of `(input, expected)` tuples
-- Test helpers at top of test module (`make_record`, `make_pool`)
-- Always include assertion messages: `assert!(x, "context: {}", val)`
-- `tempfile::tempdir()` for filesystem tests
-- Feature-gated tests: `#[cfg(feature = "...")]`
-- Generic test suites via `macro_rules!` (see `vectordb/tests.rs`)
-- No external test frameworks — pure `#[test]` with `assert!` / `assert_eq!`
+- Do not create a second scoring path.
+- Do not bypass trait abstractions with backend-specific hacks unless there is no viable alternative.
+- Do not silently degrade correctness for throughput.
+- Do not revive OR blocking, dual-DashMap crossmap, or Tantivy BM25.
+- Do not forget all-features validation when feature-gated code changed.
+- When unsure, preserve invariants first, performance second.

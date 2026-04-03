@@ -14,7 +14,7 @@ Approaches that were considered and rejected. Recorded here to prevent re-attemp
 
 **What**: Store a separate vector index for each embedding field within each blocking bucket. Query each index separately and combine results.
 
-**Why discarded**: Multiplicative complexity -- N fields x M blocks = N*M indices. Multiple ANN queries per record, complex cache management, and the separate queries could not produce the same ranking as a weighted cosine sum without a separate merge step. Replaced by the [[Key Decisions#Combined Vector Index Single Index Per Side|combined vector index]].
+**Why discarded**: Multiplicative complexity -- N fields x M blocks = N*M indices. Multiple ANN queries per record, complex cache management, and the separate queries could not produce the same ranking as a weighted cosine sum without a separate merge step. Replaced by the [[decisions/key_decisions#Combined Vector Index Single Index Per Side|combined vector index]].
 
 ---
 
@@ -22,7 +22,7 @@ Approaches that were considered and rejected. Recorded here to prevent re-attemp
 
 **What**: Use two `DashMap<String, String>` instances (a_to_b, b_to_a) for the cross-map, relying on DashMap's internal sharding for concurrency.
 
-**Why discarded**: Cannot atomically check-and-insert across two DashMaps. DashMap shards independently, so locking a_to_b[shard_3] and b_to_a[shard_7] simultaneously risks deadlock. Even without deadlock, the TOCTOU gap between checking and inserting allows two Rayon threads to both claim the same A record for different B records. Replaced by [[Key Decisions#CrossMap RwLock Over DashMap|single RwLock]].
+**Why discarded**: Cannot atomically check-and-insert across two DashMaps. DashMap shards independently, so locking a_to_b[shard_3] and b_to_a[shard_7] simultaneously risks deadlock. Even without deadlock, the TOCTOU gap between checking and inserting allows two Rayon threads to both claim the same A record for different B records. Replaced by [[decisions/key_decisions#CrossMap RwLock Over DashMap|single RwLock]].
 
 ---
 
@@ -58,7 +58,7 @@ Approaches that were considered and rejected. Recorded here to prevent re-attemp
 
 **Why it failed:** Different seeds produce non-overlapping entity name vocabularies. The model memorised training names rather than learning noise-invariant representations. This is a holdout design flaw, not a fundamental problem with fine-tuning.
 
-**Do not retry** with this exact design. The fix is to share the A-side entity pool between training and holdout (same A entities, different B noise draws). See [[Training Loop]] for full results and analysis.
+**Do not retry** with this exact design. The fix is to share the A-side entity pool between training and holdout (same A entities, different B noise draws). See [[architecture/training_loop]] for full results and analysis.
 
 ---
 
@@ -66,7 +66,7 @@ Approaches that were considered and rejected. Recorded here to prevent re-attemp
 
 **What**: Buffer BM25 writes with a `dirty` flag. `upsert()` and `remove()` mark `dirty = true` without committing. A new `commit_if_dirty()` method commits + reloads + clears cache only when dirty. Session code calls `commit_if_dirty()` on the opposite-side BM25 index just before querying it.
 
-**Why discarded**: This approach was implemented and measured a 2x throughput improvement (256 → 512 req/s on 10k×10k dataset with usearch+BM25). However, it only masked the underlying architectural problem: Tantivy's commit/segment/reload cycle is fundamentally expensive (~5-10ms per commit). The pending buffer reduced commit frequency but did not eliminate the cost. At scale, the batching window becomes a tuning knob that users must configure, and the default behavior (small batch size) remains slow. The full SimpleBm25 replacement (see [[Key Decisions#Replace Tantivy BM25 Index with Custom DashMap Based SimpleBm25]]) solves the problem at the root: no commits needed at all. SimpleBm25 achieved 3.2× improvement over the original Tantivy baseline (461 → 1,460 req/s) with zero tuning, and eliminated eventual consistency entirely.
+**Why discarded**: This approach was implemented and measured a 2x throughput improvement (256 → 512 req/s on 10k×10k dataset with usearch+BM25). However, it only masked the underlying architectural problem: Tantivy's commit/segment/reload cycle is fundamentally expensive (~5-10ms per commit). The pending buffer reduced commit frequency but did not eliminate the cost. At scale, the batching window becomes a tuning knob that users must configure, and the default behavior (small batch size) remains slow. The full SimpleBm25 replacement (see [[decisions/key_decisions#Replace Tantivy BM25 Index with Custom DashMap Based SimpleBm25]]) solves the problem at the root: no commits needed at all. SimpleBm25 achieved 3.2× improvement over the original Tantivy baseline (461 → 1,460 req/s) with zero tuning, and eliminated eventual consistency entirely.
 
 ---
 
@@ -86,7 +86,7 @@ Approaches that were considered and rejected. Recorded here to prevent re-attemp
 - **ANN**: Candidates are selected per-block; overlapping blocks create ambiguity about which block a candidate belongs to
 - **BM25 WAND**: Block-max upper bounds assume non-overlapping blocks; overlapping blocks break the guarantee
 
-AND blocking (all fields must match) is the correct model for entity resolution. OR blocking was never used in production configs. Removed in [[Key Decisions#OR Blocking Removed]].
+AND blocking (all fields must match) is the correct model for entity resolution. OR blocking was never used in production configs. Removed in [[decisions/key_decisions#OR Blocking Removed]].
 
 ---
 
@@ -94,8 +94,8 @@ AND blocking (all fields must match) is the correct model for entity resolution.
 
 **What**: Maintain a separate inverted index (term → posting list) for BM25 queries, in addition to the forward index (doc → term frequencies). Use the inverted index for small blocks (exhaustive scoring) and a separate inverted path for large blocks.
 
-**Why discarded**: The inverted index path was replaced by Block-Max WAND (see [[Key Decisions#WAND BM25 Implementation]]) which provides identical results with 90-99% fewer evaluations at scale. WAND uses the same forward index but adds per-block upper bounds to skip documents early. The inverted path is simpler but less efficient; WAND is more complex but scales better. At 4.5M scale, WAND's savings are critical.
+**Why discarded**: The inverted index path was replaced by Block-Max WAND (see [[decisions/key_decisions#WAND BM25 Implementation]]) which provides identical results with 90-99% fewer evaluations at scale. WAND uses the same forward index but adds per-block upper bounds to skip documents early. The inverted path is simpler but less efficient; WAND is more complex but scales better. At 4.5M scale, WAND's savings are critical.
 
 ---
 
-See also: [[Constitution]] for the invariants that ruled out several of these approaches, [[Key Decisions]] for the alternatives that were chosen instead.
+See also: [[decisions/key_decisions#Principles-Inviolable]] for the invariants that ruled out several of these approaches, [[decisions/key_decisions]] for the alternatives that were chosen instead.

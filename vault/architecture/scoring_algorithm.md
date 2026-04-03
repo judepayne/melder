@@ -8,7 +8,7 @@ related_code: [src/scoring/mod.rs, src/scoring/exact.rs, src/scoring/embedding.r
 
 # Scoring Algorithm
 
-How Melder computes match scores. All scoring flows through `matching/pipeline.rs::score_pool()` — there is no second code path. See [[Constitution#2 One Scoring Pipeline]].
+How Melder computes match scores. All scoring flows through `matching/pipeline.rs::score_pool()` — there is no second code path. See [[decisions/key_decisions#Principles-Inviolable]].
 
 ---
 
@@ -31,7 +31,7 @@ Each `FieldScore` also exposes `.contribution() = score × weight` (pre-normalis
 
 ## Classification
 
-Applied to the composite score after all fields are scored. See [[Config Reference#thresholds]].
+Applied to the composite score after all fields are scored. See [[architecture/config_reference#thresholds]].
 
 ```
 score >= auto_match   →  Classification::Auto    ("auto")
@@ -126,7 +126,7 @@ The actual cosine computation is:
 
 **Why clamping?** Negative similarity (opposite directions in embedding space) has no meaningful interpretation for entity matching — it would perversely reduce a composite score below what a zero contribution would give. Clamping to 0.0 treats it as "no evidence of similarity", which is correct.
 
-**Where cosines come from:** embedding scores are never recomputed from scratch during full scoring. They are recovered via `decompose_emb_scores()` in `matching/pipeline.rs` by reversing the combined vector construction — a pure dot product operation, no second ONNX call. See [[Constitution#4 Combined Vector Weighted Cosine Identity]].
+**Where cosines come from:** embedding scores are never recomputed from scratch during full scoring. They are recovered via `decompose_emb_scores()` in `matching/pipeline.rs` by reversing the combined vector construction — a pure dot product operation, no second ONNX call. See [[decisions/key_decisions#Principles-Inviolable]].
 
 ---
 
@@ -138,7 +138,7 @@ Parse-and-compare with floating-point equality.
 2. Return 1.0 if `|a − b| < f64::EPSILON`, else 0.0
 3. Both empty → 0.0; either non-numeric → 0.0
 
-**Use for:** numeric identifiers where exact equality is appropriate. Not suitable for fuzzy numeric proximity (e.g., financial amounts with rounding differences) — that case is tracked in [[Discarded Ideas#Tolerance-Based Numeric Scoring]].
+**Use for:** numeric identifiers where exact equality is appropriate. Not suitable for fuzzy numeric proximity (e.g., financial amounts with rounding differences) — that case is tracked in [[ideas/discarded_ideas#Tolerance-Based Numeric Scoring]].
 
 ---
 
@@ -150,7 +150,7 @@ Before full scoring, the pipeline retrieves a shortlist of candidates from the v
 - **flat backend:** O(N) brute-force cosine scan
 - **No embedding fields configured:** all blocked records pass through to full scoring directly
 
-See [[Key Decisions#Combined Vector Index Single Index Per Side]] for why one combined index is sufficient.
+See [[decisions/key_decisions#Combined Vector Index Single Index Per Side]] for why one combined index is sufficient.
 
 ---
 
@@ -165,7 +165,7 @@ After candidate selection (ANN or blocked records), the pipeline filters out any
 - In batch mode, exclusions are loaded from CSV only (read-only)
 - In live mode, exclusions can be added/removed via `POST /api/v1/exclude` and `DELETE /api/v1/exclude` endpoints; changes are persisted to WAL and flushed to CSV on shutdown
 
-See [[Config Reference#exclusions]] for configuration.
+See [[architecture/config_reference#exclusions]] for configuration.
 
 ---
 
@@ -182,4 +182,4 @@ See [[Config Reference#exclusions]] for configuration.
 
 ---
 
-See also: [[Config Reference#match_fields]] for scorer configuration, [[Business Logic Flow]] for where scoring sits in the pipeline, [[Performance Baselines]] for throughput by method.
+See also: [[architecture/config_reference#match_fields]] for scorer configuration, [[architecture/business_logic_flow]] for where scoring sits in the pipeline, [[benchmarks_and_experiments]] for throughput by method.

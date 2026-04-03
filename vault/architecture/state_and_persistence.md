@@ -8,7 +8,7 @@ related_code: [src/state/live.rs, src/state/upsert_log.rs, src/crossmap/mod.rs, 
 
 # State & Persistence
 
-How Melder persists state to disk, survives restarts, and replays history. Relevant to live mode only — batch mode is stateless. See [[Business Logic Flow#Live Mode]] for where these mechanisms fit in the upsert flow.
+How Melder persists state to disk, survives restarts, and replays history. Relevant to live mode only — batch mode is stateless. See [[architecture/business_logic_flow#Live Mode]] for where these mechanisms fit in the upsert flow.
 
 ---
 
@@ -226,4 +226,4 @@ A dirty WAL BufWriter is also flushed. Any in-flight requests complete normally 
 
 ---
 
-See also: [[Config Reference#live]] and [[Config Reference#cross_map]] for the relevant config fields, [[Key Decisions#Three-Layer Cache Invalidation]] for how cache validity is checked, [[Business Logic Flow#Live Mode meld serve]] for where persistence fits in the upsert flow.
+See also: [[architecture/config_reference#live]] and [[architecture/config_reference#cross_map]] for the relevant config fields, [[decisions/key_decisions#Three-Layer Cache Invalidation]] for how cache validity is checked, [[architecture/business_logic_flow#Live Mode meld serve]] for where persistence fits in the upsert flow.

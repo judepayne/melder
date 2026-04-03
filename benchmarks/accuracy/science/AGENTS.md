@@ -20,9 +20,8 @@ This directory contains fixed datasets and a controlled training loop for compar
 | `AGENTS.md` | This file — instructions for the agent |
 
 Related vault docs:
-- `vault/decisions/Training Experiments Log.md` — full history of pre-science experiments
-- `vault/decisions/BGE Small Training Results.md` — why BGE-small can't stretch
-- `vault/ideas/Acronym Matching.md` — identified blind spot for all scoring methods
+- `vault/decisions/training_experiments_log.md` — full history of pre-science experiments
+- `vault/ideas/discarded_ideas.md` — why BGE-small can't stretch
 
 ## Before Running an Experiment
 

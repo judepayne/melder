@@ -8,7 +8,7 @@ related_code: [src/config/schema.rs, src/config/loader.rs]
 
 # Config Reference
 
-Complete YAML config schema. All fields are validated at startup by `config/loader.rs`. See [[Use Cases]] for worked examples per deployment pattern.
+Complete YAML config schema. All fields are validated at startup by `config/loader.rs`. See [[business/use_cases]] for worked examples per deployment pattern.
 
 ## Top-Level Structure
 
@@ -83,7 +83,7 @@ cross_map:
 | `a_id_field` | String | required | Column header for A IDs in the CSV |
 | `b_id_field` | String | required | Column header for B IDs in the CSV |
 
-See [[State & Persistence#CrossMap Persistence]] for flush mechanics and crash safety.
+See [[architecture/state_and_persistence#CrossMap Persistence]] for flush mechanics and crash safety.
 
 ---
 
@@ -102,7 +102,7 @@ embeddings:
 | `a_cache_dir` | String | required | Directory for A-side combined index cache |
 | `b_cache_dir` | Option\<String\> | None | B-side cache dir; omit to skip B-side vector caching |
 
-Recommended model: `all-MiniLM-L6-v2` (384 dimensions, fast, strong quality for entity matching). Cache files are named `combined_{side}_{spec_hash}.idx`. Changing field names, order, weights, or `performance.vector_quantization` produces a new spec hash and forces a cold rebuild. See [[Key Decisions#Three-Layer Cache Invalidation]].
+Recommended model: `all-MiniLM-L6-v2` (384 dimensions, fast, strong quality for entity matching). Cache files are named `combined_{side}_{spec_hash}.idx`. Changing field names, order, weights, or `performance.vector_quantization` produces a new spec hash and forces a cold rebuild. See [[decisions/key_decisions#Three-Layer Cache Invalidation]].
 
 ---
 
@@ -111,7 +111,7 @@ Recommended model: `all-MiniLM-L6-v2` (384 dimensions, fast, strong quality for 
 ```yaml
 blocking:
   enabled: true
-  operator: "and"     # "and" | "or"
+  operator: "and"     # only "and" is supported
   fields:
     - field_a: "country"
       field_b: "country_code"
@@ -122,11 +122,11 @@ blocking:
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | bool | `false` | Must be `true` to activate blocking |
-| `operator` | String | `"and"` | `"and"`: must match all pairs. `"or"`: any pair match is sufficient. |
+| `operator` | String | `"and"` | Only `"and"` is supported. All blocking field pairs must match. (`"or"` was removed — see [[ideas/discarded_ideas#OR Blocking Mode]].) |
 | `fields` | Vec\<BlockingFieldPair\> | `[]` | List of `{field_a, field_b}` pairs |
 | `field_a` / `field_b` | Option\<String\> | None | Legacy single-field syntax; promoted to `fields` at load time |
 
-Blocking is critical for performance at scale. With country blocking on a 100k × 100k dataset, each query searches ~5k candidates instead of 100k. See [[Performance Baselines]]. Use `operator: "or"` when records may reach each other via multiple field routes.
+Blocking is critical for performance at scale. With country blocking on a 100k × 100k dataset, each query searches ~5k candidates instead of 100k. See [[benchmarks_and_experiments]]. Use `operator: "or"` when records may reach each other via multiple field routes.
 
 ---
 
@@ -146,7 +146,7 @@ bm25_fields:
 | `fields` | Vec\<BM25FieldPair\> | derived | List of `{field_a, field_b}` pairs to index for BM25 full-text search |
 | `field_a` / `field_b` | Option\<String\> | None | Field names on A and B sides respectively |
 
-**Optional section.** When omitted, BM25 fields are derived from the `fuzzy` and `embedding` entries in `match_fields` (backward compatible). When set explicitly, the user controls exactly which fields are indexed for BM25, independent of the scoring pipeline. This allows BM25-only configs without needing ghost match_fields entries with `weight: 0.0`. See [[Key Decisions#Explicit bm25_fields Config Section]].
+**Optional section.** When omitted, BM25 fields are derived from the `fuzzy` and `embedding` entries in `match_fields` (backward compatible). When set explicitly, the user controls exactly which fields are indexed for BM25, independent of the scoring pipeline. This allows BM25-only configs without needing ghost match_fields entries with `weight: 0.0`. See [[decisions/key_decisions#Explicit bm25_fields Config Section]].
 
 ---
 
@@ -177,7 +177,7 @@ match_fields:
 | `scorer` | Option\<String\> | Fuzzy only: `"wratio"` (default), `"partial_ratio"`, `"token_sort_ratio"`, `"ratio"` |
 | `weight` | f64 | Relative weight; weights are auto-normalised and need not sum to 1.0 |
 
-Fields with `method: "embedding"` are concatenated into the combined vector (each scaled by `sqrt(weight)`). See [[Scoring Algorithm]] for the full algorithm and [[Constitution#4 Combined Vector Weighted Cosine Identity]] for the math.
+Fields with `method: "embedding"` are concatenated into the combined vector (each scaled by `sqrt(weight)`). See [[architecture/scoring_algorithm]] for the full algorithm and [[decisions/key_decisions#Principles-Inviolable]] for the math.
 
 ### Method selection guide
 
@@ -207,7 +207,7 @@ thresholds:
 | `review_floor` | Score >= this but < auto_match → `Classification::Review` (borderline, written to review.csv / review queue) |
 | `min_score_gap` | Optional\<f64\> | `None` | Minimum margin between rank-1 and rank-2 candidates required to auto-confirm. When set, a top candidate that clears `auto_match` but whose gap over rank-2 is less than this value is downgraded to `review` instead of auto-confirmed. Single-candidate results are never downgraded. Default `None` (disabled). |
 
-Both thresholds are **inclusive** (≥). Below `review_floor` → `Classification::NoMatch`. Use `meld tune` to inspect the score distribution before setting production thresholds. See [[Scoring Algorithm#Classification]]. When `min_score_gap` is set, the gap check runs after sorting and before `top_n` truncation, so rank-2 is always available for comparison.
+Both thresholds are **inclusive** (≥). Below `review_floor` → `Classification::NoMatch`. Use `meld tune` to inspect the score distribution before setting production thresholds. See [[architecture/scoring_algorithm#Classification]]. When `min_score_gap` is set, the gap check runs after sorting and before `top_n` truncation, so rank-2 is always available for comparison.
 
 ---
 
@@ -268,7 +268,7 @@ live:
 | `upsert_log` | Option\<String\> | `"benchmarks/live/<test>/wal/events.ndjson"` | WAL base path. Each server run creates a new timestamped file: `events_20260311T184207Z.wal`. |
 | `crossmap_flush_secs` | Option\<u64\> | `5` | How often the CrossMap is flushed to disk when dirty |
 
-See [[State & Persistence#WAL]] for how the WAL file naming, replay, and compaction work.
+See [[architecture/state_and_persistence#WAL]] for how the WAL file naming, replay, and compaction work.
 
 ---
 
@@ -287,11 +287,11 @@ performance:
 |---|---|---|---|
 | `encoder_pool_size` | Option\<usize\> | `1` | Concurrent ONNX encoder sessions. **Recommended: 4.** Diminishing returns above 8. |
 | `quantized` | bool | `false` | INT8-quantized ONNX model — ~2× faster encoding, negligible quality loss. Recommended for datasets > 50k records. |
-| `encoder_batch_wait_ms` | Option\<u64\> | `0` | Coordinator batch window (ms). `0` = disabled. Only beneficial at concurrency ≥ 20 with large models. See [[Key Decisions#Encoding Coordinator Batched ONNX Inference]]. |
+| `encoder_batch_wait_ms` | Option\<u64\> | `0` | Coordinator batch window (ms). `0` = disabled. Only beneficial at concurrency ≥ 20 with large models. See [[decisions/key_decisions#Encoding Coordinator Batched ONNX Inference]]. |
 | `vector_quantization` | Option\<String\> | `"f32"` | Cache precision: `"f32"` (default), `"f16"` (43% smaller, no measurable quality loss), `"bf16"`. usearch backend only. |
-| `vector_index_mode` | Option\<String\> | `"load"` | usearch backend only: `"load"` (load entire HNSW graph into RAM at startup) or `"mmap"` (memory-map the index file, let OS page in only traversed nodes). `"mmap"` reduces peak RAM for extreme-scale batch jobs but is read-only (not suitable for `meld serve`). See [[Key Decisions#Memory-Mapped Vector Index]]. |
+| `vector_index_mode` | Option\<String\> | `"load"` | usearch backend only: `"load"` (load entire HNSW graph into RAM at startup) or `"mmap"` (memory-map the index file, let OS page in only traversed nodes). `"mmap"` reduces peak RAM for extreme-scale batch jobs but is read-only (not suitable for `meld serve`). See [[decisions/key_decisions#Memory-Mapped Vector Index]]. |
 
-See [[Performance Baselines]] for the throughput impact of each setting.
+See [[benchmarks_and_experiments]] for the throughput impact of each setting.
 
 ---
 
@@ -306,7 +306,7 @@ vector_backend: "usearch"   # "flat" (default) | "usearch"
 | `"flat"` | O(N) brute-force scan | Development and small datasets (< 10k records) |
 | `"usearch"` | O(log N) HNSW ANN | Production — any dataset > 10k records |
 
-`usearch` requires `cargo build --features usearch`. See [[Performance Baselines]] for throughput comparison. See [[Key Decisions#Combined Vector Index Single Index Per Side]] for why one index per side is sufficient.
+`usearch` requires `cargo build --features usearch`. See [[benchmarks_and_experiments]] for throughput comparison. See [[decisions/key_decisions#Combined Vector Index Single Index Per Side]] for why one index per side is sufficient.
 
 ---
 
@@ -320,4 +320,4 @@ Controls both the ANN search width (number of candidates retrieved from the vect
 
 ---
 
-See also: [[Business Logic Flow]] for how config drives the pipeline at runtime, [[State & Persistence]] for persistence-related config (`live`, `cross_map`, `embeddings` cache dirs).
+See also: [[architecture/business_logic_flow]] for how config drives the pipeline at runtime, [[architecture/state_and_persistence]] for persistence-related config (`live`, `cross_map`, `embeddings` cache dirs).

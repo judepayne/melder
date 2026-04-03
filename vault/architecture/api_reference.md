@@ -10,15 +10,19 @@ related_code: [src/api/handlers.rs, src/api/server.rs]
 
 Complete HTTP API for live mode (`meld serve`). The router is built in `api/server.rs` and binds to `0.0.0.0:{port}`. All routes are prefixed `/api/v1/`.
 
-**Middleware applied to all routes:** `CatchPanicLayer` (panic → 500 JSON), `TraceLayer` (HTTP tracing).
+Two modes:
+- **Match mode** (default): Full A/B symmetric API
+- **Enroll mode** (`meld enroll`): Single-pool enrollment API
 
-See [[Business Logic Flow#Live Mode]] for how requests flow through the system. See [[Config Reference#live]] for port and WAL configuration.
+**Middleware applied to all routes:** `CatchPananicLayer` (panic → 500 JSON), `TraceLayer` (HTTP tracing).
+
+See [[architecture/business_logic_flow#live_mode]] for how requests flow through the system. See [[architecture/config_reference#live]] for port and WAL configuration.
 
 ---
 
 ## Record Endpoints
 
-Symmetric — A and B sides have identical shapes. All A-side routes have a `/b/` equivalent. See [[Constitution#1 Batch Asymmetry Live Symmetry]].
+Symmetric — A and B sides have identical shapes. All A-side routes have a `/b/` equivalent. See [[decisions/key_decisions#Principles-Inviolable]].
 
 ### `POST /api/v1/{side}/add`
 
@@ -38,7 +42,7 @@ The record must contain the `id_field` configured for this side.
 
 ### `POST /api/v1/{side}/match`
 
-Read-only similarity search. Encodes the record and scores it against the opposite side. **Does not store the record or modify any state.** Use this for duplicate detection before committing a record. See [[Use Cases#2 Live Duplicate Detection]].
+Read-only similarity search. Encodes the record and scores it against the opposite side. **Does not store the record or modify any state.** Use this for duplicate detection before committing a record. See [[business/use_cases#2 Live Duplicate Detection]].
 
 **Request:** `{ "record": { ... } }` — same shape as `/add`.
 
@@ -90,7 +94,7 @@ Same semantics as single-record endpoints; accepts and returns arrays. Max 1,000
 
 ## CrossMap Endpoints
 
-The CrossMap is the 1:1 ledger of confirmed pairs. See [[Constitution#3 CrossMap Bijection 1 1 Under One Lock]].
+The CrossMap is the 1:1 ledger of confirmed pairs. See [[decisions/key_decisions#Principles-Inviolable]].
 
 ### `POST /api/v1/crossmap/confirm`
 
@@ -281,4 +285,4 @@ All errors return JSON: `{ "error": "message" }`.
 
 ---
 
-See also: [[Scoring Algorithm]] for how match scores are computed, [[State & Persistence]] for how upserts and CrossMap changes are persisted, [[Config Reference#live]] for server configuration.
+See also: [[architecture/scoring_algorithm]] for how match scores are computed, [[architecture/state_and_persistence]] for how upserts and CrossMap changes are persisted, [[architecture/config_reference#live]] for server configuration.

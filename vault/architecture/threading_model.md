@@ -143,7 +143,7 @@ Both hold their locks for sub-millisecond durations under normal load.
 | Primitive | What it guards | Why this choice |
 |---|---|---|
 | `DashMap` | Record stores (A/B records) | Shard-level locking; high read concurrency with negligible write contention |
-| `RwLock` | Blocking indices, vector indices, CrossMap inner | Many concurrent readers, infrequent writers. CrossMap uses a single RwLock (not two DashMaps) to prevent TOCTOU and cross-shard deadlock -- see [[CONSTITUTION#3 CrossMap Bijection 1 1 Under One Lock]] |
+| `RwLock` | Blocking indices, vector indices, CrossMap inner | Many concurrent readers, infrequent writers. CrossMap uses a single RwLock (not two DashMaps) to prevent TOCTOU and cross-shard deadlock -- see [[decisions/key_decisions#Principles-Inviolable]] |
 | `std::sync::Mutex` | Encoder pool slots, BM25 indices, WAL writer, SqliteStore connection | Exclusive access required. Encoder slots use try_lock round-robin for fairness |
 | `DashSet` | Unmatched ID sets | Same as DashMap (shard-level) |
 | `AtomicBool` / `AtomicU64` | CrossMap dirty flag, upsert counter | Lock-free; no contention |
@@ -159,8 +159,8 @@ When using the SQLite backend, a single write connection (`Arc<Mutex<Connection>
 
 **Nested par_iter hazard:** The candidate selection path in `candidates.rs` originally used `par_iter` to fetch blocked records. With SQLite, this created nested parallelism (outer `par_iter` in `engine.rs` + inner `par_iter` in `candidates.rs`), causing deadlock when all reader pool connections were held by inner tasks. Fixed by converting the inner `par_iter` to sequential `iter` for the no-embeddings path.
 
-See [[Key Decisions#SQLite Connection Pool Writer N Readers]].
+See [[decisions/key_decisions#SQLite Connection Pool Writer N Readers]].
 
 ---
 
-*See also: [[Business Logic Flow]], [[State & Persistence]], [[Module Map]]*
+*See also: [[architecture/business_logic_flow]], [[architecture/state_and_persistence]], [[architecture/module_map]]*
