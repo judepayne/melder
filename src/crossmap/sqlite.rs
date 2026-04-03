@@ -48,40 +48,55 @@ impl CrossMapOps for SqliteCrossMap {
 
     fn add(&self, a_id: &str, b_id: &str) {
         let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        // Use rusqlite's Transaction API for automatic rollback on panic.
-        // The old manual BEGIN/COMMIT left the connection in an open
-        // transaction if any .expect() panicked between them.
-        let tx = conn.transaction().expect("begin transaction");
-        tx.execute("DELETE FROM crossmap WHERE a_id = ?1", params![a_id])
-            .expect("delete old a_id");
-        tx.execute("DELETE FROM crossmap WHERE b_id = ?1", params![b_id])
-            .expect("delete old b_id");
-        tx.execute(
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::warn!(error = %e, "crossmap add: failed to begin transaction");
+                return;
+            }
+        };
+        if let Err(e) = tx.execute("DELETE FROM crossmap WHERE a_id = ?1", params![a_id]) {
+            tracing::warn!(error = %e, a_id, "crossmap add: failed to delete old a_id");
+            return;
+        }
+        if let Err(e) = tx.execute("DELETE FROM crossmap WHERE b_id = ?1", params![b_id]) {
+            tracing::warn!(error = %e, b_id, "crossmap add: failed to delete old b_id");
+            return;
+        }
+        if let Err(e) = tx.execute(
             "INSERT INTO crossmap (a_id, b_id) VALUES (?1, ?2)",
             params![a_id, b_id],
-        )
-        .expect("insert crossmap pair");
-        tx.commit().expect("commit transaction");
+        ) {
+            tracing::warn!(error = %e, a_id, b_id, "crossmap add: failed to insert pair");
+            return;
+        }
+        if let Err(e) = tx.commit() {
+            tracing::warn!(error = %e, a_id, b_id, "crossmap add: failed to commit");
+        }
     }
 
     fn remove(&self, a_id: &str, b_id: &str) {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
+        if let Err(e) = conn.execute(
             "DELETE FROM crossmap WHERE a_id = ?1 AND b_id = ?2",
             params![a_id, b_id],
-        )
-        .expect("remove crossmap pair");
+        ) {
+            tracing::warn!(error = %e, a_id, b_id, "crossmap remove failed");
+        }
     }
 
     fn remove_if_exact(&self, a_id: &str, b_id: &str) -> bool {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        let changed = conn
-            .execute(
-                "DELETE FROM crossmap WHERE a_id = ?1 AND b_id = ?2",
-                params![a_id, b_id],
-            )
-            .expect("remove_if_exact");
-        changed > 0
+        match conn.execute(
+            "DELETE FROM crossmap WHERE a_id = ?1 AND b_id = ?2",
+            params![a_id, b_id],
+        ) {
+            Ok(changed) => changed > 0,
+            Err(e) => {
+                tracing::warn!(error = %e, a_id, b_id, "crossmap remove_if_exact failed");
+                false
+            }
+        }
     }
 
     fn take_a(&self, a_id: &str) -> Option<String> {
@@ -107,9 +122,15 @@ impl CrossMapOps for SqliteCrossMap {
     fn claim(&self, a_id: &str, b_id: &str) -> bool {
         // Must use writer: check-then-insert must be atomic on one connection.
         // Wrapped in a transaction so the two SELECTs + INSERT are atomic,
-        // and any panic triggers automatic rollback via Transaction::drop.
+        // and any error triggers automatic rollback via Transaction::drop.
         let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = conn.transaction().expect("begin transaction");
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::warn!(error = %e, "crossmap claim: failed to begin transaction");
+                return false;
+            }
+        };
         let a_taken: bool = tx
             .query_row(
                 "SELECT 1 FROM crossmap WHERE a_id = ?1",
@@ -130,13 +151,20 @@ impl CrossMapOps for SqliteCrossMap {
         if b_taken {
             return false;
         }
-        tx.execute(
+        if let Err(e) = tx.execute(
             "INSERT INTO crossmap (a_id, b_id) VALUES (?1, ?2)",
             params![a_id, b_id],
-        )
-        .expect("claim insert");
-        tx.commit().expect("commit claim");
-        true
+        ) {
+            tracing::warn!(error = %e, a_id, b_id, "crossmap claim: failed to insert");
+            return false;
+        }
+        match tx.commit() {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, a_id, b_id, "crossmap claim: failed to commit");
+                false
+            }
+        }
     }
 
     fn get_b(&self, a_id: &str) -> Option<String> {

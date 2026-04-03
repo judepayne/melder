@@ -6,7 +6,7 @@ use std::process;
 use tracing::{info, warn};
 
 /// Start the live-mode HTTP server.
-pub fn cmd_serve(config_path: &Path, port: u16) {
+pub fn cmd_serve(config_path: &Path, port: u16, bind: &str) {
     // 1. Load config
     let cfg = super::load_config_or_exit(config_path);
 
@@ -83,7 +83,7 @@ pub fn cmd_serve(config_path: &Path, port: u16) {
         });
 
         // Start HTTP server
-        if let Err(e) = crate::api::server::start_server(session.clone(), port).await {
+        if let Err(e) = crate::api::server::start_server(session.clone(), port, bind).await {
             eprintln!("Server error: {}", e);
             process::exit(1);
         }

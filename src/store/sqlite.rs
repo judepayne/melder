@@ -878,7 +878,10 @@ impl SqliteStore {
         let _ = conn.execute_batch(&format!("DROP INDEX IF EXISTS idx_{prefix}_blocking"));
 
         // Begin single transaction for entire load
-        conn.execute_batch("BEGIN").expect("begin bulk transaction");
+        if let Err(e) = conn.execute_batch("BEGIN") {
+            tracing::warn!(error = %e, "bulk_load: failed to begin transaction");
+            return Ok(0);
+        }
 
         // Build columnar INSERT SQL: INSERT INTO {prefix}_records (id, "col1", "col2", ...) VALUES (?1, ?2, ...)
         let columns = self.columns(side).to_vec();
@@ -914,16 +917,24 @@ impl SqliteStore {
                     .map(|v| v as &dyn rusqlite::types::ToSql)
                     .collect();
                 conn.execute(&rec_sql, param_refs.as_slice())
-                    .expect("bulk insert record");
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, id, "bulk insert record failed");
+                        0
+                    });
 
                 let values = blocking_values(record, &blocking_fields, side);
                 for (field_index, value) in values {
                     conn.execute(&blk_sql, params![id, field_index as i64, value])
-                        .expect("bulk insert blocking key");
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(error = %e, id, "bulk insert blocking key failed");
+                            0
+                        });
                 }
 
-                conn.execute(&unm_sql, params![id])
-                    .expect("bulk mark unmatched");
+                conn.execute(&unm_sql, params![id]).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, id, "bulk mark unmatched failed");
+                    0
+                });
             }
 
             total += chunk.len();
@@ -939,8 +950,9 @@ impl SqliteStore {
 
         stream_fn(&mut insert_chunk)?;
 
-        conn.execute_batch("COMMIT")
-            .expect("commit bulk transaction");
+        if let Err(e) = conn.execute_batch("COMMIT") {
+            tracing::warn!(error = %e, "bulk_load commit failed");
+        }
 
         // Recreate blocking index
         let _ = conn.execute_batch(&format!(

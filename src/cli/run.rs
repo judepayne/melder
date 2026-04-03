@@ -155,7 +155,10 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
 
 /// SQLite-backed batch path for large datasets.
 fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limit: Option<usize>) {
-    let db_path_str = cfg.batch.db_path.as_ref().unwrap().clone();
+    let Some(db_path_str) = cfg.batch.db_path.as_ref().cloned() else {
+        eprintln!("SQLite batch mode requires batch.db_path in config");
+        process::exit(1);
+    };
     let db_path = Path::new(&db_path_str);
 
     // Always fresh: delete existing DB

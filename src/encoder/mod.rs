@@ -155,7 +155,10 @@ fn model_dim(model: &EmbeddingModel) -> usize {
         EmbeddingModel::BGESmallENV15 => 384,
         EmbeddingModel::BGEBaseENV15 => 768,
         EmbeddingModel::BGELargeENV15 => 1024,
-        _ => 384, // fallback
+        other => {
+            tracing::warn!(model = ?other, "unknown model variant, defaulting to dim=384");
+            384
+        }
     }
 }
 
@@ -390,7 +393,14 @@ impl EncoderPool {
         }
     }
 
-    /// Ensure the ONNX Runtime dynamic library is discoverable.
+    /// Ensure `ORT_DYLIB_PATH` is set before creating ONNX sessions.
+    ///
+    /// # Safety
+    /// Uses `std::env::set_var` which is not thread-safe. Must be called
+    /// during single-threaded startup, before the HTTP server or any
+    /// worker threads are spawned. This is guaranteed because
+    /// `EncoderPool::new()` is invoked during session/state construction,
+    /// which completes before the Axum server binds.
     #[cfg(feature = "gpu-encode")]
     #[allow(clippy::needless_return)]
     fn ensure_ort_dylib() -> Result<(), EncoderError> {

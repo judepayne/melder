@@ -298,27 +298,25 @@ impl VectorDB for UsearchVectorDB {
         let block_key = self.block_key_for(record, side);
         let block_idx = self.get_or_create_block(&block_key)?;
 
+        // Hold record_block write lock for the entire cross-block move + insert
+        // to prevent TOCTOU races when two threads upsert the same record.
+        let mut rb = self.record_block.write().unwrap_or_else(|e| e.into_inner());
+
         // If the record already exists in a *different* block, remove it there first.
+        if let Some(&old_block_idx) = rb.get(id)
+            && old_block_idx != block_idx
         {
-            let rb = self.record_block.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(&old_block_idx) = rb.get(id)
-                && old_block_idx != block_idx
-            {
-                drop(rb);
-                // Remove from old block.
-                let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());
-                let mut old_state = blocks[old_block_idx]
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner());
-                if let Some(old_key) = old_state.id_to_key.remove(id) {
-                    old_state.key_to_id.remove(&old_key);
-                    // Mark removed in usearch (orphan retention — vector stays).
-                    let _ = old_state.index.remove(old_key);
-                }
-                drop(old_state);
-                let mut rb = self.record_block.write().unwrap_or_else(|e| e.into_inner());
-                rb.remove(id);
+            let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());
+            let mut old_state = blocks[old_block_idx]
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(old_key) = old_state.id_to_key.remove(id) {
+                old_state.key_to_id.remove(&old_key);
+                let _ = old_state.index.remove(old_key);
             }
+            drop(old_state);
+            drop(blocks);
+            rb.remove(id);
         }
 
         // Insert/replace in the target block.
@@ -355,8 +353,7 @@ impl VectorDB for UsearchVectorDB {
         drop(state);
         drop(blocks);
 
-        // Update global record→block mapping.
-        let mut rb = self.record_block.write().unwrap_or_else(|e| e.into_inner());
+        // Update global record→block mapping (using already-held write lock).
         rb.insert(id_owned, block_idx);
         drop(rb);
 

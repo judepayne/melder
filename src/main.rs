@@ -45,10 +45,9 @@ enum Commands {
         /// HTTP port
         #[arg(short, long, default_value = "8080")]
         port: u16,
-        /// Unix socket path (alternative to port)
-        #[cfg(unix)]
-        #[arg(long)]
-        socket: Option<PathBuf>,
+        /// Bind address (default: 127.0.0.1, use 0.0.0.0 for all interfaces)
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
     },
     /// Start the enroll-mode HTTP server (single-pool entity resolution)
     Enroll {
@@ -58,6 +57,9 @@ enum Commands {
         /// HTTP port
         #[arg(short, long, default_value = "8080")]
         port: u16,
+        /// Bind address (default: 127.0.0.1, use 0.0.0.0 for all interfaces)
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
     },
     /// Tune thresholds — score distribution, overlap analysis, and accuracy metrics
     Tune {
@@ -190,13 +192,12 @@ fn main() {
             verbose,
             limit,
         } => melder::cli::run::cmd_run(&config, dry_run, verbose, limit),
-        Commands::Serve {
-            config,
-            port,
-            #[cfg(unix)]
-                socket: _socket,
-        } => melder::cli::serve::cmd_serve(&config, port),
-        Commands::Enroll { config, port } => melder::cli::enroll::cmd_enroll(&config, port),
+        Commands::Serve { config, port, bind } => {
+            melder::cli::serve::cmd_serve(&config, port, &bind)
+        }
+        Commands::Enroll { config, port, bind } => {
+            melder::cli::enroll::cmd_enroll(&config, port, &bind)
+        }
         Commands::Tune {
             config,
             verbose,

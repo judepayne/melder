@@ -35,7 +35,10 @@ pub fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
 ///
 /// Thin wrapper around [`dot_product_f32`] with a widening cast.
 pub fn dot_product(a: &[f32], b: &[f32]) -> f64 {
-    assert_eq!(a.len(), b.len(), "vectors must have same dimension");
+    debug_assert_eq!(a.len(), b.len(), "vectors must have same dimension");
+    if a.len() != b.len() {
+        return 0.0;
+    }
     dot_product_f32(a, b) as f64
 }
 

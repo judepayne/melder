@@ -513,7 +513,14 @@ pub async fn enroll_query(
 
 /// GET /api/v1/enroll/count
 pub async fn enroll_count(State(session): State<AppState>) -> axum::response::Response {
-    json_ok(serde_json::json!({ "count": session.state.store.len(Side::A).unwrap_or(0) }))
+    match tokio::task::spawn_blocking(
+        move || serde_json::json!({ "count": session.state.store.len(Side::A).unwrap_or(0) }),
+    )
+    .await
+    {
+        Ok(resp) => json_ok(resp),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -522,12 +529,18 @@ pub async fn enroll_count(State(session): State<AppState>) -> axum::response::Re
 
 /// GET /api/v1/health
 pub async fn health(State(session): State<AppState>) -> axum::response::Response {
-    json_ok(session.health())
+    match tokio::task::spawn_blocking(move || session.health()).await {
+        Ok(resp) => json_ok(resp),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
 }
 
 /// GET /api/v1/status
 pub async fn status(State(session): State<AppState>) -> axum::response::Response {
-    json_ok(session.status())
+    match tokio::task::spawn_blocking(move || session.status()).await {
+        Ok(resp) => json_ok(resp),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------

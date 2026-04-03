@@ -101,11 +101,13 @@ fn build_enroll_router() -> Router<Arc<Session>> {
 pub async fn start_server(
     session: Arc<Session>,
     port: u16,
+    bind: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = build_router(session);
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
-    info!(port, "server listening");
+    let addr = format!("{}:{}", bind, port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    info!(bind, port, "server listening");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

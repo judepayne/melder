@@ -6,7 +6,7 @@ use std::process;
 use tracing::{info, warn};
 
 /// Start the enroll-mode HTTP server.
-pub fn cmd_enroll(config_path: &Path, port: u16) {
+pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
     // 1. Load enroll config
     let cfg = match crate::config::load_enroll_config(config_path) {
         Ok(c) => c,
@@ -63,7 +63,7 @@ pub fn cmd_enroll(config_path: &Path, port: u16) {
 
         // Start HTTP server
         info!(port, "starting enroll server");
-        if let Err(e) = crate::api::server::start_server(session.clone(), port).await {
+        if let Err(e) = crate::api::server::start_server(session.clone(), port, bind).await {
             eprintln!("Server error: {}", e);
             process::exit(1);
         }

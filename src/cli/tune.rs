@@ -68,8 +68,7 @@ pub fn cmd_tune(
     let ground_truth = build_ground_truth(&cfg);
     let has_ground_truth = ground_truth.is_some();
 
-    if has_ground_truth {
-        let gt = ground_truth.as_ref().unwrap();
+    if let Some(gt) = ground_truth.as_ref() {
         eprintln!(
             "Ground truth: {} known matches from common_id_field",
             gt.len()
@@ -296,12 +295,14 @@ pub fn cmd_tune(
     }
 
     // 10. Overlap zone analysis (ground truth only, requires field scores).
-    if has_ground_truth && !field_scores_all.is_empty() {
+    if let Some(gt) = ground_truth.as_ref()
+        && !field_scores_all.is_empty()
+    {
         render_overlap_zone(
             &matched,
             &review,
             &unmatched,
-            ground_truth.as_ref().unwrap(),
+            gt,
             store.as_deref(),
             current_auto,
             current_floor,
