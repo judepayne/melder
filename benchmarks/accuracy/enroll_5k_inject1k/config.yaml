@@ -1,0 +1,37 @@
+job:
+  name: enroll_accuracy_5k_inject1k
+  description: Enroll accuracy regression test — single-pool entity resolution
+
+dataset:
+  path: benchmarks/accuracy/enroll_5k_inject1k/data/pool_5k.csv
+  id_field: entity_id
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  cache_dir: benchmarks/accuracy/enroll_5k_inject1k/cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - { field: country_code }
+
+match_fields:
+  - { field: legal_name, method: embedding, weight: 0.55 }
+  - { field: short_name, method: fuzzy, scorer: partial_ratio, weight: 0.20 }
+  - { field: country_code, method: exact, weight: 0.20 }
+  - { field: lei, method: exact, weight: 0.05 }
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+vector_backend: usearch
+top_n: 5
+ann_candidates: 50
+
+performance:
+  encoder_pool_size: 4
+
+live:
+  upsert_log: benchmarks/accuracy/enroll_5k_inject1k/wal/events.ndjson

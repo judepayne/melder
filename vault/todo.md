@@ -8,7 +8,7 @@ related_code: []
 
 # Project Status
 
-Last updated: 2026-04-02 (Exclusions system, initial match pass, rayon deadlock fix, accuracy test, competitor analysis)
+Last updated: 2026-04-03 (Windows usearch, default usearch, comprehensive code review, side-aware scoring)
 
 ## Completed
 
@@ -46,6 +46,14 @@ Last updated: 2026-04-02 (Exclusions system, initial match pass, rayon deadlock 
 - [x] **Competitor analysis documents** — Created `Competitor_analysis.md` (positioning vs Quantexa and ES/OpenSearch) and `vs_Elastic_OpenSearch.md` (detailed technical comparison). Key sections: core distribution problem, in-process advantage, cost comparison, capability matrix, Melder design philosophy.
 
 - [x] **Benchmark data regeneration scripts** — Per-directory `generate_data.sh` scripts for `batch/`, `live/`, and `accuracy/`. Each calls `benchmarks/data/generate.py` with the sizes its benchmarks need (10k/100k/1M for batch and live, 10k for accuracy). `accuracy/10kx10k_exclusions` excluded (generates its own data). `accuracy/science/` excluded (research journal, not reproducible benchmarks). User docs added to `docs/building.md`.
+
+- [x] **Windows usearch support** — Forked `unum-cloud/USearch` to `judepayne/USearch` with `MAP_FAILED` patch for MSVC. Pointed `Cargo.toml` at fork. Verified via GitHub Actions `windows-latest` CI (10k×10k batch benchmark with usearch passes). Temporary until upstream PR #720 merges.
+
+- [x] **usearch as default feature** — `usearch` is now a default Cargo feature. `vector_backend` config defaults to `"usearch"`. Users get HNSW automatically; opt out with `--no-default-features`. Windows release builds now include usearch. All Windows MSVC warnings removed from docs.
+
+- [x] **Comprehensive code review (Opus)** — Full 5-agent review of entire codebase. Fixed 2 critical (panicking handlers, production assert_eq), 11 high (server bind 127.0.0.1, spawn_blocking handlers, crossmap sqlite expect→warn, usearch TOCTOU, bulk_load panics, CLI unwraps, dead --socket arg, model_dim fallback warning, dot_product defensive return, ensure_ort_dylib safety doc), 12 medium (pagination limit cap, NaN guards, crossmap pagination sort, exclusions contains allocation, pipeline error logging, score_pair side-aware, texthash bounds, batch writer ID, usearch search margin, deprecation logging, match_batch doc, SQLite error handling), and 16 low-severity issues (module docs, naming, copy_within, synonym HashSet, batch engine logging, etc.). 418 tests pass, clippy/fmt clean.
+
+- [x] **Side-aware scoring (`score_pair` takes `pool_side`)** — `score_pair` now accepts `pool_side: Side` parameter. `field_a` always refers to A-side columns, `field_b` to B-side. The function swaps field lookups based on which side the candidate pool is on. Fixes silent zero scores in live mode when A queries against B with different column names (e.g. `legal_name` vs `counterparty_name`). This was an original design limitation from the first commit — batch mode always worked, but live mode's symmetric scoring broke with asymmetric schemas. Verified with local 10k×10k live benchmark: 733 correct matches, 402 req/s, zero errors.
 
 ## In Progress
 

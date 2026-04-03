@@ -43,3 +43,15 @@ data/*.parquet
 
 # Always include the generator script
 !data/generate.py
+
+# ---- Live accuracy regression test (fixed data, must be committed) ----
+!accuracy/live_10kx10k_inject3k/data/
+!accuracy/live_10kx10k_inject3k/data/*.csv
+!accuracy/live_10kx10k_inject3k/expected/
+!accuracy/live_10kx10k_inject3k/expected/*.csv
+
+# ---- Enroll accuracy regression test (fixed data, must be committed) ----
+!accuracy/enroll_5k_inject1k/data/
+!accuracy/enroll_5k_inject1k/data/*.csv
+!accuracy/enroll_5k_inject1k/expected/
+!accuracy/enroll_5k_inject1k/expected/*.csv

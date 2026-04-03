@@ -217,8 +217,35 @@ jobs:
         run: |
           echo ""
           echo "========================================="
-          echo "  PERFORMANCE REGRESSION CHECK SUMMARY"
-          echo "========================================="
-          echo "  Batch: ${{ steps.batch.outputs.throughput }} rec/s (min: ${{ env.BATCH_MIN_THROUGHPUT }})"
-          echo "  Live:  ${{ steps.live.outputs.throughput }} req/s (min: ${{ env.LIVE_MIN_THROUGHPUT }})"
-          echo "========================================="
+
+  accuracy:
+    name: Live accuracy regression
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: perf-build
+
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/huggingface
+          key: fastembed-model-${{ runner.os }}
+
+      - name: Install Python dependencies
+        run: pip install faker pandas pyarrow
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run live accuracy test
+        run: python3 benchmarks/accuracy/live_10kx10k_inject3k/run_test.py
+
+      - name: Run enroll accuracy test
+        run: python3 benchmarks/accuracy/enroll_5k_inject1k/run_test.py
