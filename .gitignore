@@ -35,6 +35,7 @@ __pycache__/
 .DS_Store
 
 TODO.md
+PLAN.md
 melder-train.md
 *.d2
 *~

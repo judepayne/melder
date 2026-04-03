@@ -162,6 +162,71 @@ the full tuning guide including benchmark results.
 > `encoder_device: gpu` in the config will produce a clear error at
 > startup: _"GPU encoding requires building with --features gpu-encode"_.
 
+## Benchmark data
+
+The repository includes a synthetic data generator and per-directory
+generation scripts. Only the 10k datasets are committed (small enough
+for CI); larger sizes must be regenerated after cloning.
+
+**Prerequisites:**
+
+```bash
+pip install faker pandas pyarrow
+```
+
+### Generation scripts
+
+Each benchmark directory has its own `generate_data.sh` that produces
+exactly the datasets its benchmarks need:
+
+| Script | Sizes | Output location |
+|--------|-------|-----------------|
+| `benchmarks/batch/generate_data.sh` | 10k, 100k, 1M | `benchmarks/data/` |
+| `benchmarks/live/generate_data.sh` | 10k, 100k, 1M | `benchmarks/data/` |
+| `benchmarks/accuracy/generate_data.sh` | 10k | `benchmarks/data/` |
+| `benchmarks/accuracy/science/generate_data.sh` | 27 training rounds | `benchmarks/accuracy/science/rounds/` |
+
+The batch and live scripts accept size arguments:
+
+```bash
+# Generate all sizes (10k + 100k + 1M)
+./benchmarks/batch/generate_data.sh
+
+# Generate specific sizes
+./benchmarks/batch/generate_data.sh 10k 100k
+./benchmarks/live/generate_data.sh 1M
+
+# Accuracy benchmarks only need 10k
+./benchmarks/accuracy/generate_data.sh
+
+# Science training rounds (wraps setup_datasets.py)
+./benchmarks/accuracy/science/generate_data.sh
+```
+
+All generators use seed 42 (or fixed per-round seeds for science) for
+deterministic, reproducible output. The `--addresses` flag is always
+passed so datasets include address fields used by some configs.
+
+### What's committed vs generated
+
+| Data | Status |
+|------|--------|
+| 10k datasets (`benchmarks/data/dataset_*_10k.*`) | Committed in git |
+| 100k, 1M datasets | Gitignored — regenerate with scripts above |
+| Science master + holdout (`science/master/`, `science/holdout/`) | Committed in git |
+| Science round datasets (`science/rounds/`) | Gitignored — regenerate with script above |
+
+### Special cases
+
+- **`accuracy/10kx10k_exclusions`** generates its own data during
+  Phase 0 of its `run_test.py` (uses `n_exact=1000` for exact-match
+  exclusion testing). It is not covered by the accuracy generation
+  script.
+
+- **`accuracy/science/`** uses its own fixed datasets (committed
+  `master/dataset_a.csv` seed 0 and `holdout/dataset_b.csv` seed 9999),
+  not the shared `benchmarks/data/` pool.
+
 ## Environment variables
 
 | Variable | Purpose |

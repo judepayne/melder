@@ -24,7 +24,8 @@
 
 # ---- Datasets ----
 # Only 10k datasets are committed (small, needed for unit tests).
-# Larger datasets must be regenerated: python3 benchmarks/data/generate.py --size N
+# Larger datasets must be regenerated via the generate_data.sh scripts
+# in batch/, live/, accuracy/, and accuracy/science/.
 
 # Exclude all generated data by default
 data/*.csv
