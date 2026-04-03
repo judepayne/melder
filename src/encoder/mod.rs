@@ -422,8 +422,37 @@ impl EncoderPool {
             ))
         }
 
-        #[cfg(not(target_os = "macos"))]
-        Ok(())
+        #[cfg(target_os = "linux")]
+        {
+            // Check common system locations where libonnxruntime.so might be.
+            let candidates = [
+                "/usr/lib/libonnxruntime.so",
+                "/usr/lib/x86_64-linux-gnu/libonnxruntime.so",
+                "/usr/local/lib/libonnxruntime.so",
+            ];
+            for path in &candidates {
+                if std::path::Path::new(path).exists() {
+                    info!(path, "auto-detected onnxruntime");
+                    unsafe { std::env::set_var("ORT_DYLIB_PATH", path) };
+                    return Ok(());
+                }
+            }
+            Err(EncoderError::Inference(
+                "onnxruntime not found. Download the CUDA-enabled ONNX Runtime build from \
+                 https://github.com/microsoft/onnxruntime/releases and set ORT_DYLIB_PATH \
+                 to the libonnxruntime.so location"
+                    .to_string(),
+            ))
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            Err(EncoderError::Inference(
+                "gpu-encode requires macOS or Linux. Set ORT_DYLIB_PATH to the \
+                 libonnxruntime shared library location"
+                    .to_string(),
+            ))
+        }
     }
 
     /// Download a model from HuggingFace Hub and load it.
