@@ -39,6 +39,11 @@ python benchmarks/batch/run_all_tests.py
 python benchmarks/batch/10kx10k_usearch/warm/run_test.py
 ```
 
+> [!NOTE]
+> Always use the `run_test.py` scripts to run benchmarks — they handle cache
+> preservation, output cleanup, and timing. Don't invoke `meld run` directly
+> for benchmarking. Scripts live in each benchmark's directory.
+
 Key benchmarks:
 - `10kx10k_usearch/warm` — 10k×10k, usearch, cached (baseline: ~31k rec/s)
 - `100kx100k_usearch` — 100k×100k, usearch (~8.7k rec/s)
@@ -130,6 +135,19 @@ Benchmarked on Apple Silicon M3 MacBook Air, `all-MiniLM-L6-v2`, `encoder_pool_s
 | Cache load | ~235ms (A) + ~261ms (B) |
 | Scoring throughput | 10,539 rec/s |
 | Wall time (warm) | 9.5s |
+
+### Batch Mode (1M × 1M, usearch, cold, GPU encode, production config)
+
+Mac Studio M1 Ultra, 64 GB RAM. `encoder_pool_size: 12`, `encoder_batch_size: 256`,
+`encoder_device: gpu`, CoreML EP. Production scoring config (embedding + BM25 + synonym).
+
+| Metric | Value |
+|---|---:|
+| GPU encoding (cold) | ~2,094s |
+| BM25/synonym build | 10.4s |
+| Scoring | 1,824s |
+| Scoring throughput | 548 rec/s |
+| Total wall time | 3,938s (~65 min) |
 
 ### Batch Mode (1M × 1M, BM25-only, in-memory)
 

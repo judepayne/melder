@@ -52,11 +52,20 @@ impl VecIndex {
 
     /// Create an index from pre-existing data (used by cache loading).
     pub fn from_parts(vectors: Vec<f32>, dim: usize, ids: Vec<String>) -> Self {
-        assert_eq!(
+        debug_assert_eq!(
             vectors.len(),
             ids.len() * dim,
             "vectors length must equal ids.len() * dim"
         );
+        if vectors.len() != ids.len() * dim {
+            tracing::warn!(
+                vectors_len = vectors.len(),
+                ids_len = ids.len(),
+                dim = dim,
+                "from_parts: vectors/ids/dim mismatch, returning empty index"
+            );
+            return Self::new(dim);
+        }
         let id_to_pos: HashMap<String, usize> = ids
             .iter()
             .enumerate()
@@ -75,16 +84,12 @@ impl VecIndex {
     /// If the id already exists, the vector is overwritten in-place.
     /// If new, appended to the end.
     ///
-    /// # Panics
-    /// Panics if `vec.len() != self.dim`.
+    /// Silently returns if `vec.len() != self.dim`.
     pub fn upsert(&mut self, id: &str, vec: &[f32]) {
-        assert_eq!(
-            vec.len(),
-            self.dim,
-            "vector dimension mismatch: expected {}, got {}",
-            self.dim,
-            vec.len()
-        );
+        debug_assert_eq!(vec.len(), self.dim, "vector dimension mismatch");
+        if vec.len() != self.dim {
+            return;
+        }
 
         if let Some(&pos) = self.id_to_pos.get(id) {
             // Overwrite existing vector
@@ -137,8 +142,8 @@ impl VecIndex {
     ///
     /// Returns `Vec<(id, score)>` sorted by score descending.
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(String, f32)> {
-        assert_eq!(query.len(), self.dim);
-        if self.ids.is_empty() || k == 0 {
+        debug_assert_eq!(query.len(), self.dim);
+        if query.len() != self.dim || self.ids.is_empty() || k == 0 {
             return vec![];
         }
 
@@ -176,8 +181,8 @@ impl VecIndex {
         k: usize,
         allowed: &HashSet<String>,
     ) -> Vec<(String, f32)> {
-        assert_eq!(query.len(), self.dim);
-        if self.ids.is_empty() || k == 0 || allowed.is_empty() {
+        debug_assert_eq!(query.len(), self.dim);
+        if query.len() != self.dim || self.ids.is_empty() || k == 0 || allowed.is_empty() {
             return vec![];
         }
 

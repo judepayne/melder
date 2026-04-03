@@ -431,12 +431,10 @@ pub async fn exclude(
 ) -> axum::response::Response {
     let a_id = body.a_id;
     let b_id = body.b_id;
-    let resp = tokio::task::spawn_blocking(move || session.exclude(&a_id, &b_id))
-        .await
-        .unwrap_or_else(|e| {
-            panic!("exclude task panicked: {:?}", e);
-        });
-    json_ok(resp)
+    match tokio::task::spawn_blocking(move || session.exclude(&a_id, &b_id)).await {
+        Ok(resp) => json_ok(resp),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
 }
 
 /// DELETE /api/v1/exclude
@@ -446,17 +444,11 @@ pub async fn unexclude(
 ) -> axum::response::Response {
     let a_id = body.a_id;
     let b_id = body.b_id;
-    let resp = tokio::task::spawn_blocking(move || session.unexclude(&a_id, &b_id))
-        .await
-        .unwrap_or_else(|e| {
-            panic!("unexclude task panicked: {:?}", e);
-        });
-    json_ok(resp)
+    match tokio::task::spawn_blocking(move || session.unexclude(&a_id, &b_id)).await {
+        Ok(resp) => json_ok(resp),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
+    }
 }
-
-// ---------------------------------------------------------------------------
-// Utility handlers
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Enroll-mode handlers
