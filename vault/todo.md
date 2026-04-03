@@ -55,6 +55,8 @@ Last updated: 2026-04-03 (Windows usearch, default usearch, comprehensive code r
 
 - [x] **Side-aware scoring (`score_pair` takes `pool_side`)** — `score_pair` now accepts `pool_side: Side` parameter. `field_a` always refers to A-side columns, `field_b` to B-side. The function swaps field lookups based on which side the candidate pool is on. Fixes silent zero scores in live mode when A queries against B with different column names (e.g. `legal_name` vs `counterparty_name`). This was an original design limitation from the first commit — batch mode always worked, but live mode's symmetric scoring broke with asymmetric schemas. Verified with local 10k×10k live benchmark: 733 correct matches, 402 req/s, zero errors.
 
+- [x] **Accuracy regression tests** — Added two deterministic accuracy tests to prevent silent business logic bugs: (1) `benchmarks/accuracy/live_10kx10k_inject3k/` — 10k A + 10k B with asymmetric field names, validates crossmap at two checkpoints (5,376 pairs after initial match, 6,124 after injection). (2) `benchmarks/accuracy/enroll_5k_inject1k/` — single-pool enroll lifecycle (add, score, remove, re-score), validates 2,814 edges. New `accuracy` CI job runs both tests in parallel with `perf` job, fails on any regression. Prevents recurrence of the `score_pair` bug which silently scored zero in live mode for months.
+
 ## In Progress
 
 - [ ] **Check upstream PR #720 status** — Melder temporarily uses a forked usearch repo with the `MAP_FAILED` Windows fix. Check https://github.com/unum-cloud/usearch/pull/720 — if merged, revert `Cargo.toml` to `version = "2"`. Due: end of April 2026.

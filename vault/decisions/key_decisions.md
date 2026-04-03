@@ -237,4 +237,27 @@ After datasets loaded and indices built, `Session::initial_match_pass()` scores 
 
 ---
 
+## Accuracy Regression Tests (Deterministic Validation)
+
+Two fixed-dataset accuracy tests prevent silent business logic bugs. Discovered: `score_pair` hardcoded `field_a` for candidate and `field_b` for query, working only in batch mode. In live mode with asymmetric schemas (e.g. `legal_name` vs `counterparty_name`), A→B queries silently scored zero — no error, no crash, just fewer matches. Undetected for months because the existing live CI test used `skip_initial_match: true` (only B→A direction exercised) and throughput checks ignored match quality.
+
+**Design**: Fixed datasets with asymmetric field names, expected outputs committed to repo, validates at crossmap/edge level.
+
+**Live test** (`benchmarks/accuracy/live_10kx10k_inject3k/`):
+- 10k A + 10k B records with asymmetric field names (legal_name/counterparty_name, country_code/domicile, lei/lei_code)
+- `skip_initial_match: false` — runs initial match pass at startup (B→A direction)
+- Injects 3k B records via API (triggers A→B scoring direction via crossmap claim/re-scoring)
+- Validates crossmap at two checkpoints: 5,376 pairs after initial match, 6,124 after injection
+- Any change to scoring logic that alters results causes CI failure
+
+**Enroll test** (`benchmarks/accuracy/enroll_5k_inject1k/`):
+- 5k single-pool dataset, full lifecycle: enroll 1k records, validate 2,814 edges, remove 50, re-enroll 50, confirm no edges to removed records
+- Tests add/score/remove/re-score paths
+
+**CI integration**: New `accuracy` job runs both tests sequentially, fails on any regression. Runs in parallel with existing `perf` job (both depend on `test`).
+
+**Updating expected outputs**: Run with `--update-expected` flag to regenerate baseline files after intentional scoring changes.
+
+---
+
 See also: [[decisions/key_decisions_implementation]] for detailed implementation ADRs (SQLite wiring, refactoring, concurrency fixes), [[ideas/discarded_ideas]] for rejected approaches.

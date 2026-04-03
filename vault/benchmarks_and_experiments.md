@@ -116,6 +116,33 @@ Baseline on GitHub ubuntu-latest:
 
 ---
 
+## CI Accuracy Regression Tests
+
+CI runs `accuracy` job in parallel with `perf` job on every push. Two deterministic tests validate that scoring logic changes don't silently alter match results.
+
+**Live accuracy test** (`benchmarks/accuracy/live_10kx10k_inject3k/`):
+- Fixed 10k A + 10k B datasets with asymmetric field names (legal_name vs counterparty_name, country_code vs domicile, lei vs lei_code)
+- Validates crossmap at two checkpoints against committed expected files:
+  - After initial match pass: 5,376 pairs
+  - After 3k record injection: 6,124 pairs
+- Any change to scoring logic that alters results causes CI failure
+
+**Enroll accuracy test** (`benchmarks/accuracy/enroll_5k_inject1k/`):
+- Fixed 5k single-pool dataset
+- Validates 2,814 edges after enrollment
+- Removes 50 records, verifies they're gone
+- Enrolls 50 more post-removal, validates 136 edges and confirms no edges to removed records
+- Tests the full enroll lifecycle: add, score, remove, re-score
+
+**Updating expected outputs**:
+```bash
+# After intentional scoring changes, regenerate baselines
+python benchmarks/accuracy/live_10kx10k_inject3k/run_test.py --update-expected
+python benchmarks/accuracy/enroll_5k_inject1k/run_test.py --update-expected
+```
+
+---
+
 ## Performance Baselines
 
 Benchmarked on Apple Silicon M3 MacBook Air, `all-MiniLM-L6-v2`, `encoder_pool_size: 4`.
