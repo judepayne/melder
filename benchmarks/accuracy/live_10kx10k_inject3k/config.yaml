@@ -34,7 +34,11 @@ match_fields:
   - field_a: legal_name
     field_b: counterparty_name
     method: embedding
-    weight: 0.55
+    weight: 0.35
+  - field_a: registered_address
+    field_b: counterparty_address
+    method: embedding
+    weight: 0.20
   - field_a: short_name
     field_b: counterparty_name
     method: fuzzy

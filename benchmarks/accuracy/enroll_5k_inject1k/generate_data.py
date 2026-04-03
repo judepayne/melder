@@ -35,7 +35,14 @@ N_REMOVE = 50
 N_POST_REMOVE = 50
 
 # Fields used in enroll mode (symmetric — no A/B distinction)
-ENROLL_FIELDS = ["entity_id", "legal_name", "short_name", "country_code", "lei"]
+ENROLL_FIELDS = [
+    "entity_id",
+    "legal_name",
+    "short_name",
+    "country_code",
+    "lei",
+    "registered_address",
+]
 
 
 def main():
@@ -53,7 +60,7 @@ def main():
     records_a = generate.generate_a_with_seed(
         seed=SEED,
         n=N_POOL,
-        include_addresses=False,
+        include_addresses=True,
         out_dir=DATA_DIR,
     )
 
@@ -99,6 +106,8 @@ def main():
         noise_level = rng.choices(["clear", "moderate"], weights=[0.6, 0.4])[0]
         noised_name = generate.add_name_noise(a_rec["legal_name"], noise_level)
         lei = a_rec["lei"] if rng.random() < 0.7 else ""
+        address = a_rec.get("registered_address", "")
+        address = generate.add_address_noise(address) if rng.random() < 0.5 else address
 
         enroll_records.append(
             {
@@ -107,6 +116,7 @@ def main():
                 "short_name": generate.make_short_name(noised_name),
                 "country_code": a_rec["country_code"],
                 "lei": lei,
+                "registered_address": address,
             }
         )
         enroll_lookup.append(
@@ -129,6 +139,8 @@ def main():
             if rng.random() < 0.5
             else rng.choice(generate.COUNTRIES)
         )
+        address = a_rec.get("registered_address", "")
+        address = generate.add_address_noise(address) if rng.random() < 0.3 else ""
 
         enroll_records.append(
             {
@@ -137,6 +149,7 @@ def main():
                 "short_name": generate.make_short_name(noised_name),
                 "country_code": country,
                 "lei": "",
+                "registered_address": address,
             }
         )
         enroll_lookup.append(
@@ -159,6 +172,7 @@ def main():
                 "short_name": generate.make_short_name(generate.company_name(country)),
                 "country_code": country,
                 "lei": generate.random_lei() if rng.random() < 0.3 else "",
+                "registered_address": generate.generate_address(),
             }
         )
         enroll_lookup.append(
@@ -238,6 +252,10 @@ def main():
         noise_level = rng3.choices(["clear", "moderate"], weights=[0.6, 0.4])[0]
         noised_name = generate.add_name_noise(a_rec["legal_name"], noise_level)
         lei = a_rec["lei"] if rng3.random() < 0.7 else ""
+        address = a_rec.get("registered_address", "")
+        address = (
+            generate.add_address_noise(address) if rng3.random() < 0.5 else address
+        )
 
         post_remove_records.append(
             {
@@ -246,6 +264,7 @@ def main():
                 "short_name": generate.make_short_name(noised_name),
                 "country_code": a_rec["country_code"],
                 "lei": lei,
+                "registered_address": address,
             }
         )
         post_remove_lookup.append(
@@ -265,6 +284,10 @@ def main():
         noise_level = rng3.choices(["clear", "moderate"], weights=[0.6, 0.4])[0]
         noised_name = generate.add_name_noise(a_rec["legal_name"], noise_level)
         lei = a_rec["lei"] if rng3.random() < 0.7 else ""
+        address = a_rec.get("registered_address", "")
+        address = (
+            generate.add_address_noise(address) if rng3.random() < 0.5 else address
+        )
 
         post_remove_records.append(
             {
@@ -273,6 +296,7 @@ def main():
                 "short_name": generate.make_short_name(noised_name),
                 "country_code": a_rec["country_code"],
                 "lei": lei,
+                "registered_address": address,
             }
         )
         post_remove_lookup.append(
@@ -295,6 +319,7 @@ def main():
                 "short_name": generate.make_short_name(generate.company_name(country)),
                 "country_code": country,
                 "lei": generate.random_lei() if rng3.random() < 0.3 else "",
+                "registered_address": generate.generate_address(),
             }
         )
         post_remove_lookup.append(

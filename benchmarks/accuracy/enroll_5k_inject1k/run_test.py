@@ -196,8 +196,7 @@ def main():
     # Clean runtime artifacts
     shutil.rmtree(f"{TEST_DIR}/cache", ignore_errors=True)
     os.makedirs(f"{TEST_DIR}/cache", exist_ok=True)
-    for f in glob.glob(f"{TEST_DIR}/wal/*.ndjson"):
-        os.remove(f)
+    shutil.rmtree(f"{TEST_DIR}/wal", ignore_errors=True)
     os.makedirs(f"{TEST_DIR}/wal", exist_ok=True)
 
     if args.update_expected:

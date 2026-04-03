@@ -17,7 +17,8 @@ blocking:
     - { field: country_code }
 
 match_fields:
-  - { field: legal_name, method: embedding, weight: 0.55 }
+  - { field: legal_name, method: embedding, weight: 0.35 }
+  - { field: registered_address, method: embedding, weight: 0.20 }
   - { field: short_name, method: fuzzy, scorer: partial_ratio, weight: 0.20 }
   - { field: country_code, method: exact, weight: 0.20 }
   - { field: lei, method: exact, weight: 0.05 }

@@ -1,51 +1,51 @@
-entity_id,legal_name,short_name,country_code,lei
-ENR-PR-00023,villa-baxter capital,villa-baxter capital,DK,V48K00F2T23EBIE7V692
-ENR-PR-00006,Ortiz Inc G.m.b.H.,Ortiz Inc,ES,728Z00HZD71286HKFD99
-ENR-PR-00038,CG,CG,AT,
-ENR-PR-00015,Yu Inc Co,Yu Inc,IE,
-ENR-PR-00028,Harvey P.L.C. Limited,Harvey P.L.C.,GB,7GA200IZ5P3VOB5APO77
-ENR-PR-00008,"Smith, Jones & Santiago Group","Smith, Jones",NL,
-ENR-PR-00000,Taylor Grp Holdings,Taylor Grp,NL,ZZE200TBST9XWI708449
-ENR-PR-00003,SP,SP,US,4M4U00Q39OSMO8ID0Y40
-ENR-PR-00045,"Harrison, Davis and Spears BV",Sullivan LLC,AU,
-ENR-PR-00017,MP,MP,SE,J8H900KJSVC8OLWDTH34
-ENR-PR-00041,Smith-Baker Group,Ellison Ltd,NO,
-ENR-PR-00035,"DAVENPORT, ROBERTS AND WOODS AB","DAVENPORT, ROBERTS",ES,HC3H00S3XR5LP23MXO41
-ENR-PR-00049,White and Sons Group,Soto-Mathews Group,AT,
-ENR-PR-00048,Davis and Sons GmbH,"Johnson, Booker",AU,CJPZ00KA78NWSKB5PX69
-ENR-PR-00043,"House, Wang and Johnson Holdings","Kim, Lopez",GB,
-ENR-PR-00029,Williams-Brown Plc,Williams-Brown Plc,JP,YN6S00JCHZJQ8CXX6M23
-ENR-PR-00031,Nelson-King Grp,Nelson-King Grp,NL,OVFV007HWUWOSYLROI11
-ENR-PR-00010,"Robertson, Fisher & Smith Partners","Robertson, Fisher",HK,
-ENR-PR-00044,Gomez-Moreno Holdings,Hogan-Briggs &,DE,
-ENR-PR-00039,"Shah, and Villanueva Group","Shah, and",DE,GQ7800U42I3P4LFDJ267
-ENR-PR-00024,"Smith, and Griffin Capital","Smith, and",US,9VXK002FIB7AKKSQKU91
-ENR-PR-00005,"Cooper, Gutierrez and Brewer","Cooper, Gutierrez",HK,U1R5004ED6LOB24HY076
-ENR-PR-00026,"Wong Fisher, and Jimenez NV","Wong Fisher,",BE,3DQ000E7E2AWBBZC0Q41
-ENR-PR-00034,"Carter, Gilbert & West Group","Carter, Gilbert",DK,
-ENR-PR-00012,"warner, weiss and davis ab","warner, weiss",DK,YYKA00TCRGEVPG4GMA41
-ENR-PR-00019,Solis PLC Cap,Solis PLC,GB,
-ENR-PR-00025,"Spencer, Morgan & Diaz AB","Spencer, Morgan",DK,8YX700NQACWF8DYBMX56
-ENR-PR-00037,JACOBS-HERRERA AG,JACOBS-HERRERA AG,AU,DG1M00Q2591XDRBG2R79
-ENR-PR-00036,HUGHES-SMITH INC,HUGHES-SMITH INC,CA,
-ENR-PR-00047,Herring LLC Group,Davis-Foster Capital,US,
-ENR-PR-00042,Robinson-Dawson Capital,"Navarro, Baker",LU,W3M900NKRSC809A4HL73
-ENR-PR-00014,JOHNSON PLC NV,JOHNSON PLC,BE,
-ENR-PR-00021,CS,CS,IT,
-ENR-PR-00004,HP,HP,AU,0C0Z0024E4HWY3OHVV13
-ENR-PR-00033,MENDOZA-JACKSON AB,MENDOZA-JACKSON AB,DK,98PO00C4VGZIABSCAH77
-ENR-PR-00020,"ryan, garza and bryant bv","ryan, garza",BE,0RIL00LPGEY18JSEUO95
-ENR-PR-00022,SAP,SAP,CA,P9VZ00UAGEJDIFCW5699
-ENR-PR-00009,Mcdonald Plc SRL,Mcdonald Plc,HK,R5Q4002PKDPK5BVS8743
-ENR-PR-00040,Sherman Ltd Capital,"Williams, Orr",FR,
-ENR-PR-00018,raymond llc plc,raymond llc,JP,SZKZ00N0LYIMOES1AI79
-ENR-PR-00002,"Yates, Brown and Hernandez G.m.b.H.","Yates, Brown",CH,9X5L00AL5WL10MVNIK51
-ENR-PR-00013,alvarez-hart holdings,alvarez-hart holdings,BE,WLPT00POMQH0CECI1Z76
-ENR-PR-00001,Jones LLC Finance,Jones LLC,NO,
-ENR-PR-00030,Taylor-Ayala and Co,Taylor-Ayala and,AT,
-ENR-PR-00046,"Flores, Harris and Petty Holdings","Lewis, Walker",DK,RTTY00NN7TPW7MTI3498
-ENR-PR-00007,Lopez llc Limited,Lopez llc,CA,
-ENR-PR-00032,Decker Inc Investments,Decker Inc,NL,4PE0005SA9C2LTWI0H19
-ENR-PR-00016,"Wright, Brown & Brown Capital","Wright, Brown",SE,
-ENR-PR-00011,RYAN-STEELE HOLDINGS,RYAN-STEELE HOLDINGS,NL,XA76006D931MB74L3N96
-ENR-PR-00027,Krueger-Barnett Hldgs,Krueger-Barnett Hldgs,NL,G0AV00TK3HRLY4NFY959
+entity_id,legal_name,short_name,country_code,lei,registered_address
+ENR-PR-00032,Avila-Brown Holdings,Avila-Brown Holdings,NL,4PE0005SA9C2LTWI0H19,"92361 ASHLEY CROSSROAD, SOUTH STEVEN, MN 78911"
+ENR-PR-00045,"Garcia, Wright and Lopez SA",Sellers-Fernandez SAS,FR,,"8939 Ochoa Circles Apt. 465, Sharonfurt, MT 69763"
+ENR-PR-00001,Alvarez Inc Finance,Alvarez Inc,NO,E50K00G3QXMG624LUH44,"7993 Acosta Trafficway New Melanieport, MS 92066"
+ENR-PR-00048,Elliott-Villegas SRL,Morris and,JP,DXLL003F9UF8NBTCPR35,"499 Powers Drive Apt. 803, Williamsberg, PA 87178"
+ENR-PR-00035,Golden-Maynard,Golden-Maynard,ES,HC3H00S3XR5LP23MXO41,"PSC 9124, Box 1521, APO AE 11081"
+ENR-PR-00038,HVFG,HVFG,AT,,"74496 BENNETT AVENUE SUITE 236, BLAIRPORT, PR 62100"
+ENR-PR-00014,Davis NV Ltd,Davis NV,BE,,"2194 Donna Heights Suite 891, South Timothy, NE 09688"
+ENR-PR-00025,Robinson Plc AB,Robinson Plc,DK,,"4712 Proctor Avenue, Grayport, OH 48335"
+ENR-PR-00015,jacobs-mason & co,jacobs-mason &,IE,SBEL00RQVSLWF90KM378,"uscgc garcia, fpo aa 94127"
+ENR-PR-00029,"Mcconnell, Roberson and PLC","Mcconnell, Roberson",JP,YN6S00JCHZJQ8CXX6M23,"922 Paul Rapid, Williamfurt, MT 80323"
+ENR-PR-00016,"Evans, Brown and Kane Investments","Evans, Brown",SE,,"150 Palmer Prairie North Oscarfort, PR 70636"
+ENR-PR-00004,Holden Grp PLC,Holden Grp,AU,0C0Z0024E4HWY3OHVV13,"7447 Alexander Rd.s, North Marymouth, PW 84414"
+ENR-PR-00019,Moore Ltd Cap.,Moore Ltd,GB,,"85923 Campbell Unions Apt. 321 N. Christinaview, NJ 04831"
+ENR-PR-00017,sloan and sons ab,sloan and,SE,,"68085 GREEN TRAIL, JASONFORT, DC 15302"
+ENR-PR-00043,"Phillips, Ferrell and Dennis LLC","Lopez, Martin",LU,,"095 Bailey Light, Campbellfort, MI 68836"
+ENR-PR-00018,Kim Plc PLC,Kim Plc,JP,SZKZ00N0LYIMOES1AI79,"4662 Steele Knolls Apt. 896, E. Matthew, NV 43401"
+ENR-PR-00009,harris-phelps srl,harris-phelps srl,HK,R5Q4002PKDPK5BVS8743,"082 Peck Trail, New Angela, MO 89772"
+ENR-PR-00021,"GONZALEZ, PACE AND ALLEN SAS","GONZALEZ, PACE",IT,,"590 SMITH STR PORT RYANBOROUGH, MT"
+ENR-PR-00013,Edwards-Johnson Investments,Edwards-Johnson Investments,BE,WLPT00POMQH0CECI1Z76,"53558 Melissa Greens, Lake Davidhaven, AK 88024"
+ENR-PR-00041,Terry-Martin Group,Stewart-Campbell SA,FR,,"713 Richard Greens Suite 833, West Brian, AK 52344"
+ENR-PR-00002,"Diaz, and Decker GmbH","Diaz, and",CH,9X5L00AL5WL10MVNIK51,"750 Nancy Parks, Costashire, AR 96412"
+ENR-PR-00036,"stout, ward and meyer inc","stout, ward",CA,QPXY00KFO7IQXBS00023,"1344 Melissa Plains Apt. 318, New Anthony, MO 76431"
+ENR-PR-00022,"WRIGHT, BOYLE AND GUTIERREZ SA","WRIGHT, BOYLE",CA,P9VZ00UAGEJDIFCW5699,"49565 Matthew Pl., East Janet, FM 28505"
+ENR-PR-00006,"Thompson, Reilly & Fernandez GmbH","Thompson, Reilly",ES,728Z00HZD71286HKFD99,"83327 ANDREW ISLAND APT. 513, DEBRABOROUGH, TX 93426"
+ENR-PR-00040,Sherman Ltd BV,"Williams, Orr",NL,,"3315 Tyler Prairie Suite 238, Port Claudia, VT 80094"
+ENR-PR-00044,Hopkins Inc PLC,"Gregory, Phillips",ES,Q8NP00H6QW6CEJIZVQ24,"9794 Fisher Spurs, Kevinmouth, OH 80990"
+ENR-PR-00011,AGGH,AGGH,NL,XA76006D931MB74L3N96,"223 Lewis Island, Erinberg, NH"
+ENR-PR-00037,GP,GP,AU,,"4099 Gerald Spur, W Robert, GA"
+ENR-PR-00042,Burns-Smith NV,Garcia Group,LU,,"131 Kristina Dale, Sotoview, MT 17881"
+ENR-PR-00034,wade-ryan group,wade-ryan group,DK,RX6A00990BSH1FYE7L27,"4053 CRYSTAL MISSION, LAKE TARA, PA 56688"
+ENR-PR-00039,"Mcgrath, Lang and Ramos Enterprises","Mcgrath, Lang",DE,,"6924 Johnson Walk, North Sarahborough, AR 12722"
+ENR-PR-00007,MEDINA-MCCARTY LIMITED,MEDINA-MCCARTY LIMITED,CA,,"31194 REGINA SQUARE SUITE 100, SOUTH LORI, NE 01691"
+ENR-PR-00027,"gonzales, cruz and proctor holdings","gonzales, cruz",NL,G0AV00TK3HRLY4NFY959,"91420 Teresa Lake, Gilbertport, CA 41044"
+ENR-PR-00008,"CORTEZ, JACOBS AND WEBB GROUP","CORTEZ, JACOBS",NL,O4QU00280WC84AYUF177,Unit 9201 Box 9918 DPO AP 91301
+ENR-PR-00049,Howe-Tran Capital,Vargas Inc,US,,"04177 Ramirez Camp Apt. 576, Davidside, WI 07820"
+ENR-PR-00028,"Hall, Vega and Limited","Hall, Vega",GB,7GA200IZ5P3VOB5APO77,"47658 Connor Place Suite 694, Josephville, KS 86267"
+ENR-PR-00026,"Salazar, Barron and","Salazar, Barron",BE,3DQ000E7E2AWBBZC0Q41,"018 Atkins Oval, Barrettberg, FM 15660"
+ENR-PR-00046,Young-Blankenship AG,Carter Inc,CH,,"9277 Walker Glens, Alishamouth, NY 87208"
+ENR-PR-00003,Johnson Group Ptrs,Johnson Group,US,,"930 Jennifer Rest Apt. 387 Daniellechester, AS 59392"
+ENR-PR-00010,Mendez Holdings Partners,Mendez Holdings,HK,,"9391 Thomas Oval Suite 003, Michaelhaven, TX 66577"
+ENR-PR-00020,RODRIGUEZ PLC BV,RODRIGUEZ PLC,BE,0RIL00LPGEY18JSEUO95,"5818 Wanda Branch Suite 173, Richardbury, CT 53969"
+ENR-PR-00012,williams and sons ab,williams and,DK,YYKA00TCRGEVPG4GMA41,"757 VANG JUNCTIONS PENNYTON, OR 40277"
+ENR-PR-00023,"Parsons, Cole Cohen and Capital","Parsons, Cole",DK,V48K00F2T23EBIE7V692,"58936 Kennedy Row Williamhaven, MA 71381"
+ENR-PR-00005,LS,LS,HK,U1R5004ED6LOB24HY076,"675 Ronnie Manor, West Ashley, AL 56822"
+ENR-PR-00024,Perez-Jones cap,Perez-Jones cap,US,,"0107 Simpson Row East Robertshire, WV 87433"
+ENR-PR-00031,"Olson, Wilson & Kim Group","Olson, Wilson",NL,OVFV007HWUWOSYLROI11,"11476 Anthony Ford Suite 787, Lake Maurice, DE 37275"
+ENR-PR-00030,Guzman-Mendez and Co,Guzman-Mendez and,AT,,"98221 Joseph Causeway Apt. 648, New Rosetown, KS 82496"
+ENR-PR-00047,"Martinez, Howard and Avery Capital",Salazar Ltd,HK,,"9347 Sara Field, East Mark, VT 85529"
+ENR-PR-00000,Morris and Sons Hldgs,Morris and,NL,ZZE200TBST9XWI708449,"9924 Scott Freeway Apt. 385, North Derrick, TX 24403"
+ENR-PR-00033,HERNANDEZ AND SONS AB,HERNANDEZ AND,DK,98PO00C4VGZIABSCAH77,"94634 Angela Prairie, Lonniechester, VI"
