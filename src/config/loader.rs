@@ -1298,7 +1298,7 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
     }
 
     #[test]
-    fn validation_vector_backend_defaults_to_flat() {
+    fn validation_vector_backend_defaults_to_usearch() {
         let yaml = r#"
 job:
   name: test
@@ -1316,7 +1316,7 @@ output: { results_path: r, review_path: rv, unmatched_path: u }
         normalise_blocking(&mut cfg);
         apply_defaults(&mut cfg);
         validate(&cfg).unwrap();
-        assert_eq!(cfg.vector_backend, "flat");
+        assert_eq!(cfg.vector_backend, "usearch");
     }
 
     #[test]

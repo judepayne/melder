@@ -37,15 +37,12 @@ directly.
 | `gpu-encode` | Enables GPU-accelerated ONNX encoding for batch mode. Uses CoreML on macOS and CUDA on Linux. Requires the ONNX Runtime shared library at runtime. See [GPU encoding](#gpu-encoding) below. |
 
 > [!TIP]
-> On macOS and Linux, always build with `--features usearch`. The
-> usearch backend uses an HNSW graph index for O(log N) candidate
-> search instead of the flat backend's O(N) brute-force scan. At 100k
-> records, usearch is the difference between a 12-second warm run and a
-> 4-minute one — see [Performance](performance.md) for full numbers.
->
-> On Windows, `usearch` currently has a known MSVC build bug (AVX-512
-> FP16 intrinsics and a missing POSIX constant) and must be omitted.
-> The flat backend works correctly — just slower at scale.
+> The `usearch` feature (HNSW vector index) is enabled by default. It
+> provides O(log N) candidate search instead of the flat backend's O(N)
+> brute-force scan. At 100k records, usearch is the difference between a
+> 12-second warm run and a 4-minute one — see [Performance](performance.md)
+> for full numbers. To build without it (pure Rust, no C++ dependency):
+> `cargo build --release --no-default-features`.
 
 ## Model download
 
@@ -246,12 +243,6 @@ defaults to the MSVC toolchain on Windows. You will need the
 **Visual Studio Build Tools** (or full Visual Studio) with the
 "Desktop development with C++" workload installed — this provides the
 MSVC compiler and linker that Rust requires.
-
-> [!WARNING]
-> The `usearch` feature currently has a known build bug on MSVC
-> (AVX-512 FP16 intrinsics and a missing POSIX constant). Build without
-> it on Windows — the flat vector backend works correctly, just with
-> O(N) instead of O(log N) candidate search.
 
 **Building.** The same `cargo build` commands work. The binary is
 produced at `target\release\meld.exe`:

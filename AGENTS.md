@@ -35,10 +35,10 @@ Use these commands unless task scope clearly allows narrower checks:
 # builds
 cargo build
 cargo build --release
-cargo build --release --features usearch
-cargo build --release --features usearch,parquet-format
-cargo build --release --features usearch,gpu-encode
-cargo build --release --features usearch,builtin-model
+cargo build --release --features parquet-format
+cargo build --release --features gpu-encode
+cargo build --release --features builtin-model
+cargo build --release --no-default-features   # pure Rust, no C++ (flat backend only)
 
 # quality gates
 cargo fmt -- --check

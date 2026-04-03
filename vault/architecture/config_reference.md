@@ -298,15 +298,15 @@ See [[benchmarks_and_experiments]] for the throughput impact of each setting.
 ## `vector_backend`
 
 ```yaml
-vector_backend: "usearch"   # "flat" (default) | "usearch"
+vector_backend: "usearch"   # "flat" | "usearch" (default)
 ```
 
 | Value | Algorithm | When to use |
 |---|---|---|
-| `"flat"` | O(N) brute-force scan | Development and small datasets (< 10k records) |
-| `"usearch"` | O(log N) HNSW ANN | Production — any dataset > 10k records |
+| `"flat"` | O(N) brute-force scan | Development, small datasets (< 10k), or `--no-default-features` builds |
+| `"usearch"` | O(log N) HNSW ANN | Production — any dataset > 10k records. Enabled by default. |
 
-`usearch` requires `cargo build --features usearch`. See [[benchmarks_and_experiments]] for throughput comparison. See [[decisions/key_decisions#Combined Vector Index Single Index Per Side]] for why one index per side is sufficient.
+`usearch` is included by default as a Cargo feature. Opt out with `--no-default-features` for a pure-Rust build. See [[benchmarks_and_experiments]] for throughput comparison. See [[decisions/key_decisions#Combined Vector Index Single Index Per Side]] for why one index per side is sufficient.
 
 ---
 

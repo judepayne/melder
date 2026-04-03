@@ -81,12 +81,12 @@ embeddings:
 # --- Vector backend ----------------------------------------------------------
 # Controls the embedding index used for candidate selection (Phase 2).
 #
-#   flat    (default) — brute-force O(N) scan. No extra build dependency.
-#                       Good for development and datasets under ~10k records.
-#   usearch — HNSW approximate nearest-neighbour graph. O(log N) search.
-#             Up to 5× faster at scale. Requires:
-#             cargo build --release --features usearch
-vector_backend: usearch             # "flat" | "usearch" (default: "flat")
+#   flat    — brute-force O(N) scan. Pure Rust, no C++ dependency.
+#             Good for development and datasets under ~10k records.
+#   usearch (default) — HNSW approximate nearest-neighbour graph. O(log N)
+#             search. Up to 5× faster at scale. Included by default; opt out
+#             with --no-default-features if you need a pure-Rust build.
+vector_backend: usearch             # "flat" | "usearch" (default: "usearch")
 
 # --- BM25 fields (optional) ---------------------------------------------------
 # Which text fields to index for BM25 scoring. Preferred: define fields inline

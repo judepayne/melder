@@ -49,6 +49,8 @@ parquet = { version = "54", optional = true, default-features = false, features 
 arrow = { version = "54", optional = true, default-features = false, features = ["prettyprint"] }
 
 # HNSW vector index (feature-flagged)
+# TEMPORARY: using forked repo with MAP_FAILED fix for Windows MSVC.
+# Revert to version = "2" once https://github.com/unum-cloud/usearch/pull/720 is merged.
 usearch = { git = "https://github.com/judepayne/USearch.git", branch = "windows-map-failed-fix", optional = true }
 
 # HuggingFace Hub model download
@@ -68,6 +70,7 @@ thiserror = "2"
 libc = "0.2"
 
 [features]
+default = ["usearch"]
 parquet-format = ["dep:parquet", "dep:arrow"]
 usearch = ["dep:usearch"]
 simd = ["dep:simsimd"]

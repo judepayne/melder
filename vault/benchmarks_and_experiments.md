@@ -167,7 +167,7 @@ Benchmarked on Apple Silicon M3 MacBook Air, `all-MiniLM-L6-v2`, `encoder_pool_s
 
 ### Key Performance Settings
 
-- usearch (HNSW) is production backend; flat is dev only
+- usearch (HNSW) is the default backend; flat is dev-only or for `--no-default-features` builds
 - `encoder_pool_size: 4` recommended
 - `quantized: true` doubles encoding speed
 - `vector_quantization: f16` reduces cache 43%

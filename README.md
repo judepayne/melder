@@ -53,10 +53,6 @@ same thing regardless of how it was produced.
 ## Quick Start
 
 ```bash
-# macOS / Linux — build with HNSW vector index (recommended)
-cargo build --release --features usearch
-
-# Windows — usearch has a known MSVC build bug; build without it (flat backend)
 cargo build --release
 
 # The binary is at ./target/release/meld  (Windows: .\target\release\meld.exe)

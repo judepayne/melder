@@ -34,9 +34,10 @@ crossmappings.
 > and startup is fast.
 
 - The `flat` backend is file-based with O(N) search performance. Use
-  only for small experiments and development.
+  only for small experiments and development, or when building without
+  C++ dependencies (`--no-default-features`).
 - The `usearch` backend is an in-process HNSW vector database with
-  O(log N) search. Use for any real-world workload.
+  O(log N) search. Enabled by default — use for any real-world workload.
 
 ## GPU-accelerated batch encoding
 

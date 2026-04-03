@@ -126,8 +126,8 @@ pub struct Config {
     pub performance: PerformanceConfig,
     #[serde(default)]
     pub hooks: HooksConfig,
-    /// Vector storage backend: "flat" (brute-force, default) or "usearch"
-    /// (per-block HNSW, requires building with `--features usearch`).
+    /// Vector storage backend: "flat" (brute-force, dev only) or "usearch"
+    /// (per-block HNSW, included by default).
     #[serde(default = "default_vector_backend")]
     pub vector_backend: String,
     /// Maximum final results to return per record. Defaults to 5.
@@ -617,7 +617,7 @@ fn default_backend() -> String {
 }
 
 pub fn default_vector_backend() -> String {
-    "flat".into()
+    "usearch".into()
 }
 
 pub fn default_operator() -> String {

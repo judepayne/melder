@@ -38,7 +38,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: meld.exe
             archive: zip
-            cargo_features: "--features parquet-format,simd"  # usearch excluded: MSVC bugs
+            cargo_features: "--features usearch,parquet-format,simd"
 
     steps:
       - uses: actions/checkout@v6

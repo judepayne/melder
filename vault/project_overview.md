@@ -47,8 +47,8 @@ See [[decisions/key_decisions]] for the tradeoffs behind each principle.
 ## 3. Build & Test
 
 ```bash
-cargo build --release --features usearch          # standard
-cargo build --release --features usearch,gpu-encode
+cargo build --release                                # standard (usearch included by default)
+cargo build --release --features gpu-encode
 cargo test --all-features                         # REQUIRED before commit
 ```
 
