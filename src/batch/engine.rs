@@ -143,10 +143,10 @@ pub fn run_batch(
             }
         }
         if common_count > 0 {
-            eprintln!(
-                "Common ID pre-match: {} pairs matched in {:.1}ms",
-                common_count,
-                cid_start.elapsed().as_secs_f64() * 1000.0
+            tracing::info!(
+                pairs = common_count,
+                elapsed_ms = format!("{:.1}", cid_start.elapsed().as_secs_f64() * 1000.0),
+                "common ID pre-match complete"
             );
         }
         common_count
@@ -223,10 +223,10 @@ pub fn run_batch(
         }
 
         if exact_count > 0 {
-            eprintln!(
-                "Exact prefilter: {} pairs matched in {:.1}ms",
-                exact_count,
-                ep_start.elapsed().as_secs_f64() * 1000.0
+            tracing::info!(
+                pairs = exact_count,
+                elapsed_ms = format!("{:.1}", ep_start.elapsed().as_secs_f64() * 1000.0),
+                "exact prefilter complete"
             );
         }
     }
@@ -256,10 +256,10 @@ pub fn run_batch(
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
             let idx = crate::bm25::simple::SimpleBm25::build(store, Side::A, &config.bm25_fields);
-            eprintln!(
-                "Built BM25 index for {} A records in {:.1}ms",
-                store.len(Side::A).unwrap_or(0),
-                bm25_start.elapsed().as_secs_f64() * 1000.0
+            tracing::info!(
+                a_records = store.len(Side::A).unwrap_or(0),
+                elapsed_ms = format!("{:.1}", bm25_start.elapsed().as_secs_f64() * 1000.0),
+                "BM25 index build complete"
             );
             Some(idx)
         } else {
@@ -274,11 +274,11 @@ pub fn run_batch(
             let dict = crate::synonym::dictionary::SynonymDictionary::load(std::path::Path::new(
                 &sd_cfg.path,
             ))?;
-            eprintln!(
-                "Loaded synonym dictionary ({} groups, {} terms) in {:.1}ms",
-                dict.len(),
-                dict.len() * 2, // approximate
-                dict_start.elapsed().as_secs_f64() * 1000.0
+            tracing::info!(
+                groups = dict.len(),
+                terms = dict.len() * 2,
+                elapsed_ms = format!("{:.1}", dict_start.elapsed().as_secs_f64() * 1000.0),
+                "synonym dictionary loaded"
             );
             Some(std::sync::Arc::new(dict))
         } else {
@@ -295,10 +295,10 @@ pub fn run_batch(
                 &config.synonym_fields,
                 synonym_dict.clone(),
             );
-            eprintln!(
-                "Built synonym index for A records ({} keys) in {:.1}ms",
-                idx.len(),
-                syn_start.elapsed().as_secs_f64() * 1000.0
+            tracing::info!(
+                keys = idx.len(),
+                elapsed_ms = format!("{:.1}", syn_start.elapsed().as_secs_f64() * 1000.0),
+                "synonym index build complete"
             );
             Some(idx)
         } else {
@@ -325,9 +325,12 @@ pub fn run_batch(
                 } else {
                     0.0
                 };
-                eprintln!(
-                    "  scored {}/{} B records ({:.0} rec/s, ETA {:.0}s)",
-                    done, work_total, rate, eta
+                tracing::info!(
+                    done,
+                    total = work_total,
+                    rate = format!("{:.0}", rate),
+                    eta_s = format!("{:.0}", eta),
+                    "scoring progress"
                 );
             }
 

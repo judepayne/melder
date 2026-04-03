@@ -121,9 +121,8 @@ impl VecIndex {
             // Copy last vector row into removed position
             let src_start = last * self.dim;
             let dst_start = pos * self.dim;
-            for i in 0..self.dim {
-                self.vectors[dst_start + i] = self.vectors[src_start + i];
-            }
+            self.vectors
+                .copy_within(src_start..src_start + self.dim, dst_start);
 
             // Update ids
             self.ids[pos] = last_id.clone();

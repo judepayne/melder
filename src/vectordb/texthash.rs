@@ -52,6 +52,8 @@ pub fn compute_text_hash(record: &Record, emb_specs: &[(String, String, f64)], s
             h = h.wrapping_mul(0x00000100000001b3);
         }
         // Field separator prevents "ab"+"c" colliding with "a"+"bc"
+        // 0xFF is used as a field separator — relies on UTF-8 text never
+        // containing raw 0xFF bytes.
         h ^= 0xFFu64;
         h = h.wrapping_mul(0x00000100000001b3);
     }

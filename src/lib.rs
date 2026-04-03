@@ -1,3 +1,5 @@
+//! Melder — record matching engine library.
+
 pub mod api;
 pub mod batch;
 pub mod bm25;

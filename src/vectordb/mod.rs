@@ -61,6 +61,7 @@ pub enum VectorDBError {
 }
 
 /// Search result: (id, score) pair.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub id: String,

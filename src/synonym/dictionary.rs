@@ -5,7 +5,7 @@
 //! bidirectionally to each other. Transitive groups are merged: if row 1
 //! has `A,B` and row 2 has `B,C`, then A, B, and C are all equivalent.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use tracing::warn;
@@ -16,7 +16,7 @@ use crate::error::DataError;
 ///
 /// Maps each normalised term to its full equivalence set (excluding self).
 pub struct SynonymDictionary {
-    equivalences: HashMap<String, Vec<String>>,
+    equivalences: HashMap<String, HashSet<String>>,
     group_count: usize,
 }
 
@@ -128,12 +128,13 @@ impl SynonymDictionary {
         }
 
         // Build the equivalences map.
-        let mut equivalences: HashMap<String, Vec<String>> = HashMap::new();
+        let mut equivalences: HashMap<String, HashSet<String>> = HashMap::new();
         let group_count = merged.len();
 
         for members in merged.values() {
             for term in members {
-                let others: Vec<String> = members.iter().filter(|m| *m != term).cloned().collect();
+                let others: HashSet<String> =
+                    members.iter().filter(|m| *m != term).cloned().collect();
                 equivalences.insert(term.clone(), others);
             }
         }
@@ -146,13 +147,13 @@ impl SynonymDictionary {
 
     /// Return all equivalent terms for the given input (excluding itself).
     ///
-    /// Returns an empty slice if the term is not in the dictionary.
-    pub fn expand(&self, term: &str) -> &[String] {
+    /// Returns an empty vec if the term is not in the dictionary.
+    pub fn expand(&self, term: &str) -> Vec<String> {
         let key = term.trim().to_uppercase();
         self.equivalences
             .get(&key)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Check if two terms are in the same equivalence group.

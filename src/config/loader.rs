@@ -1019,6 +1019,11 @@ fn derive_required_fields(cfg: &mut Config) {
 /// `SqliteStore`. A column name containing `"` could break the quoting. This
 /// validates them at load time rather than at runtime.
 fn validate_field_names(cfg: &Config) -> Result<(), ConfigError> {
+    /// Check whether a field name is safe for use as a double-quoted SQL
+    /// identifier and for general programmatic use.
+    ///
+    /// Allows `[a-zA-Z_][a-zA-Z0-9_.-]*` — the `-` and `.` characters
+    /// require quoting in SQL but are common in real-world data fields.
     fn is_safe_identifier(s: &str) -> bool {
         !s.is_empty()
             && s.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')

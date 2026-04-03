@@ -122,16 +122,14 @@ pub fn write_unmatched_csv(
 
     for (_, rec, score) in records {
         let score_str = score.map(|s| format!("{:.4}", s)).unwrap_or_default();
-        let row: Vec<String> = all_fields
-            .iter()
-            .map(|f| {
-                if f == "score" {
-                    score_str.clone()
-                } else {
-                    rec.get(f).cloned().unwrap_or_default()
-                }
-            })
-            .collect();
+        let mut row: Vec<String> = Vec::with_capacity(all_fields.len());
+        for f in &all_fields {
+            if f == "score" {
+                row.push(score_str.clone());
+            } else {
+                row.push(rec.get(f).cloned().unwrap_or_default());
+            }
+        }
         wtr.write_record(&row)?;
     }
 

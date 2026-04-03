@@ -289,17 +289,11 @@ fn score_candidate(
     )
 }
 
-/// Independent BM25 candidate generation stage.
-///
-/// Queries the Tantivy index directly with blocking filters to surface the
-/// top `bm25_candidates` records. Returns candidate IDs and their normalised
 /// Independent synonym candidate generation stage.
 ///
-/// For each configured synonym field, looks up the query record's field value
-/// in the opposite-side synonym index. Returns deduplicated candidate IDs.
-///
-/// Typically produces 0-2 candidates per query — synonym matches are rare
-/// but critical for acronym recovery.
+/// Looks up each synonym match field value in the synonym index and returns
+/// the union of all matching record IDs that are not already in the ANN or
+/// BM25 candidate sets.
 pub fn synonym_candidate_stage(
     index: &crate::synonym::index::SynonymIndex,
     query_record: &Record,

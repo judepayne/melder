@@ -1,3 +1,5 @@
+//! CLI entry point for the `meld` binary.
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};

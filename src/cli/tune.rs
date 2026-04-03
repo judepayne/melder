@@ -637,7 +637,7 @@ fn run_pipeline(
     };
 
     // Load B records, build B embedding index, insert into store.
-    let (b_records_map, _b_ids) = match crate::data::load_dataset(
+    let (b_records_map, b_ids) = match crate::data::load_dataset(
         Path::new(&state.config.datasets.b.path),
         &state.config.datasets.b.id_field,
         &state.config.required_fields_b,
@@ -654,7 +654,7 @@ fn run_pipeline(
         &state.config.vector_backend,
         state.config.embeddings.b_cache_dir.as_deref(),
         &b_records_map,
-        &_b_ids,
+        &b_ids,
         &state.config,
         false,
         &state.encoder_pool,

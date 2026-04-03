@@ -743,7 +743,9 @@ impl RecordStore for SqliteStore {
             prefix,
             cols.join(", ")
         );
-        conn.execute_batch(&sql).ok();
+        if let Err(e) = conn.execute_batch(&sql) {
+            tracing::warn!(error = %e, "failed to build exact prefilter index");
+        }
         Ok(())
     }
 

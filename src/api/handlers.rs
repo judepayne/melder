@@ -47,7 +47,7 @@ pub struct ExcludeRequest {
 #[derive(Deserialize)]
 pub struct LookupParams {
     pub id: String,
-    pub side: String,
+    pub side: Side,
 }
 
 #[derive(Deserialize)]
@@ -56,7 +56,7 @@ pub struct RemoveRequest {
 }
 
 #[derive(Deserialize)]
-pub struct AddBatchRequest {
+pub struct BatchRecordsRequest {
     pub records: Vec<HashMap<String, String>>,
 }
 
@@ -320,26 +320,26 @@ pub async fn query_b(
 
 pub async fn add_batch_a(
     State(s): State<AppState>,
-    Json(b): Json<AddBatchRequest>,
+    Json(b): Json<BatchRecordsRequest>,
 ) -> axum::response::Response {
     add_batch_handler(Side::A, s, b.records).await
 }
 pub async fn add_batch_b(
     State(s): State<AppState>,
-    Json(b): Json<AddBatchRequest>,
+    Json(b): Json<BatchRecordsRequest>,
 ) -> axum::response::Response {
     add_batch_handler(Side::B, s, b.records).await
 }
 
 pub async fn match_batch_a(
     State(s): State<AppState>,
-    Json(b): Json<AddBatchRequest>,
+    Json(b): Json<BatchRecordsRequest>,
 ) -> axum::response::Response {
     match_batch_handler(Side::A, s, b.records).await
 }
 pub async fn match_batch_b(
     State(s): State<AppState>,
-    Json(b): Json<AddBatchRequest>,
+    Json(b): Json<BatchRecordsRequest>,
 ) -> axum::response::Response {
     match_batch_handler(Side::B, s, b.records).await
 }
@@ -387,14 +387,7 @@ pub async fn crossmap_lookup(
     State(session): State<AppState>,
     Query(params): Query<LookupParams>,
 ) -> axum::response::Response {
-    let side = match params.side.to_lowercase().as_str() {
-        "a" => Side::A,
-        "b" => Side::B,
-        _ => {
-            return error_response(StatusCode::BAD_REQUEST, "side must be 'a' or 'b'")
-                .into_response();
-        }
-    };
+    let side = params.side;
     let id = params.id;
     run_blocking_session(move || session.lookup_crossmap(&id, side)).await
 }
@@ -477,7 +470,7 @@ pub async fn enroll(
 /// POST /api/v1/enroll-batch
 pub async fn enroll_batch(
     State(session): State<AppState>,
-    Json(body): Json<AddBatchRequest>,
+    Json(body): Json<BatchRecordsRequest>,
 ) -> axum::response::Response {
     let count = body.records.len();
     let t0 = std::time::Instant::now();

@@ -252,9 +252,8 @@ impl SynonymIndex {
         // Dictionary expansion: look up equivalent terms and their acronyms.
         if let Some(ref dict) = self.dictionary {
             for equiv_term in dict.expand(trimmed) {
-                add_matches(equiv_term);
-                // Also generate acronyms of each expanded term.
-                for acr in &generate_acronyms(equiv_term, min_len) {
+                add_matches(&equiv_term);
+                for acr in &generate_acronyms(&equiv_term, min_len) {
                     add_matches(acr);
                 }
             }
