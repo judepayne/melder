@@ -483,28 +483,6 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     // 32. hooks
     validate_hooks(cfg)?;
 
-    // 33. In live/enroll mode, field_a must equal field_b for non-BM25/synonym fields
-    // because scoring is symmetric — either side can be query or candidate.
-    if cfg.is_enroll_mode() || cfg.live.upsert_log.is_some() || cfg.live.db_path.is_some() {
-        for mf in &cfg.match_fields {
-            if mf.method != MatchMethod::Bm25
-                && mf.method != MatchMethod::Synonym
-                && mf.field_a != mf.field_b
-            {
-                return Err(ConfigError::InvalidValue {
-                    field: "match_fields".into(),
-                    message: format!(
-                        "live/enroll mode requires field_a == field_b for {} fields, \
-                         but got field_a={:?} != field_b={:?}",
-                        mf.method.as_str(),
-                        mf.field_a,
-                        mf.field_b,
-                    ),
-                });
-            }
-        }
-    }
-
     Ok(())
 }
 
@@ -1073,19 +1051,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn load_bench_live_rejects_asymmetric_fields() {
-        // The live benchmark config uses field_a != field_b (e.g. legal_name vs
-        // counterparty_name) which is invalid in live symmetric mode.
-        let err = load_config(Path::new(
+    fn load_bench_live() {
+        let cfg = load_config(Path::new(
             "benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml",
         ))
-        .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("live/enroll mode requires field_a == field_b"),
-            "got: {}",
-            err,
-        );
+        .unwrap();
+        assert_eq!(cfg.job.name, "live_10kx10k_usearch_warm");
+        assert_eq!(cfg.performance.encoder_pool_size, Some(4));
+        assert_eq!(cfg.top_n, Some(5));
+        assert_eq!(cfg.live.crossmap_flush_secs, Some(5)); // default applied
     }
 
     #[test]
@@ -1105,16 +1079,28 @@ mod tests {
     }
 
     #[test]
-    fn derived_fields_bench_live_rejected() {
-        // The live benchmark config has asymmetric field names (field_a != field_b)
-        // which the new validation rejects before derived fields are computed.
-        let result = load_config(Path::new(
+    fn derived_fields_bench_live() {
+        let cfg = load_config(Path::new(
             "benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml",
-        ));
+        ))
+        .unwrap();
+        // A side should include: entity_id, legal_name, short_name, country_code, lei
+        assert!(cfg.required_fields_a.contains(&"entity_id".to_string()));
+        assert!(cfg.required_fields_a.contains(&"legal_name".to_string()));
+        assert!(cfg.required_fields_a.contains(&"short_name".to_string()));
+        assert!(cfg.required_fields_a.contains(&"country_code".to_string()));
+        assert!(cfg.required_fields_a.contains(&"lei".to_string()));
+        // B side should include: counterparty_id, counterparty_name, domicile, lei_code
         assert!(
-            result.is_err(),
-            "live config with field_a != field_b should be rejected"
+            cfg.required_fields_b
+                .contains(&"counterparty_id".to_string())
         );
+        assert!(
+            cfg.required_fields_b
+                .contains(&"counterparty_name".to_string())
+        );
+        assert!(cfg.required_fields_b.contains(&"domicile".to_string()));
+        assert!(cfg.required_fields_b.contains(&"lei_code".to_string()));
     }
 
     #[test]

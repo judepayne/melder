@@ -546,7 +546,7 @@ embeddings:
   a_cache_dir: {cache}
 match_fields:
   - field_a: name
-    field_b: name
+    field_b: cpty_name
     method: exact
     weight: 1.0
 thresholds:
@@ -592,14 +592,14 @@ live:
         // before we open it again inside export_sqlite.
         {
             let cols_a = vec!["entity_id".to_string(), "name".to_string()];
-            let cols_b = vec!["counterparty_id".to_string(), "name".to_string()];
+            let cols_b = vec!["counterparty_id".to_string(), "cpty_name".to_string()];
             let (store, crossmap, conn) =
                 open_sqlite(&db_path, &bc, None, &cols_a, &cols_b).unwrap();
 
             let rec_a1 = make_record(&[("entity_id", "A-1"), ("name", "Acme")]);
             let rec_a2 = make_record(&[("entity_id", "A-2"), ("name", "Globex")]);
-            let rec_b1 = make_record(&[("counterparty_id", "B-1"), ("name", "Acme Corp")]);
-            let rec_b2 = make_record(&[("counterparty_id", "B-2"), ("name", "Globex Inc")]);
+            let rec_b1 = make_record(&[("counterparty_id", "B-1"), ("cpty_name", "Acme Corp")]);
+            let rec_b2 = make_record(&[("counterparty_id", "B-2"), ("cpty_name", "Globex Inc")]);
 
             store.insert(Side::A, "A-1", &rec_a1).unwrap();
             store.insert(Side::A, "A-2", &rec_a2).unwrap();
@@ -632,7 +632,7 @@ live:
         let b_csv = dir.path().join("b.csv");
         let wal = dir.path().join("wal.ndjson");
         std::fs::write(&a_csv, "entity_id,name\n").unwrap();
-        std::fs::write(&b_csv, "counterparty_id,name\n").unwrap();
+        std::fs::write(&b_csv, "counterparty_id,cpty_name\n").unwrap();
         let cfg = write_and_load_config(&dir, &a_csv, &b_csv, &wal, Some(&db_path));
 
         std::fs::create_dir_all(&out_dir).unwrap();
@@ -683,7 +683,7 @@ live:
         std::fs::write(&a_csv, "entity_id,name\nA-1,Acme\nA-2,Globex\n").unwrap();
         std::fs::write(
             &b_csv,
-            "counterparty_id,name\nB-1,Acme Corp\nB-2,Globex Inc\n",
+            "counterparty_id,cpty_name\nB-1,Acme Corp\nB-2,Globex Inc\n",
         )
         .unwrap();
 
@@ -764,7 +764,7 @@ live:
         let b_csv = dir.path().join("b.csv");
         let wal = dir.path().join("wal.ndjson");
         std::fs::write(&a_csv, "entity_id,name\n").unwrap();
-        std::fs::write(&b_csv, "counterparty_id,name\n").unwrap();
+        std::fs::write(&b_csv, "counterparty_id,cpty_name\n").unwrap();
 
         let cfg = write_and_load_config(&dir, &a_csv, &b_csv, &wal, None);
         export_memory(&cfg, &out_dir);

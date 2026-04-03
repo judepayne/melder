@@ -609,7 +609,7 @@ pub async fn review_list(
     Query(params): Query<PaginationParams>,
 ) -> axum::response::Response {
     let cursor = params.cursor;
-    let limit = params.limit;
+    let limit = params.limit.map(|l| l.min(MAX_PAGE_SIZE));
     run_blocking(
         move || Ok::<_, SessionError>(session.review_list(cursor.as_deref(), limit)),
         StatusCode::INTERNAL_SERVER_ERROR,

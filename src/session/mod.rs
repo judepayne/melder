@@ -1946,11 +1946,11 @@ impl Session {
         let mut all = self.state.crossmap.pairs();
         let total = all.len();
 
+        // Full sort required for correct cursor-based pagination.
+        all.sort_unstable();
+
         let start = match cursor {
-            Some(c) => all
-                .iter()
-                .position(|(a, _)| a.as_str() > c)
-                .unwrap_or(total),
+            Some(c) => all.partition_point(|(a, _)| a.as_str() <= c),
             None => 0,
         };
 
@@ -1958,16 +1958,6 @@ impl Session {
             Some(l) => (start + l).min(total),
             None => total,
         };
-
-        // Partial sort: only sort the window we need, not all pairs.
-        if start < end && end < total {
-            let slice = &mut all[start..];
-            let nth = end - start;
-            slice.select_nth_unstable_by(nth, |a, b| a.0.cmp(&b.0));
-            slice[..nth].sort_by(|a, b| a.0.cmp(&b.0));
-        } else if start < end {
-            all[start..end].sort_by(|a, b| a.0.cmp(&b.0));
-        }
 
         let pairs: Vec<CrossmapPairEntry> = all[start..end]
             .iter()

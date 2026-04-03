@@ -286,6 +286,7 @@ fn score_candidate(
         emb_scores.as_ref(),
         precomputed_bm25,
         synonym_dictionary,
+        query_side.opposite(),
     );
 
     scoring::build_match_result(

@@ -34,6 +34,7 @@ pub fn score_pair(
     precomputed_emb_scores: Option<&std::collections::HashMap<(&str, &str), f64>>,
     precomputed_bm25_score: Option<f64>,
     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
+    pool_side: Side,
 ) -> ScoreResult {
     let mut field_scores = Vec::with_capacity(match_fields.len());
     let mut base_weighted_sum = 0.0_f64; // non-synonym methods
@@ -46,12 +47,18 @@ pub fn score_pair(
             // No per-field record values — BM25 operates across all text fields.
             precomputed_bm25_score.unwrap_or(0.0)
         } else {
+            // field_a always refers to the A-side column, field_b to the B-side.
+            // Pick the correct field based on which side the candidate (pool) is on.
+            let (cand_field, query_field) = match pool_side {
+                Side::A => (&mf.field_a, &mf.field_b),
+                Side::B => (&mf.field_b, &mf.field_a),
+            };
             let a_val = candidate_record
-                .get(&mf.field_a)
+                .get(cand_field)
                 .map(|s| s.as_str())
                 .unwrap_or("");
             let b_val = query_record
-                .get(&mf.field_b)
+                .get(query_field)
                 .map(|s| s.as_str())
                 .unwrap_or("");
 
@@ -229,7 +236,7 @@ mod tests {
             ("lei_code", "abc123"),
         ]);
         let fields = make_fields();
-        let result = score_pair(&b, &a, &fields, None, None, None);
+        let result = score_pair(&b, &a, &fields, None, None, None, Side::A);
 
         // country_code: exact match → 1.0 * 0.20 = 0.20
         // short_name/counterparty_name: fuzzy partial_ratio identical → ~1.0 * 0.20 = 0.20
@@ -238,6 +245,32 @@ mod tests {
         assert!(
             result.total > 0.95,
             "expected near 1.0, got {}",
+            result.total
+        );
+        assert_eq!(result.field_scores.len(), 3);
+    }
+
+    #[test]
+    fn score_exact_match_pool_side_b() {
+        // Same data as score_exact_match, but now A is the query and B is the pool.
+        // field_a columns are on the query (A), field_b columns are on the candidate (B).
+        let a = make_record(&[
+            ("country_code", "GB"),
+            ("short_name", "Acme Corp"),
+            ("lei", "ABC123"),
+        ]);
+        let b = make_record(&[
+            ("domicile", "gb"),
+            ("counterparty_name", "Acme Corp"),
+            ("lei_code", "abc123"),
+        ]);
+        let fields = make_fields();
+        // query=A, candidate=B, pool_side=Side::B
+        let result = score_pair(&a, &b, &fields, None, None, None, Side::B);
+
+        assert!(
+            result.total > 0.95,
+            "expected near 1.0 with Side::B pool, got {}",
             result.total
         );
         assert_eq!(result.field_scores.len(), 3);
@@ -256,7 +289,7 @@ mod tests {
             ("lei_code", "ABC123"),
         ]);
         let fields = make_fields();
-        let result = score_pair(&b, &a, &fields, None, None, None);
+        let result = score_pair(&b, &a, &fields, None, None, None, Side::A);
 
         // country_code: "US" vs "GB" → 0.0
         // short_name: "Alpha Corp" vs "Beta Inc" → low
@@ -335,7 +368,7 @@ mod tests {
         let mut emb = HashMap::new();
         emb.insert(("legal_name", "counterparty_name"), 0.92);
 
-        let result = score_pair(&b, &a, &fields, Some(&emb), None, None);
+        let result = score_pair(&b, &a, &fields, Some(&emb), None, None, Side::A);
         assert!((result.total - 0.92).abs() < f64::EPSILON);
     }
 
@@ -361,7 +394,7 @@ mod tests {
                 fields: None,
             },
         ];
-        let result = score_pair(&b, &a, &fields, None, Some(0.8), None);
+        let result = score_pair(&b, &a, &fields, None, Some(0.8), None, Side::A);
         // exact: 1.0 * 0.7 = 0.7
         // bm25: 0.8 * 0.3 = 0.24
         // total = 0.94
@@ -391,7 +424,7 @@ mod tests {
             weight: 1.0,
             fields: None,
         }];
-        let result = score_pair(&b, &a, &fields, None, None, None);
+        let result = score_pair(&b, &a, &fields, None, None, None, Side::A);
         assert!(
             result.total.abs() < f64::EPSILON,
             "expected 0.0, got {}",

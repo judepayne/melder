@@ -975,9 +975,11 @@ impl SqliteStore {
             if total.is_multiple_of(100_000) || (total < 100_000 && total.is_multiple_of(10_000)) {
                 let elapsed = load_start.elapsed().as_secs_f64();
                 let rate = total as f64 / elapsed;
-                eprintln!(
-                    "  bulk_load {}: {} records ({:.0} rec/s)",
-                    prefix, total, rate
+                tracing::info!(
+                    side = prefix,
+                    records = total,
+                    rate = format!("{:.0}", rate),
+                    "bulk_load progress"
                 );
             }
         };
@@ -993,11 +995,11 @@ impl SqliteStore {
             "CREATE INDEX IF NOT EXISTS idx_{prefix}_blocking ON {prefix}_blocking_keys(field_index, value)"
         ));
 
-        eprintln!(
-            "  bulk_load {} complete: {} records in {:.1}s",
-            prefix,
-            total,
-            load_start.elapsed().as_secs_f64()
+        tracing::info!(
+            side = prefix,
+            records = total,
+            elapsed_secs = format!("{:.1}", load_start.elapsed().as_secs_f64()),
+            "bulk_load complete"
         );
 
         Ok(total)

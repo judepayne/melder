@@ -223,13 +223,20 @@ impl CrossMapOps for SqliteCrossMap {
 
     fn pairs(&self) -> Vec<(String, String)> {
         let conn = self.reader_pool.acquire();
-        let mut stmt = conn
-            .prepare("SELECT a_id, b_id FROM crossmap")
-            .expect("prepare pairs query");
-        stmt.query_map([], |row: &rusqlite::Row| Ok((row.get(0)?, row.get(1)?)))
-            .expect("query pairs")
-            .filter_map(|r: Result<(String, String), _>| r.ok())
-            .collect()
+        let mut stmt = match conn.prepare("SELECT a_id, b_id FROM crossmap") {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "pairs: failed to prepare query");
+                return Vec::new();
+            }
+        };
+        match stmt.query_map([], |row: &rusqlite::Row| Ok((row.get(0)?, row.get(1)?))) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "pairs: failed to execute query");
+                Vec::new()
+            }
+        }
     }
 }
 
