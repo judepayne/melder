@@ -49,7 +49,7 @@ parquet = { version = "54", optional = true, default-features = false, features 
 arrow = { version = "54", optional = true, default-features = false, features = ["prettyprint"] }
 
 # HNSW vector index (feature-flagged)
-usearch = { version = "2", optional = true }
+usearch = { git = "https://github.com/judepayne/USearch.git", branch = "windows-map-failed-fix", optional = true }
 
 # HuggingFace Hub model download
 hf-hub = "0.4"

@@ -34,6 +34,48 @@ jobs:
       - name: cargo test
         run: cargo test --features usearch,parquet-format,simd -- --test-threads=1
 
+  windows-usearch:
+    name: Windows usearch build + batch
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/huggingface
+          key: fastembed-model-${{ runner.os }}
+
+      - name: Install Python dependencies for data generation
+        run: pip install faker pandas pyarrow
+
+      - name: Generate 10k benchmark data
+        run: python benchmarks/data/generate.py --size 10000 --out benchmarks/data
+
+      - name: Build release binary
+        run: cargo build --release --features usearch
+
+      - name: Prepare batch benchmark dirs
+        shell: bash
+        run: |
+          rm -rf benchmarks/batch/10kx10k_usearch/cold/cache
+          rm -rf benchmarks/batch/10kx10k_usearch/cold/output
+          mkdir -p benchmarks/batch/10kx10k_usearch/cold/cache
+          mkdir -p benchmarks/batch/10kx10k_usearch/cold/output
+          rm -f benchmarks/batch/10kx10k_usearch/cold/crossmap.csv
+
+      - name: Run 10k x 10k batch benchmark
+        shell: bash
+        run: |
+          ./target/release/meld run \
+            --config benchmarks/batch/10kx10k_usearch/cold/config.yaml \
+            --verbose 2>&1
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
