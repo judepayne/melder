@@ -161,8 +161,8 @@ jobs:
             > /tmp/meld_perf_server.log 2>&1 &
           SERVER_PID=$!
 
-          # Wait for health endpoint
-          for i in $(seq 1 120); do
+          # Wait for health endpoint (up to 180s for cold encoding on slow CI runners)
+          for i in $(seq 1 180); do
             if curl -sf http://localhost:8090/api/v1/health > /dev/null 2>&1; then
               break
             fi
