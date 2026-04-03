@@ -93,8 +93,10 @@ echo "export LD_LIBRARY_PATH=\$HOME/onnxruntime-linux-x64-gpu-1.23.0/lib:\$LD_LI
 
 ## Step 6 — Clone and Build
 
+The Linux `ensure_ort_dylib()` fix and test data are already pushed to `main`.
+
 ```bash
-git clone <your-repo-url> melder
+git clone https://github.com/judepayne/melder.git
 cd melder
 
 cargo build --release --features usearch,gpu-encode
@@ -121,31 +123,24 @@ ALL sessions when the feature is compiled in, even CPU ones.
 
 ## Step 8 — Functional GPU Test (batch mode)
 
-Test data files are pre-created in `test-data/gpu-test/`. Copy them to the
-instance:
-
-```bash
-scp -r test-data/gpu-test/ user@<instance-ip>:~/gpu-test/
-```
-
-Then run:
+Test data is in the repo at `test-data/gpu-test/` (cloned in Step 6).
 
 ```bash
 cd ~/melder
 ./target/release/meld run \
-  --config ~/gpu-test/config.yaml \
-  --file-a ~/gpu-test/a.csv \
-  --file-b ~/gpu-test/b.csv \
+  --config test-data/gpu-test/config.yaml \
+  --file-a test-data/gpu-test/a.csv \
+  --file-b test-data/gpu-test/b.csv \
   --id-field-a id \
   --id-field-b id \
-  --output ~/gpu-test/output.csv
+  --output /tmp/gpu-test-output.csv
 ```
 
 **What to look for in the logs:**
 
 - `GPU encoding enabled: CUDA` — CUDA EP was selected
 - No errors about missing `libonnxruntime.so` or CUDA providers
-- Match output in `~/gpu-test/output.csv`
+- Match output in `/tmp/gpu-test-output.csv`
 
 ---
 
