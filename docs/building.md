@@ -184,7 +184,6 @@ exactly the datasets its benchmarks need:
 | `benchmarks/batch/generate_data.sh` | 10k, 100k, 1M | `benchmarks/data/` |
 | `benchmarks/live/generate_data.sh` | 10k, 100k, 1M | `benchmarks/data/` |
 | `benchmarks/accuracy/generate_data.sh` | 10k | `benchmarks/data/` |
-| `benchmarks/accuracy/science/generate_data.sh` | 27 training rounds | `benchmarks/accuracy/science/rounds/` |
 
 The batch and live scripts accept size arguments:
 
@@ -198,14 +197,11 @@ The batch and live scripts accept size arguments:
 
 # Accuracy benchmarks only need 10k
 ./benchmarks/accuracy/generate_data.sh
-
-# Science training rounds (wraps setup_datasets.py)
-./benchmarks/accuracy/science/generate_data.sh
 ```
 
-All generators use seed 42 (or fixed per-round seeds for science) for
-deterministic, reproducible output. The `--addresses` flag is always
-passed so datasets include address fields used by some configs.
+All generators use seed 42 for deterministic, reproducible output.
+The `--addresses` flag is always passed so datasets include address
+fields used by some configs.
 
 ### What's committed vs generated
 
@@ -213,8 +209,6 @@ passed so datasets include address fields used by some configs.
 |------|--------|
 | 10k datasets (`benchmarks/data/dataset_*_10k.*`) | Committed in git |
 | 100k, 1M datasets | Gitignored — regenerate with scripts above |
-| Science master + holdout (`science/master/`, `science/holdout/`) | Committed in git |
-| Science round datasets (`science/rounds/`) | Gitignored — regenerate with script above |
 
 ### Special cases
 
@@ -223,9 +217,15 @@ passed so datasets include address fields used by some configs.
   exclusion testing). It is not covered by the accuracy generation
   script.
 
-- **`accuracy/science/`** uses its own fixed datasets (committed
-  `master/dataset_a.csv` seed 0 and `holdout/dataset_b.csv` seed 9999),
-  not the shared `benchmarks/data/` pool.
+- **`accuracy/science/`** is a research journal documenting 14
+  sequential fine-tuning experiments, not a standard benchmark suite.
+  It is not intended to be reproduced — the committed results
+  (`metrics.csv`, `learning_curve.png`, `experiments.md`) are the
+  scientific record. Reproducing experiments would require days of GPU
+  compute and running experiments in dependency order (later experiments
+  depend on model weights produced by earlier ones). See
+  `benchmarks/accuracy/science/experiments.md` for the full experiment
+  history, results, and methodology.
 
 ## Environment variables
 

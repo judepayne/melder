@@ -45,6 +45,8 @@ Last updated: 2026-04-02 (Exclusions system, initial match pass, rayon deadlock 
 
 - [x] **Competitor analysis documents** — Created `Competitor_analysis.md` (positioning vs Quantexa and ES/OpenSearch) and `vs_Elastic_OpenSearch.md` (detailed technical comparison). Key sections: core distribution problem, in-process advantage, cost comparison, capability matrix, Melder design philosophy.
 
+- [x] **Benchmark data regeneration scripts** — Per-directory `generate_data.sh` scripts for `batch/`, `live/`, and `accuracy/`. Each calls `benchmarks/data/generate.py` with the sizes its benchmarks need (10k/100k/1M for batch and live, 10k for accuracy). `accuracy/10kx10k_exclusions` excluded (generates its own data). `accuracy/science/` excluded (research journal, not reproducible benchmarks). User docs added to `docs/building.md`.
+
 ## In Progress
 
 *(Nothing currently in progress.)*
@@ -82,10 +84,7 @@ relationships, hook notifications when existing records gain new edges.
 Prerequisite for enroll mode being a real entity resolution service rather than
 a one-shot dedup check.
 
-**3. Benchmark data regeneration script.** *(Developer Experience)*
-The `benchmarks/data/` directory is gitignored (datasets are too large to commit). A user who clones the repo has no data to run benchmarks. Add a `benchmarks/data/generate_all.sh` (or similar) script that calls `generate.py` with all required sizes (1K for tests, 10K, 100K, 1M) and validates the output. Should be documented in the README under a "Running Benchmarks" section or similar.
-
-**4. GPU encoding on Linux CI / CUDA.** *(Infrastructure)*
+**3. GPU encoding on Linux CI / CUDA.** *(Infrastructure)*
 The `gpu-encode` feature currently works on macOS (CoreML) but is untested on
 Linux (CUDA path). CI runs on Ubuntu and cannot enable `gpu-encode` because
 there is no `libonnxruntime.so` installed. Investigate: (a) adding ORT to the
