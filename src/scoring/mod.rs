@@ -76,6 +76,8 @@ pub fn score_pair(
             }
         };
 
+        let score = if score.is_nan() { 0.0 } else { score };
+
         let fs = FieldScore {
             field_a: if mf.method == MatchMethod::Bm25 {
                 "bm25".to_string()
@@ -112,7 +114,12 @@ pub fn score_pair(
     } else {
         base_weighted_sum
     };
-    let total = (base + synonym_bonus).clamp(0.0, 1.0);
+    let total = if (base + synonym_bonus).is_nan() {
+        0.0
+    } else {
+        base + synonym_bonus
+    }
+    .clamp(0.0, 1.0);
 
     ScoreResult {
         field_scores,

@@ -184,6 +184,12 @@ impl TextHashStore {
             // id
             file.read_exact(&mut buf4)?;
             let id_len = u32::from_le_bytes(buf4) as usize;
+            if id_len > 10_000 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("implausible id_len {} in texthash sidecar", id_len),
+                ));
+            }
             let mut id_bytes = vec![0u8; id_len];
             file.read_exact(&mut id_bytes)?;
             let id = String::from_utf8(id_bytes)
@@ -200,6 +206,12 @@ impl TextHashStore {
         // emb_specs
         file.read_exact(&mut buf4)?;
         let json_len = u32::from_le_bytes(buf4) as usize;
+        if json_len > 1_000_000 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("implausible json_len {} in texthash sidecar", json_len),
+            ));
+        }
         let mut json_bytes = vec![0u8; json_len];
         file.read_exact(&mut json_bytes)?;
         let emb_specs: Vec<(String, String, f64)> = serde_json::from_slice(&json_bytes)

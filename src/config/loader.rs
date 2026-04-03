@@ -111,8 +111,8 @@ fn apply_defaults(cfg: &mut Config) {
 
 fn deprecation_warnings(cfg: &Config) {
     if cfg.bm25_commit_batch_size.is_some() {
-        eprintln!(
-            "WARNING: bm25_commit_batch_size is deprecated and ignored. \
+        tracing::warn!(
+            "bm25_commit_batch_size is deprecated and ignored. \
              SimpleBm25 has instant write visibility — no commit batching needed."
         );
     }

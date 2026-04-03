@@ -306,11 +306,13 @@ impl RecordStore for SqliteStore {
             col_list,
             side_prefix(side)
         );
-        Ok(conn
-            .query_row(&sql, params![id], |row| {
-                Ok(record_from_row(columns, row, 1))
-            })
-            .ok())
+        match conn.query_row(&sql, params![id], |row| {
+            Ok(record_from_row(columns, row, 1))
+        }) {
+            Ok(rec) => Ok(Some(rec)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StoreError::from(e)),
+        }
     }
 
     fn insert(&self, side: Side, id: &str, record: &Record) -> Result<Option<Record>, StoreError> {
@@ -420,7 +422,13 @@ impl RecordStore for SqliteStore {
         let mut stmt = conn.prepare(&sql)?;
         let ids = stmt
             .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping malformed row in id query");
+                    None
+                }
+            })
             .collect();
         Ok(ids)
     }
@@ -600,7 +608,13 @@ impl RecordStore for SqliteStore {
             let mut stmt = conn.prepare(&sql)?;
             let ids = stmt
                 .query_map([], |row| row.get(0))?
-                .filter_map(|r| r.ok())
+                .filter_map(|r| match r {
+                    Ok(id) => Some(id),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "skipping malformed row in id query");
+                        None
+                    }
+                })
                 .collect();
             return Ok(ids);
         }
@@ -627,7 +641,13 @@ impl RecordStore for SqliteStore {
 
         let ids = stmt
             .query_map(param_values.as_slice(), |row| row.get(0))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping malformed row in id query");
+                    None
+                }
+            })
             .collect();
         Ok(ids)
     }
@@ -679,7 +699,13 @@ impl RecordStore for SqliteStore {
         let mut stmt = conn.prepare(&sql)?;
         let ids = stmt
             .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping malformed row in unmatched query");
+                    None
+                }
+            })
             .collect();
         Ok(ids)
     }
@@ -851,7 +877,13 @@ impl RecordStore for SqliteStore {
                 let side = if side_str == "a" { Side::A } else { Side::B };
                 Ok((key, id, side, candidate_id, score))
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(entry) => Some(entry),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping malformed row in review query");
+                    None
+                }
+            })
             .collect();
         Ok(reviews)
     }

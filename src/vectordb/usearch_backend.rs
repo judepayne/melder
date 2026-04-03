@@ -425,7 +425,7 @@ impl VectorDB for UsearchVectorDB {
 
         // Search with extra margin since usearch may return removed keys
         // that haven't been fully purged from the graph.
-        let search_k = k.min(state.index.size());
+        let search_k = (k * 2).min(state.index.size()).max(k);
         if search_k == 0 {
             return Ok(Vec::new());
         }

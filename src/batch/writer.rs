@@ -120,11 +120,13 @@ pub fn write_unmatched_csv(
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record(&all_fields)?;
 
-    for (_, rec, score) in records {
+    for (id, rec, score) in records {
         let score_str = score.map(|s| format!("{:.4}", s)).unwrap_or_default();
         let mut row: Vec<String> = Vec::with_capacity(all_fields.len());
         for f in &all_fields {
-            if f == "score" {
+            if f == id_field {
+                row.push(id.clone());
+            } else if f == "score" {
                 row.push(score_str.clone());
             } else {
                 row.push(rec.get(f).cloned().unwrap_or_default());

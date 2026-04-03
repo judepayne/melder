@@ -1075,19 +1075,15 @@ impl Session {
             message: format!("record {} not found on side {:?}", id, side),
         })?;
 
-        // Break any crossmap pair
-        let paired = match side {
-            Side::A => self.state.crossmap.get_b(id),
-            Side::B => self.state.crossmap.get_a(id),
+        // Break any crossmap pair (atomic read+remove to avoid TOCTOU)
+        let paired_id = match side {
+            Side::A => self.state.crossmap.take_a(id),
+            Side::B => self.state.crossmap.take_b(id),
         };
-        let broken: Vec<String> = if let Some(paired_id) = paired {
-            match side {
-                Side::A => self.state.crossmap.remove(id, &paired_id),
-                Side::B => self.state.crossmap.remove(&paired_id, id),
-            }
-            store.mark_unmatched(opp, &paired_id)?;
+        let broken: Vec<String> = if let Some(ref pid) = paired_id {
+            store.mark_unmatched(opp, pid)?;
             self.state.mark_crossmap_dirty();
-            vec![paired_id]
+            vec![pid.clone()]
         } else {
             vec![]
         };
@@ -1769,8 +1765,10 @@ impl Session {
         Ok(BatchUpsertResponse { results })
     }
 
-    /// Score multiple records against the opposite side without storing
-    /// them (read-only batch).
+    /// Score multiple records against the opposite side.
+    ///
+    /// Encoded vectors are cached in the combined index for future queries,
+    /// but no crossmap pairs or unmatched state is modified.
     pub fn match_batch(
         &self,
         side: Side,
@@ -1946,7 +1944,6 @@ impl Session {
         limit: Option<usize>,
     ) -> CrossmapPairsResponse {
         let mut all = self.state.crossmap.pairs();
-        all.sort();
         let total = all.len();
 
         let start = match cursor {
@@ -1961,6 +1958,16 @@ impl Session {
             Some(l) => (start + l).min(total),
             None => total,
         };
+
+        // Partial sort: only sort the window we need, not all pairs.
+        if start < end && end < total {
+            let slice = &mut all[start..];
+            let nth = end - start;
+            slice.select_nth_unstable_by(nth, |a, b| a.0.cmp(&b.0));
+            slice[..nth].sort_by(|a, b| a.0.cmp(&b.0));
+        } else if start < end {
+            all[start..end].sort_by(|a, b| a.0.cmp(&b.0));
+        }
 
         let pairs: Vec<CrossmapPairEntry> = all[start..end]
             .iter()

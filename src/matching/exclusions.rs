@@ -151,6 +151,9 @@ impl Exclusions {
     /// Check whether a pair is excluded.
     pub fn contains(&self, id_1: &str, id_2: &str) -> bool {
         let g = self.pairs.read().unwrap_or_else(|e| e.into_inner());
+        if g.is_empty() {
+            return false;
+        }
         g.contains(&(id_1.to_string(), id_2.to_string()))
     }
 

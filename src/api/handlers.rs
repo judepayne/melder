@@ -17,6 +17,9 @@ use crate::session::Session;
 /// Shared application state for axum handlers.
 pub type AppState = Arc<Session>;
 
+/// Maximum number of items returned by paginated endpoints.
+const MAX_PAGE_SIZE: usize = 1000;
+
 // ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------
@@ -546,7 +549,7 @@ pub async fn crossmap_pairs(
     Query(params): Query<PaginationParams>,
 ) -> axum::response::Response {
     let cursor = params.cursor;
-    let limit = params.limit;
+    let limit = params.limit.map(|l| l.min(MAX_PAGE_SIZE));
     run_blocking(
         move || Ok::<_, SessionError>(session.crossmap_pairs(cursor.as_deref(), limit)),
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -561,7 +564,7 @@ async fn unmatched_handler(
     params: UnmatchedParams,
 ) -> axum::response::Response {
     let cursor = params.cursor;
-    let limit = params.limit;
+    let limit = params.limit.map(|l| l.min(MAX_PAGE_SIZE));
     let include_records = params.include_records.unwrap_or(false);
     run_blocking(
         move || {

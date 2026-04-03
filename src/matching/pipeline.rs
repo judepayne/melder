@@ -147,13 +147,24 @@ pub fn score_pool(
         Vec::new()
     } else {
         let records = if scoring_fields.is_empty() {
-            pool.store
-                .get_many(pool.side, &extra_ids)
-                .unwrap_or_default()
+            match pool.store.get_many(pool.side, &extra_ids) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to fetch extra candidate records");
+                    Vec::new()
+                }
+            }
         } else {
-            pool.store
+            match pool
+                .store
                 .get_many_fields(pool.side, &extra_ids, &scoring_fields)
-                .unwrap_or_default()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to fetch extra candidate records");
+                    Vec::new()
+                }
+            }
         };
         records
             .into_iter()
