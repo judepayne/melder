@@ -20,6 +20,7 @@ pub fn build_db(
     a_records: &HashMap<String, Record>,
     b_records: &HashMap<String, Record>,
     relationships: &[Relationship],
+    field_scores: &[super::build::FieldScoreRow],
     manifest: &OutputManifest,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tmp = path.with_extension("db.tmp");
@@ -84,10 +85,18 @@ pub fn build_db(
         );
         CREATE INDEX idx_fscores_relationship ON field_scores(a_id, b_id);",
     )?;
+    let has_field_scores = !field_scores.is_empty();
+    insert_field_scores(&conn, field_scores)?;
 
     // --- metadata table ---
     conn.execute_batch("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)")?;
-    insert_metadata(&conn, manifest, a_records.len(), b_records.len())?;
+    insert_metadata(
+        &conn,
+        manifest,
+        a_records.len(),
+        b_records.len(),
+        has_field_scores,
+    )?;
 
     // --- views ---
     let views_sql = include_str!("views.sql");
@@ -191,6 +200,7 @@ fn insert_metadata(
     manifest: &OutputManifest,
     a_count: usize,
     b_count: usize,
+    has_field_scores: bool,
 ) -> rusqlite::Result<()> {
     let sql = "INSERT INTO metadata (key, value) VALUES (?1, ?2)";
     let mut stmt = conn.prepare(sql)?;
@@ -210,11 +220,36 @@ fn insert_metadata(
         ("top_n", manifest.top_n.to_string()),
         ("a_record_count", a_count.to_string()),
         ("b_record_count", b_count.to_string()),
-        ("scoring_log_enabled", "false".to_string()),
+        (
+            "scoring_log_enabled",
+            if has_field_scores { "true" } else { "false" }.to_string(),
+        ),
         ("schema_version", "1".to_string()),
     ];
     for (k, v) in &pairs {
         stmt.execute(rusqlite::params![k, v])?;
     }
+    Ok(())
+}
+
+fn insert_field_scores(
+    conn: &Connection,
+    field_scores: &[super::build::FieldScoreRow],
+) -> rusqlite::Result<()> {
+    if field_scores.is_empty() {
+        return Ok(());
+    }
+    let sql = "INSERT INTO field_scores (a_id, b_id, field_a, field_b, method, score, weight) \
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare_cached(sql)?;
+        for fs in field_scores {
+            stmt.execute(rusqlite::params![
+                fs.a_id, fs.b_id, fs.field_a, fs.field_b, fs.method, fs.score, fs.weight,
+            ])?;
+        }
+    }
+    tx.commit()?;
     Ok(())
 }

@@ -616,3 +616,133 @@ pub async fn review_list(
     )
     .await
 }
+
+// ---------------------------------------------------------------------------
+// Admin endpoints
+// ---------------------------------------------------------------------------
+
+/// POST /admin/flush — build outputs without shutting down.
+pub async fn admin_flush(State(session): State<AppState>) -> axum::response::Response {
+    let ml_path = session
+        .state
+        .config
+        .live
+        .match_log_path
+        .clone()
+        .unwrap_or_else(|| "bench/upsert.wal".to_string());
+    let csv_dir = session.state.config.output.csv_dir_path.clone();
+    let db_path = session.state.config.output.db_path.clone();
+
+    if csv_dir.is_none() && db_path.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                serde_json::json!({"error": "no output.csv_dir_path or output.db_path configured"}),
+            ),
+        )
+            .into_response();
+    }
+
+    // Flush the WAL before building.
+    if let Err(e) = session.state.wal.flush() {
+        warn!(error = %e, "WAL flush failed before admin/flush build");
+    }
+
+    let manifest = crate::output::OutputManifest::from_config(&session.state.config);
+
+    match tokio::task::spawn_blocking(move || {
+        crate::output::build_outputs(
+            std::path::Path::new(&ml_path),
+            None,
+            csv_dir.as_deref().map(std::path::Path::new),
+            db_path.as_deref().map(std::path::Path::new),
+            &manifest,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    {
+        Ok(Ok(report)) => {
+            info!(
+                matches = report.match_count,
+                review = report.review_count,
+                elapsed_s = format!("{:.1}", report.elapsed_secs),
+                "admin/flush build complete"
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "complete",
+                    "matches": report.match_count,
+                    "review": report.review_count,
+                    "unmatched": report.no_match_count,
+                    "elapsed_secs": report.elapsed_secs,
+                })),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /admin/shutdown — graceful shutdown with final build.
+pub async fn admin_shutdown(State(session): State<AppState>) -> axum::response::Response {
+    info!("admin/shutdown requested");
+
+    if let Err(e) = session.state.wal.flush() {
+        warn!(error = %e, "WAL flush failed during admin/shutdown");
+    }
+
+    let csv_dir = session.state.config.output.csv_dir_path.clone();
+    let db_path = session.state.config.output.db_path.clone();
+
+    if csv_dir.is_some() || db_path.is_some() {
+        let ml_path = session
+            .state
+            .config
+            .live
+            .match_log_path
+            .clone()
+            .unwrap_or_else(|| "bench/upsert.wal".to_string());
+        let manifest = crate::output::OutputManifest::from_config(&session.state.config);
+        if let Ok(Ok(report)) = tokio::task::spawn_blocking(move || {
+            crate::output::build_outputs(
+                std::path::Path::new(&ml_path),
+                None,
+                csv_dir.as_deref().map(std::path::Path::new),
+                db_path.as_deref().map(std::path::Path::new),
+                &manifest,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        {
+            info!(
+                matches = report.match_count,
+                review = report.review_count,
+                "admin/shutdown build complete"
+            );
+        }
+    }
+
+    // Schedule process exit after response is sent.
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        std::process::exit(0);
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({"status": "shutting_down"})),
+    )
+        .into_response()
+}

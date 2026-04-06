@@ -114,3 +114,29 @@ pub fn write_unmatched_csv(
         .map_err(|e| csv::Error::from(std::io::Error::other(e.to_string())))?;
     Ok(())
 }
+
+/// Write candidates.csv: scored candidates at ranks 2..N (scoring log only).
+pub fn write_candidates_csv(
+    path: &Path,
+    candidates: &[super::build::CandidateRow],
+    b_id_field: &str,
+    a_id_field: &str,
+) -> Result<(), csv::Error> {
+    let tmp = path.with_extension("csv.tmp");
+    {
+        let mut wtr = csv::Writer::from_path(&tmp)?;
+        wtr.write_record([b_id_field, "rank", a_id_field, "score"])?;
+        for c in candidates {
+            wtr.write_record([
+                c.b_id.as_str(),
+                &c.rank.to_string(),
+                c.a_id.as_str(),
+                &format!("{:.4}", c.score),
+            ])?;
+        }
+        wtr.flush()?;
+    }
+    crate::util::rename_replacing(&tmp, path)
+        .map_err(|e| csv::Error::from(std::io::Error::other(e.to_string())))?;
+    Ok(())
+}

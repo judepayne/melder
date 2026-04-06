@@ -1,6 +1,8 @@
-//! Build pipeline: reads match log, produces CSVs and/or SQLite DB.
+//! Build pipeline: reads match log + optional scoring log, produces CSVs
+//! and/or SQLite DB.
 
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::time::Instant;
 
@@ -21,6 +23,25 @@ pub struct Relationship {
     pub reason: Option<String>,
 }
 
+/// A field score row for the output DB.
+pub struct FieldScoreRow {
+    pub a_id: String,
+    pub b_id: String,
+    pub field_a: String,
+    pub field_b: String,
+    pub method: String,
+    pub score: f64,
+    pub weight: f64,
+}
+
+/// A candidate row for candidates.csv.
+pub struct CandidateRow {
+    pub b_id: String,
+    pub rank: u8,
+    pub a_id: String,
+    pub score: f64,
+}
+
 /// State for tracking unmatched B records with best candidate info.
 struct NoMatchInfo {
     best_score: Option<f64>,
@@ -34,7 +55,7 @@ struct NoMatchInfo {
 /// places: batch end-of-run, `meld export`, `/admin/flush`, `/admin/shutdown`.
 pub fn build_outputs(
     match_log_path: &Path,
-    _scoring_log_path: Option<&Path>, // reserved for Phase 5
+    scoring_log_path: Option<&Path>,
     csv_dir: Option<&Path>,
     db_path: Option<&Path>,
     manifest: &OutputManifest,
@@ -155,7 +176,9 @@ pub fn build_outputs(
         }
     }
 
-    // Collect relationships into a sorted vec.
+    // Collect relationships into a sorted vec, tracking seen pairs.
+    let relationships_seen: std::collections::HashSet<(String, String)> =
+        relationships.keys().cloned().collect();
     let mut rel_vec: Vec<Relationship> = relationships.into_values().collect();
     rel_vec.sort_by(|a, b| a.b_id.cmp(&b.b_id).then(a.a_id.cmp(&b.a_id)));
 
@@ -195,6 +218,29 @@ pub fn build_outputs(
         .filter(|r| r.relationship_type == "broken")
         .count();
 
+    // Read scoring log if present — enriches output with field_scores and candidates.
+    let (field_scores, candidate_rows) =
+        if let Some(sl_path) = scoring_log_path.filter(|p| p.exists()) {
+            read_scoring_log(sl_path)?
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+    // Add candidate relationships from scoring log (ranks 2..N).
+    for cr in &candidate_rows {
+        let key = (cr.a_id.clone(), cr.b_id.clone());
+        if !relationships_seen.contains(&key) {
+            rel_vec.push(Relationship {
+                a_id: cr.a_id.clone(),
+                b_id: cr.b_id.clone(),
+                score: Some(cr.score),
+                rank: Some(cr.rank),
+                relationship_type: "candidate".to_string(),
+                reason: None,
+            });
+        }
+    }
+
     // Write CSV outputs.
     if let Some(dir) = csv_dir {
         std::fs::create_dir_all(dir)?;
@@ -217,9 +263,21 @@ pub fn build_outputs(
         )
         .map_err(|e| format!("unmatched.csv: {}", e))?;
 
+        // Write candidates.csv if scoring log provided data.
+        if !candidate_rows.is_empty() {
+            super::csv::write_candidates_csv(
+                &dir.join("candidates.csv"),
+                &candidate_rows,
+                &manifest.b_id_field,
+                &manifest.a_id_field,
+            )
+            .map_err(|e| format!("candidates.csv: {}", e))?;
+        }
+
         info!(
             relationships = match_count + review_count,
             unmatched = unmatched.len(),
+            field_scores = field_scores.len(),
             dir = %dir.display(),
             "CSV output written"
         );
@@ -230,7 +288,14 @@ pub fn build_outputs(
         if let Some(parent) = db.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        super::db::build_db(db, &a_records, &b_records, &rel_vec, manifest)?;
+        super::db::build_db(
+            db,
+            &a_records,
+            &b_records,
+            &rel_vec,
+            &field_scores,
+            manifest,
+        )?;
 
         info!(
             path = %db.display(),
@@ -258,4 +323,114 @@ pub fn build_outputs(
         warnings,
         elapsed_secs: elapsed,
     })
+}
+
+/// Read the scoring log and extract field_scores + candidate rows.
+///
+/// Handles both plain ndjson and zstd-compressed (.ndjson.zst) files.
+fn read_scoring_log(
+    path: &Path,
+) -> Result<(Vec<FieldScoreRow>, Vec<CandidateRow>), Box<dyn std::error::Error>> {
+    let mut field_scores = Vec::new();
+    let mut candidates = Vec::new();
+
+    let file = std::fs::File::open(path)?;
+    let is_zstd = path.to_string_lossy().ends_with(".zst");
+
+    let reader: Box<dyn std::io::Read> = if is_zstd {
+        Box::new(zstd::Decoder::new(file)?)
+    } else {
+        Box::new(file)
+    };
+    let buf = BufReader::new(reader);
+
+    for line in buf.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Parse as generic JSON value to check type field.
+        let val: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let ty = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if ty == "header" {
+            continue; // Skip the header line
+        }
+        if ty != "scored" {
+            continue;
+        }
+
+        let query_id = val.get("query_id").and_then(|v| v.as_str()).unwrap_or("");
+        let query_side = val
+            .get("query_side")
+            .and_then(|v| v.as_str())
+            .unwrap_or("b");
+
+        if let Some(cands) = val.get("candidates").and_then(|v| v.as_array()) {
+            for cand in cands {
+                let rank = cand.get("rank").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+                let matched_id = cand
+                    .get("matched_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let score = cand.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+                // Determine a_id and b_id based on query side
+                let (a_id, b_id) = match query_side {
+                    "a" => (query_id.to_string(), matched_id.to_string()),
+                    _ => (matched_id.to_string(), query_id.to_string()),
+                };
+
+                // Candidates at rank 2+ go into candidates.csv
+                if rank >= 2 {
+                    candidates.push(CandidateRow {
+                        b_id: b_id.clone(),
+                        rank,
+                        a_id: a_id.clone(),
+                        score,
+                    });
+                }
+
+                // All candidates get field_scores
+                if let Some(fscores) = cand.get("field_scores").and_then(|v| v.as_array()) {
+                    for fs in fscores {
+                        field_scores.push(FieldScoreRow {
+                            a_id: a_id.clone(),
+                            b_id: b_id.clone(),
+                            field_a: fs
+                                .get("field_a")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            field_b: fs
+                                .get("field_b")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            method: fs
+                                .get("method")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            score: fs.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            weight: fs.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    info!(
+        path = %path.display(),
+        field_scores = field_scores.len(),
+        candidates = candidates.len(),
+        "scoring log read"
+    );
+    Ok((field_scores, candidates))
 }

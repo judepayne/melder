@@ -37,6 +37,9 @@ pub fn build_router(session: Arc<Session>) -> Router {
         // Health / status (always available)
         .route("/api/v1/health", get(handlers::health))
         .route("/api/v1/status", get(handlers::status))
+        // Admin endpoints
+        .route("/admin/flush", post(handlers::admin_flush))
+        .route("/admin/shutdown", post(handlers::admin_shutdown))
         // Middleware
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .layer(CatchPanicLayer::new())

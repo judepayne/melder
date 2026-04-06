@@ -688,6 +688,7 @@ fn run_pipeline(
         None,
         true, // skip pre-match
         None, // no match log for tune
+        None, // no scoring log for tune
     ) {
         Ok(r) => r,
         Err(e) => {

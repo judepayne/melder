@@ -71,6 +71,7 @@ pub fn run_batch(
     limit: Option<usize>,
     skip_prematch: bool,
     match_log: Option<Arc<MatchLog>>,
+    scoring_log: Option<&crate::output::scoring_log::ScoringLogSender>,
 ) -> Result<BatchResult, MelderError> {
     let start = Instant::now();
 
@@ -501,6 +502,11 @@ pub fn run_batch(
             };
             let results =
                 pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
+
+            // Send to scoring log if enabled.
+            if let Some(sl) = scoring_log {
+                sl.send(b_id, Side::B, &results);
+            }
 
             // Claim loop: try each auto-match candidate in ranked order.
             // Uses crossmap.claim() so concurrent threads can't double-match.

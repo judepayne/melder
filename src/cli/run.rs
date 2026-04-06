@@ -145,6 +145,25 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         }
     };
 
+    // Open scoring log if enabled.
+    let (sl_sender, sl_writer) = if state.config.scoring_log.enabled {
+        let sl_base = output_dir.join(format!("{}.scoring_log", state.config.job.name));
+        let manifest = crate::output::OutputManifest::from_config(&state.config);
+        let use_zstd = state.config.scoring_log.compression != "none";
+        match crate::output::scoring_log::open_scoring_log(&sl_base, use_zstd, &manifest) {
+            Ok((sender, writer)) => (Some(sender), Some(writer)),
+            Err(e) => {
+                eprintln!(
+                    "Warning: failed to open scoring log: {} — continuing without",
+                    e
+                );
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     // Run batch engine
     let result = match crate::batch::run_batch(
         &state.config,
@@ -156,6 +175,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         limit,
         false,
         match_log,
+        sl_sender.as_ref(),
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -163,6 +183,15 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
             process::exit(1);
         }
     };
+
+    // Get scoring log path before shutting down writer.
+    let sl_path = sl_writer.as_ref().map(|w| w.path().to_path_buf());
+
+    // Shut down scoring log writer (flush remaining entries).
+    drop(sl_sender);
+    if let Some(w) = sl_writer {
+        w.shutdown();
+    }
 
     // Determine output paths: prefer new config keys, fall back to old ones.
     let csv_dir = if let Some(ref dir) = state.config.output.csv_dir_path {
@@ -181,16 +210,21 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     };
     let db_path = state.config.output.db_path.as_deref().map(Path::new);
 
-    // Build outputs from the match log.
+    // Build outputs from the match log (+ scoring log if present).
     let manifest = crate::output::OutputManifest::from_config(&state.config);
-    let report =
-        match crate::output::build_outputs(&ml_base, None, Some(&csv_dir), db_path, &manifest) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Failed to build outputs: {}", e);
-                process::exit(1);
-            }
-        };
+    let report = match crate::output::build_outputs(
+        &ml_base,
+        sl_path.as_deref(),
+        Some(&csv_dir),
+        db_path,
+        &manifest,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to build outputs: {}", e);
+            process::exit(1);
+        }
+    };
 
     save_crossmap(&crossmap, crossmap_path, &state.config);
     print_summary(
@@ -330,6 +364,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         &exclusions,
         limit,
         false,
+        None,
         None,
     ) {
         Ok(r) => r,

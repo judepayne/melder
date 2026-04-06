@@ -10,7 +10,7 @@ use crate::error::ConfigError;
 use super::schema::{
     BatchConfig, Bm25FieldPair, Config, CrossMapConfig, DatasetConfig, DatasetsConfig,
     EmbeddingsConfig, ExclusionsConfig, HooksConfig, LiveConfig, Mode, OutputConfig,
-    PerformanceConfig, SynonymDictionaryConfig,
+    PerformanceConfig, ScoringLogConfig, SynonymDictionaryConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -297,6 +297,7 @@ impl EnrollConfig {
             output_mapping: Vec::new(),
             thresholds: self.thresholds,
             output: OutputConfig::default(),
+            scoring_log: ScoringLogConfig::default(),
             batch: BatchConfig::default(),
             live: self.live,
             performance: self.performance,

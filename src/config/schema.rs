@@ -119,6 +119,8 @@ pub struct Config {
     #[serde(default)]
     pub output: OutputConfig,
     #[serde(default)]
+    pub scoring_log: ScoringLogConfig,
+    #[serde(default)]
     pub batch: BatchConfig,
     #[serde(default)]
     pub live: LiveConfig,
@@ -428,6 +430,38 @@ pub struct OutputConfig {
     /// Remove the batch match log after a successful build. Default false.
     #[serde(default)]
     pub cleanup_match_log: bool,
+}
+
+/// Scoring log configuration.
+///
+/// When enabled, records every scored record's full top_n candidate set with
+/// per-field breakdowns. Enables `candidates.csv`, `field_scores` DB table,
+/// and explainability views.
+#[derive(Debug, Deserialize)]
+pub struct ScoringLogConfig {
+    /// Enable the scoring log. Default false for batch/live, true for enroll.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Compression: "zstd" (default) or "none".
+    #[serde(default = "default_scoring_log_compression")]
+    pub compression: String,
+    /// Size-based rotation for long-lived servers (MB). Default 1024. Ignored in batch.
+    #[serde(default)]
+    pub rotation_size_mb: Option<u64>,
+}
+
+impl Default for ScoringLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            compression: "zstd".to_string(),
+            rotation_size_mb: None,
+        }
+    }
+}
+
+fn default_scoring_log_compression() -> String {
+    "zstd".to_string()
 }
 
 /// Batch-mode SQLite configuration.
