@@ -586,11 +586,9 @@ thresholds:
   auto_match: 0.85
   review_floor: 0.60
 output:
-  results_path: {out}/results.csv
-  review_path: {out}/review.csv
-  unmatched_path: {out}/unmatched.csv
+  csv_dir_path: {out}
 live:
-  upsert_log: {wal}
+  match_log_path: {wal}
 {db_line}
 "#,
             a_csv = a_csv.display(),

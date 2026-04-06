@@ -289,7 +289,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
           <tr><td>Barclays Bank PLC</td><td>Barclays Bk</td></tr>
         </tbody>
       </table>
-      <p style="margin-top:var(--space-4)">Melder takes both datasets, compares every record using multiple scoring methods, and produces three outputs: <strong>auto-matched</strong> pairs (high confidence), <strong>review</strong> pairs (borderline), and <strong>unmatched</strong> records.</p>
+      <p style="margin-top:var(--space-4)">Melder takes both datasets, compares every record using multiple scoring methods, and classifies each pair as <strong>auto-matched</strong> (high confidence), <strong>review</strong> (borderline), or <strong>unmatched</strong>. Results are written to a unified <code>relationships.csv</code> and optional SQLite database.</p>
     </section>
 
     <section class="screen animate-in">
@@ -355,7 +355,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
         <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
           <div class="pattern-icon" style="background: var(--color-actor-1)">📦</div>
           <h4 class="pattern-title">Batch Mode</h4>
-          <p class="pattern-desc"><code>meld run</code> — load both CSVs, match everything in parallel via <span class="term" data-definition="Rayon is a Rust library for data-parallel computation. It splits work across CPU cores automatically.">Rayon</span>, write results.csv, review.csv, unmatched.csv. Use for initial loads and periodic reconciliation.</p>
+          <p class="pattern-desc"><code>meld run</code> — load both CSVs, match everything in parallel via <span class="term" data-definition="Rayon is a Rust library for data-parallel computation. It splits work across CPU cores automatically.">Rayon</span>, write a match log during scoring, then build relationships.csv + unmatched.csv (and optionally a SQLite DB) from the log. The architecture is event-sourced: the match log is the canonical record of the scoring run. Use for initial loads and periodic reconciliation.</p>
         </div>
         <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
           <div class="pattern-icon" style="background: var(--color-actor-2)">🔄</div>
@@ -530,7 +530,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
             <div class="ft-folder"><span class="ft-name">synonym/</span><span class="ft-desc">Acronym generation + dictionary matching</span></div>
             <div class="ft-folder"><span class="ft-name">crossmap/</span><span class="ft-desc">Bidirectional 1:1 match registry (A↔B)</span></div>
             <div class="ft-folder"><span class="ft-name">store/</span><span class="ft-desc">Record storage: DashMap (memory) or SQLite</span></div>
-            <div class="ft-folder"><span class="ft-name">state/</span><span class="ft-desc">Runtime state, WAL, startup orchestration</span></div>
+            <div class="ft-folder"><span class="ft-name">state/</span><span class="ft-desc">Runtime state, match log (WAL), startup orchestration</span></div>
             <div class="ft-folder"><span class="ft-name">session/</span><span class="ft-desc">Live session: upsert, match, claim, respond</span></div>
             <div class="ft-folder"><span class="ft-name">api/</span><span class="ft-desc">Axum HTTP server and handlers</span></div>
             <div class="ft-folder"><span class="ft-name">hooks/</span><span class="ft-desc">Pipeline event hooks (subprocess NDJSON)</span></div>
@@ -575,7 +575,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-4)"><div class="pattern-icon" style="background:var(--color-actor-4)">📝</div><h4 class="pattern-title">BM25</h4><p class="pattern-desc"><span class="term" data-definition="SimpleBm25 is a custom lock-free BM25 scorer backed by DashMap with Block-Max WAND for efficient large-scale queries.">SimpleBm25</span> IDF-weighted text scoring with WAND early termination. Suppresses common tokens like &quot;Holdings&quot;.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-3)"><div class="pattern-icon" style="background:var(--color-actor-3)">🔤</div><h4 class="pattern-title">Fuzzy</h4><p class="pattern-desc">Edit-distance scorers. wratio, partial_ratio, token_sort. Catches typos and abbreviations.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-5)"><div class="pattern-icon" style="background:var(--color-actor-5)">🔁</div><h4 class="pattern-title">Synonym</h4><p class="pattern-desc">Generates acronyms (Goldman Sachs → GS). Additive bonus weight.</p></div>
-        <div class="pattern-card" style="border-top:3px solid var(--color-actor-1)"><div class="pattern-icon" style="background:var(--color-actor-1)">📋</div><h4 class="pattern-title">WAL</h4><p class="pattern-desc">Write-ahead log for crash recovery. Append-only NDJSON.</p></div>
+        <div class="pattern-card" style="border-top:3px solid var(--color-actor-1)"><div class="pattern-icon" style="background:var(--color-actor-1)">📋</div><h4 class="pattern-title">Match Log</h4><p class="pattern-desc">Append-only NDJSON log recording every matching event. Serves dual purpose: crash recovery for live mode and canonical input for output generation in all modes.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-info)"><div class="pattern-icon" style="background:var(--color-info)">🪝</div><h4 class="pattern-title">Hooks</h4><p class="pattern-desc">Non-blocking event dispatch to external subprocess via stdin.</p></div>
       </div>
     </section>
@@ -837,28 +837,27 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
     </section>
 
     <section class="screen animate-in">
-      <h2 class="screen-heading">WAL: Crash Recovery</h2>
+      <h2 class="screen-heading">Match Log: Event Sourcing</h2>
       <div class="translation-block">
         <div class="translation-code">
-          <span class="translation-label">src/state/upsert_log.rs</span>
-          <pre><code><span class="code-keyword">pub fn</span> <span class="code-function">append</span>(&amp;self, event: &amp;<span class="code-type">WalEvent</span>) -&gt; <span class="code-type">io::Result</span>&lt;()&gt; {
-    <span class="code-keyword">let</span> wrapped = <span class="code-type">Timestamped</span> {
-        ts: <span class="code-function">iso8601_now</span>(),
-        event,
-    };
-    <span class="code-keyword">let</span> line = <span class="code-function">serde_json::to_string</span>(&amp;wrapped)?;
+          <span class="translation-label">src/state/match_log.rs</span>
+          <pre><code><span class="code-keyword">pub fn</span> <span class="code-function">append</span>(&amp;self, event: &amp;<span class="code-type">MatchLogEvent</span>) -&gt; <span class="code-type">io::Result</span>&lt;()&gt; {
+    <span class="code-keyword">let</span> bytes = <span class="code-type">Self</span>::<span class="code-function">serialize_event</span>(event)?;
+    self.<span class="code-function">append_bytes</span>(&amp;bytes)
+}
+
+<span class="code-keyword">pub fn</span> <span class="code-function">append_bytes</span>(&amp;self, bytes: &amp;[<span class="code-type">u8</span>]) -&gt; <span class="code-type">io::Result</span>&lt;()&gt; {
     <span class="code-keyword">let mut</span> w = self.writer.<span class="code-function">lock</span>()?;
-    w.<span class="code-function">write_all</span>(line.<span class="code-function">as_bytes</span>())?;
-    w.<span class="code-function">write_all</span>(<span class="code-string">b"\n"</span>)?;
+    w.<span class="code-function">write_all</span>(bytes)?;
     <span class="code-function">Ok</span>(())
 }</code></pre>
         </div>
         <div class="translation-english">
           <span class="translation-label">PLAIN ENGLISH</span>
           <div class="translation-lines">
-            <p class="tl">Wrap the event with an ISO timestamp.</p>
-            <p class="tl">Serialize to JSON, then append one line to the log file under a mutex.</p>
-            <p class="tl">On restart, the WAL is replayed to recover all upserts and crossmap changes since the last clean shutdown.</p>
+            <p class="tl">The match log is append-only NDJSON recording every matching event: upserts, confirms, reviews, breaks, and no-matches.</p>
+            <p class="tl">Serialization happens outside the mutex; the lock is held only for the write (~100ns). This makes it safe inside Rayon parallel loops.</p>
+            <p class="tl">The match log serves two purposes: crash recovery for live mode, and the canonical input for output generation in all modes. A single <code>build_outputs()</code> function reads the log and produces CSVs and/or a SQLite database.</p>
           </div>
         </div>
       </div>
@@ -992,7 +991,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
 
       <div class="step-cards">
         <div class="step-card"><div class="step-num">1</div><div class="step-body"><strong>Run a single batch benchmark</strong><p><code style="background:var(--color-bg-code);color:#CDD6F4;padding:2px 8px;border-radius:4px;font-size:var(--text-sm)">python3 benchmarks/batch/10kx10k_usearch/warm/run_test.py</code></p><p style="margin-top:var(--space-2)">Loads 10k records on each side, matches them in parallel, and prints throughput + timing. First run builds the embedding cache (~17s); second run loads from cache (~0.3s).</p></div></div>
-        <div class="step-card"><div class="step-num">2</div><div class="step-body"><strong>Check the output files</strong><p>Look at <code>benchmarks/batch/10kx10k_usearch/warm/output/</code> for <code>results.csv</code> (confirmed matches), <code>review.csv</code> (borderline pairs), and <code>unmatched.csv</code> (no match found).</p></div></div>
+        <div class="step-card"><div class="step-num">2</div><div class="step-body"><strong>Check the output files</strong><p>Look at <code>benchmarks/batch/10kx10k_usearch/warm/output/</code> for <code>relationships.csv</code> (confirmed matches and review-band pairs, distinguished by the <code>relationship_type</code> column) and <code>unmatched.csv</code> (no match found).</p></div></div>
         <div class="step-card"><div class="step-num">3</div><div class="step-body"><strong>Run all batch benchmarks</strong><p><code style="background:var(--color-bg-code);color:#CDD6F4;padding:2px 8px;border-radius:4px;font-size:var(--text-sm)">python3 benchmarks/batch/run_all_tests.py</code></p><p style="margin-top:var(--space-2)">Runs every batch benchmark (cold then warm) and prints a summary table. Budget ~45-60 minutes on Apple Silicon.</p></div></div>
       </div>
     </section>

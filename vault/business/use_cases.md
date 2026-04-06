@@ -80,7 +80,7 @@ Batch mode cannot serve this use case because the check must happen in real-time
 - **Blocking**: Use with care. Blocking on country is sensible (a UK client is not a duplicate of a US client), but over-aggressive blocking may miss cross-subsidiary duplicates. If a record must be reachable via multiple field routes, use the `exact_prefilter` (pre-blocking exact match) rather than OR blocking — OR mode was removed.
 - **The `/match` vs `/add` distinction is critical**: `/match` is read-only and safe to call speculatively. `/add` modifies state. The duplicate-check workflow should use `/match` first, and only `/add` after human or system confirmation.
 - **Text-hash skip**: In this use case, the A-side records are relatively stable (the master changes slowly). The text-hash optimisation means that periodic bulk reloads of the master (e.g., nightly full refresh) only re-encode records whose text actually changed. See [[decisions/key_decisions#Text-Hash Skip Optimization]].
-- **WAL and crash recovery**: Configure `live.upsert_log` so that any records added via `/a/add` during the day survive a server restart. On startup, the WAL is replayed to restore state. See [[architecture/state_and_persistence#WAL]] and [[architecture/config_reference#live]].
+- **WAL and crash recovery**: Configure `live.match_log_path` so that any records added via `/a/add` during the day survive a server restart. On startup, the WAL is replayed to restore state. See [[architecture/state_and_persistence#WAL]] and [[architecture/config_reference#live]].
 
 ### Integration Pattern
 
@@ -144,7 +144,7 @@ Live mode provides:
 - **Blocking**: Choose fields that exist in both systems and are reasonably reliable. If both systems have a country field, block on it. Use `exact_prefilter` to recover cross-block matches (e.g., records with matching LEI but different country codes). OR blocking was removed.
 - **`common_id_field`**: If both systems share any common identifier (even a partial one -- e.g., both have an LEI field but not all records have it populated), configure it. Records with matching common IDs are paired instantly, reducing the scoring workload.
 - **Cross-map persistence**: The cross-map is flushed to disk periodically (default every 5 seconds) and on shutdown. For production deployments, back up the cross-map CSV regularly -- it is the most valuable output of the synchronisation process.
-- **WAL**: Essential for this use case. Configure `live.upsert_log` so that all record additions and cross-map changes are journalled. On restart, the WAL replays to restore full state without re-processing the change feed. See [[architecture/state_and_persistence]].
+- **WAL**: Essential for this use case. Configure `live.match_log_path` so that all record additions and cross-map changes are journalled. On restart, the WAL replays to restore full state without re-processing the change feed. See [[architecture/state_and_persistence]].
 - **Review workflow**: Integrate with `meld review list` and `meld review import` to process ambiguous pairs. Accepted pairs are added to the cross-map. Rejected pairs are removed from the review queue. Over time, the fraction of records requiring human review should decrease as the cross-map grows and only genuinely new entities remain unmatched.
 - **Monitoring**: Use the `/status` endpoint to monitor record counts, uptime, and cross-map size. Alert if the unmatched pool grows unexpectedly -- this may indicate a data quality issue in one of the source systems.
 

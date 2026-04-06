@@ -180,9 +180,7 @@ def patch_config(
     cfg["embeddings"]["model"] = model
     cfg["embeddings"]["a_cache_dir"] = os.path.join(cache_dir, "a")
     cfg["embeddings"]["b_cache_dir"] = os.path.join(cache_dir, "b")
-    cfg["output"]["results_path"] = os.path.join(output_dir, "results.csv")
-    cfg["output"]["review_path"] = os.path.join(output_dir, "review.csv")
-    cfg["output"]["unmatched_path"] = os.path.join(output_dir, "unmatched.csv")
+    cfg["output"]["csv_dir_path"] = output_dir + "/"
     cfg["cross_map"]["path"] = crossmap_path
 
     with open(out_config, "w") as f:

@@ -35,6 +35,9 @@ All endpoints are under `/api/v1/`. The server is started with
 | GET | `/review/list` | List pending review-band matches (paginated) |
 | POST | `/exclude` | Exclude a pair (known non-match). Breaks existing match if present |
 | DELETE | `/exclude` | Remove an exclusion, allowing the pair to match again |
+| POST | `/admin/flush` | Trigger output build without shutting down |
+| GET | `/admin/flush/{build_id}` | Check status of a flush build |
+| POST | `/admin/shutdown` | Graceful shutdown with final output build |
 | GET | `/health` | Health check |
 | GET | `/status` | Detailed server status (record counts, uptime) |
 
@@ -430,3 +433,73 @@ been removed. `false` if the pair was not in the exclusion set.
 After removing an exclusion, the pair will be scored normally on the
 next upsert or try-match. It is not automatically re-scored — you need
 to re-upsert one of the records to trigger matching.
+
+## Admin endpoints
+
+Admin endpoints generate output files (CSVs and/or SQLite DB) from the
+match log using the same build pipeline as `meld run` and `meld export`.
+Available in both live and enroll modes.
+
+### Flush (build without shutdown)
+
+Trigger an output build while the server continues accepting requests.
+Requires `output.csv_dir_path` and/or `output.db_path` to be configured.
+
+```
+POST /api/v1/admin/flush
+```
+
+Response (`202 Accepted`):
+
+```json
+{
+  "build_id": "build_20260406T120000Z",
+  "status": "accepted"
+}
+```
+
+The build runs in a background task. Multiple concurrent flush calls
+are serialised — only one build runs at a time.
+
+Check build status:
+
+```
+GET /api/v1/admin/flush/build_20260406T120000Z
+```
+
+```json
+{
+  "build_id": "build_20260406T120000Z",
+  "status": "completed",
+  "duration_ms": 4200,
+  "files_written": ["output/relationships.csv", "output/unmatched.csv", "output/results.db"]
+}
+```
+
+Possible `status` values: `accepted`, `running`, `completed`, `failed`.
+On failure, the response includes an `error` field with details.
+
+### Shutdown (build then exit)
+
+Graceful shutdown with a final output build. The server stops accepting
+new requests, drains in-flight work, flushes the match log and scoring
+log, runs the build pipeline, and exits.
+
+```
+POST /api/v1/admin/shutdown
+```
+
+Response (`202 Accepted`):
+
+```json
+{
+  "status": "shutting_down"
+}
+```
+
+On build failure, the server exits with a non-zero code. The match log
+remains on disk and outputs can be rebuilt with `meld export`.
+
+SIGTERM triggers the same shutdown sequence, so standard process
+management tools (Docker, Kubernetes, systemd) work correctly by
+default.

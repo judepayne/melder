@@ -64,10 +64,8 @@ performance:
 
 live:
   skip_initial_match: true
-  upsert_log: benchmarks/live/sqlite_cache_sweep/sqlite_cold_setup/wal/events.ndjson
+  match_log_path: benchmarks/live/sqlite_cache_sweep/sqlite_cold_setup/wal/events.ndjson
   db_path: benchmarks/live/sqlite_cache_sweep/sqlite_cold_setup/live.db
 
 output:
-  results_path:   benchmarks/live/sqlite_cache_sweep/sqlite_cold_setup/output/results.csv
-  review_path:    benchmarks/live/sqlite_cache_sweep/sqlite_cold_setup/output/review.csv
-  unmatched_path: benchmarks/live/sqlite_cache_sweep/sqlite_cold_setup/output/unmatched.csv
+  csv_dir_path: benchmarks/live/sqlite_cache_sweep/sqlite_cold_setup/output

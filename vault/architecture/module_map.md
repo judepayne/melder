@@ -28,7 +28,7 @@ Melder is a single Rust crate (`melder`). Binary name is `meld`. All modules are
 | `models/` | `mod.rs` (root level) | Core domain types: `Record`, `Side`, `Classification`, `MatchResult` |
 | `scoring/` | `mod.rs`, `exact.rs`, `embedding.rs` | Per-field scoring dispatch and method implementations. Handles synonym scoring internally. See [[architecture/scoring_algorithm]]. |
 | `session/` | `mod.rs` | Live-mode state: both sides, upsert/match logic |
-| `state/` | `state.rs`, `live.rs`, `upsert_log.rs` | Shared state loading, live side state, WAL. See [[architecture/state_and_persistence]]. |
+| `state/` | `state.rs`, `live.rs`, `match_log.rs` | Shared state loading, live side state, WAL. See [[architecture/state_and_persistence]]. |
 | `store/` | `mod.rs`, `memory.rs`, `sqlite.rs` | RecordStore trait implementations |
 | `synonym/` | `mod.rs`, `index.rs`, `scorer.rs`, `generator.rs`, `dictionary.rs` | Synonym/acronym matching (generates acronyms, builds bidirectional index, scores) |
 | `vectordb/` | `mod.rs`, `flat.rs`, `usearch_backend.rs`, `manifest.rs`, `texthash.rs`, `tests.rs` | Vector index trait, backends, cache validation |

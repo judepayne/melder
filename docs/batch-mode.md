@@ -27,14 +27,39 @@ B records (useful for quick sanity checks on large datasets).
 
 ## Output files
 
-When the job completes, the melder writes three output csvs (paths
-configured in the `output` section):
+Batch mode is event-sourced: during scoring, events are written to a
+match log on disk. At the end of the run, the build pipeline reads the
+match log (and the optional scoring log) to produce outputs. This means
+a crashed run leaves a recoverable match log, and outputs can be rebuilt
+with `meld export` without re-scoring.
+
+Output files are written to the directory configured by
+`output.csv_dir_path` and/or the SQLite database at `output.db_path`.
+At least one must be set.
+
+### CSV outputs
 
 | File | Contents |
 |------|----------|
-| `results.csv` | Confirmed matches — pairs that scored at or above `auto_match`. Columns: `a_id`, `b_id`, `score`, `classification`, plus a per-field score column for each match field. |
-| `review.csv` | Borderline pairs — scored between `review_floor` and `auto_match`. Same columns as results. These need a human decision. |
-| `unmatched.csv` | B records that had no match above `review_floor`. Contains all original B-side fields so you can inspect what failed. |
+| `relationships.csv` | All confirmed matches and review-band pairs. Columns: `b_id`, `a_id`, `score`, `relationship_type` (`match` or `review`), `reason`, `rank`, plus configured A-side fields. Replaces the former `results.csv` + `review.csv` split. |
+| `unmatched.csv` | B records with no match above `review_floor`. Columns: `b_id`, B-side fields, `best_score`, `best_a_id`. The `best_a_id` column is new — it shows the closest A-side record even when below threshold. |
+| `candidates.csv` | Produced only when the scoring log is enabled. Ranks 2..N for every scored query record. Columns: `b_id`, `rank`, `a_id`, `score`. |
+
+### SQLite output database
+
+When `output.db_path` is set, the build pipeline writes a SQLite
+database with tables `a_records`, `b_records`, `relationships`,
+`field_scores` (populated when the scoring log is on), and `metadata`.
+Eleven analytical views are included (e.g. `confirmed_matches`,
+`review_queue`, `unmatched_a`, `unmatched_b`, `relationship_detail`).
+See the output data design for the full schema.
+
+### Match log
+
+The match log is written during scoring to a file in the output
+directory. By default it is kept after the build for debugging and
+rebuilds. Set `output.cleanup_match_log: true` to delete it after a
+successful build.
 
 The cross-map csv is also updated: every auto-matched pair is added so
 that re-running the job skips already-resolved records.
@@ -56,9 +81,8 @@ Batch matching complete:
   Throughput:   120 records/sec
 
 Output files:
-  results:   output/results.csv (712 rows)
-  review:    output/review.csv (138 rows)
-  unmatched: output/unmatched.csv (150 rows)
+  relationships: output/relationships.csv (850 rows)
+  unmatched:     output/unmatched.csv (150 rows)
 ```
 
 ## SQLite batch mode (large datasets)

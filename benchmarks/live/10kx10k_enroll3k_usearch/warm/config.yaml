@@ -41,7 +41,7 @@ thresholds:
 
 live:
   skip_initial_match: true
-  upsert_log: benchmarks/live/10kx10k_enroll3k_usearch/warm/wal/events.ndjson
+  match_log_path: benchmarks/live/10kx10k_enroll3k_usearch/warm/wal/events.ndjson
 
 performance:
   encoder_pool_size: 4

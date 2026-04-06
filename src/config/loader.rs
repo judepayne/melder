@@ -352,10 +352,13 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         });
     }
 
-    // 24-26. output paths
-    require_non_empty(&cfg.output.results_path, "output.results_path")?;
-    require_non_empty(&cfg.output.review_path, "output.review_path")?;
-    require_non_empty(&cfg.output.unmatched_path, "output.unmatched_path")?;
+    // 24. output: at least one of csv_dir_path or db_path must be set.
+    if cfg.output.csv_dir_path.is_none() && cfg.output.db_path.is_none() {
+        return Err(ConfigError::InvalidValue {
+            field: "output".into(),
+            message: "at least one of output.csv_dir_path or output.db_path must be set".into(),
+        });
+    }
 
     // 27. blocking
     if cfg.blocking.enabled {
@@ -1142,7 +1145,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1165,7 +1168,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: magic, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let result: Result<Config, _> = serde_yaml::from_str(yaml);
         assert!(result.is_err(), "invalid method should fail at parse time");
@@ -1190,7 +1193,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1217,7 +1220,7 @@ match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 0.5 }
   - { field_a: g, field_b: g, method: fuzzy, weight: 0.45 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1239,7 +1242,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.50, review_floor: 0.80 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1266,7 +1269,7 @@ blocking:
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1293,7 +1296,7 @@ vector_backend: milvus
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1315,7 +1318,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1338,7 +1341,7 @@ vector_backend: usearch
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1370,7 +1373,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: fuzzy, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1394,7 +1397,7 @@ performance:
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1418,7 +1421,7 @@ performance:
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1445,7 +1448,7 @@ performance:
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1474,7 +1477,7 @@ embeddings: {{ model: m, a_cache_dir: i }}
 match_fields:
 {}
 thresholds: {{ auto_match: 0.85, review_floor: 0.6 }}
-output: {{ results_path: r, review_path: rv, unmatched_path: u }}
+output: {{ csv_dir_path: /tmp/test/output }}
 "#,
             match_fields_yaml
         )
@@ -1545,7 +1548,7 @@ match_fields:
   - {{ field_a: f, field_b: f, method: embedding, weight: 0.8 }}
   - {{ method: bm25, weight: 0.2 }}
 thresholds: {{ auto_match: 0.85, review_floor: 0.6 }}
-output: {{ results_path: r, review_path: rv, unmatched_path: u }}
+output: {{ csv_dir_path: /tmp/test/output }}
 "#
         );
         let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
@@ -1571,7 +1574,7 @@ match_fields:
   - {{ field_a: f, field_b: f, method: exact, weight: 0.8 }}
   - {{ method: bm25, weight: 0.2 }}
 thresholds: {{ auto_match: 0.85, review_floor: 0.6 }}
-output: {{ results_path: r, review_path: rv, unmatched_path: u }}
+output: {{ csv_dir_path: /tmp/test/output }}
 "#
         );
         let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
@@ -1623,7 +1626,7 @@ match_fields:
   - {{ field_a: name_a, field_b: name_b, method: fuzzy, weight: 0.8 }}
   - {{ method: bm25, weight: 0.2 }}
 thresholds: {{ auto_match: 0.85, review_floor: 0.6 }}
-output: {{ results_path: r, review_path: rv, unmatched_path: u }}
+output: {{ csv_dir_path: /tmp/test/output }}
 "#
         );
         let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
@@ -1700,7 +1703,7 @@ match_fields:
       - { field_a: name_a, field_b: name_b }
       - { field_a: addr_a, field_b: addr_b }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1732,7 +1735,7 @@ match_fields:
     fields:
       - { field_a: new_a, field_b: new_b }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1762,7 +1765,7 @@ match_fields:
   - { field_a: name_a, field_b: name_b, method: embedding, weight: 0.8 }
   - { method: bm25, weight: 0.2 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1793,7 +1796,7 @@ match_fields:
     fields:
       - { field_a: only_this_a, field_b: only_this_b }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1834,7 +1837,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1910,7 +1913,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6, min_score_gap: 0.10 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1932,7 +1935,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6, min_score_gap: 0.0 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1954,7 +1957,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6, min_score_gap: -0.05 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1976,7 +1979,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6, min_score_gap: 1.0 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -1998,7 +2001,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -2270,7 +2273,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 performance:
   expansion_search: 32
 "#;
@@ -2308,7 +2311,7 @@ match_fields:
   - { field_a: name_a, field_b: name_b, method: embedding, weight: 1.0 }
   - { field_a: name_a, field_b: name_b, method: synonym, weight: 0.2 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -2344,7 +2347,7 @@ match_fields:
   - { field_a: name_a, field_b: name_b, method: embedding, weight: 1.0 }
   - { field_a: name_a, field_b: name_b, method: synonym, weight: 0.2 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 "#;
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
@@ -2371,7 +2374,7 @@ embeddings: { model: m, a_cache_dir: i }
 match_fields:
   - { field_a: f, field_b: f, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
-output: { results_path: r, review_path: rv, unmatched_path: u }
+output: { csv_dir_path: /tmp/test/output }
 bm25_commit_batch_size: 100
 "#;
         let cfg: Config = serde_yaml::from_str(yaml).unwrap();

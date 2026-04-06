@@ -23,9 +23,13 @@ meld validate --config config.yaml
 ## `meld run`
 
 Run batch matching: load both datasets, score every B record against the
-A-side pool, and write three output csvs (results, review, unmatched).
-The cross-map is updated with auto-matched pairs so that re-running
-skips already-resolved records.
+A-side pool, and produce output files. During scoring, events are
+written to a match log. At the end of the run, the build pipeline reads
+the match log to produce `relationships.csv` (confirmed matches and
+review-band pairs), `unmatched.csv`, an optional SQLite output database,
+and `candidates.csv` (when the scoring log is enabled). The cross-map
+is updated with auto-matched pairs so that re-running skips
+already-resolved records.
 
 ```bash
 meld run --config config.yaml
@@ -44,10 +48,11 @@ meld run --config config.yaml --limit 500 --verbose
 
 Start the live-mode HTTP server. Datasets are loaded (into memory or
 SQLite, depending on whether `live.db_path` is set), embedding and
-blocking indices are built, and the write-ahead log is replayed for
-crash recovery. Once ready, the server accepts requests on the
-configured port. See [API Reference](api-reference.md) for endpoint
-details.
+blocking indices are built, and the match log is replayed for crash
+recovery. Once ready, the server accepts requests on the configured
+port. Admin endpoints (`POST /admin/flush`, `POST /admin/shutdown`) are
+available for on-demand output generation. See [API Reference](api-reference.md)
+for endpoint details.
 
 ```bash
 meld serve --config config.yaml --port 8090
@@ -64,8 +69,9 @@ Start the enroll-mode HTTP server for single-pool entity resolution.
 Records are enrolled into one growing pool and scored against everything
 already there. Designed for graph-based ER workflows and deduplication.
 Uses a simplified config format with `field:` instead of
-`field_a:`/`field_b:`. See [Enroll Mode](enroll-mode.md) for full
-details.
+`field_a:`/`field_b:`. Admin endpoints (`POST /admin/flush`,
+`POST /admin/shutdown`) are available for on-demand output generation.
+See [Enroll Mode](enroll-mode.md) for full details.
 
 ```bash
 meld enroll --config enroll_config.yaml --port 8090
@@ -75,6 +81,26 @@ meld enroll --config enroll_config.yaml --port 8090
 |------|-------|-------------|
 | `--config` | `-c` | Path to enroll-mode YAML config file (required) |
 | `--port` | `-p` | TCP port to listen on (default: 8080) |
+
+## `meld export`
+
+Generate output files from an existing match log without re-running
+scoring. Uses the same build pipeline as batch end-of-run,
+`POST /admin/flush`, and `POST /admin/shutdown` — one implementation,
+same output shape. Reads the match log (and optional scoring log) to
+produce CSVs and/or the SQLite output database.
+
+This is the primary way to generate outputs from a live or enroll
+server's match log. It can also rebuild batch outputs with different
+config options (e.g. adding `output.db_path`) without re-scoring.
+
+```bash
+meld export --config config.yaml
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--config` | `-c` | Path to YAML config file (required) |
 
 ## `meld tune`
 

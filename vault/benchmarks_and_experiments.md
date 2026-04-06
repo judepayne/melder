@@ -118,20 +118,20 @@ Baseline on GitHub ubuntu-latest:
 
 ## CI Accuracy Regression Tests
 
-CI runs `accuracy` job in parallel with `perf` job on every push. Two deterministic tests validate that scoring logic changes don't silently alter match results.
+CI runs `accuracy` job in parallel with `perf` job on every push. Two deterministic tests validate that scoring logic changes don't silently alter match results. Both tests use `registered_address`/`counterparty_address` as a discriminating embedding signal (weight 0.20) alongside `legal_name`/`counterparty_name` (weight 0.35) — without the address signal, records with identical names but different addresses produced equal composite scores, causing non-deterministic pair ordering across runs.
 
 **Live accuracy test** (`benchmarks/accuracy/live_10kx10k_inject3k/`):
-- Fixed 10k A + 10k B datasets with asymmetric field names (legal_name vs counterparty_name, country_code vs domicile, lei vs lei_code)
+- Fixed 10k A + 10k B datasets with asymmetric field names (legal_name vs counterparty_name, country_code vs domicile, lei vs lei_code, registered_address vs counterparty_address)
 - Validates crossmap at two checkpoints against committed expected files:
-  - After initial match pass: 5,376 pairs
-  - After 3k record injection: 6,124 pairs
+  - After initial match pass: 5,712 pairs
+  - After 3k record injection: 6,423 pairs
 - Any change to scoring logic that alters results causes CI failure
 
 **Enroll accuracy test** (`benchmarks/accuracy/enroll_5k_inject1k/`):
-- Fixed 5k single-pool dataset
-- Validates 2,814 edges after enrollment
+- Fixed 5k single-pool dataset with registered_address field
+- Validates 2,019 edges after enrollment
 - Removes 50 records, verifies they're gone
-- Enrolls 50 more post-removal, validates 136 edges and confirms no edges to removed records
+- Enrolls 50 more post-removal, validates 112 edges and confirms no edges to removed records
 - Tests the full enroll lifecycle: add, score, remove, re-score
 
 **Updating expected outputs**:

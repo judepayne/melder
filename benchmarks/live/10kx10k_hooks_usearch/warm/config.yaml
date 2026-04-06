@@ -54,13 +54,11 @@ thresholds:
   review_floor: 0.60
 
 output:
-  results_path:   benchmarks/live/10kx10k_hooks_usearch/warm/output/results.csv
-  review_path:    benchmarks/live/10kx10k_hooks_usearch/warm/output/review.csv
-  unmatched_path: benchmarks/live/10kx10k_hooks_usearch/warm/output/unmatched.csv
+  csv_dir_path: benchmarks/live/10kx10k_hooks_usearch/warm/output
 
 live:
   skip_initial_match: true
-  upsert_log: benchmarks/live/10kx10k_hooks_usearch/warm/wal/events.ndjson
+  match_log_path: benchmarks/live/10kx10k_hooks_usearch/warm/wal/events.ndjson
 
 hooks:
   command: "python3 benchmarks/live/10kx10k_hooks_usearch/warm/hook.py"

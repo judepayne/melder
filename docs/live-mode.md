@@ -125,35 +125,61 @@ match broken), see [Hooks](hooks.md). Hooks run a single long-lived
 subprocess that receives events as JSON on stdin — zero impact on
 scoring throughput.
 
-## Write-ahead log (WAL)
+## Match log (WAL)
 
-Every record addition and cross-map change is appended to the WAL file
-(configured via `live.upsert_log`, e.g. `wal.ndjson`). This is a
-newline-delimited JSON file — one event per line.
+The match log (configured via `live.match_log_path`, formerly
+`upsert_log`) is the canonical input for all output generation. Every
+record addition, cross-map change, and scoring outcome is appended to
+this newline-delimited JSON file. It serves two purposes:
 
-In in-memory mode, the WAL is essential for crash recovery: if the
-server is killed, the next startup replays these events to restore
-state. In SQLite mode, the WAL is still written as a redundant safety
-net but is not needed for recovery.
+1. **Crash recovery** — in in-memory mode, the next startup replays
+   these events to restore state. In SQLite mode, the match log is
+   still written as a redundant safety net but is not needed for
+   recovery.
+2. **Output generation** — `meld export` and the admin endpoints
+   (`POST /admin/flush`, `POST /admin/shutdown`) read the match log
+   through the build pipeline to produce CSVs and the SQLite output
+   database, the same way batch mode does at end-of-run.
 
-On clean shutdown the WAL is compacted (duplicate entries collapsed) and
-can be inspected with:
+On clean shutdown the match log is compacted (duplicate entries
+collapsed) and can be inspected with:
 
 ```bash
-# See recent WAL entries
+# See recent entries
 tail -20 wal.ndjson
 
 # Count events by type
 jq -r .type wal.ndjson | sort | uniq -c
 ```
 
-Each server run creates a new timestamped WAL file (e.g.
-`wal_20260312T143207Z.ndjson`). On startup, all WAL files matching the
+Each server run creates a new timestamped match log file (e.g.
+`wal_20260312T143207Z.ndjson`). On startup, all files matching the
 configured base path are discovered and replayed in lexicographic
-(chronological) order. Each run's WAL is compacted at shutdown. Old WAL
+(chronological) order. Each run's file is compacted at shutdown. Old
 files accumulate across runs; delete them manually if disk space is a
 concern (only the most recent compacted file is needed for full
 recovery).
+
+## Admin endpoints
+
+Two admin endpoints are available on the live-mode server for on-demand
+output generation:
+
+**`POST /admin/flush`** — triggers a build (CSVs and/or SQLite DB)
+without shutting down the server. Returns `202 Accepted` immediately
+with a build ID. The build runs in a background task; status is
+queryable via `GET /admin/flush/{build_id}`. Multiple concurrent flush
+calls are serialised (one build at a time). Use this for periodic
+snapshots of a running server.
+
+**`POST /admin/shutdown`** — graceful shutdown with a final build.
+Returns `202 Accepted`, then the server drains in-flight requests,
+flushes the match log and scoring log, runs the build pipeline, and
+exits. On build failure, exits with non-zero code; the match log
+remains on disk and can be rebuilt with `meld export`. SIGTERM triggers
+the same sequence.
+
+See [API Reference](api-reference.md) for full details.
 
 ## Cross-map persistence
 
@@ -170,10 +196,11 @@ How confirmed matches are persisted depends on the storage backend:
 
 ## Shutdown
 
-Send Ctrl-C or SIGTERM. The melder will stop accepting new connections,
-drain in-flight requests, flush and compact the WAL, save the cross-map
-(in-memory mode) or no-op (SQLite mode), and persist index caches. No
-data is lost.
+Send Ctrl-C, SIGTERM, or `POST /admin/shutdown`. The melder will stop
+accepting new connections, drain in-flight requests, flush and compact
+the match log, run the build pipeline (if `output.csv_dir_path` or
+`output.db_path` is configured), save the cross-map (in-memory mode)
+or no-op (SQLite mode), and persist index caches. No data is lost.
 
 ## Persistence and restart
 

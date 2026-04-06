@@ -1,6 +1,6 @@
 job:
   name: experiment_6
-  description: BM25 composite scoring — 10% BM25 share
+  description: "BM25 composite scoring \u2014 10% BM25 share"
 datasets:
   a:
     path: benchmarks/accuracy/science/results/experiment_6/dataset_a.csv
@@ -45,9 +45,7 @@ thresholds:
   auto_match: 0.88
   review_floor: 0.6
 output:
-  results_path: benchmarks/accuracy/science/results/experiment_6/output/results.csv
-  review_path: benchmarks/accuracy/science/results/experiment_6/output/review.csv
-  unmatched_path: benchmarks/accuracy/science/results/experiment_6/output/unmatched.csv
+  csv_dir_path: benchmarks/accuracy/science/results/experiment_6/output/
 performance:
   encoder_pool_size: 4
   vector_index_mode: load

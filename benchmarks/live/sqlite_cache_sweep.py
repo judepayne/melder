@@ -104,13 +104,11 @@ performance:
   vector_index_mode: "load"
 
 live:
-  upsert_log: {work_dir}/wal/events.ndjson
+  match_log_path: {work_dir}/wal/events.ndjson
 {live_extra}
 
 output:
-  results_path:   {work_dir}/output/results.csv
-  review_path:    {work_dir}/output/review.csv
-  unmatched_path: {work_dir}/output/unmatched.csv
+  csv_dir_path: {work_dir}/output/
 """
 
 

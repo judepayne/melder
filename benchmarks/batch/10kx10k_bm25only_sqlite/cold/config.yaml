@@ -55,9 +55,7 @@ thresholds:
   review_floor: 0.60
 
 output:
-  results_path:   benchmarks/batch/10kx10k_bm25only_sqlite/cold/output/results.csv
-  review_path:    benchmarks/batch/10kx10k_bm25only_sqlite/cold/output/review.csv
-  unmatched_path: benchmarks/batch/10kx10k_bm25only_sqlite/cold/output/unmatched.csv
+  csv_dir_path: benchmarks/batch/10kx10k_bm25only_sqlite/cold/output
 
 performance:
   encoder_pool_size: 1

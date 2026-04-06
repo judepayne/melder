@@ -35,4 +35,4 @@ performance:
   encoder_pool_size: 4
 
 live:
-  upsert_log: benchmarks/accuracy/enroll_5k_inject1k/wal/events.ndjson
+  match_log_path: benchmarks/accuracy/enroll_5k_inject1k/wal/events.ndjson

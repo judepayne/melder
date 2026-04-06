@@ -241,17 +241,19 @@ After datasets loaded and indices built, `Session::initial_match_pass()` scores 
 
 Two fixed-dataset accuracy tests prevent silent business logic bugs. Discovered: `score_pair` hardcoded `field_a` for candidate and `field_b` for query, working only in batch mode. In live mode with asymmetric schemas (e.g. `legal_name` vs `counterparty_name`), A→B queries silently scored zero — no error, no crash, just fewer matches. Undetected for months because the existing live CI test used `skip_initial_match: true` (only B→A direction exercised) and throughput checks ignored match quality.
 
-**Design**: Fixed datasets with asymmetric field names, expected outputs committed to repo, validates at crossmap/edge level.
+**Jitter root cause (2026-04-03)**: Tests failed on CI with 8-12 pair swaps between expected and actual. Investigated and confirmed the cause was NOT ONNX non-determinism. Two different companies with identical `legal_name`, `short_name`, `country_code`, and empty LEI on the B side produced byte-identical composite scores (0.887523525953 to 12dp). With equal scores, the claim ordering depended on candidate iteration order (memory layout), which varied across runs. Fix: adding `registered_address`/`counterparty_address` as an embedding field (weight 0.20, reducing legal_name from 0.55 to 0.35) provides sufficient discriminating signal — the two companies have different addresses, breaking the score tie. After the fix, both tests produce identical results across repeated cold runs on the same machine.
+
+**Design**: Fixed datasets with asymmetric field names (including addresses), expected outputs committed to repo, validates at crossmap/edge level.
 
 **Live test** (`benchmarks/accuracy/live_10kx10k_inject3k/`):
-- 10k A + 10k B records with asymmetric field names (legal_name/counterparty_name, country_code/domicile, lei/lei_code)
+- 10k A + 10k B records with asymmetric field names (legal_name/counterparty_name, country_code/domicile, lei/lei_code, registered_address/counterparty_address)
 - `skip_initial_match: false` — runs initial match pass at startup (B→A direction)
 - Injects 3k B records via API (triggers A→B scoring direction via crossmap claim/re-scoring)
-- Validates crossmap at two checkpoints: 5,376 pairs after initial match, 6,124 after injection
+- Validates crossmap at two checkpoints: 5,712 pairs after initial match, 6,423 after injection
 - Any change to scoring logic that alters results causes CI failure
 
 **Enroll test** (`benchmarks/accuracy/enroll_5k_inject1k/`):
-- 5k single-pool dataset, full lifecycle: enroll 1k records, validate 2,814 edges, remove 50, re-enroll 50, confirm no edges to removed records
+- 5k single-pool dataset with registered_address, full lifecycle: enroll 1k records, validate 2,019 edges, remove 50, re-enroll 50, confirm no edges to removed records
 - Tests add/score/remove/re-score paths
 
 **CI integration**: New `accuracy` job runs both tests sequentially, fails on any regression. Runs in parallel with existing `perf` job (both depend on `test`).

@@ -67,9 +67,7 @@ performance:
   vector_index_mode: "load"
 
 live:
-  upsert_log: benchmarks/accuracy/10kx10k_exclusions/wal/events.ndjson
+  match_log_path: benchmarks/accuracy/10kx10k_exclusions/wal/events.ndjson
 
 output:
-  results_path:   benchmarks/accuracy/10kx10k_exclusions/output/results.csv
-  review_path:    benchmarks/accuracy/10kx10k_exclusions/output/review.csv
-  unmatched_path: benchmarks/accuracy/10kx10k_exclusions/output/unmatched.csv
+  csv_dir_path: benchmarks/accuracy/10kx10k_exclusions/output/

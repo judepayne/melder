@@ -43,9 +43,7 @@ thresholds:
   auto_match: 0.85
   review_floor: 0.6
 output:
-  results_path: benchmarks/accuracy/10kx10k_bm25/output/results.csv
-  review_path: benchmarks/accuracy/10kx10k_bm25/output/review.csv
-  unmatched_path: benchmarks/accuracy/10kx10k_bm25/output/unmatched.csv
+  csv_dir_path: benchmarks/accuracy/10kx10k_bm25/output/
 performance:
   encoder_pool_size: 4
 top_n: 20

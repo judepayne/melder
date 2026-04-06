@@ -43,7 +43,7 @@ Entry point: `cli/serve.rs` -> `api/server.rs` (Axum router) -> `api/handlers.rs
 3. Store record in `DashMap`, upsert vector into combined index, update blocking index
 4. Call `pipeline::score_pool()` against the opposite side -- same function as batch. See [[decisions/key_decisions#Principles-Inviolable]].
 5. If top result >= auto_match, claim in CrossMap
-6. Log to WAL (`state/upsert_log.rs`) — see [[architecture/state_and_persistence#WAL]]
+6. Log to WAL (`state/match_log.rs`) — see [[architecture/state_and_persistence#WAL]]
 7. Return matches as JSON
 
 ### Try-match flow (read-only):

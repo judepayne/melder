@@ -102,6 +102,8 @@ not available.
 | DELETE | `/exclude` | Remove an exclusion |
 | GET | `/health` | Health check |
 | GET | `/status` | Server status (uptime, enrollment count) |
+| POST | `/admin/flush` | Trigger output build without shutting down |
+| POST | `/admin/shutdown` | Graceful shutdown with final output build |
 
 ## Enrolling a record
 
@@ -233,11 +235,34 @@ design — the same behaviour as live mode's concurrent `add` calls.
 If deterministic edge discovery is required, serialize calls or use
 `/enroll-batch`.
 
+## Output
+
+Enroll mode has the same output pipeline as batch and live modes. The
+match log written during enrollment is the canonical input for output
+generation.
+
+**Scoring log defaults to on.** Enroll mode has no other persistent
+relationship output, so the scoring log is enabled by default to
+provide per-field explainability data. Disable it explicitly with
+`scoring_log.enabled: false` if not needed.
+
+**Generating outputs.** Use any of:
+- `meld export --config enroll_config.yaml` — reads the match log and
+  produces CSVs and/or the SQLite DB via the build pipeline.
+- `POST /admin/flush` — triggers a build without shutting down.
+  Returns `202 Accepted` with a build ID.
+- `POST /admin/shutdown` — graceful shutdown with a final build.
+  SIGTERM triggers the same sequence.
+
+Configure `output.csv_dir_path` and/or `output.db_path` in the config
+to control what is produced. When neither is set, the match log is
+still written and outputs can be generated later with `meld export`.
+
 ## Persistence
 
-The pool persists across restarts using the same WAL mechanism as
+The pool persists across restarts using the same match log mechanism as
 live mode. On shutdown, the embedding index cache is saved to disk.
-On restart, the WAL is replayed and the cache is reloaded.
+On restart, the match log is replayed and the cache is reloaded.
 
 ## Hooks
 

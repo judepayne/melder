@@ -698,18 +698,29 @@ fn run_pipeline(
     };
 
     // Write output CSVs so --no-run can re-use them.
-    let results_path = Path::new(&state.config.output.results_path);
-    let review_path = Path::new(&state.config.output.review_path);
-    let unmatched_path = Path::new(&state.config.output.unmatched_path);
+    let csv_dir = state
+        .config
+        .output
+        .csv_dir_path
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&csv_dir);
 
-    if let Err(e) = crate::batch::write_results_csv(results_path, &result.matched, &state.config) {
+    if let Err(e) = crate::batch::write_results_csv(
+        &csv_dir.join("relationships.csv"),
+        &result.matched,
+        &state.config,
+    ) {
         eprintln!("Warning: failed to write results CSV: {}", e);
     }
-    if let Err(e) = crate::batch::write_review_csv(review_path, &result.review, &state.config) {
+    if let Err(e) =
+        crate::batch::write_review_csv(&csv_dir.join("review.csv"), &result.review, &state.config)
+    {
         eprintln!("Warning: failed to write review CSV: {}", e);
     }
     if let Err(e) = crate::batch::write_unmatched_csv(
-        unmatched_path,
+        &csv_dir.join("unmatched.csv"),
         &result.unmatched,
         &state.config.datasets.b.id_field,
     ) {
@@ -745,9 +756,13 @@ fn load_cached_results(
     HashMap<String, Vec<f64>>,
 ) {
     // Read results.csv
-    let matched = load_match_results(&cfg.output.results_path, "results");
-    let review = load_match_results(&cfg.output.review_path, "review");
-    let unmatched = load_unmatched(&cfg.output.unmatched_path, &cfg.datasets.b.id_field);
+    let csv_dir = cfg.output.csv_dir_path.as_deref().unwrap_or(".");
+    let results_path = format!("{}/relationships.csv", csv_dir);
+    let review_path = format!("{}/review.csv", csv_dir);
+    let unmatched_path = format!("{}/unmatched.csv", csv_dir);
+    let matched = load_match_results(&results_path, "results");
+    let review = load_match_results(&review_path, "review");
+    let unmatched = load_unmatched(&unmatched_path, &cfg.datasets.b.id_field);
 
     let mut field_scores_map: HashMap<String, Vec<f64>> = HashMap::new();
     for mr in matched.iter().chain(review.iter()) {

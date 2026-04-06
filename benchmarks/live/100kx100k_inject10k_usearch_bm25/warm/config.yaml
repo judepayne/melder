@@ -52,9 +52,7 @@ performance:
 
 live:
   skip_initial_match: true
-  upsert_log: benchmarks/live/100kx100k_inject10k_usearch_bm25/warm/wal/events.ndjson
+  match_log_path: benchmarks/live/100kx100k_inject10k_usearch_bm25/warm/wal/events.ndjson
 
 output:
-  results_path:   benchmarks/live/100kx100k_inject10k_usearch_bm25/warm/output/results.csv
-  review_path:    benchmarks/live/100kx100k_inject10k_usearch_bm25/warm/output/review.csv
-  unmatched_path: benchmarks/live/100kx100k_inject10k_usearch_bm25/warm/output/unmatched.csv
+  csv_dir_path: benchmarks/live/100kx100k_inject10k_usearch_bm25/warm/output

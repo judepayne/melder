@@ -58,13 +58,11 @@ thresholds:
   review_floor: 0.55
 
 output:
-  results_path:   __TMPDIR__/results.csv
-  review_path:    __TMPDIR__/review.csv
-  unmatched_path: __TMPDIR__/unmatched.csv
+  csv_dir_path: __TMPDIR__/
 
 performance:
   encoder_pool_size: 1
 
 live:
-  upsert_log: __TMPDIR__/wal.ndjson
+  match_log_path: __TMPDIR__/wal.ndjson
   crossmap_flush_secs: 1

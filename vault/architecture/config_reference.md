@@ -234,10 +234,12 @@ exclusions:
 
 ```yaml
 output:
-  results_path: "output/results.csv"
-  review_path: "output/review.csv"
-  unmatched_path: "output/unmatched.csv"
+  csv_dir_path: "output/"
 ```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `csv_dir_path` | String | required | Directory where `results.csv`, `review.csv`, and `unmatched.csv` are written |
 
 ---
 
@@ -259,13 +261,13 @@ Enriches batch output by copying A-side fields (with optional rename) into the r
 
 ```yaml
 live:
-  upsert_log: "state/events.wal"
+  match_log_path: "state/events.wal"
   crossmap_flush_secs: 5
 ```
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `upsert_log` | Option\<String\> | `"benchmarks/live/<test>/wal/events.ndjson"` | WAL base path. Each server run creates a new timestamped file: `events_20260311T184207Z.wal`. |
+| `match_log_path` | Option\<String\> | None | WAL base path. Each server run creates a new timestamped file: `events_20260311T184207Z.wal`. |
 | `crossmap_flush_secs` | Option\<u64\> | `5` | How often the CrossMap is flushed to disk when dirty |
 
 See [[architecture/state_and_persistence#WAL]] for how the WAL file naming, replay, and compaction work.

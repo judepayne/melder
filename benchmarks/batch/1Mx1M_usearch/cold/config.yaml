@@ -58,9 +58,7 @@ thresholds:
   review_floor: 0.60
 
 output:
-  results_path:   benchmarks/batch/1Mx1M_usearch/cold/output/results.csv
-  review_path:    benchmarks/batch/1Mx1M_usearch/cold/output/review.csv
-  unmatched_path: benchmarks/batch/1Mx1M_usearch/cold/output/unmatched.csv
+  csv_dir_path: benchmarks/batch/1Mx1M_usearch/cold/output
 
 performance:
   encoder_pool_size: 12

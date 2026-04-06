@@ -70,9 +70,7 @@ thresholds:
   review_floor: 0.60
 
 output:
-  results_path:   output/counterparty/results.csv
-  review_path:    output/counterparty/review.csv
-  unmatched_path: output/counterparty/unmatched.csv
+  csv_dir_path: output/counterparty/
 
 performance:
   encoder_pool_size: 2

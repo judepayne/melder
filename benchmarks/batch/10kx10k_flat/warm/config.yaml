@@ -56,9 +56,7 @@ thresholds:
   review_floor: 0.60
 
 output:
-  results_path:   benchmarks/batch/10kx10k_flat/warm/output/results.csv
-  review_path:    benchmarks/batch/10kx10k_flat/warm/output/review.csv
-  unmatched_path: benchmarks/batch/10kx10k_flat/warm/output/unmatched.csv
+  csv_dir_path: benchmarks/batch/10kx10k_flat/warm/output
 
 performance:
   encoder_pool_size: 4

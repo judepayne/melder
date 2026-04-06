@@ -9,11 +9,13 @@ use crate::crossmap::CrossMapOps;
 pub fn cmd_review_list(config_path: &Path) {
     let cfg = super::load_config_or_exit(config_path);
 
-    let review_path = Path::new(&cfg.output.review_path);
+    let csv_dir = cfg.output.csv_dir_path.as_deref().unwrap_or(".");
+    let review_path_buf = Path::new(csv_dir).join("review.csv");
+    let review_path = review_path_buf.as_path();
     if !review_path.exists() {
         println!(
             "No review records (file not found: {})",
-            cfg.output.review_path
+            review_path.display()
         );
         return;
     }
@@ -54,7 +56,7 @@ pub fn cmd_review_list(config_path: &Path) {
     if rows.is_empty() {
         println!(
             "No review records (file is empty: {})",
-            cfg.output.review_path
+            review_path.display()
         );
         return;
     }
@@ -204,7 +206,9 @@ pub fn cmd_review_import(config_path: &Path, decisions_path: &Path) {
     }
 
     // Update review csv: remove accepted/rejected pairs
-    let review_path = Path::new(&cfg.output.review_path);
+    let csv_dir = cfg.output.csv_dir_path.as_deref().unwrap_or(".");
+    let review_path_buf = Path::new(csv_dir).join("review.csv");
+    let review_path = review_path_buf.as_path();
     if review_path.exists() && (accepted > 0 || rejected > 0) {
         // Build set of decided pairs
         // Re-read decisions to get the pairs

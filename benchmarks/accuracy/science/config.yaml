@@ -51,9 +51,7 @@ thresholds:
   review_floor: 0.60
 
 output:
-  results_path:   PLACEHOLDER_RESULTS
-  review_path:    PLACEHOLDER_REVIEW
-  unmatched_path: PLACEHOLDER_UNMATCHED
+  csv_dir_path: PLACEHOLDER_CSV_DIR
 
 performance:
   encoder_pool_size: 4

@@ -137,9 +137,7 @@ def build_config():
         ],
         "thresholds": {"auto_match": 0.88, "review_floor": 0.60},
         "output": {
-            "results_path": os.path.join(OUTPUT_DIR, "results.csv"),
-            "review_path": os.path.join(OUTPUT_DIR, "review.csv"),
-            "unmatched_path": os.path.join(OUTPUT_DIR, "unmatched.csv"),
+            "csv_dir_path": OUTPUT_DIR + "/",
         },
         "performance": {"encoder_pool_size": 4, "vector_index_mode": "load"},
         "vector_backend": "usearch",

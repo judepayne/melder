@@ -58,9 +58,7 @@ performance:
   vector_index_mode: "load"
 
 live:
-  upsert_log: benchmarks/soak/10kx10k_usearch/wal/events.ndjson
+  match_log_path: benchmarks/soak/10kx10k_usearch/wal/events.ndjson
 
 output:
-  results_path:   benchmarks/soak/10kx10k_usearch/output/results.csv
-  review_path:    benchmarks/soak/10kx10k_usearch/output/review.csv
-  unmatched_path: benchmarks/soak/10kx10k_usearch/output/unmatched.csv
+  csv_dir_path: benchmarks/soak/10kx10k_usearch/output/

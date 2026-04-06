@@ -38,9 +38,7 @@ thresholds:
   auto_match: 0.88
   review_floor: 0.6
 output:
-  results_path: benchmarks/accuracy/science/results/experiment_10/bm25_0pct/output/results.csv
-  review_path: benchmarks/accuracy/science/results/experiment_10/bm25_0pct/output/review.csv
-  unmatched_path: benchmarks/accuracy/science/results/experiment_10/bm25_0pct/output/unmatched.csv
+  csv_dir_path: benchmarks/accuracy/science/results/experiment_10/bm25_0pct/output/
 performance:
   encoder_pool_size: 4
   vector_index_mode: load

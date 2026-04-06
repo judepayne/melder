@@ -52,9 +52,7 @@ thresholds:
   auto_match: 0.85
   review_floor: 0.6
 output:
-  results_path: benchmarks/accuracy/10kx10k_combined/output/results.csv
-  review_path: benchmarks/accuracy/10kx10k_combined/output/review.csv
-  unmatched_path: benchmarks/accuracy/10kx10k_combined/output/unmatched.csv
+  csv_dir_path: benchmarks/accuracy/10kx10k_combined/output/
 performance:
   encoder_pool_size: 4
   vector_index_mode: load

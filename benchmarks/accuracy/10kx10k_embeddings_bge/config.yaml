@@ -51,9 +51,7 @@ thresholds:
   review_floor: 0.80
 
 output:
-  results_path:   benchmarks/accuracy/10kx10k_embeddings_bge/output/results.csv
-  review_path:    benchmarks/accuracy/10kx10k_embeddings_bge/output/review.csv
-  unmatched_path: benchmarks/accuracy/10kx10k_embeddings_bge/output/unmatched.csv
+  csv_dir_path: benchmarks/accuracy/10kx10k_embeddings_bge/output/
 
 performance:
   encoder_pool_size: 4

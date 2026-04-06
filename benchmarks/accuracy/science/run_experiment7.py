@@ -172,9 +172,7 @@ def build_config(variant_dir, include_synonym):
         "match_fields": match_fields,
         "thresholds": {"auto_match": 0.64, "review_floor": 0.52},
         "output": {
-            "results_path": os.path.join(output_dir, "results.csv"),
-            "review_path": os.path.join(output_dir, "review.csv"),
-            "unmatched_path": os.path.join(output_dir, "unmatched.csv"),
+            "csv_dir_path": output_dir + "/",
         },
         "performance": {"encoder_pool_size": 4, "vector_index_mode": "load"},
         "vector_backend": "usearch",

@@ -50,9 +50,7 @@ thresholds:
   auto_match: 0.85
   review_floor: 0.6
 output:
-  results_path: benchmarks/batch/1Mx1M_bm25only/cold/output/results.csv
-  review_path: benchmarks/batch/1Mx1M_bm25only/cold/output/review.csv
-  unmatched_path: benchmarks/batch/1Mx1M_bm25only/cold/output/unmatched.csv
+  csv_dir_path: benchmarks/batch/1Mx1M_bm25only/cold/output
 performance:
   encoder_pool_size: 1
 top_n: 5

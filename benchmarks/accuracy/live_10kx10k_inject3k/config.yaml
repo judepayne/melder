@@ -67,9 +67,7 @@ performance:
 
 live:
   skip_initial_match: false
-  upsert_log: benchmarks/accuracy/live_10kx10k_inject3k/wal/events.ndjson
+  match_log_path: benchmarks/accuracy/live_10kx10k_inject3k/wal/events.ndjson
 
 output:
-  results_path:   benchmarks/accuracy/live_10kx10k_inject3k/output/results.csv
-  review_path:    benchmarks/accuracy/live_10kx10k_inject3k/output/review.csv
-  unmatched_path: benchmarks/accuracy/live_10kx10k_inject3k/output/unmatched.csv
+  csv_dir_path: benchmarks/accuracy/live_10kx10k_inject3k/output/

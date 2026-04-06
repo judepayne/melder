@@ -265,12 +265,44 @@ thresholds:
   review_floor: 0.60
   # min_score_gap: 0.10   # uncomment to enable confidence-margin check
 
-# --- Output paths (batch mode) -----------------------------------------------
-# Paths for the three output CSVs written by meld run.
+# --- Output ------------------------------------------------------------------
+# Controls where meld run / meld export / admin endpoints write results.
+# At least one of csv_dir_path or db_path must be set in batch mode.
+# Live and enroll modes may run with neither (WAL is still written;
+# use meld export or admin endpoints to generate outputs later).
 output:
-  results_path: output/results.csv      # confirmed matches (score >= auto_match)
-  review_path: output/review.csv        # borderline pairs for human review
-  unmatched_path: output/unmatched.csv  # B records with no match above review_floor
+  csv_dir_path: output/                 # optional — directory for relationships.csv,
+                                        #   unmatched.csv, and (when scoring log is on)
+                                        #   candidates.csv. Created if it does not exist.
+  db_path: output/results.db            # optional — path for the output SQLite database.
+                                        #   Contains tables: a_records, b_records,
+                                        #   relationships, field_scores, metadata,
+                                        #   plus 11 analytical views.
+  cleanup_match_log: false              # optional (default: false) — batch mode only.
+                                        #   When true, deletes the per-run match log after
+                                        #   a successful build. Default keeps it for
+                                        #   debugging and rebuilds.
+
+  # DEPRECATED: The following keys are accepted for backwards compatibility
+  # but will be removed in a future version. They map to csv_dir_path
+  # (the directory portion of the path is used). A deprecation warning is
+  # logged at startup.
+  # results_path: output/results.csv
+  # review_path: output/review.csv
+  # unmatched_path: output/unmatched.csv
+
+# --- Scoring log (optional) --------------------------------------------------
+# Per-field explainability data. When enabled, records every scored query's
+# full candidate set with field-score breakdowns. Consumed by the build
+# pipeline to produce candidates.csv and populate the field_scores DB table.
+# Defaults to off in batch and live modes; on in enroll mode.
+scoring_log:
+  enabled: false                        # optional (default: false; true for enroll mode)
+  compression: zstd                     # optional — "zstd" (default) or "none".
+                                        #   zstd compresses ~5-10x; strongly recommended.
+  rotation_size_mb: 1024                # optional (default: 1024) — size-based rotation
+                                        #   for long-lived live/enroll servers. Ignored
+                                        #   in batch mode.
 
 # --- Batch mode SQLite (meld run) ---------------------------------------------
 # When batch.db_path is set, meld run stores records in SQLite instead of
@@ -292,9 +324,12 @@ batch:
 # --- Live mode (meld serve) --------------------------------------------------
 # Ignored by meld run. Omit this section for pure batch usage.
 live:
-  upsert_log: wal.ndjson            # optional — path for the write-ahead log. Every record add/remove
-                                    #   and crossmap change is appended here for crash recovery.
+  match_log_path: wal.ndjson         # optional — path for the match log (formerly "upsert_log").
+                                    #   Every record add/remove, crossmap change, and scoring
+                                    #   outcome is appended here. Serves as the canonical input
+                                    #   for output generation and crash recovery.
                                     #   Compacted on clean shutdown.
+                                    #   The old key name "upsert_log" is accepted as an alias.
   crossmap_flush_secs: 5            # optional (default: 5) — how often to flush the in-memory
                                     #   crossmap to disk (seconds). Ignored when using
                                     #   live.db_path (SQLite writes through immediately).

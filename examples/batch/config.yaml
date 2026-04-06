@@ -59,9 +59,7 @@ thresholds:
   review_floor: 0.60
 
 output:
-  results_path:   examples/batch/output/results.csv
-  review_path:    examples/batch/output/review.csv
-  unmatched_path: examples/batch/output/unmatched.csv
+  csv_dir_path: examples/batch/output/
 
 performance:
   encoder_pool_size: 2

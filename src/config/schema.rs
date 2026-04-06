@@ -413,14 +413,6 @@ pub struct ThresholdsConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct OutputConfig {
-    // Old fields (deprecated, backwards compat)
-    #[serde(default)]
-    pub results_path: String,
-    #[serde(default)]
-    pub review_path: String,
-    #[serde(default)]
-    pub unmatched_path: String,
-    // New fields
     /// Directory for CSV output files (relationships.csv, unmatched.csv).
     #[serde(default)]
     pub csv_dir_path: Option<String>,
@@ -493,7 +485,7 @@ pub struct BatchConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct LiveConfig {
-    #[serde(default, alias = "upsert_log")]
+    #[serde(default)]
     pub match_log_path: Option<String>,
     /// How often dirty CrossMap state is flushed to disk (seconds). Default 5.
     #[serde(default)]

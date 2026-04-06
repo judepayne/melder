@@ -634,9 +634,7 @@ thresholds:
   auto_match: 0.85
   review_floor: 0.60
 output:
-  results_path: /tmp/test/results.csv
-  review_path: /tmp/test/review.csv
-  unmatched_path: /tmp/test/unmatched.csv
+  csv_dir_path: /tmp/test/output
 "#
         );
         // Use load pipeline: parse → defaults → validate → derive.

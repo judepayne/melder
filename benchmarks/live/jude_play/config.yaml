@@ -43,8 +43,6 @@ performance:
   vector_index_mode: load
 live:
   skip_initial_match: true
-  upsert_log: benchmarks/live/jude_play/wal/events.ndjson
+  match_log_path: benchmarks/live/jude_play/wal/events.ndjson
 output:
-  results_path: benchmarks/live/jude_play/output/results.csv
-  review_path: benchmarks/live/jude_play/output/review.csv
-  unmatched_path: benchmarks/live/jude_play/output/unmatched.csv
+  csv_dir_path: benchmarks/live/jude_play/output

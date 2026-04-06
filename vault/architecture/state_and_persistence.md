@@ -3,7 +3,7 @@ type: architecture
 module: state
 status: active
 tags: [state, persistence, wal, restart, cache, crossmap]
-related_code: [src/state/live.rs, src/state/upsert_log.rs, src/crossmap/mod.rs, src/vectordb/mod.rs]
+related_code: [src/state/live.rs, src/state/match_log.rs, src/crossmap/mod.rs, src/vectordb/mod.rs]
 ---
 
 # State & Persistence
@@ -29,7 +29,7 @@ How Melder persists state to disk, survives restarts, and replays history. Relev
 
 ### File Naming
 
-Given `live.upsert_log: "state/events.wal"`, each server run creates a new file:
+Given `live.match_log_path: "state/events.wal"`, each server run creates a new file:
 ```
 state/events_20260311T184207Z.wal
 ```

@@ -8,7 +8,7 @@ related_code: []
 
 # Project Status
 
-Last updated: 2026-04-03 (Windows usearch, default usearch, comprehensive code review, side-aware scoring)
+Last updated: 2026-04-03 (accuracy test jitter fix, address embedding)
 
 ## Completed
 
@@ -55,7 +55,8 @@ Last updated: 2026-04-03 (Windows usearch, default usearch, comprehensive code r
 
 - [x] **Side-aware scoring (`score_pair` takes `pool_side`)** — `score_pair` now accepts `pool_side: Side` parameter. `field_a` always refers to A-side columns, `field_b` to B-side. The function swaps field lookups based on which side the candidate pool is on. Fixes silent zero scores in live mode when A queries against B with different column names (e.g. `legal_name` vs `counterparty_name`). This was an original design limitation from the first commit — batch mode always worked, but live mode's symmetric scoring broke with asymmetric schemas. Verified with local 10k×10k live benchmark: 733 correct matches, 402 req/s, zero errors.
 
-- [x] **Accuracy regression tests** — Added two deterministic accuracy tests to prevent silent business logic bugs: (1) `benchmarks/accuracy/live_10kx10k_inject3k/` — 10k A + 10k B with asymmetric field names, validates crossmap at two checkpoints (5,376 pairs after initial match, 6,124 after injection). (2) `benchmarks/accuracy/enroll_5k_inject1k/` — single-pool enroll lifecycle (add, score, remove, re-score), validates 2,814 edges. New `accuracy` CI job runs both tests in parallel with `perf` job, fails on any regression. Prevents recurrence of the `score_pair` bug which silently scored zero in live mode for months.
+- [x] **Accuracy regression tests** — Added two deterministic accuracy tests to prevent silent business logic bugs: (1) `benchmarks/accuracy/live_10kx10k_inject3k/` — 10k A + 10k B with asymmetric field names, validates crossmap at two checkpoints (5,712 pairs after initial match, 6,423 after injection). (2) `benchmarks/accuracy/enroll_5k_inject1k/` — single-pool enroll lifecycle (add, score, remove, re-score), validates 2,019 edges. New `accuracy` CI job runs both tests in parallel with `perf` job, fails on any regression. Prevents recurrence of the `score_pair` bug which silently scored zero in live mode for months.
+- [x] **Accuracy test jitter fix (address embedding)** — Tests failed on CI with 8-12 pair swaps between expected and actual. Root cause was not ONNX non-determinism but genuinely indistinguishable records under the old scoring config: two different companies with same name + short name + country + empty LEI produced identical composite scores, so the claim ordering depended on memory layout. Adding `registered_address`/`counterparty_address` as an embedding field (weight 0.20, reducing legal_name from 0.55 to 0.35) broke the degeneracy — both tests now produce identical results across repeated runs. Also fixed enroll test WAL cleanup bug (glob.glob leaked files between runs; replaced with shutil.rmtree). Updated enroll data generator to include addresses in all record types.
 
 ## In Progress
 
@@ -94,7 +95,37 @@ relationships, hook notifications when existing records gain new edges.
 Prerequisite for enroll mode being a real entity resolution service rather than
 a one-shot dedup check.
 
-**3. GPU encoding on Linux CI / CUDA.** *(Infrastructure)*
+**3. SQLite output format (`output.db_path` or `.db` extension).** *(Output / UX)*
+Write batch results to a SQLite file: `results`, `field_scores`, `a_records`, `b_records`,
+`unmatched` tables plus pre-built views (`confirmed_matches`, `review_queue`, `near_misses`,
+`match_summary`). Primary tool for Ops users: DB Browser for SQLite (free desktop app).
+Format inferred from file extension — `.db` writes SQLite, `.csv` unchanged. See `sqlite.md`
+for full schema, example queries, and tooling notes. **Note**: `meld tune --no-run` reads CSV
+output back in; any format change must update `src/batch/writer.rs` and
+`src/cli/tune.rs::load_cached_results` in lockstep.
+
+**4. SQLite record store for live and enroll modes.** *(Memory / Scalability)*
+Batch mode already uses SQLite as an optional memory-overflow record store (`batch.db_path`).
+Live and enroll modes currently hold all records in RAM — at large scale this becomes a
+problem. Investigate adding `live.db_path` / `enroll.db_path` to offload the record store
+to SQLite in the same way. The `RecordStore` trait abstraction is already in place; the
+`SqliteStore` implementation exists. Main challenge: live mode is long-running with
+continuous upserts — need to ensure write throughput doesn't degrade latency. WAL mode
+is already enabled on the SQLite connections so concurrent reads are fine.
+
+**5. Richer output file format (JSONL opt-in).** *(Output / UX) -- needs user research*
+Current batch output (results.csv, review.csv, unmatched.csv) is CSV-only. Proposal: infer
+output format from file extension — if the user configures a `.jsonl` path, write JSONL
+(one match object per line); `.csv` paths behave as today. JSONL would include full matched
+records, all field scores, and optionally runner-up candidates. Rationale: CSV works for
+Excel/Ops users; JSONL serves downstream pipelines and analysts. **Pending**: speak to initial
+user base to confirm what richness they actually need from the output — may turn out CSV +
+additional matched-record columns is sufficient and simpler. **Note**: `meld tune --no-run`
+reads results.csv/review.csv/unmatched.csv back in (`src/cli/tune.rs::load_cached_results`);
+any format change must update both the writer (`src/batch/writer.rs`) and the reader in
+tune.rs in lockstep.
+
+**4. GPU encoding on Linux CI / CUDA.** *(Infrastructure)*
 The `gpu-encode` feature currently works on macOS (CoreML) but is untested on
 Linux (CUDA path). CI runs on Ubuntu and cannot enable `gpu-encode` because
 there is no `libonnxruntime.so` installed. Investigate: (a) adding ORT to the

@@ -49,9 +49,7 @@ thresholds:
   auto_match: 0.88
   review_floor: 0.6
 output:
-  results_path: benchmarks/accuracy/science/results/experiment_11/with_synonym/output/results.csv
-  review_path: benchmarks/accuracy/science/results/experiment_11/with_synonym/output/review.csv
-  unmatched_path: benchmarks/accuracy/science/results/experiment_11/with_synonym/output/unmatched.csv
+  csv_dir_path: benchmarks/accuracy/science/results/experiment_11/with_synonym/output/
 performance:
   encoder_pool_size: 4
   vector_index_mode: load
