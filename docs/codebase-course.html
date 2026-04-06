@@ -864,6 +864,41 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
     </section>
 
     <section class="screen animate-in">
+      <h2 class="screen-heading">Scoring Log: Explainability</h2>
+      <div class="translation-block">
+        <div class="translation-code">
+          <span class="translation-label">src/output/scoring_log.rs</span>
+          <pre><code><span class="code-keyword">pub fn</span> <span class="code-function">send</span>(&amp;self, query_id: &amp;<span class="code-type">str</span>,
+             query_side: <span class="code-type">Side</span>,
+             results: &amp;[<span class="code-type">MatchResult</span>]) {
+    <span class="code-keyword">let</span> entry = <span class="code-type">ScoredRecord</span> {
+        query_id, query_side,
+        candidates: results.<span class="code-function">iter</span>()
+            .<span class="code-function">map</span>(|mr| <span class="code-type">CandidateEntry</span> {
+                rank, matched_id, score,
+                field_scores: <span class="code-comment">/* per-field */</span>
+            }).<span class="code-function">collect</span>(),
+    };
+    <span class="code-keyword">let</span> bytes = <span class="code-function">serde_json::to_vec</span>(&amp;entry)?;
+    self.tx.<span class="code-function">send</span>(bytes);  <span class="code-comment">// → writer thread</span>
+}</code></pre>
+        </div>
+        <div class="translation-english">
+          <span class="translation-label">PLAIN ENGLISH</span>
+          <div class="translation-lines">
+            <p class="tl">The scoring log is an <strong>opt-in enrichment layer</strong>. When enabled, it records every scored record's full top-N candidate set with per-field score breakdowns — the data the match log deliberately omits to stay small.</p>
+            <p class="tl">Producers serialize on their own thread, then send pre-serialized bytes through a bounded channel. A single writer thread drains to disk with optional <strong>zstd compression</strong> (~8× ratio, turning 46 MB into 5.6 MB at 10k scale).</p>
+            <p class="tl">This powers three things users care about: <strong>candidates.csv</strong> (who were the runner-ups?), the <strong>field_scores</strong> DB table (why did this pair score 0.87?), and the <strong>relationship_detail</strong> view (join scores with relationships for audit).</p>
+          </div>
+        </div>
+      </div>
+      <div class="step-cards" style="margin-top:var(--space-4)">
+        <div class="step-card"><div class="step-num">1</div><div class="step-body"><strong>Match log</strong> (always on)<p>Lightweight ~200 bytes/event. Records <em>what happened</em>: confirms, reviews, breaks. Drives output generation.</p></div></div>
+        <div class="step-card"><div class="step-num">2</div><div class="step-body"><strong>Scoring log</strong> (opt-in)<p>Rich ~2.5 KB/event. Records <em>why it happened</em>: all candidates, all field scores. Drives explainability.</p></div></div>
+      </div>
+    </section>
+
+    <section class="screen animate-in">
       <h2 class="screen-heading">Three-Layer Cache Invalidation</h2>
       <div class="step-cards">
         <div class="step-card"><div class="step-num">1</div><div class="step-body"><strong>Spec-hash in filename</strong><p>Field names + weights + quantization are hashed into the cache filename. Any config change makes the old path unreachable.</p></div></div>
