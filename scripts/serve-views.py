@@ -17,7 +17,7 @@ import os
 import sqlite3
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlencode
 
 # ---------------------------------------------------------------------------
 # Config
@@ -26,8 +26,14 @@ from urllib.parse import parse_qs, urlparse
 DEFAULT_PORT = 8787
 PAGE_SIZE = 100
 
+# Columns that should render as dropdowns rather than text inputs.
+# Values are auto-discovered from the data.
+ENUM_COLUMNS = {
+    "relationship_type", "reason", "method", "side", "query_side",
+}
+
 # ---------------------------------------------------------------------------
-# HTML templates (inline, no external files)
+# HTML templates
 # ---------------------------------------------------------------------------
 
 STYLE = """
@@ -37,7 +43,7 @@ header { background: #2c2a28; color: #faf7f2; padding: 16px 24px; }
 header h1 { margin: 0; font-size: 20px; font-weight: 600; }
 header .db-path { color: #9e9790; font-size: 13px; margin-top: 4px; }
 nav { background: #f5f0e8; border-bottom: 1px solid #e5dfd6; padding: 12px 24px;
-      display: flex; flex-wrap: wrap; gap: 8px; }
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 nav a { text-decoration: none; color: #2c2a28; background: #fff;
         border: 1px solid #e5dfd6; border-radius: 6px; padding: 6px 14px;
         font-size: 13px; transition: all 0.15s; }
@@ -64,6 +70,50 @@ tr:hover td { background: #fdf9f3; }
 .type-review { color: #d4a843; font-weight: 500; }
 .type-candidate { color: #2a7b9b; font-weight: 500; }
 .type-broken { color: #c93b3b; font-weight: 500; }
+.filter-row { background: #fdf9f3; }
+.filter-row td { padding: 4px 6px; border-bottom: 2px solid #e5dfd6; }
+.filter-row input, .filter-row select {
+    width: 100%; box-sizing: border-box; padding: 5px 8px;
+    border: 1px solid #e5dfd6; border-radius: 4px; font-size: 12px;
+    font-family: inherit; background: #fff; }
+.filter-row input:focus, .filter-row select:focus {
+    outline: none; border-color: #d94f30; box-shadow: 0 0 0 2px rgba(217,79,48,0.15); }
+.filter-row select { appearance: auto; }
+.filter-actions { display: flex; gap: 8px; align-items: center;
+                  margin-left: auto; }
+.filter-actions button { background: #d94f30; color: #fff; border: none;
+    border-radius: 6px; padding: 6px 16px; font-size: 13px; cursor: pointer; }
+.filter-actions button:hover { background: #c4432a; }
+.filter-actions .clear { background: #e5dfd6; color: #2c2a28; }
+.filter-actions .clear:hover { background: #d5cfc6; }
+.active-filters { padding: 8px 24px; background: #fdeee9; font-size: 12px;
+                  color: #d94f30; border-bottom: 1px solid #e5dfd6; }
+"""
+
+FILTER_JS = """
+<script>
+function applyFilters() {
+    var form = document.getElementById('filter-form');
+    var inputs = form.querySelectorAll('input, select');
+    var params = new URLSearchParams();
+    inputs.forEach(function(el) {
+        var val = el.value.trim();
+        if (val) params.set('f_' + el.name, val);
+    });
+    var base = window.location.pathname;
+    var qs = params.toString();
+    window.location.href = base + (qs ? '?' + qs : '');
+}
+function clearFilters() {
+    window.location.href = window.location.pathname;
+}
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && e.target.closest('#filter-form')) {
+        e.preventDefault();
+        applyFilters();
+    }
+});
+</script>
 """
 
 
@@ -106,8 +156,46 @@ def page_index(db_path, views, tables, meta):
 </main></body></html>"""
 
 
-def page_data(db_path, name, kind, columns, rows, offset, total):
+def build_filter_row(columns, filters, enum_values):
+    """Build the filter row with text inputs and dropdowns."""
+    cells = []
+    for col in columns:
+        current = filters.get(col, "")
+        if col in enum_values and enum_values[col]:
+            # Dropdown for enum columns
+            opts = ['<option value="">—</option>']
+            for val in sorted(enum_values[col]):
+                sel = ' selected' if val == current else ''
+                opts.append(
+                    f'<option value="{html.escape(val)}"{sel}>'
+                    f'{html.escape(val)}</option>'
+                )
+            cells.append(
+                f'<td><select name="{html.escape(col)}">'
+                f'{"".join(opts)}</select></td>'
+            )
+        else:
+            # Text input for everything else
+            cells.append(
+                f'<td><input type="text" name="{html.escape(col)}" '
+                f'value="{html.escape(current)}" '
+                f'placeholder="filter..."></td>'
+            )
+    return '<tr class="filter-row">' + ''.join(cells) + '</tr>'
+
+
+def page_data(db_path, name, kind, columns, rows, offset, total,
+              filters, enum_values, filter_description):
     col_headers = "".join(f"<th>{html.escape(c)}</th>" for c in columns)
+
+    filter_row = build_filter_row(columns, filters, enum_values)
+
+    # Active filters banner
+    filter_banner = ""
+    if filter_description:
+        filter_banner = (
+            f'<div class="active-filters">Filtered: {html.escape(filter_description)}</div>'
+        )
 
     def fmt_cell(col, val):
         if val is None:
@@ -129,28 +217,48 @@ def page_data(db_path, name, kind, columns, rows, offset, total):
     if not rows:
         body = f'<tr><td colspan="{len(columns)}" class="empty">No rows</td></tr>'
 
+    # Build pagination links preserving filters
+    def make_link(new_offset):
+        p = {f"f_{k}": v for k, v in filters.items()}
+        p["offset"] = str(new_offset)
+        return f"/{kind}/{name}?{urlencode(p)}"
+
     prev_link = ""
     next_link = ""
     if offset > 0:
-        prev_off = max(0, offset - PAGE_SIZE)
-        prev_link = f'<a href="/{kind}/{name}?offset={prev_off}">&larr; Previous</a>'
+        prev_link = f'<a href="{make_link(max(0, offset - PAGE_SIZE))}">&larr; Previous</a>'
     if offset + PAGE_SIZE < total:
-        next_off = offset + PAGE_SIZE
-        next_link = f'<a href="/{kind}/{name}?offset={next_off}">Next &rarr;</a>'
+        next_link = f'<a href="{make_link(offset + PAGE_SIZE)}">Next &rarr;</a>'
+
+    showing_end = min(offset + PAGE_SIZE, total)
+    showing_start = offset + 1 if total > 0 else 0
 
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>{html.escape(name)} — Melder</title>
 <style>{STYLE}</style></head><body>
 <header><h1>Melder Output Browser</h1>
 <div class="db-path">{html.escape(db_path)}</div></header>
-<nav><a href="/">&larr; Index</a>
-<a class="active">{html.escape(name)}</a></nav>
+<nav>
+  <a href="/">&larr; Index</a>
+  <a class="active">{html.escape(name)}</a>
+  <div class="filter-actions">
+    <button onclick="applyFilters()">Apply filters</button>
+    <button class="clear" onclick="clearFilters()">Clear</button>
+  </div>
+</nav>
+{filter_banner}
 <div class="info">
-<span>Showing {offset+1}–{min(offset+PAGE_SIZE, total)} of {total} rows</span>
+<span>Showing {showing_start}–{showing_end} of {total} rows</span>
 <span>{prev_link}{next_link}</span>
 </div>
-<main><table><thead><tr>{col_headers}</tr></thead>
-<tbody>{body}</tbody></table></main></body></html>"""
+<main>
+<form id="filter-form" onsubmit="event.preventDefault(); applyFilters();">
+<table><thead><tr>{col_headers}</tr>{filter_row}</thead>
+<tbody>{body}</tbody></table>
+</form>
+</main>
+{FILTER_JS}
+</body></html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +269,7 @@ class Handler(BaseHTTPRequestHandler):
     db_path = None
 
     def log_message(self, format, *args):
-        pass  # Silence per-request logging
+        pass
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -229,16 +337,76 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, f"{kind} '{name}' not found")
             return
 
-        offset = int(params.get("offset", [0])[0])
-        total = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        offset = int(params.get("offset", ["0"])[0])
 
-        cursor = conn.execute(
-            f'SELECT * FROM "{name}" LIMIT {PAGE_SIZE} OFFSET {offset}'
-        )
+        # Extract filters from f_column=value params
+        filters = {}
+        for key, vals in params.items():
+            if key.startswith("f_") and vals and vals[0].strip():
+                col_name = key[2:]
+                filters[col_name] = vals[0].strip()
+
+        # Get column names
+        cursor = conn.execute(f'SELECT * FROM "{name}" LIMIT 0')
         columns = [desc[0] for desc in cursor.description]
+
+        # Discover enum values for dropdown columns
+        enum_values = {}
+        for col in columns:
+            if col in ENUM_COLUMNS:
+                try:
+                    distinct = conn.execute(
+                        f'SELECT DISTINCT "{col}" FROM "{name}" '
+                        f'WHERE "{col}" IS NOT NULL ORDER BY "{col}"'
+                    ).fetchall()
+                    enum_values[col] = [row[0] for row in distinct if row[0]]
+                except Exception:
+                    pass
+
+        # Build WHERE clause from filters
+        where_parts = []
+        where_params = []
+        for col, val in filters.items():
+            if col not in columns:
+                continue
+            if col in enum_values:
+                # Exact match for enum columns
+                where_parts.append(f'"{col}" = ?')
+                where_params.append(val)
+            else:
+                # LIKE match for text columns (case-insensitive)
+                where_parts.append(f'"{col}" LIKE ?')
+                where_params.append(f"%{val}%")
+
+        where_sql = ""
+        if where_parts:
+            where_sql = " WHERE " + " AND ".join(where_parts)
+
+        # Get filtered count
+        total = conn.execute(
+            f'SELECT COUNT(*) FROM "{name}"{where_sql}', where_params
+        ).fetchone()[0]
+
+        # Get filtered rows
+        cursor = conn.execute(
+            f'SELECT * FROM "{name}"{where_sql} LIMIT {PAGE_SIZE} OFFSET {offset}',
+            where_params
+        )
         rows = cursor.fetchall()
 
-        body = page_data(self.db_path, name, kind, columns, rows, offset, total)
+        # Build human-readable filter description
+        filter_parts = []
+        for col, val in filters.items():
+            if col in enum_values:
+                filter_parts.append(f"{col} = {val}")
+            else:
+                filter_parts.append(f'{col} contains "{val}"')
+        filter_description = ", ".join(filter_parts)
+
+        body = page_data(
+            self.db_path, name, kind, columns, rows, offset, total,
+            filters, enum_values, filter_description
+        )
         self._send(200, body)
 
     def _send(self, code, body):
