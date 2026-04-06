@@ -164,32 +164,45 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         }
     };
 
-    // Write output (old path) + save crossmap + print summary
-    write_outputs(&state.config, &result);
-    save_crossmap(&crossmap, crossmap_path, &state.config);
-    print_summary(&state.config, &result, &crossmap, crossmap_path, verbose);
-
-    // New build pipeline: if csv_dir_path or db_path are set, also produce
-    // outputs via build_outputs (reads the match log just written).
-    let new_csv_dir = state.config.output.csv_dir_path.as_deref().map(Path::new);
-    let new_db_path = state.config.output.db_path.as_deref().map(Path::new);
-    if new_csv_dir.is_some() || new_db_path.is_some() {
-        let manifest = crate::output::OutputManifest::from_config(&state.config);
-        match crate::output::build_outputs(&ml_base, None, new_csv_dir, new_db_path, &manifest) {
-            Ok(report) => {
-                eprintln!(
-                    "Build pipeline: {} matches, {} review, {} unmatched in {:.1}s",
-                    report.match_count,
-                    report.review_count,
-                    report.no_match_count,
-                    report.elapsed_secs
-                );
-            }
-            Err(e) => {
-                eprintln!("Warning: build pipeline failed: {}", e);
-            }
+    // Determine output paths: prefer new config keys, fall back to old ones.
+    let csv_dir = if let Some(ref dir) = state.config.output.csv_dir_path {
+        std::path::PathBuf::from(dir)
+    } else if !state.config.output.results_path.is_empty() {
+        // Derive from old results_path for backwards compatibility.
+        if !state.config.output.results_path.is_empty() {
+            eprintln!("Note: output.results_path is deprecated. Use output.csv_dir_path instead.");
         }
-    }
+        Path::new(&state.config.output.results_path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
+    } else {
+        output_dir.to_path_buf()
+    };
+    let db_path = state.config.output.db_path.as_deref().map(Path::new);
+
+    // Build outputs from the match log.
+    let manifest = crate::output::OutputManifest::from_config(&state.config);
+    let report =
+        match crate::output::build_outputs(&ml_base, None, Some(&csv_dir), db_path, &manifest) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Failed to build outputs: {}", e);
+                process::exit(1);
+            }
+        };
+
+    save_crossmap(&crossmap, crossmap_path, &state.config);
+    print_summary(
+        &state.config,
+        &result.stats,
+        &report,
+        &crossmap,
+        crossmap_path,
+        &csv_dir,
+        db_path,
+        verbose,
+    );
 }
 
 /// SQLite-backed batch path for large datasets.
@@ -326,8 +339,8 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         }
     };
 
-    // Write output + save crossmap + print summary
-    write_outputs(&cfg, &result);
+    // Write output (legacy path for SQLite batch) + save crossmap + print summary
+    write_legacy_outputs(&cfg, &result);
     // Export SQLite crossmap back to CSV
     let pairs = sqlite_crossmap.pairs();
     let save_cm = crate::crossmap::MemoryCrossMap::new();
@@ -335,7 +348,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         save_cm.add(a_id, b_id);
     }
     save_crossmap(&save_cm, crossmap_path, &cfg);
-    print_summary(&cfg, &result, &sqlite_crossmap, crossmap_path, verbose);
+    print_legacy_summary(&cfg, &result, &sqlite_crossmap, crossmap_path, verbose);
 
     // Drop all SQLite connections before deleting the file
     drop(sqlite_crossmap);
@@ -414,7 +427,8 @@ fn print_dry_run(
     println!("    unmatched: {}", config.output.unmatched_path);
 }
 
-fn write_outputs(config: &crate::config::Config, result: &crate::batch::BatchResult) {
+/// Write legacy CSVs from BatchResult vecs (used only by SQLite batch path).
+fn write_legacy_outputs(config: &crate::config::Config, result: &crate::batch::BatchResult) {
     let results_path = Path::new(&config.output.results_path);
     let review_path = Path::new(&config.output.review_path);
     let unmatched_path = Path::new(&config.output.unmatched_path);
@@ -451,7 +465,65 @@ fn save_crossmap(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_summary(
+    _config: &crate::config::Config,
+    stats: &crate::batch::BatchStats,
+    report: &crate::output::BuildReport,
+    crossmap: &dyn CrossMapOps,
+    crossmap_path: &str,
+    csv_dir: &Path,
+    db_path: Option<&Path>,
+    verbose: bool,
+) {
+    println!();
+    println!("Batch matching complete:");
+    println!("  Total B records: {}", stats.total_b);
+    println!("  Skipped (crossmap): {}", stats.skipped);
+    println!("  Auto-matched: {}", stats.auto_matched);
+    println!("  Review:       {}", stats.review_count);
+    println!("  No match:     {}", stats.no_match);
+    let index_build_secs = stats.elapsed_secs - stats.scoring_elapsed_secs;
+    if index_build_secs > 0.5 {
+        println!("  Index build:  {:.1}s", index_build_secs);
+    }
+    println!("  Scoring time: {:.1}s", stats.scoring_elapsed_secs);
+    println!("  Total elapsed:{:.1}s", stats.elapsed_secs);
+    if stats.scoring_elapsed_secs > 0.0 {
+        let processed = stats.total_b - stats.skipped;
+        println!(
+            "  Throughput:   {:.0} records/sec",
+            processed as f64 / stats.scoring_elapsed_secs
+        );
+    }
+    println!();
+    println!("Output files:");
+    println!(
+        "  relationships: {} ({} rows)",
+        csv_dir.join("relationships.csv").display(),
+        report.match_count + report.review_count,
+    );
+    println!(
+        "  unmatched:     {} ({} rows)",
+        csv_dir.join("unmatched.csv").display(),
+        report.no_match_count,
+    );
+    if let Some(db) = db_path {
+        println!("  database:      {}", db.display());
+    }
+
+    if verbose {
+        println!();
+        println!(
+            "Crossmap: {} total pairs (saved to {})",
+            crossmap.len(),
+            crossmap_path
+        );
+    }
+}
+
+/// Legacy summary for SQLite batch path (still uses BatchResult vecs).
+fn print_legacy_summary(
     config: &crate::config::Config,
     result: &crate::batch::BatchResult,
     crossmap: &dyn CrossMapOps,
@@ -466,10 +538,6 @@ fn print_summary(
     println!("  Auto-matched: {}", stats.auto_matched);
     println!("  Review:       {}", stats.review_count);
     println!("  No match:     {}", stats.no_match);
-    let index_build_secs = stats.elapsed_secs - stats.scoring_elapsed_secs;
-    if index_build_secs > 0.5 {
-        println!("  Index build:  {:.1}s", index_build_secs);
-    }
     println!("  Scoring time: {:.1}s", stats.scoring_elapsed_secs);
     println!("  Total elapsed:{:.1}s", stats.elapsed_secs);
     if stats.scoring_elapsed_secs > 0.0 {
@@ -496,11 +564,9 @@ fn print_summary(
         config.output.unmatched_path,
         result.unmatched.len()
     );
-
     if verbose {
-        println!();
         println!(
-            "Crossmap: {} total pairs (saved to {})",
+            "\nCrossmap: {} total pairs (saved to {})",
             crossmap.len(),
             crossmap_path
         );
