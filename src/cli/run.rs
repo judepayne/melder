@@ -129,6 +129,22 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     }
     drop(b_records_map); // free memory
 
+    // Open match log for batch event-sourcing.
+    let output_dir = std::path::Path::new(&state.config.output.results_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+    let ml_base = output_dir.join(format!("{}.match_log.ndjson", state.config.job.name));
+    let match_log = match crate::state::match_log::MatchLog::open(&ml_base) {
+        Ok(ml) => Some(std::sync::Arc::new(ml)),
+        Err(e) => {
+            eprintln!(
+                "Warning: failed to open match log: {} — continuing without",
+                e
+            );
+            None
+        }
+    };
+
     // Run batch engine
     let result = match crate::batch::run_batch(
         &state.config,
@@ -139,6 +155,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         &exclusions,
         limit,
         false,
+        match_log,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -268,7 +285,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     let combined_index_a: Option<&dyn crate::vectordb::VectorDB> = None;
     let combined_index_b: Option<&dyn crate::vectordb::VectorDB> = None;
 
-    // Run batch engine
+    // Run batch engine (no match log for SQLite path yet)
     let result = match crate::batch::run_batch(
         &cfg,
         store.as_ref(),
@@ -278,6 +295,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         &exclusions,
         limit,
         false,
+        None,
     ) {
         Ok(r) => r,
         Err(e) => {

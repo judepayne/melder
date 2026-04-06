@@ -7,7 +7,8 @@
 //! 4. Classify top result; if auto_match → try to claim in CrossMap
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -18,6 +19,7 @@ use crate::crossmap::CrossMapOps;
 use crate::error::MelderError;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
+use crate::state::match_log::{MatchLog, MatchLogEvent};
 use crate::store::RecordStore;
 use crate::vectordb::VectorDB;
 
@@ -68,6 +70,7 @@ pub fn run_batch(
     exclusions: &crate::matching::exclusions::Exclusions,
     limit: Option<usize>,
     skip_prematch: bool,
+    match_log: Option<Arc<MatchLog>>,
 ) -> Result<BatchResult, MelderError> {
     let start = Instant::now();
 
@@ -84,6 +87,47 @@ pub fn run_batch(
     let mut review = Vec::new();
     let mut unmatched = Vec::new();
     let mut skipped = 0;
+
+    // Match log error tracking — log errors but don't abort the scoring run.
+    let ml_errors = Arc::new(AtomicBool::new(false));
+    let ml_append = |log: &MatchLog, event: &MatchLogEvent, errors: &AtomicBool| {
+        if let Err(e) = log.append(event)
+            && !errors.swap(true, Ordering::Relaxed)
+        {
+            tracing::error!(error = %e, "match log write failed (further errors suppressed)");
+        }
+    };
+
+    // Emit UpsertRecord events for all A and B records.
+    if let Some(ref ml) = match_log {
+        let a_id_field = &config.datasets.a.id_field;
+        for a_id in store.ids(Side::A)? {
+            if let Ok(Some(rec)) = store.get(Side::A, &a_id) {
+                ml_append(
+                    ml,
+                    &MatchLogEvent::UpsertRecord {
+                        side: Side::A,
+                        record: rec,
+                    },
+                    &ml_errors,
+                );
+            }
+        }
+        let b_id_field = &config.datasets.b.id_field;
+        for b_id in b_ids.iter().take(total_b) {
+            if let Ok(Some(rec)) = store.get(Side::B, b_id) {
+                ml_append(
+                    ml,
+                    &MatchLogEvent::UpsertRecord {
+                        side: Side::B,
+                        record: rec,
+                    },
+                    &ml_errors,
+                );
+            }
+        }
+        let _ = (a_id_field, b_id_field); // used for documentation only
+    }
 
     // Common ID pre-match phase: if common_id_field is configured, match
     // records with identical common IDs before any scoring.
@@ -127,6 +171,19 @@ pub fn run_batch(
                         continue;
                     }
                     let a_rec = store.get(Side::A, a_id).ok().flatten();
+                    if let Some(ref ml) = match_log {
+                        ml_append(
+                            ml,
+                            &MatchLogEvent::CrossMapConfirm {
+                                a_id: a_id.clone(),
+                                b_id: b_id.clone(),
+                                score: Some(1.0),
+                                rank: None,
+                                reason: Some("canonical".into()),
+                            },
+                            &ml_errors,
+                        );
+                    }
                     let mr = MatchResult {
                         query_id: b_id.clone(),
                         matched_id: a_id.clone(),
@@ -209,6 +266,19 @@ pub fn run_batch(
                 if !crossmap.claim(&a_id, b_id) {
                     continue;
                 }
+                if let Some(ref ml) = match_log {
+                    ml_append(
+                        ml,
+                        &MatchLogEvent::CrossMapConfirm {
+                            a_id: a_id.clone(),
+                            b_id: b_id.clone(),
+                            score: Some(1.0),
+                            rank: None,
+                            reason: Some("exact".into()),
+                        },
+                        &ml_errors,
+                    );
+                }
                 let a_rec = store.get(Side::A, &a_id).ok().flatten();
                 matched.push(MatchResult {
                     query_id: b_id.clone(),
@@ -240,6 +310,22 @@ pub fn run_batch(
     let mut work_ids: Vec<&str> = Vec::with_capacity(total_b);
     for b_id in b_ids_slice {
         if crossmap.has_b(b_id) {
+            // Emit pre-loaded crossmap pairs to the match log.
+            if let Some(ref ml) = match_log
+                && let Some(a_id) = crossmap.get_a(b_id)
+            {
+                ml_append(
+                    ml,
+                    &MatchLogEvent::CrossMapConfirm {
+                        a_id,
+                        b_id: b_id.clone(),
+                        score: None,
+                        rank: None,
+                        reason: Some("crossmap".into()),
+                    },
+                    &ml_errors,
+                );
+            }
             skipped += 1;
         } else if store.contains(Side::B, b_id).unwrap_or(false) {
             work_ids.push(b_id.as_str());
@@ -436,6 +522,20 @@ pub fn run_batch(
                 if result.score >= config.thresholds.auto_match {
                     let a_id = &result.matched_id;
                     if crossmap.claim(a_id, b_id) {
+                        // Emit match log event
+                        if let Some(ref ml) = match_log {
+                            ml_append(
+                                ml,
+                                &MatchLogEvent::CrossMapConfirm {
+                                    a_id: a_id.clone(),
+                                    b_id: b_id.to_string(),
+                                    score: Some(result.score),
+                                    rank: result.rank,
+                                    reason: result.reason.clone(),
+                                },
+                                &ml_errors,
+                            );
+                        }
                         // Attach matched record
                         if result.matched_record.is_none() {
                             result.matched_record = store.get(Side::A, a_id).ok().flatten();
@@ -447,19 +547,61 @@ pub fn run_batch(
                     continue;
                 }
                 // Review band
+                if let Some(ref ml) = match_log {
+                    ml_append(
+                        ml,
+                        &MatchLogEvent::ReviewMatch {
+                            id: b_id.to_string(),
+                            side: Side::B,
+                            candidate_id: result.matched_id.clone(),
+                            score: result.score,
+                            rank: result.rank,
+                            reason: result.reason.clone(),
+                        },
+                        &ml_errors,
+                    );
+                }
                 outcome = Some(RecordOutcome::Review(result));
                 break;
             }
 
-            outcome.or_else(|| {
+            // Emit NoMatchBelow for records with no match/review outcome.
+            let final_outcome = outcome.or_else(|| {
                 Some(RecordOutcome::NoMatch(
                     b_id.to_string(),
                     b_record,
                     best_score,
                 ))
-            })
+            });
+            if let Some(RecordOutcome::NoMatch(ref id, _, ref bs)) = final_outcome
+                && let Some(ref ml) = match_log
+            {
+                ml_append(
+                    ml,
+                    &MatchLogEvent::NoMatchBelow {
+                        query_id: id.clone(),
+                        query_side: Side::B,
+                        best_candidate_id: None,
+                        best_score: *bs,
+                    },
+                    &ml_errors,
+                );
+            }
+            final_outcome
         })
         .collect();
+
+    // Flush match log and report errors.
+    if let Some(ref ml) = match_log {
+        if let Err(e) = ml.flush() {
+            tracing::warn!(error = %e, "match log flush failed");
+        } else {
+            tracing::info!(path = %ml.path().display(), "batch match log written");
+        }
+        if ml_errors.load(Ordering::Relaxed) {
+            tracing::warn!("match log had write errors — output may be incomplete");
+        }
+    }
 
     for outcome in outcomes {
         match outcome {
