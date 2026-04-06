@@ -180,6 +180,8 @@ mod tests {
             classification: Classification::Auto,
             matched_record: None,
             from_crossmap: false,
+            rank: Some(1),
+            reason: None,
         }];
 
         write_results_csv(&path, &results, &config).unwrap();

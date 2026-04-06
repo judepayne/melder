@@ -20,7 +20,7 @@ use crate::encoder::coordinator::EncoderCoordinator;
 use crate::encoder::{EncoderOptions, EncoderPool};
 use crate::error::MelderError;
 use crate::models::Side;
-use crate::state::upsert_log::{UpsertLog, WalEvent};
+use crate::state::match_log::{MatchLog, MatchLogEvent};
 use crate::store::RecordStore;
 use crate::store::memory::MemoryStore;
 use crate::store::sqlite::open_sqlite;
@@ -85,7 +85,7 @@ pub struct LiveMatchState {
     /// Optional batching coordinator for concurrent encoding.
     /// Created when `performance.encoder_batch_wait_ms > 0`.
     pub coordinator: Option<EncoderCoordinator>,
-    pub wal: UpsertLog,
+    pub wal: MatchLog,
     pub crossmap_dirty: AtomicBool,
     /// Pending review-band matches. Keyed by `"{side}:{id}:{candidate_id}"`.
     /// Populated on `ReviewMatch` WAL events, drained on crossmap
@@ -266,10 +266,10 @@ impl LiveMatchState {
         // Open WAL for append-only writes
         let wal_path = config
             .live
-            .upsert_log
+            .match_log_path
             .as_deref()
             .unwrap_or("bench/upsert.wal");
-        let wal = UpsertLog::open(Path::new(wal_path))
+        let wal = MatchLog::open(Path::new(wal_path))
             .map_err(|e| MelderError::Other(anyhow::anyhow!("WAL open failed: {}", e)))?;
 
         let total = start.elapsed();
@@ -410,10 +410,10 @@ impl LiveMatchState {
         // WAL replay (updates store, crossmap, exclusions, and vector indices)
         let wal_path = config
             .live
-            .upsert_log
+            .match_log_path
             .as_deref()
             .unwrap_or("bench/upsert.wal");
-        let wal_events = UpsertLog::replay(Path::new(wal_path))
+        let wal_events = MatchLog::replay(Path::new(wal_path))
             .map_err(|e| MelderError::Other(anyhow::anyhow!("WAL replay failed: {}", e)))?;
 
         if !wal_events.is_empty() {
@@ -510,10 +510,10 @@ impl LiveMatchState {
         // WAL replay (enroll events are stored as A-side upserts)
         let wal_path = config
             .live
-            .upsert_log
+            .match_log_path
             .as_deref()
             .unwrap_or("bench/upsert.wal");
-        let wal_events = UpsertLog::replay(Path::new(wal_path))
+        let wal_events = MatchLog::replay(Path::new(wal_path))
             .map_err(|e| MelderError::Other(anyhow::anyhow!("WAL replay failed: {}", e)))?;
 
         if !wal_events.is_empty() {
@@ -551,7 +551,7 @@ impl LiveMatchState {
     /// WAL replay entirely (state is already durable in the DB).
     #[allow(clippy::too_many_arguments)]
     fn replay_wal(
-        wal_events: &[WalEvent],
+        wal_events: &[MatchLogEvent],
         config: &Config,
         store: &Arc<dyn RecordStore>,
         crossmap: &dyn CrossMapOps,
@@ -567,7 +567,7 @@ impl LiveMatchState {
         info!(events = wal_events.len(), "replaying WAL");
         for event in wal_events {
             match event {
-                WalEvent::UpsertRecord { side, record } => {
+                MatchLogEvent::UpsertRecord { side, record } => {
                     let is_a = *side == Side::A;
                     let id_field = match side {
                         Side::A => &config.datasets.a.id_field,
@@ -605,16 +605,16 @@ impl LiveMatchState {
                         }
                     }
                 }
-                WalEvent::CrossMapConfirm { a_id, b_id, .. } => {
+                MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } => {
                     crossmap.add(a_id, b_id);
                 }
-                WalEvent::ReviewMatch { .. } => {
+                MatchLogEvent::ReviewMatch { .. } => {
                     // Informational — no state change on replay.
                 }
-                WalEvent::CrossMapBreak { a_id, b_id } => {
+                MatchLogEvent::CrossMapBreak { a_id, b_id } => {
                     crossmap.remove(a_id, b_id);
                 }
-                WalEvent::RemoveRecord { side, id } => {
+                MatchLogEvent::RemoveRecord { side, id } => {
                     let side_idx = match side {
                         Side::A => combined_index_a,
                         Side::B => combined_index_b,
@@ -642,10 +642,13 @@ impl LiveMatchState {
                         }
                     }
                 }
-                WalEvent::Exclude { a_id, b_id } => {
+                MatchLogEvent::NoMatchBelow { .. } => {
+                    // Informational — no state change on replay.
+                }
+                MatchLogEvent::Exclude { a_id, b_id } => {
                     exclusions.add(a_id, b_id);
                 }
-                WalEvent::Unexclude { a_id, b_id } => {
+                MatchLogEvent::Unexclude { a_id, b_id } => {
                     exclusions.remove(a_id, b_id);
                 }
             }

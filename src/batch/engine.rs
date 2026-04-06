@@ -136,6 +136,8 @@ pub fn run_batch(
                         classification: Classification::Auto,
                         matched_record: a_rec,
                         from_crossmap: false,
+                        rank: None,
+                        reason: Some("canonical".into()),
                     };
                     matched.push(mr);
                     common_count += 1;
@@ -217,6 +219,8 @@ pub fn run_batch(
                     classification: Classification::Auto,
                     matched_record: a_rec,
                     from_crossmap: false,
+                    rank: None,
+                    reason: Some("exact".into()),
                 });
                 exact_count += 1;
             }

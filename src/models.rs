@@ -52,6 +52,11 @@ pub struct MatchResult {
     pub classification: Classification,
     pub matched_record: Option<Record>,
     pub from_crossmap: bool,
+    /// Position in the ranked candidate list (1-based). Set by `score_pool()`.
+    pub rank: Option<u8>,
+    /// How this result was produced. `None` for normal scored matches.
+    /// Values: "canonical" | "exact" | "crossmap" | "downgraded".
+    pub reason: Option<String>,
 }
 
 /// Match classification based on thresholds.

@@ -156,6 +156,8 @@ pub fn build_match_result(
         classification,
         matched_record,
         from_crossmap,
+        rank: None,
+        reason: None,
     }
 }
 

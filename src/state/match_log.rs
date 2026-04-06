@@ -1,6 +1,7 @@
-//! Write-Ahead Log (WAL) for live mode.
+//! Match log (formerly "upsert log" / WAL) for all modes.
 //!
-//! Records upsert events and crossmap changes as newline-delimited JSON.
+//! Records matching events as newline-delimited JSON: upserts, confirms,
+//! reviews, breaks, removes, excludes. Canonical input for output generation.
 //! Provides replay for crash recovery and compaction for space reclamation.
 
 use std::fs::{self, File, OpenOptions};
@@ -68,10 +69,10 @@ fn timestamped_wal_path(base: &Path) -> PathBuf {
     base.with_file_name(new_name)
 }
 
-/// WAL event types.
+/// Match log event types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum WalEvent {
+pub enum MatchLogEvent {
     #[serde(rename = "upsert_record")]
     UpsertRecord { side: Side, record: Record },
     #[serde(rename = "crossmap_confirm")]
@@ -83,6 +84,14 @@ pub enum WalEvent {
         /// of old WAL files that lack this field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         score: Option<f64>,
+        /// Position in the ranked candidate list. `None` for pre-score paths
+        /// (canonical, exact, crossmap) and for backwards-compatible replay.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rank: Option<u8>,
+        /// How the match was confirmed. `None` for normal scored matches.
+        /// Values: "canonical" | "exact" | "crossmap" | "downgraded".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     #[serde(rename = "review_match")]
     ReviewMatch {
@@ -93,6 +102,22 @@ pub enum WalEvent {
         candidate_id: String,
         /// The best candidate's composite score.
         score: f64,
+        /// Position in the ranked candidate list. `None` for backwards compat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rank: Option<u8>,
+        /// How the review was triggered. `None` for normal; "downgraded" for
+        /// min_score_gap demotion.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    #[serde(rename = "no_match_below")]
+    NoMatchBelow {
+        query_id: String,
+        query_side: Side,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        best_candidate_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        best_score: Option<f64>,
     },
     #[serde(rename = "crossmap_break")]
     CrossMapBreak { a_id: String, b_id: String },
@@ -112,7 +137,7 @@ pub enum WalEvent {
 /// Each server run creates a new timestamped WAL file. On startup,
 /// all WAL files matching the configured base path are replayed in
 /// chronological order.
-pub struct UpsertLog {
+pub struct MatchLog {
     /// The timestamped path for the current run's WAL file.
     path: PathBuf,
     /// The configured base path (without timestamp) for glob matching.
@@ -121,7 +146,7 @@ pub struct UpsertLog {
     writer: Mutex<BufWriter<File>>,
 }
 
-impl UpsertLog {
+impl MatchLog {
     /// Open a new timestamped WAL file for the current server run.
     ///
     /// The `base_path` is the configured path (e.g. `bench/live_upserts.ndjson`).
@@ -150,12 +175,12 @@ impl UpsertLog {
     ///
     /// Serializes to JSON + newline, writes to buffer. Does not fsync —
     /// background flush handles that periodically.
-    pub fn append(&self, event: &WalEvent) -> io::Result<()> {
+    pub fn append(&self, event: &MatchLogEvent) -> io::Result<()> {
         #[derive(serde::Serialize)]
         struct Timestamped<'a> {
             ts: String,
             #[serde(flatten)]
-            event: &'a WalEvent,
+            event: &'a MatchLogEvent,
         }
         let wrapped = Timestamped {
             ts: iso8601_now(),
@@ -175,7 +200,7 @@ impl UpsertLog {
     /// Append an upsert event without cloning the record.
     ///
     /// Uses a borrowing struct for serialization to avoid the clone that
-    /// `WalEvent::UpsertRecord { record: record.clone() }` would require.
+    /// `MatchLogEvent::UpsertRecord { record: record.clone() }` would require.
     /// Includes an ISO-8601 UTC timestamp.
     pub fn append_upsert(&self, side: Side, record: &Record) -> io::Result<()> {
         #[derive(serde::Serialize)]
@@ -287,7 +312,7 @@ impl UpsertLog {
     /// The `ts` field in events is ignored during deserialization
     /// (serde skips unknown fields by default with the internally
     /// tagged enum).
-    fn replay_file(path: &Path) -> io::Result<Vec<WalEvent>> {
+    fn replay_file(path: &Path) -> io::Result<Vec<MatchLogEvent>> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut events = Vec::new();
@@ -309,7 +334,7 @@ impl UpsertLog {
                 continue;
             }
 
-            match serde_json::from_str::<WalEvent>(trimmed) {
+            match serde_json::from_str::<MatchLogEvent>(trimmed) {
                 Ok(event) => events.push(event),
                 Err(e) => {
                     truncated += 1;
@@ -340,7 +365,7 @@ impl UpsertLog {
     /// Files are replayed in lexicographic (chronological) order.
     /// Also replays the exact base path for backwards compatibility
     /// with pre-timestamp WAL files.
-    pub fn replay(base_path: &Path) -> io::Result<Vec<WalEvent>> {
+    pub fn replay(base_path: &Path) -> io::Result<Vec<MatchLogEvent>> {
         let mut all_events = Vec::new();
 
         // First replay the exact base path if it exists (old-style WAL)
@@ -400,7 +425,7 @@ impl UpsertLog {
         let mut removed_ids: HashSet<(String, String)> = HashSet::new();
         for (idx, event) in events.iter().enumerate() {
             match event {
-                WalEvent::UpsertRecord { side, record } => {
+                MatchLogEvent::UpsertRecord { side, record } => {
                     let id_field = match side {
                         Side::A => a_id_field,
                         Side::B => b_id_field,
@@ -414,7 +439,7 @@ impl UpsertLog {
                     removed_ids.remove(&key);
                     record_latest.insert(key, idx);
                 }
-                WalEvent::RemoveRecord { side, id } => {
+                MatchLogEvent::RemoveRecord { side, id } => {
                     let side_str = match side {
                         Side::A => "a".to_string(),
                         Side::B => "b".to_string(),
@@ -429,10 +454,10 @@ impl UpsertLog {
         }
 
         // Build compacted event list
-        let mut compacted: Vec<&WalEvent> = Vec::new();
+        let mut compacted: Vec<&MatchLogEvent> = Vec::new();
         for (idx, event) in events.iter().enumerate() {
             match event {
-                WalEvent::UpsertRecord { side, record } => {
+                MatchLogEvent::UpsertRecord { side, record } => {
                     let id_field = match side {
                         Side::A => a_id_field,
                         Side::B => b_id_field,
@@ -448,7 +473,7 @@ impl UpsertLog {
                         compacted.push(event);
                     }
                 }
-                WalEvent::RemoveRecord { side, id } => {
+                MatchLogEvent::RemoveRecord { side, id } => {
                     let side_str = match side {
                         Side::A => "a".to_string(),
                         Side::B => "b".to_string(),
@@ -458,11 +483,12 @@ impl UpsertLog {
                         compacted.push(event);
                     }
                 }
-                WalEvent::CrossMapConfirm { .. }
-                | WalEvent::CrossMapBreak { .. }
-                | WalEvent::ReviewMatch { .. }
-                | WalEvent::Exclude { .. }
-                | WalEvent::Unexclude { .. } => {
+                MatchLogEvent::CrossMapConfirm { .. }
+                | MatchLogEvent::CrossMapBreak { .. }
+                | MatchLogEvent::ReviewMatch { .. }
+                | MatchLogEvent::NoMatchBelow { .. }
+                | MatchLogEvent::Exclude { .. }
+                | MatchLogEvent::Unexclude { .. } => {
                     compacted.push(event);
                 }
             }
@@ -507,9 +533,9 @@ impl UpsertLog {
     }
 }
 
-impl std::fmt::Debug for UpsertLog {
+impl std::fmt::Debug for MatchLog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UpsertLog")
+        f.debug_struct("MatchLog")
             .field("path", &self.path)
             .finish()
     }
@@ -534,23 +560,25 @@ mod tests {
 
         // Append 100 UpsertRecord + 5 CrossMapConfirm
         {
-            let log = UpsertLog::open(&path).unwrap();
+            let log = MatchLog::open(&path).unwrap();
             for i in 0..100 {
                 let rec = make_record(&[
                     ("entity_id", &format!("A-{}", i)),
                     ("legal_name", &format!("Company {}", i)),
                 ]);
-                log.append(&WalEvent::UpsertRecord {
+                log.append(&MatchLogEvent::UpsertRecord {
                     side: Side::A,
                     record: rec,
                 })
                 .unwrap();
             }
             for i in 0..5 {
-                log.append(&WalEvent::CrossMapConfirm {
+                log.append(&MatchLogEvent::CrossMapConfirm {
                     a_id: format!("A-{}", i),
                     b_id: format!("B-{}", i),
                     score: Some(0.9),
+                    rank: Some(1),
+                    reason: None,
                 })
                 .unwrap();
             }
@@ -558,16 +586,16 @@ mod tests {
         }
 
         // Replay
-        let events = UpsertLog::replay(&path).unwrap();
+        let events = MatchLog::replay(&path).unwrap();
         assert_eq!(events.len(), 105);
 
         let upserts = events
             .iter()
-            .filter(|e| matches!(e, WalEvent::UpsertRecord { .. }))
+            .filter(|e| matches!(e, MatchLogEvent::UpsertRecord { .. }))
             .count();
         let confirms = events
             .iter()
-            .filter(|e| matches!(e, WalEvent::CrossMapConfirm { .. }))
+            .filter(|e| matches!(e, MatchLogEvent::CrossMapConfirm { .. }))
             .count();
         assert_eq!(upserts, 100);
         assert_eq!(confirms, 5);
@@ -581,11 +609,11 @@ mod tests {
         // Write valid events, capture the actual timestamped path
         let actual_path;
         {
-            let log = UpsertLog::open(&base_path).unwrap();
+            let log = MatchLog::open(&base_path).unwrap();
             actual_path = log.path().to_path_buf();
             for i in 0..10 {
                 let rec = make_record(&[("entity_id", &format!("A-{}", i))]);
-                log.append(&WalEvent::UpsertRecord {
+                log.append(&MatchLogEvent::UpsertRecord {
                     side: Side::A,
                     record: rec,
                 })
@@ -602,7 +630,7 @@ mod tests {
         }
 
         // Replay should recover 10 events and warn about truncated line
-        let events = UpsertLog::replay(&base_path).unwrap();
+        let events = MatchLog::replay(&base_path).unwrap();
         assert_eq!(events.len(), 10);
     }
 
@@ -612,7 +640,7 @@ mod tests {
         let path = dir.path().join("compact.wal");
 
         {
-            let log = UpsertLog::open(&path).unwrap();
+            let log = MatchLog::open(&path).unwrap();
 
             // Write 50 records, then overwrite them (50 duplicates)
             for i in 0..50 {
@@ -620,7 +648,7 @@ mod tests {
                     ("entity_id", &format!("A-{}", i)),
                     ("legal_name", &format!("Company {}", i)),
                 ]);
-                log.append(&WalEvent::UpsertRecord {
+                log.append(&MatchLogEvent::UpsertRecord {
                     side: Side::A,
                     record: rec,
                 })
@@ -631,7 +659,7 @@ mod tests {
                     ("entity_id", &format!("A-{}", i)),
                     ("legal_name", &format!("Company {} Updated", i)),
                 ]);
-                log.append(&WalEvent::UpsertRecord {
+                log.append(&MatchLogEvent::UpsertRecord {
                     side: Side::A,
                     record: rec,
                 })
@@ -640,14 +668,16 @@ mod tests {
 
             // Add crossmap events
             for i in 0..3 {
-                log.append(&WalEvent::CrossMapConfirm {
+                log.append(&MatchLogEvent::CrossMapConfirm {
                     a_id: format!("A-{}", i),
                     b_id: format!("B-{}", i),
                     score: Some(0.88),
+                    rank: Some(1),
+                    reason: None,
                 })
                 .unwrap();
             }
-            log.append(&WalEvent::CrossMapBreak {
+            log.append(&MatchLogEvent::CrossMapBreak {
                 a_id: "A-0".into(),
                 b_id: "B-0".into(),
             })
@@ -657,17 +687,17 @@ mod tests {
         }
 
         // Replay compacted file
-        let events = UpsertLog::replay(&path).unwrap();
+        let events = MatchLog::replay(&path).unwrap();
 
         // Should have: 50 unique upserts (latest version) + 3 confirms + 1 break = 54
         let upserts: Vec<_> = events
             .iter()
-            .filter(|e| matches!(e, WalEvent::UpsertRecord { .. }))
+            .filter(|e| matches!(e, MatchLogEvent::UpsertRecord { .. }))
             .collect();
         assert_eq!(upserts.len(), 50, "expected 50 deduplicated upserts");
 
         // Verify latest version was kept
-        if let WalEvent::UpsertRecord { record, .. } = &upserts[0] {
+        if let MatchLogEvent::UpsertRecord { record, .. } = &upserts[0] {
             let name = record.get("legal_name").unwrap();
             assert!(
                 name.contains("Updated"),
@@ -681,7 +711,7 @@ mod tests {
             .filter(|e| {
                 matches!(
                     e,
-                    WalEvent::CrossMapConfirm { .. } | WalEvent::CrossMapBreak { .. }
+                    MatchLogEvent::CrossMapConfirm { .. } | MatchLogEvent::CrossMapBreak { .. }
                 )
             })
             .count();
@@ -694,7 +724,7 @@ mod tests {
     #[test]
     fn replay_missing_file() {
         let events =
-            UpsertLog::replay(&Path::new("nonexistent_dir_for_test").join("wal.log")).unwrap();
+            MatchLog::replay(&Path::new("nonexistent_dir_for_test").join("wal.log")).unwrap();
         assert!(events.is_empty());
     }
 
@@ -703,7 +733,90 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("empty.wal");
         File::create(&path).unwrap();
-        let events = UpsertLog::replay(&path).unwrap();
+        let events = MatchLog::replay(&path).unwrap();
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn backwards_compat_old_events_without_rank_reason() {
+        // Old WAL lines lack rank/reason fields — they should deserialize fine
+        // via #[serde(default)].
+        let old_confirm = r#"{"type":"crossmap_confirm","a_id":"A-1","b_id":"B-1","score":0.9}"#;
+        let event: MatchLogEvent = serde_json::from_str(old_confirm).unwrap();
+        if let MatchLogEvent::CrossMapConfirm {
+            rank,
+            reason,
+            score,
+            ..
+        } = event
+        {
+            assert_eq!(rank, None);
+            assert_eq!(reason, None);
+            assert_eq!(score, Some(0.9));
+        } else {
+            panic!("wrong variant");
+        }
+
+        let old_review =
+            r#"{"type":"review_match","id":"B-1","side":"b","candidate_id":"A-1","score":0.72}"#;
+        let event: MatchLogEvent = serde_json::from_str(old_review).unwrap();
+        if let MatchLogEvent::ReviewMatch { rank, reason, .. } = event {
+            assert_eq!(rank, None);
+            assert_eq!(reason, None);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn no_match_below_round_trip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nomatch.wal");
+
+        {
+            let log = MatchLog::open(&path).unwrap();
+            log.append(&MatchLogEvent::NoMatchBelow {
+                query_id: "B-42".into(),
+                query_side: Side::B,
+                best_candidate_id: Some("A-7".into()),
+                best_score: Some(0.45),
+            })
+            .unwrap();
+            log.append(&MatchLogEvent::NoMatchBelow {
+                query_id: "B-99".into(),
+                query_side: Side::B,
+                best_candidate_id: None,
+                best_score: None,
+            })
+            .unwrap();
+            log.flush().unwrap();
+        }
+
+        let events = MatchLog::replay(&path).unwrap();
+        assert_eq!(events.len(), 2);
+        if let MatchLogEvent::NoMatchBelow {
+            query_id,
+            best_candidate_id,
+            best_score,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(query_id, "B-42");
+            assert_eq!(best_candidate_id.as_deref(), Some("A-7"));
+            assert_eq!(*best_score, Some(0.45));
+        } else {
+            panic!("wrong variant");
+        }
+        if let MatchLogEvent::NoMatchBelow {
+            best_candidate_id,
+            best_score,
+            ..
+        } = &events[1]
+        {
+            assert_eq!(*best_candidate_id, None);
+            assert_eq!(*best_score, None);
+        } else {
+            panic!("wrong variant");
+        }
     }
 }

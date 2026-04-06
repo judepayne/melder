@@ -821,6 +821,8 @@ fn load_match_results(path: &str, label: &str) -> Vec<crate::models::MatchResult
             classification: crate::models::Classification::Auto,
             matched_record: None,
             from_crossmap: false,
+            rank: None,
+            reason: None,
         });
     }
 

@@ -11,7 +11,7 @@ use std::process;
 use crate::config::Config;
 use crate::crossmap::traits::CrossMapOps;
 use crate::models::{Record, Side};
-use crate::state::upsert_log::{UpsertLog, WalEvent};
+use crate::state::match_log::{MatchLog, MatchLogEvent};
 
 // --- Entry point -------------------------------------------------------------
 
@@ -23,8 +23,8 @@ use crate::state::upsert_log::{UpsertLog, WalEvent};
 pub fn cmd_export(config_path: &Path, out_dir: &Path) {
     let cfg = super::load_config_or_exit(config_path);
 
-    // Guard: batch configs have neither upsert_log nor db_path configured.
-    if cfg.live.upsert_log.is_none() && cfg.live.db_path.is_none() {
+    // Guard: batch configs have neither match_log_path nor db_path configured.
+    if cfg.live.match_log_path.is_none() && cfg.live.db_path.is_none() {
         eprintln!(
             "Error: meld export is for live mode. \
              Batch mode already writes output files directly via meld run."
@@ -266,8 +266,8 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
     let mut review_map: HashMap<String, ReviewRow> = HashMap::new();
 
     // Replay WAL events, applying them to all four maps.
-    if let Some(wal_base) = &cfg.live.upsert_log {
-        let events = match UpsertLog::replay(Path::new(wal_base)) {
+    if let Some(wal_base) = &cfg.live.match_log_path {
+        let events = match MatchLog::replay(Path::new(wal_base)) {
             Ok(e) => e,
             Err(e) => {
                 eprintln!("Warning: WAL replay failed: {}", e);
@@ -277,7 +277,7 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
 
         for event in events {
             match event {
-                WalEvent::UpsertRecord { side, record } => {
+                MatchLogEvent::UpsertRecord { side, record } => {
                     let id_field = match side {
                         Side::A => a_id_field.as_str(),
                         Side::B => b_id_field.as_str(),
@@ -297,7 +297,7 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
                         }
                     }
                 }
-                WalEvent::RemoveRecord { side, id } => {
+                MatchLogEvent::RemoveRecord { side, id } => {
                     drain_reviews_for_id(&mut review_map, &id);
                     match side {
                         Side::A => {
@@ -308,23 +308,24 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
                         }
                     }
                 }
-                WalEvent::CrossMapConfirm { a_id, b_id, .. } => {
+                MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } => {
                     // A confirm resolves pending reviews for both ids.
                     drain_reviews_for_id(&mut review_map, &a_id);
                     drain_reviews_for_id(&mut review_map, &b_id);
                     crossmap_b_to_a.insert(b_id.clone(), a_id.clone());
                     crossmap_a_to_b.insert(a_id, b_id);
                 }
-                WalEvent::CrossMapBreak { a_id, b_id } => {
+                MatchLogEvent::CrossMapBreak { a_id, b_id } => {
                     crossmap_a_to_b.remove(&a_id);
                     crossmap_b_to_a.remove(&b_id);
                     // A break doesn't re-add to review — the match is simply gone.
                 }
-                WalEvent::ReviewMatch {
+                MatchLogEvent::ReviewMatch {
                     id,
                     side,
                     candidate_id,
                     score,
+                    ..
                 } => {
                     let side_str = match side {
                         Side::A => "a",
@@ -341,7 +342,10 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
                         },
                     );
                 }
-                WalEvent::Exclude { .. } | WalEvent::Unexclude { .. } => {
+                MatchLogEvent::NoMatchBelow { .. } => {
+                    // No-match events don't affect export state.
+                }
+                MatchLogEvent::Exclude { .. } | MatchLogEvent::Unexclude { .. } => {
                     // Exclusions are not part of the export state.
                 }
             }
@@ -501,7 +505,7 @@ mod tests {
     use super::*;
     use crate::config::BlockingConfig;
     use crate::models::Side;
-    use crate::state::upsert_log::UpsertLog;
+    use crate::state::match_log::MatchLog;
     use crate::store::RecordStore;
     use tempfile::{TempDir, tempdir};
 
@@ -514,7 +518,7 @@ mod tests {
 
     /// Write a minimal live-mode config YAML to disk and load it.
     /// `a_csv` and `b_csv` are paths that will be written into the YAML.
-    /// `wal_path` is written into `live.upsert_log` (may be non-existent).
+    /// `wal_path` is written into `live.match_log_path` (may be non-existent).
     fn write_and_load_config(
         dir: &TempDir,
         a_csv: &Path,
@@ -690,35 +694,41 @@ live:
         // Write WAL events: upsert both sides, confirm A-1↔B-1, review B-2→A-2.
         let wal_base = dir.path().join("wal.ndjson");
         {
-            let log = UpsertLog::open(&wal_base).unwrap();
+            let log = MatchLog::open(&wal_base).unwrap();
             // These upserts add API-only record A-3 and update A-1.
-            log.append(&WalEvent::UpsertRecord {
+            log.append(&MatchLogEvent::UpsertRecord {
                 side: Side::A,
                 record: make_record(&[("entity_id", "A-3"), ("name", "NewCo")]),
             })
             .unwrap();
-            log.append(&WalEvent::CrossMapConfirm {
+            log.append(&MatchLogEvent::CrossMapConfirm {
                 a_id: "A-1".into(),
                 b_id: "B-1".into(),
                 score: Some(0.95),
+                rank: Some(1),
+                reason: None,
             })
             .unwrap();
-            log.append(&WalEvent::ReviewMatch {
+            log.append(&MatchLogEvent::ReviewMatch {
                 id: "B-2".into(),
                 side: Side::B,
                 candidate_id: "A-2".into(),
                 score: 0.73,
+                rank: Some(1),
+                reason: None,
             })
             .unwrap();
             // A-3 gets a review entry, then immediately removed — should not appear.
-            log.append(&WalEvent::ReviewMatch {
+            log.append(&MatchLogEvent::ReviewMatch {
                 id: "A-3".into(),
                 side: Side::A,
                 candidate_id: "B-2".into(),
                 score: 0.65,
+                rank: Some(1),
+                reason: None,
             })
             .unwrap();
-            log.append(&WalEvent::RemoveRecord {
+            log.append(&MatchLogEvent::RemoveRecord {
                 side: Side::A,
                 id: "A-3".into(),
             })

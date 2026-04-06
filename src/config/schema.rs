@@ -448,8 +448,8 @@ pub struct BatchConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct LiveConfig {
-    #[serde(default)]
-    pub upsert_log: Option<String>,
+    #[serde(default, alias = "upsert_log")]
+    pub match_log_path: Option<String>,
     /// How often dirty CrossMap state is flushed to disk (seconds). Default 5.
     #[serde(default)]
     pub crossmap_flush_secs: Option<u64>,

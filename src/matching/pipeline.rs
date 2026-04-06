@@ -225,6 +225,11 @@ pub fn score_pool(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    // Assign rank (1-based) after sorting.
+    for (i, r) in results.iter_mut().enumerate() {
+        r.rank = Some((i + 1).min(255) as u8);
+    }
+
     // Apply score gap check before truncation so rank-2 is still present.
     if let Some(min_gap) = config.thresholds.min_score_gap {
         apply_score_gap_check(&mut results, min_gap);
@@ -429,6 +434,7 @@ fn apply_score_gap_check(results: &mut [MatchResult], min_gap: f64) {
     let gap = results[0].score - results[1].score;
     if gap < min_gap {
         results[0].classification = Classification::Review;
+        results[0].reason = Some("downgraded".into());
     }
 }
 
@@ -457,6 +463,8 @@ mod tests {
             classification,
             matched_record: None,
             from_crossmap: false,
+            rank: None,
+            reason: None,
         }
     }
 
