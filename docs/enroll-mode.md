@@ -247,8 +247,8 @@ provide per-field explainability data. Disable it explicitly with
 `scoring_log.enabled: false` if not needed.
 
 **Generating outputs.** Use any of:
-- `meld export --config enroll_config.yaml` — reads the match log and
-  produces CSVs and/or the SQLite DB via the build pipeline.
+- `meld export --config enroll_config.yaml --out-dir export/` — reads
+  the match log and produces CSVs and/or the SQLite DB via the build pipeline.
 - `POST /admin/flush` — triggers a build without shutting down.
   Returns `202 Accepted` with a build ID.
 - `POST /admin/shutdown` — graceful shutdown with a final build.

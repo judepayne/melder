@@ -95,12 +95,19 @@ server's match log. It can also rebuild batch outputs with different
 config options (e.g. adding `output.db_path`) without re-scoring.
 
 ```bash
-meld export --config config.yaml
+meld export --config config.yaml --out-dir export/
 ```
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--config` | `-c` | Path to YAML config file (required) |
+| `--out-dir` | `-o` | Output directory for exported files (required) |
+
+Produces `relationships.csv` and `unmatched.csv` in the output directory.
+If `output.db_path` is set in the config, also produces the SQLite database.
+
+Only works for live and enroll mode configs (which have a `match_log_path`).
+Batch mode writes outputs automatically at end-of-run.
 
 ## `meld tune`
 

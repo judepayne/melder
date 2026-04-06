@@ -105,12 +105,12 @@ enum Commands {
         #[command(subcommand)]
         action: CrossmapAction,
     },
-    /// Export live-mode state to CSV files
+    /// Export live/enroll match log to output files (CSVs and/or SQLite DB)
     Export {
         /// Path to YAML config file
         #[arg(short, long)]
         config: PathBuf,
-        /// Output directory for exported CSV files
+        /// Output directory for exported files
         #[arg(short, long)]
         out_dir: PathBuf,
     },
