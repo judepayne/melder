@@ -55,7 +55,9 @@ table { border-collapse: collapse; width: 100%; font-size: 13px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 th { background: #f5f0e8; text-align: left; padding: 10px 14px;
      font-weight: 600; border-bottom: 2px solid #e5dfd6;
-     position: sticky; top: 0; }
+     position: sticky; top: 0; cursor: pointer; user-select: none; }
+th:hover { background: #ece7dd; }
+th a { display: block; }
 td { padding: 8px 14px; border-bottom: 1px solid #eeebe5; }
 tr:hover td { background: #fdf9f3; }
 .info { padding: 12px 24px; color: #6b6560; font-size: 13px;
@@ -94,18 +96,32 @@ FILTER_JS = """
 <script>
 function applyFilters() {
     var form = document.getElementById('filter-form');
-    var inputs = form.querySelectorAll('input, select');
     var params = new URLSearchParams();
-    inputs.forEach(function(el) {
+    // Collect filter values
+    form.querySelectorAll('input[name], select[name]').forEach(function(el) {
+        if (el.name.startsWith('__')) return;  // skip hidden sort fields
         var val = el.value.trim();
         if (val) params.set('f_' + el.name, val);
     });
+    // Preserve sort state
+    var sortEl = form.querySelector('input[name="__sort"]');
+    var dirEl = form.querySelector('input[name="__dir"]');
+    if (sortEl && sortEl.value) {
+        params.set('sort', sortEl.value);
+        params.set('dir', dirEl ? dirEl.value : 'asc');
+    }
     var base = window.location.pathname;
     var qs = params.toString();
     window.location.href = base + (qs ? '?' + qs : '');
 }
 function clearFilters() {
-    window.location.href = window.location.pathname;
+    // Keep sort, clear filters
+    var params = new URLSearchParams(window.location.search);
+    var newParams = new URLSearchParams();
+    if (params.has('sort')) newParams.set('sort', params.get('sort'));
+    if (params.has('dir')) newParams.set('dir', params.get('dir'));
+    var qs = newParams.toString();
+    window.location.href = window.location.pathname + (qs ? '?' + qs : '');
 }
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && e.target.closest('#filter-form')) {
@@ -185,8 +201,43 @@ def build_filter_row(columns, filters, enum_values):
 
 
 def page_data(db_path, name, kind, columns, rows, offset, total,
-              filters, enum_values, filter_description):
-    col_headers = "".join(f"<th>{html.escape(c)}</th>" for c in columns)
+              filters, enum_values, filter_description, sort_col, sort_dir):
+
+    # Build sortable column headers
+    def make_state_params(extra=None):
+        p = {f"f_{k}": v for k, v in filters.items()}
+        if sort_col:
+            p["sort"] = sort_col
+            p["dir"] = sort_dir
+        if extra:
+            p.update(extra)
+        return p
+
+    col_header_cells = []
+    for col in columns:
+        # Clicking toggles: unsorted → asc → desc → unsorted
+        if sort_col == col and sort_dir == "asc":
+            next_dir = "desc"
+            indicator = " &#9650;"  # ▲
+        elif sort_col == col and sort_dir == "desc":
+            next_dir = ""
+            indicator = " &#9660;"  # ▼
+        else:
+            next_dir = "asc"
+            indicator = ""
+
+        sp = {f"f_{k}": v for k, v in filters.items()}
+        if next_dir:
+            sp["sort"] = col
+            sp["dir"] = next_dir
+        # else: no sort params → clears sort
+        link = f"/{kind}/{name}?{urlencode(sp)}"
+
+        col_header_cells.append(
+            f'<th><a href="{link}" style="color:inherit;text-decoration:none">'
+            f'{html.escape(col)}{indicator}</a></th>'
+        )
+    col_headers = "".join(col_header_cells)
 
     filter_row = build_filter_row(columns, filters, enum_values)
 
@@ -217,9 +268,9 @@ def page_data(db_path, name, kind, columns, rows, offset, total,
     if not rows:
         body = f'<tr><td colspan="{len(columns)}" class="empty">No rows</td></tr>'
 
-    # Build pagination links preserving filters
+    # Build pagination links preserving filters and sort
     def make_link(new_offset):
-        p = {f"f_{k}": v for k, v in filters.items()}
+        p = make_state_params()
         p["offset"] = str(new_offset)
         return f"/{kind}/{name}?{urlencode(p)}"
 
@@ -232,6 +283,14 @@ def page_data(db_path, name, kind, columns, rows, offset, total,
 
     showing_end = min(offset + PAGE_SIZE, total)
     showing_start = offset + 1 if total > 0 else 0
+
+    # Pass sort state to JS so applyFilters preserves it
+    sort_hidden = ""
+    if sort_col:
+        sort_hidden = (
+            f'<input type="hidden" name="__sort" value="{html.escape(sort_col)}">'
+            f'<input type="hidden" name="__dir" value="{html.escape(sort_dir)}">'
+        )
 
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>{html.escape(name)} — Melder</title>
@@ -253,6 +312,7 @@ def page_data(db_path, name, kind, columns, rows, offset, total,
 </div>
 <main>
 <form id="filter-form" onsubmit="event.preventDefault(); applyFilters();">
+{sort_hidden}
 <table><thead><tr>{col_headers}</tr>{filter_row}</thead>
 <tbody>{body}</tbody></table>
 </form>
@@ -339,6 +399,12 @@ class Handler(BaseHTTPRequestHandler):
 
         offset = int(params.get("offset", ["0"])[0])
 
+        # Extract sort parameters
+        sort_col = params.get("sort", [""])[0].strip()
+        sort_dir = params.get("dir", ["asc"])[0].strip()
+        if sort_dir not in ("asc", "desc"):
+            sort_dir = "asc"
+
         # Extract filters from f_column=value params
         filters = {}
         for key, vals in params.items():
@@ -349,6 +415,10 @@ class Handler(BaseHTTPRequestHandler):
         # Get column names
         cursor = conn.execute(f'SELECT * FROM "{name}" LIMIT 0')
         columns = [desc[0] for desc in cursor.description]
+
+        # Validate sort column
+        if sort_col and sort_col not in columns:
+            sort_col = ""
 
         # Discover enum values for dropdown columns
         enum_values = {}
@@ -370,11 +440,9 @@ class Handler(BaseHTTPRequestHandler):
             if col not in columns:
                 continue
             if col in enum_values:
-                # Exact match for enum columns
                 where_parts.append(f'"{col}" = ?')
                 where_params.append(val)
             else:
-                # LIKE match for text columns (case-insensitive)
                 where_parts.append(f'"{col}" LIKE ?')
                 where_params.append(f"%{val}%")
 
@@ -382,14 +450,20 @@ class Handler(BaseHTTPRequestHandler):
         if where_parts:
             where_sql = " WHERE " + " AND ".join(where_parts)
 
+        # Build ORDER BY clause
+        order_sql = ""
+        if sort_col:
+            direction = "ASC" if sort_dir == "asc" else "DESC"
+            order_sql = f' ORDER BY "{sort_col}" {direction}'
+
         # Get filtered count
         total = conn.execute(
             f'SELECT COUNT(*) FROM "{name}"{where_sql}', where_params
         ).fetchone()[0]
 
-        # Get filtered rows
+        # Get filtered + sorted rows
         cursor = conn.execute(
-            f'SELECT * FROM "{name}"{where_sql} LIMIT {PAGE_SIZE} OFFSET {offset}',
+            f'SELECT * FROM "{name}"{where_sql}{order_sql} LIMIT {PAGE_SIZE} OFFSET {offset}',
             where_params
         )
         rows = cursor.fetchall()
@@ -405,7 +479,7 @@ class Handler(BaseHTTPRequestHandler):
 
         body = page_data(
             self.db_path, name, kind, columns, rows, offset, total,
-            filters, enum_values, filter_description
+            filters, enum_values, filter_description, sort_col, sort_dir
         )
         self._send(200, body)
 
