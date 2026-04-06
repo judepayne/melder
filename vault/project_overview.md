@@ -74,6 +74,9 @@ Feature flags: `usearch`, `parquet-format`, `simd`, `gpu-encode`, `builtin-model
 | Build/test commands | §3 above |
 | Error types | `src/error.rs` |
 | Core types | `src/models.rs` |
+| Output pipeline | `src/output/` (build, csv, db, scoring_log, views.sql) |
+| Output data design | `DATA_DESIGN.md` (schema, event vocab, invariants) |
+| DB browser | `scripts/serve-views.py` |
 | Enroll mode | `docs/enroll-mode.md` |
 
 ---

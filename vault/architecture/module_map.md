@@ -15,7 +15,7 @@ Melder is a single Rust crate (`melder`). Binary name is `meld`. All modules are
 | Module | Files | Responsibility |
 |---|---|---|
 | `api/` | `server.rs`, `handlers.rs`, `mod.rs` | Axum HTTP router and request handlers for live mode. See [[architecture/api_reference]]. |
-| `batch/` | `engine.rs`, `writer.rs` | Batch matching engine and CSV output writer |
+| `batch/` | `engine.rs`, `writer.rs` | Batch matching engine (event-sourced via match log). Writer used only by tune. |
 | `bm25/` | `simple.rs`, `mod.rs`, `scorer.rs` | Custom DashMap-based BM25 scorer (replaced Tantivy) |
 | `cli/` | `run.rs`, `serve.rs`, `validate.rs`, `tune.rs`, `cache.rs`, `review.rs`, `crossmap.rs`, `enroll.rs`, `export.rs`, `mod.rs` | One file per CLI subcommand. Entry points dispatch to business logic. |
 | `config/` | `schema.rs`, `loader.rs`, `enroll_schema.rs` | YAML config structs (schema) and parse + validate (loader). See [[architecture/config_reference]]. |
@@ -26,6 +26,7 @@ Melder is a single Rust crate (`melder`). Binary name is `meld`. All modules are
 | `hooks/` | `mod.rs`, `writer.rs` | Pipeline hooks for external callbacks |
 | `matching/` | `blocking.rs`, `candidates.rs`, `pipeline.rs`, `exclusions.rs`, `mod.rs` | Blocking filter, candidate selection, unified scoring pipeline, exclusions |
 | `models/` | `mod.rs` (root level) | Core domain types: `Record`, `Side`, `Classification`, `MatchResult` |
+| `output/` | `build.rs`, `csv.rs`, `db.rs`, `manifest.rs`, `scoring_log.rs`, `views.sql` | Output pipeline: `build_outputs()` reads match log + optional scoring log, produces CSVs and/or SQLite DB. See `DATA_DESIGN.md`. |
 | `scoring/` | `mod.rs`, `exact.rs`, `embedding.rs` | Per-field scoring dispatch and method implementations. Handles synonym scoring internally. See [[architecture/scoring_algorithm]]. |
 | `session/` | `mod.rs` | Live-mode state: both sides, upsert/match logic |
 | `state/` | `state.rs`, `live.rs`, `match_log.rs` | Shared state loading, live side state, WAL. See [[architecture/state_and_persistence]]. |
