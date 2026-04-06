@@ -176,6 +176,15 @@ impl MatchLog {
     /// Serializes to JSON + newline, writes to buffer. Does not fsync —
     /// background flush handles that periodically.
     pub fn append(&self, event: &MatchLogEvent) -> io::Result<()> {
+        let bytes = Self::serialize_event(event)?;
+        self.append_bytes(&bytes)
+    }
+
+    /// Serialize an event to bytes (JSON + newline) without acquiring the lock.
+    ///
+    /// Use with `append_bytes()` to move serialization out of the critical
+    /// section in hot paths (e.g. Rayon parallel scoring).
+    pub fn serialize_event(event: &MatchLogEvent) -> io::Result<Vec<u8>> {
         #[derive(serde::Serialize)]
         struct Timestamped<'a> {
             ts: String,
@@ -186,14 +195,22 @@ impl MatchLog {
             ts: iso8601_now(),
             event,
         };
-        let line = serde_json::to_string(&wrapped)
+        let mut bytes = serde_json::to_vec(&wrapped)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    /// Append pre-serialized bytes to the WAL.
+    ///
+    /// The mutex is held only for the `write_all` call (~100ns memcpy),
+    /// not for serialization.
+    pub fn append_bytes(&self, bytes: &[u8]) -> io::Result<()> {
         let mut w = self
             .writer
             .lock()
             .map_err(|e| io::Error::other(e.to_string()))?;
-        w.write_all(line.as_bytes())?;
-        w.write_all(b"\n")?;
+        w.write_all(bytes)?;
         Ok(())
     }
 

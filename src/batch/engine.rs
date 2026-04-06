@@ -91,8 +91,12 @@ pub fn run_batch(
 
     // Match log error tracking — log errors but don't abort the scoring run.
     let ml_errors = Arc::new(AtomicBool::new(false));
+
+    // Serialize-then-write: serialization happens outside the mutex,
+    // the lock is held only for the memcpy into BufWriter (~100ns).
     let ml_append = |log: &MatchLog, event: &MatchLogEvent, errors: &AtomicBool| {
-        if let Err(e) = log.append(event)
+        let result = MatchLog::serialize_event(event).and_then(|bytes| log.append_bytes(&bytes));
+        if let Err(e) = result
             && !errors.swap(true, Ordering::Relaxed)
         {
             tracing::error!(error = %e, "match log write failed (further errors suppressed)");
