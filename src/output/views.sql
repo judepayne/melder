@@ -6,11 +6,11 @@ SELECT * FROM relationships WHERE relationship_type = 'match';
 
 -- Confirmed pairs that were scored normally (no pre-score shortcut).
 CREATE VIEW IF NOT EXISTS scored_matches AS
-SELECT * FROM relationships WHERE relationship_type = 'match' AND reason IS NULL;
+SELECT * FROM relationships WHERE relationship_type = 'match' AND reason = 'top_scoring';
 
 -- Confirmed pairs from pre-score paths (canonical, exact, crossmap).
 CREATE VIEW IF NOT EXISTS asserted_matches AS
-SELECT * FROM relationships WHERE relationship_type = 'match' AND reason IS NOT NULL;
+SELECT * FROM relationships WHERE relationship_type = 'match' AND reason NOT IN ('top_scoring', 'downgraded');
 
 -- Pairs awaiting human review.
 CREATE VIEW IF NOT EXISTS review_queue AS

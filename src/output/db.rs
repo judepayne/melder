@@ -23,13 +23,16 @@ pub fn build_db(
     field_scores: &[super::build::FieldScoreRow],
     manifest: &OutputManifest,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let tmp = path.with_extension("db.tmp");
-    if tmp.exists() {
-        std::fs::remove_file(&tmp)?;
+    // Write directly to final path (no atomic rename — this is a write-once
+    // output file, and rename can fail on network/cloud filesystems).
+    if path.exists() {
+        std::fs::remove_file(path)?;
     }
 
-    let conn = Connection::open(&tmp)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+    let conn = Connection::open(path)?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = DELETE; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = OFF;",
+    )?;
 
     // --- a_records table (dynamic columns) ---
     create_records_table(&conn, "a_records", &manifest.a_id_field, &manifest.a_fields)?;
@@ -104,9 +107,6 @@ pub fn build_db(
 
     // Flush and close
     drop(conn);
-
-    // Atomic rename
-    crate::util::rename_replacing(&tmp, path)?;
     Ok(())
 }
 

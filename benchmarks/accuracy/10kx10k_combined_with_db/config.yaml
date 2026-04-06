@@ -1,0 +1,65 @@
+job:
+  name: accuracy_10kx10k_combined_with_db
+  description: Accuracy benchmark — 10k × 10k, BM25 + embeddings, CSV + SQLite DB output
+datasets:
+  a:
+    path: benchmarks/data/dataset_a_10k.csv
+    id_field: entity_id
+    format: csv
+  b:
+    path: benchmarks/data/dataset_b_10k.csv
+    id_field: counterparty_id
+    format: csv
+cross_map:
+  backend: local
+  path: benchmarks/accuracy/10kx10k_combined_with_db/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: benchmarks/accuracy/10kx10k_combined_with_db/cache
+  b_cache_dir: benchmarks/accuracy/10kx10k_combined_with_db/cache
+exact_prefilter:
+  enabled: true
+  fields:
+  - field_a: lei
+    field_b: lei_code
+blocking:
+  enabled: true
+  operator: and
+  fields:
+  - field_a: country_code
+    field_b: domicile
+match_fields:
+- field_a: legal_name
+  field_b: counterparty_name
+  method: embedding
+  weight: 0.3
+- field_a: registered_address
+  field_b: counterparty_address
+  method: embedding
+  weight: 0.2
+- method: bm25
+  weight: 0.5
+  fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+  - field_a: short_name
+    field_b: counterparty_name
+  - field_a: registered_address
+    field_b: counterparty_address
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.6
+output:
+  csv_dir_path: benchmarks/accuracy/10kx10k_combined_with_db/output/
+  db_path: benchmarks/accuracy/10kx10k_combined_with_db/output/results.db
+scoring_log:
+  enabled: true
+performance:
+  encoder_pool_size: 4
+  vector_index_mode: load
+vector_backend: usearch
+top_n: 20
+ann_candidates: 40
+bm25_candidates: 20

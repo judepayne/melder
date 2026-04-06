@@ -462,11 +462,11 @@ Views (same list for match and enroll modes, parameterised by id columns):
 
 | `reason` | Applies to | Meaning |
 |---|---|---|
+| `top_scoring` | `match` or `review` | Normal scored outcome — top-scoring candidate passed or fell within the threshold band. |
 | `canonical` | `match` | Matched via `common_id_field`. Score 1.0, rank NULL. |
 | `exact` | `match` | Matched via `exact_prefilter`. Score 1.0, rank NULL. |
 | `crossmap` | `match` | Pair came from pre-loaded crossmap CSV or manual `/crossmap/confirm`. |
 | `downgraded` | `review` | Above `auto_match` but demoted by `min_score_gap`. Score ≥ auto_match intentionally. |
-| NULL | any | Normal scored outcome. |
 
 ---
 

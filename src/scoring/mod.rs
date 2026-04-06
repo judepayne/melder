@@ -157,7 +157,7 @@ pub fn build_match_result(
         matched_record,
         from_crossmap,
         rank: None,
-        reason: None,
+        reason: Some("top_scoring".into()),
     }
 }
 
