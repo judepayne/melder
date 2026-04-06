@@ -13,6 +13,7 @@ pub mod fuzzy;
 pub mod hooks;
 pub mod matching;
 pub mod models;
+pub mod output;
 pub mod scoring;
 pub mod session;
 pub mod state;

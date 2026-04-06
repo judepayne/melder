@@ -411,12 +411,23 @@ pub struct ThresholdsConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct OutputConfig {
+    // Old fields (deprecated, backwards compat)
     #[serde(default)]
     pub results_path: String,
     #[serde(default)]
     pub review_path: String,
     #[serde(default)]
     pub unmatched_path: String,
+    // New fields
+    /// Directory for CSV output files (relationships.csv, unmatched.csv).
+    #[serde(default)]
+    pub csv_dir_path: Option<String>,
+    /// Path for the SQLite output database.
+    #[serde(default)]
+    pub db_path: Option<String>,
+    /// Remove the batch match log after a successful build. Default false.
+    #[serde(default)]
+    pub cleanup_match_log: bool,
 }
 
 /// Batch-mode SQLite configuration.

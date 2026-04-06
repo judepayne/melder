@@ -41,7 +41,36 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         process::exit(1);
     }
 
-    // Use SQLite if the DB file already exists; fall back to WAL replay.
+    // Try the new build pipeline if a match log path is configured.
+    // Also produce a SQLite DB if output.db_path is set.
+    if let Some(ref ml_path) = cfg.live.match_log_path {
+        let ml = std::path::Path::new(ml_path);
+        let manifest = crate::output::OutputManifest::from_config(&cfg);
+        let db_path = cfg.output.db_path.as_deref().map(Path::new);
+        match crate::output::build_outputs(ml, None, Some(out_dir), db_path, &manifest) {
+            Ok(report) => {
+                println!("Export complete (build pipeline):");
+                println!(
+                    "  relationships.csv: {} matches + {} review",
+                    report.match_count, report.review_count
+                );
+                println!("  unmatched.csv:     {} records", report.no_match_count);
+                if let Some(db) = db_path {
+                    println!("  database:          {}", db.display());
+                }
+                println!("  elapsed:           {:.1}s", report.elapsed_secs);
+                return;
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: build pipeline failed ({}), falling back to legacy export",
+                    e
+                );
+            }
+        }
+    }
+
+    // Legacy path: SQLite if DB exists, otherwise WAL replay.
     let sqlite_db = cfg
         .live
         .db_path

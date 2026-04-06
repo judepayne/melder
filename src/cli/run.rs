@@ -164,10 +164,32 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         }
     };
 
-    // Write output + save crossmap + print summary
+    // Write output (old path) + save crossmap + print summary
     write_outputs(&state.config, &result);
     save_crossmap(&crossmap, crossmap_path, &state.config);
     print_summary(&state.config, &result, &crossmap, crossmap_path, verbose);
+
+    // New build pipeline: if csv_dir_path or db_path are set, also produce
+    // outputs via build_outputs (reads the match log just written).
+    let new_csv_dir = state.config.output.csv_dir_path.as_deref().map(Path::new);
+    let new_db_path = state.config.output.db_path.as_deref().map(Path::new);
+    if new_csv_dir.is_some() || new_db_path.is_some() {
+        let manifest = crate::output::OutputManifest::from_config(&state.config);
+        match crate::output::build_outputs(&ml_base, None, new_csv_dir, new_db_path, &manifest) {
+            Ok(report) => {
+                eprintln!(
+                    "Build pipeline: {} matches, {} review, {} unmatched in {:.1}s",
+                    report.match_count,
+                    report.review_count,
+                    report.no_match_count,
+                    report.elapsed_secs
+                );
+            }
+            Err(e) => {
+                eprintln!("Warning: build pipeline failed: {}", e);
+            }
+        }
+    }
 }
 
 /// SQLite-backed batch path for large datasets.
