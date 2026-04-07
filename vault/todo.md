@@ -8,7 +8,7 @@ related_code: []
 
 # Project Status
 
-Last updated: 2026-04-03 (accuracy test jitter fix, address embedding)
+Last updated: 2026-04-07 (Linux CUDA GPU encode test verified)
 
 ## Completed
 
@@ -50,6 +50,8 @@ Last updated: 2026-04-03 (accuracy test jitter fix, address embedding)
 - [x] **Windows usearch support** — Forked `unum-cloud/USearch` to `judepayne/USearch` with `MAP_FAILED` patch for MSVC. Pointed `Cargo.toml` at fork. Verified via GitHub Actions `windows-latest` CI (10k×10k batch benchmark with usearch passes). Temporary until upstream PR #720 merges.
 
 - [x] **usearch as default feature** — `usearch` is now a default Cargo feature. `vector_backend` config defaults to `"usearch"`. Users get HNSW automatically; opt out with `--no-default-features`. Windows release builds now include usearch. All Windows MSVC warnings removed from docs.
+
+- [x] **Linux CUDA GPU encode test** — Verified `gpu-encode` (CUDA) path on Runpod RTX 3090 with PyTorch 2.4.0 / CUDA 12.4.1 / Ubuntu 22.04 image. Key findings: ONNX Runtime >= 1.23.x required (not 1.17.x — `ort` crate rejects older versions); default PyTorch image GCC 11.x cannot compile usearch/simsimd AVX-512 FP16 intrinsics — use `--no-default-features` for smoke tests; GPU and CPU produce identical results (14 auto-matched, 6 review on 20×20 test set). Updated test config and `linux_gpu_encode_test.md` with corrected instructions.
 
 - [x] **Comprehensive code review (Opus)** — Full 5-agent review of entire codebase. Fixed 2 critical (panicking handlers, production assert_eq), 11 high (server bind 127.0.0.1, spawn_blocking handlers, crossmap sqlite expect→warn, usearch TOCTOU, bulk_load panics, CLI unwraps, dead --socket arg, model_dim fallback warning, dot_product defensive return, ensure_ort_dylib safety doc), 12 medium (pagination limit cap, NaN guards, crossmap pagination sort, exclusions contains allocation, pipeline error logging, score_pair side-aware, texthash bounds, batch writer ID, usearch search margin, deprecation logging, match_batch doc, SQLite error handling), and 16 low-severity issues (module docs, naming, copy_within, synonym HashSet, batch engine logging, etc.). 418 tests pass, clippy/fmt clean.
 
@@ -127,14 +129,8 @@ reads results.csv/review.csv/unmatched.csv back in (`src/cli/tune.rs::load_cache
 any format change must update both the writer (`src/batch/writer.rs`) and the reader in
 tune.rs in lockstep.
 
-**4. GPU encoding on Linux CI / CUDA.** *(Infrastructure)*
-The `gpu-encode` feature currently works on macOS (CoreML) but is untested on
-Linux (CUDA path). CI runs on Ubuntu and cannot enable `gpu-encode` because
-there is no `libonnxruntime.so` installed. Investigate: (a) adding ORT to the
-CI runner (apt package or download), (b) whether the CUDA execution provider
-works without a GPU (CPU fallback), (c) whether a lighter ORT build
-(CPU-only dynamic) would let us test the `ort-load-dynamic` codepath without
-needing a full CUDA stack. Goal: CI tests all features including `gpu-encode`.
+**4. GPU encoding on Linux CI / CUDA.** *(Infrastructure — partially done)*
+Linux CUDA path verified manually on Runpod (see completed items). Remaining: integrate into CI (a) adding ORT GPU to the CI runner, (b) whether CUDA execution provider works without a physical GPU, (c) lighter ORT build for testing the `ort-load-dynamic` codepath. Goal: CI tests all features including `gpu-encode`.
 
 ---
 
