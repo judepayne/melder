@@ -135,9 +135,13 @@ meld export --config config.yaml --out-dir export/
 
 Produces `relationships.csv` and `unmatched.csv` in the output directory.
 If `output.db_path` is set in the config, also produces the SQLite database.
+When a scoring log file exists (from running with `scoring_log.enabled: true`),
+also produces `candidates.csv` (rank 2+ candidates) and populates the
+`field_scores` table in the SQLite database.
 
-Only works for live and enroll mode configs (which have a `match_log_path`).
-Batch mode writes outputs automatically at end-of-run.
+Works with both match-mode (`meld serve`) and enroll-mode (`meld enroll`)
+configs — the config format is auto-detected. Batch mode writes outputs
+automatically at end-of-run.
 
 ## `meld tune`
 
