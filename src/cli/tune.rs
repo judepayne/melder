@@ -707,17 +707,15 @@ fn run_pipeline(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let _ = std::fs::create_dir_all(&csv_dir);
 
+    // Write unified relationships.csv (matched + review) for --no-run caching.
+    let mut all_results = result.matched.clone();
+    all_results.extend(result.review.iter().cloned());
     if let Err(e) = crate::batch::write_results_csv(
         &csv_dir.join("relationships.csv"),
-        &result.matched,
+        &all_results,
         &state.config,
     ) {
-        eprintln!("Warning: failed to write results CSV: {}", e);
-    }
-    if let Err(e) =
-        crate::batch::write_review_csv(&csv_dir.join("review.csv"), &result.review, &state.config)
-    {
-        eprintln!("Warning: failed to write review CSV: {}", e);
+        eprintln!("Warning: failed to write relationships CSV: {}", e);
     }
     if let Err(e) = crate::batch::write_unmatched_csv(
         &csv_dir.join("unmatched.csv"),
@@ -755,13 +753,26 @@ fn load_cached_results(
     Vec<(String, crate::models::Record, Option<f64>)>,
     HashMap<String, Vec<f64>>,
 ) {
-    // Read results.csv
     let csv_dir = cfg.output.csv_dir_path.as_deref().unwrap_or(".");
-    let results_path = format!("{}/relationships.csv", csv_dir);
-    let review_path = format!("{}/review.csv", csv_dir);
+    let relationships_path = format!("{}/relationships.csv", csv_dir);
     let unmatched_path = format!("{}/unmatched.csv", csv_dir);
-    let matched = load_match_results(&results_path, "results");
-    let review = load_match_results(&review_path, "review");
+
+    let all = load_match_results(&relationships_path, "relationships");
+    let auto_threshold = cfg.thresholds.auto_match;
+
+    // Split by classification: auto (score >= auto_match) vs review.
+    let mut matched = Vec::new();
+    let mut review = Vec::new();
+    for mut mr in all {
+        if mr.score >= auto_threshold {
+            mr.classification = crate::models::Classification::Auto;
+            matched.push(mr);
+        } else {
+            mr.classification = crate::models::Classification::Review;
+            review.push(mr);
+        }
+    }
+
     let unmatched = load_unmatched(&unmatched_path, &cfg.datasets.b.id_field);
 
     let mut field_scores_map: HashMap<String, Vec<f64>> = HashMap::new();

@@ -72,17 +72,6 @@ pub fn write_results_csv(
     Ok(())
 }
 
-/// Write review results to a CSV file.
-///
-/// Same format as results, but only review-classified entries.
-pub fn write_review_csv(
-    path: &Path,
-    results: &[MatchResult],
-    config: &Config,
-) -> Result<(), DataError> {
-    write_results_csv(path, results, config)
-}
-
 /// Write unmatched B records to a CSV file.
 ///
 /// Columns: id_field, score (best candidate score or empty), then all other B-record fields.

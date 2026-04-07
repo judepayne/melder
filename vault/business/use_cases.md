@@ -24,11 +24,11 @@ Without automated matching, operations teams manually eyeball spreadsheets, a pr
 
 **Mode: Batch (`meld run`)**
 
-The reference data master is loaded as dataset A (the reference pool). The vendor file is loaded as dataset B (the query set). Melder matches every B record against the A-side pool and writes three output files:
+The reference data master is loaded as dataset A (the reference pool). The vendor file is loaded as dataset B (the query set). Melder matches every B record against the A-side pool and writes output files:
 
-- **results.csv** -- confirmed matches (score >= `auto_match` threshold). These can be fed directly into downstream enrichment: for each matched pair, the vendor record (B) is linked to the master record (A), and master attributes (LEI, classification, domicile, etc.) can be stamped onto the vendor record.
-- **review.csv** -- borderline pairs (score between `review_floor` and `auto_match`). These are routed to a human review queue for manual decision.
-- **unmatched.csv** -- vendor records with no viable match. These are candidates for new master record creation or further investigation.
+- **relationships.csv** — all confirmed matches (`relationship_type: match`) and review-band pairs (`relationship_type: review`). Confirmed matches can be fed directly into downstream enrichment. Review-band pairs are borderline (score between `review_floor` and `auto_match`) and can be routed to a human review queue.
+- **unmatched.csv** — vendor records with no viable match. These are candidates for new master record creation or further investigation.
+- **SQLite DB** (optional) — queryable output with relationships, field scores, and analytical views.
 
 The [[decisions/key_decisions#Principles-Inviolable|batch asymmetry]] is intentional here: B records are the ones being enriched with A-side data, so B is the query side.
 
@@ -145,7 +145,7 @@ Live mode provides:
 - **`common_id_field`**: If both systems share any common identifier (even a partial one -- e.g., both have an LEI field but not all records have it populated), configure it. Records with matching common IDs are paired instantly, reducing the scoring workload.
 - **Cross-map persistence**: The cross-map is flushed to disk periodically (default every 5 seconds) and on shutdown. For production deployments, back up the cross-map CSV regularly -- it is the most valuable output of the synchronisation process.
 - **WAL**: Essential for this use case. Configure `live.match_log_path` so that all record additions and cross-map changes are journalled. On restart, the WAL replays to restore full state without re-processing the change feed. See [[architecture/state_and_persistence]].
-- **Review workflow**: Integrate with `meld review list` and `meld review import` to process ambiguous pairs. Accepted pairs are added to the cross-map. Rejected pairs are removed from the review queue. Over time, the fraction of records requiring human review should decrease as the cross-map grows and only genuinely new entities remain unmatched.
+- **Review workflow**: Use the SQLite output DB or `relationships.csv` (filtered by `relationship_type = review`) to identify ambiguous pairs. Accept pairs via `meld crossmap import` with a CSV of confirmed matches. Over time, the fraction of records requiring human review should decrease as the cross-map grows and only genuinely new entities remain unmatched.
 - **Monitoring**: Use the `/status` endpoint to monitor record counts, uptime, and cross-map size. Alert if the unmatched pool grows unexpectedly -- this may indicate a data quality issue in one of the source systems.
 
 ### Architecture Pattern

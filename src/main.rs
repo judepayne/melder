@@ -95,11 +95,6 @@ enum Commands {
         #[command(subcommand)]
         action: CacheAction,
     },
-    /// Review queue management
-    Review {
-        #[command(subcommand)]
-        action: ReviewAction,
-    },
     /// Cross-map management
     Crossmap {
         #[command(subcommand)]
@@ -135,23 +130,6 @@ enum CacheAction {
         /// Delete ALL cache files (including current). Default: only delete stale files.
         #[arg(long)]
         all: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum ReviewAction {
-    /// List pending reviews
-    List {
-        #[arg(short, long)]
-        config: PathBuf,
-    },
-    /// Import review decisions
-    Import {
-        #[arg(short, long)]
-        config: PathBuf,
-        /// Path to decisions file
-        #[arg(short, long)]
-        file: PathBuf,
     },
 }
 
@@ -223,12 +201,6 @@ fn main() {
             CacheAction::Build { config } => melder::cli::cache::cmd_cache_build(&config),
             CacheAction::Status { config } => melder::cli::cache::cmd_cache_status(&config),
             CacheAction::Clear { config, all } => melder::cli::cache::cmd_cache_clear(&config, all),
-        },
-        Commands::Review { action } => match action {
-            ReviewAction::List { config } => melder::cli::review::cmd_review_list(&config),
-            ReviewAction::Import { config, file } => {
-                melder::cli::review::cmd_review_import(&config, &file)
-            }
         },
         Commands::Crossmap { action } => match action {
             CrossmapAction::Stats { config } => melder::cli::crossmap::cmd_crossmap_stats(&config),

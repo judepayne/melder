@@ -220,33 +220,6 @@ adding a new match field, or renaming fields. These all change the spec
 hash, so the old cache files become unreachable automatically — the
 smart clear finds and removes them without touching anything current.
 
-## `meld review list`
-
-Print the review queue as a formatted table. The review csv is produced
-by `meld run` and contains borderline pairs that scored between
-`review_floor` and `auto_match`. This command reads that file and
-displays it with aligned columns for easy scanning.
-
-```bash
-meld review list --config config.yaml
-```
-
-## `meld review import`
-
-Import human decisions on review pairs. The decisions file is a csv with
-columns `a_id`, `b_id`, and `decision` (either `accept` or `reject`).
-Accepted pairs are added to the cross-map. Both accepted and rejected
-pairs are removed from the review csv, shrinking the queue.
-
-```bash
-meld review import --config config.yaml --file decisions.csv
-```
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--config` | `-c` | Path to YAML config file (required) |
-| `--file` | `-f` | Path to decisions csv (required) |
-
 ## `meld crossmap stats`
 
 Show cross-map statistics: total matched pairs, and coverage as a

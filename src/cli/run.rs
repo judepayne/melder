@@ -384,16 +384,13 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         eprintln!("Failed to create output dir {}: {}", csv_dir.display(), e);
         process::exit(1);
     }
+    // Write matched + review into a single relationships.csv (unified format).
+    let mut all_results = result.matched.clone();
+    all_results.extend(result.review.iter().cloned());
     if let Err(e) =
-        crate::batch::write_results_csv(&csv_dir.join("relationships.csv"), &result.matched, &cfg)
+        crate::batch::write_results_csv(&csv_dir.join("relationships.csv"), &all_results, &cfg)
     {
-        eprintln!("Failed to write results: {}", e);
-        process::exit(1);
-    }
-    if let Err(e) =
-        crate::batch::write_review_csv(&csv_dir.join("review.csv"), &result.review, &cfg)
-    {
-        eprintln!("Failed to write review: {}", e);
+        eprintln!("Failed to write relationships: {}", e);
         process::exit(1);
     }
     if let Err(e) = crate::batch::write_unmatched_csv(
