@@ -336,19 +336,38 @@ output:
 
 ## `scoring_log`
 
-Per-field explainability data. Records every scored query's full candidate set with field-score breakdowns. Produces `candidates.csv` and populates the `field_scores` DB table.
+Per-field explainability data for batch mode. When enabled, records every scored query's full top_n candidate set with per-field breakdowns. Produces `candidates.csv` and populates the `field_scores` table in the output SQLite database. Also enables the `near_misses`, `runner_ups`, and `relationship_detail` views in the SQLite output.
+
+> [!NOTE]
+> The scoring log currently works only in **batch mode** (`meld run`). It is not integrated with live or enroll modes. The SQLite batch path (`batch.db_path`) also does not produce scoring log output.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `enabled` | no | `false` (true for enroll) | Enable scoring log output. |
+| `enabled` | no | `false` | Enable scoring log output. |
 | `compression` | no | `"zstd"` | `"zstd"` (recommended, ~5-10x compression) or `"none"`. |
-| `rotation_size_mb` | no | `1024` | Size-based rotation for long-lived servers. Ignored in batch mode. |
+| `rotation_size_mb` | no | not set | Reserved for future use. Not currently implemented. |
 
 ```yaml
 scoring_log:
   enabled: true
   compression: zstd
 ```
+
+### What the scoring log produces
+
+| Output | Description |
+|--------|-------------|
+| `{job_name}.scoring_log.ndjson.zst` | Raw scoring log file (one line per scored record with full candidate set) |
+| `candidates.csv` | Rank-2+ candidates that did not make the final match (written by `build_outputs`) |
+| `field_scores` DB table | Per-field score breakdowns for all candidates (SQLite output only) |
+
+### Explainability views (SQLite output)
+
+These views require the scoring log to be populated:
+
+- **`near_misses`** — best unmatched candidates below review floor
+- **`runner_ups`** — candidates at ranks 2+
+- **`relationship_detail`** — joins relationships with per-field scores
 
 ---
 

@@ -29,7 +29,9 @@ improvement exists.
 
 The `meld tune` command runs the full batch pipeline and produces a
 diagnostic report showing how well your configuration separates true
-matches from non-matches.
+matches from non-matches. It bypasses the `common_id` auto-match phase
+so that all records are scored through the full pipeline — giving you
+complete per-field diagnostics.
 
 ```bash
 meld tune --config config.yaml
@@ -140,6 +142,12 @@ meld tune --config config.yaml --no-run --bucket-width 0.01 --min-score 0.50 --m
 
 The `--no-run` flag skips the pipeline and re-analyses cached output
 files — instant, so you can iterate on display parameters.
+
+> [!NOTE]
+> `--no-run` mode has a limitation: cached CSV files do not include
+> per-field score breakdowns, so the per-field analysis and overlap zone
+> detail sections will be empty or incomplete. For full diagnostics,
+> run without `--no-run`.
 
 #### Overlap coefficient
 
@@ -351,12 +359,14 @@ that covers only 30% of records — to unlock the two-population analysis.
 
 | Flag | Default | Description |
 |---|---|---|
+| `--config` | — | Path to YAML config file (required) |
+| `--verbose` / `-v` | off | Print job metadata and dataset paths at startup |
+| `--no-run` | off | Skip pipeline, re-analyse cached output (instant). Note: per-field scores are not available in cached output. |
 | `--bucket-width` | 0.04 | Width of each histogram bucket |
 | `--min-score` | auto | Lower bound of display range |
 | `--max-score` | auto | Upper bound of display range |
 | `--bar-width` | 50 | Maximum bar width in characters |
 | `--overlap-limit` | 5 | Records shown per population in overlap zone |
-| `--no-run` | off | Skip pipeline, re-analyse cached output (instant) |
 
 ### The tuning loop
 
@@ -367,7 +377,7 @@ that covers only 30% of records — to unlock the two-population analysis.
 5. Run `meld tune` again — watch the overlap coefficient
 6. Inspect the overlap zone — what's causing the remaining errors?
 7. Adjust thresholds to balance auto-match precision vs review volume
-8. Run `meld run --dry-run` to confirm counts, then drop `--dry-run`
+8. Run `meld run` for the production run
 
 ### Blocking and match field interaction
 
@@ -793,8 +803,7 @@ change you can make if the data supports it.
 
 After each change, run `meld tune` again. Watch the overlap
 coefficient, the review queue size, and the false positive count.
-When you're satisfied, run `meld run --dry-run` to confirm the
-final counts, then drop `--dry-run` for the production run.
+When you're satisfied, run `meld run` for the production run.
 
 ---
 
