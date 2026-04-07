@@ -2,60 +2,137 @@
 
 # Building
 
+## Build prerequisites
+
+You need **Rust** (which includes Cargo) and a **C++ compiler** (for usearch, which is enabled by default).
+
+### macOS
+
+1. Install Xcode command-line tools (provides Clang, the C++ compiler):
+
+```bash
+xcode-select --install
+```
+
+2. Install Rust via rustup:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+```
+
+3. Verify:
+
+```bash
+rustc --version
+cargo --version
+cc --version
+```
+
+That's it. Homebrew is not required unless you want GPU encoding (see [GPU encoding](#macos-apple-silicon) below).
+
+### Linux (Debian / Ubuntu)
+
+1. Install the C++ compiler and other build tools:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential pkg-config libssl-dev
+```
+
+2. Install Rust via rustup:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+```
+
+3. Verify:
+
+```bash
+rustc --version
+cargo --version
+g++ --version
+```
+
+For other distributions, install `gcc` or `clang`, `pkg-config`, and `openssl-dev` (or your distro's equivalent) before building.
+
+### Windows
+
+1. Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (free). During setup, select the **"Desktop development with C++"** workload. This provides the MSVC compiler and linker.
+
+2. Install Rust via [rustup](https://rustup.rs/). Download and run `rustup-init.exe`. It detects Visual Studio automatically.
+
+3. Verify in a new terminal (PowerShell or cmd):
+
+```powershell
+rustc --version
+cargo --version
+cl
+```
+
+> [!NOTE]
+> You must open a **new** terminal after installing Visual Studio Build Tools for the PATH changes to take effect.
+
 ## Build commands
 
 ```bash
+# Default build (includes usearch HNSW)
 cargo build --release
 
-# With HNSW vector index (recommended for production)
-cargo build --release --features usearch
+# Pure Rust — no C++ dependency, uses flat (brute-force) vector backend
+cargo build --release --no-default-features
 
-# With Parquet support
-cargo build --release --features usearch,parquet-format
-
-# With builtin embedding model (self-contained binary, no network needed at runtime)
-cargo build --release --features usearch,builtin-model
-
-# With GPU-accelerated encoding (CoreML on macOS, CUDA on Linux)
-cargo build --release --features usearch,gpu-encode
-
-# All features together
-cargo build --release --features usearch,parquet-format,builtin-model,gpu-encode
+# Add features as needed
+cargo build --release --no-default-features --features usearch
+cargo build --release --no-default-features --features usearch,parquet-format
+cargo build --release --no-default-features --features usearch,builtin-model
+cargo build --release --no-default-features --features usearch,gpu-encode
+cargo build --release --no-default-features --features usearch,parquet-format,simd,gpu-encode
 ```
 
 The binary is produced at `./target/release/meld` (Windows:
-`.\target\release\meld.exe`). Either add it to your PATH or invoke it
-directly.
+`.\target\release\meld.exe`). See the [CLI Reference](cli-reference.md) for
+placing it on your PATH.
 
 ## Feature flags
 
-| Feature | What it does |
-|---------|-------------|
-| `usearch` | Enables the HNSW approximate nearest-neighbour graph index for O(log N) candidate search instead of the flat backend's O(N) brute-force scan. Up to 5x faster at scale. |
-| `parquet-format` | Enables reading Parquet files as input datasets. All column types (string, integer, float, boolean) are converted to strings internally. Snappy-compressed Parquet files are supported. |
-| `builtin-model` | Compiles an embedding model into the binary so no network access or model download is needed at runtime. Set `model: builtin` in config to use it. See [Builtin model](#builtin-model) below. |
-| `gpu-encode` | Enables GPU-accelerated ONNX encoding for batch mode. Uses CoreML on macOS and CUDA on Linux. Requires the ONNX Runtime shared library at runtime. See [GPU encoding](#gpu-encoding) below. |
+| Feature | Default | What it does |
+|---------|---------|-------------|
+| `usearch` | yes | HNSW approximate nearest-neighbour index. O(log N) candidate search instead of O(N) brute-force. Up to 5x faster at scale. Requires a C++ compiler (MSVC on Windows, GCC/Clang on Unix). |
+| `simd` | no | SimSIMD hardware-accelerated dot product (NEON / SVE / AVX2 / AVX-512). Speeds up cosine similarity computation. Pure Rust — no C++ dependency. |
+| `parquet-format` | no | Read Parquet files as input datasets. All column types (string, integer, float, boolean) are converted to strings internally. Snappy compression supported. |
+| `builtin-model` | no | Compile an embedding model into the binary. No network access or model download needed at runtime. See [Builtin model](#builtin-model) below. |
+| `gpu-encode` | no | GPU-accelerated ONNX encoding for batch mode. CoreML on macOS, CUDA on Linux. Requires the ONNX Runtime shared library at runtime. See [GPU encoding](#gpu-encoding) below. |
 
 > [!TIP]
-> The `usearch` feature (HNSW vector index) is enabled by default. It
-> provides O(log N) candidate search instead of the flat backend's O(N)
-> brute-force scan. At 100k records, usearch is the difference between a
-> 12-second warm run and a 4-minute one — see [Performance](performance.md)
-> for full numbers. To build without it (pure Rust, no C++ dependency):
-> `cargo build --release --no-default-features`.
+> `usearch` is the only default feature. To build without it (pure Rust, no
+> C++ dependency), use `--no-default-features`. This is useful for quick builds
+> or environments without a C++ compiler.
+
+## System requirements
+
+**macOS / Linux:** Xcode command-line tools (macOS) or GCC/Clang (Linux)
+provide the C++ compiler needed for usearch. Rust installed via
+[rustup](https://rustup.rs/).
+
+**Windows:** Install Rust via [rustup](https://rustup.rs/) which defaults to
+the MSVC toolchain. You need the **Visual Studio Build Tools** (or full
+Visual Studio) with the "Desktop development with C++" workload.
+
+**Linux GPU (CUDA):** See [GPU encoding on Linux](#linux-nvidia-gpu) below.
 
 ## Model download
 
 The ONNX model is downloaded automatically on first run to
-`~/.cache/fastembed/` on Linux/macOS or `%LOCALAPPDATA%\fastembed\` on
-Windows.
+`~/.cache/huggingface/hub/` (Linux/macOS) or `%LOCALAPPDATA%\huggingface\hub\`
+(Windows).
 
 ## Builtin model
 
 Build with `--features builtin-model` to compile an embedding model
-directly into the binary. The resulting binary needs no network access
-and no model files on disk — ideal for air-gapped, containerised, or
-edge deployments.
+directly into the binary. No network access or model files on disk at
+runtime — ideal for air-gapped, containerised, or edge deployments.
 
 ```bash
 # Default: embeds themelder/arctic-embed-xs-entity-resolution from HuggingFace
@@ -82,16 +159,14 @@ embeddings:
   model: builtin
 ```
 
-The binary size increases by the size of the ONNX model (~90 MB for
-arctic-embed-xs). The model is downloaded once at build time and cached
-in the Cargo build directory — subsequent builds reuse the cached files.
+The binary size increases by ~90 MB (arctic-embed-xs). The model is
+downloaded once at build time and cached in the Cargo build directory.
 
 ## GPU encoding
 
 Build with `--features gpu-encode` to enable GPU-accelerated ONNX
-encoding for batch mode (`meld run`). This offloads the embedding
-inference to the GPU, dramatically reducing encoding time for large
-datasets.
+encoding for batch mode (`meld run`). Offloads embedding inference to the
+GPU, dramatically reducing encoding time for large datasets.
 
 ```bash
 cargo build --release --features usearch,gpu-encode
@@ -101,69 +176,83 @@ GPU encoding is **batch mode only**. It is ignored in live mode
 (`meld serve`) where single-record GPU dispatch overhead exceeds
 the compute savings.
 
-### Platform setup
+### macOS (Apple Silicon)
 
-GPU encoding uses dynamic linking against the ONNX Runtime shared
-library. The library must be present at runtime.
-
-**macOS (Apple Silicon).** The melder auto-detects ONNX Runtime
-installed via Homebrew. No manual configuration needed:
+Auto-detects ONNX Runtime installed via Homebrew:
 
 ```bash
 brew install onnxruntime
 ```
 
-If you install ONNX Runtime to a non-standard location, set the
-`ORT_DYLIB_PATH` environment variable:
+For non-standard locations, set `ORT_DYLIB_PATH`:
 
 ```bash
 export ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib
 ```
 
-The CoreML execution provider is used automatically. It dispatches
-compute across CPU, GPU, and the Neural Engine (ANE) based on the
-model graph.
+The CoreML execution provider is used automatically, dispatching across
+CPU, GPU, and the Neural Engine.
 
-**Linux (NVIDIA GPU).** Download a CUDA-enabled ONNX Runtime build
-from [Microsoft's releases](https://github.com/microsoft/onnxruntime/releases)
-and set `ORT_DYLIB_PATH`:
+### Linux (NVIDIA GPU)
+
+1. Install the CUDA toolkit (12.x recommended).
+2. Download ONNX Runtime GPU (>= 1.23.x) from [Microsoft's releases](https://github.com/microsoft/onnxruntime/releases):
+
+```bash
+cd /tmp
+wget https://github.com/microsoft/onnxruntime/releases/download/v1.23.1/onnxruntime-linux-x64-gpu-1.23.1.tgz
+tar xzf onnxruntime-linux-x64-gpu-1.23.1.tgz
+sudo cp onnxruntime-linux-x64-gpu-1.23.1/lib/libonnxruntime.so* /usr/local/lib/
+sudo ln -sf /usr/local/lib/libonnxruntime.so.1.23.1 /usr/local/lib/libonnxruntime.so
+sudo ldconfig
+```
+
+The library is auto-detected from standard paths (`/usr/lib/`,
+`/usr/lib/x86_64-linux-gnu/`, `/usr/local/lib/`). If it's elsewhere,
+set `ORT_DYLIB_PATH`:
 
 ```bash
 export ORT_DYLIB_PATH=/path/to/libonnxruntime.so
 ```
 
-Requires CUDA toolkit and cuDNN to be installed. The CUDA execution
-provider is used automatically.
+> [!WARNING]
+> ONNX Runtime **must be >= 1.23.x**. Older versions (e.g. 1.17.x) will be
+> rejected at runtime with a version mismatch error. Download the
+> `linux-x64-gpu` release matching your CUDA version.
 
-**Windows.** GPU encoding is not currently supported on Windows. The
-`gpu-encode` feature will compile but `encoder_device: gpu` in the
-config will fall back to CPU with a warning.
+> [!NOTE]
+> The usearch dependency requires GCC >= 13 to compile the bundled simsimd
+> AVX-512 FP16 intrinsics on Linux. If your system has GCC 11.x (common on
+> PyTorch Docker images), build without usearch:
+> `cargo build --release --no-default-features --features gpu-encode`.
+> This uses the flat vector backend — sufficient for GPU encoding tests and
+> small-to-medium datasets.
+
+### Windows
+
+GPU encoding is not currently supported. The `gpu-encode` feature will
+compile but `encoder_device: gpu` in the config will fall back to CPU with
+a warning.
 
 ### Configuration
-
-Set `encoder_device: gpu` in the `performance` section of your
-config file:
 
 ```yaml
 performance:
   encoder_device: gpu
-  encoder_pool_size: 12    # ~60% of CPU cores (see tuning guide)
-  encoder_batch_size: 256  # optimal for GPU; default when device is gpu
+  encoder_pool_size: 12
+  encoder_batch_size: 256
 ```
-
-See [Configuration](configuration.md#performance-field-reference) for
-the full tuning guide including benchmark results.
 
 > [!NOTE]
 > If the binary was built **without** `--features gpu-encode`, setting
-> `encoder_device: gpu` in the config will produce a clear error at
-> startup: _"GPU encoding requires building with --features gpu-encode"_.
+> `encoder_device: gpu` will produce a clear error at startup:
+> _"GPU encoding requires building with --features gpu-encode"_.
 
 ## Benchmark data
 
 The repository includes a synthetic data generator and per-directory
-generation scripts. Only the 10k datasets are committed (small enough
-for CI); larger sizes must be regenerated after cloning.
+generation scripts. Only the 10k datasets are committed; larger sizes must
+be regenerated after cloning.
 
 **Prerequisites:**
 
@@ -173,16 +262,13 @@ pip install faker pandas pyarrow
 
 ### Generation scripts
 
-Each benchmark directory has its own `generate_data.sh` that produces
-exactly the datasets its benchmarks need:
+Each benchmark directory has its own `generate_data.sh`:
 
 | Script | Sizes | Output location |
 |--------|-------|-----------------|
 | `benchmarks/batch/generate_data.sh` | 10k, 100k, 1M | `benchmarks/data/` |
 | `benchmarks/live/generate_data.sh` | 10k, 100k, 1M | `benchmarks/data/` |
 | `benchmarks/accuracy/generate_data.sh` | 10k | `benchmarks/data/` |
-
-The batch and live scripts accept size arguments:
 
 ```bash
 # Generate all sizes (10k + 100k + 1M)
@@ -191,38 +277,24 @@ The batch and live scripts accept size arguments:
 # Generate specific sizes
 ./benchmarks/batch/generate_data.sh 10k 100k
 ./benchmarks/live/generate_data.sh 1M
-
-# Accuracy benchmarks only need 10k
-./benchmarks/accuracy/generate_data.sh
 ```
 
-All generators use seed 42 for deterministic, reproducible output.
-The `--addresses` flag is always passed so datasets include address
-fields used by some configs.
+All generators use seed 42 for deterministic output.
 
 ### What's committed vs generated
 
 | Data | Status |
 |------|--------|
-| 10k datasets (`benchmarks/data/dataset_*_10k.*`) | Committed in git |
+| 10k datasets | Committed in git |
 | 100k, 1M datasets | Gitignored — regenerate with scripts above |
 
 ### Special cases
 
 - **`accuracy/10kx10k_exclusions`** generates its own data during
-  Phase 0 of its `run_test.py` (uses `n_exact=1000` for exact-match
-  exclusion testing). It is not covered by the accuracy generation
-  script.
-
-- **`accuracy/science/`** is a research journal documenting 14
-  sequential fine-tuning experiments, not a standard benchmark suite.
-  It is not intended to be reproduced — the committed results
-  (`metrics.csv`, `learning_curve.png`, `experiments.md`) are the
-  scientific record. Reproducing experiments would require days of GPU
-  compute and running experiments in dependency order (later experiments
-  depend on model weights produced by earlier ones). See
-  `benchmarks/accuracy/science/experiments.md` for the full experiment
-  history, results, and methodology.
+  Phase 0 of its `run_test.py` (uses `n_exact=1000`).
+- **`accuracy/science/`** is a research journal documenting fine-tuning
+  experiments, not a standard benchmark suite. See
+  `benchmarks/accuracy/science/experiments.md` for the full history.
 
 ## Environment variables
 
@@ -234,32 +306,11 @@ fields used by some configs.
 | `ORT_DYLIB_PATH` | Path to `libonnxruntime.dylib` (macOS) or `libonnxruntime.so` (Linux). Required for `gpu-encode` if ONNX Runtime is not in a standard location. On macOS, Homebrew installs are auto-detected. |
 | `MELDER_BUILTIN_MODEL` | Build-time only. HuggingFace repo ID or local path for the model to embed when `--features builtin-model` is enabled. Defaults to `themelder/arctic-embed-xs-entity-resolution`. |
 
-## Windows
+## Windows notes
 
-The melder builds and runs on Windows. A few things to be aware of:
-
-**Prerequisites.** Install Rust via [rustup](https://rustup.rs/) which
-defaults to the MSVC toolchain on Windows. You will need the
-**Visual Studio Build Tools** (or full Visual Studio) with the
-"Desktop development with C++" workload installed — this provides the
-MSVC compiler and linker that Rust requires.
-
-**Building.** The same `cargo build` commands work. The binary is
-produced at `target\release\meld.exe`:
-
-```powershell
-cargo build --release --features parquet-format
-.\target\release\meld.exe validate --config config.yaml
-```
-
-**Environment variables.** `RUST_LOG` and `RAYON_NUM_THREADS` work the
-same way. Set them in PowerShell with `$env:RUST_LOG = "melder=debug"`
-or in cmd with `set RUST_LOG=melder=debug`.
-
-**Graceful shutdown.** On Unix, the melder listens for both Ctrl-C and
-SIGTERM. On Windows, SIGTERM is not available — use Ctrl-C to trigger
-a clean shutdown (in-flight requests drain, WAL is compacted, cross-map
-and index caches are saved).
-
-**Config paths.** Both forward slashes and backslashes work in YAML
-config file paths (`datasets.a.path`, `output.results_path`, etc.).
+- Same `cargo build` commands work. Binary at `target\release\meld.exe`.
+- Environment variables: use `$env:RUST_LOG = "melder=debug"` (PowerShell) or
+  `set RUST_LOG=melder=debug` (cmd).
+- Graceful shutdown: use Ctrl-C (SIGTERM is not available on Windows).
+- Config paths: both forward slashes and backslashes work in YAML paths.
+- `gpu-encode` compiles but falls back to CPU with a warning.

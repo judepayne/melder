@@ -107,9 +107,16 @@ body {
 .content th {
   font-family: var(--font-display); font-weight: 600; text-align: left;
   padding: 10px 12px; border-bottom: 2px solid var(--accent); background: var(--bg-warm);
+  white-space: nowrap;
 }
 .content td {
   padding: 8px 12px; border-bottom: 1px solid var(--border-light);
+}
+.content td:first-child {
+  white-space: nowrap;
+}
+.content td:nth-child(2) {
+  white-space: nowrap;
 }
 .content tr:hover td { background: var(--accent-light); }
 

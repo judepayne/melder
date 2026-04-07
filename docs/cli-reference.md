@@ -2,6 +2,36 @@
 
 # CLI Reference
 
+On Windows, replace `meld` with `meld.exe` in all commands below.
+
+## Installing the Binary on Your PATH
+
+After building or downloading the binary, place it somewhere on your `PATH` so you can run `meld` from any directory.
+
+**macOS / Linux:**
+
+```bash
+# From a release tarball
+sudo cp target/release/meld /usr/local/bin/
+
+# Or install via cargo (if you have Rust installed)
+cargo install --path .
+```
+
+**Windows:**
+
+```cmd
+REM Add the build output directory to your PATH
+set PATH=%PATH%;C:\path\to\melder\target\release\
+
+REM Or copy meld.exe to a directory already on PATH, e.g.
+copy target\release\meld.exe C:\Users\You\AppData\Local\Programs\
+```
+
+You can also download pre-built binaries from the [GitHub Releases](https://github.com/judepayne/melder/releases) page.
+
+---
+
 All commands accept `--log-format json` for structured log output.
 Logs go to stderr; command output goes to stdout.
 
