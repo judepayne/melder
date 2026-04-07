@@ -1,22 +1,50 @@
+job:
+  name: gpu-smoke-test
+
+datasets:
+  a:
+    path: test-data/gpu-test/a.csv
+    id_field: id
+    format: csv
+  b:
+    path: test-data/gpu-test/b.csv
+    id_field: id
+    format: csv
+
+cross_map:
+  backend: local
+  path: test-data/gpu-test/crossmap.csv
+  a_id_field: id
+  b_id_field: id
+
+embeddings:
+  model: themelder/arctic-embed-xs-entity-resolution
+  a_cache_dir: test-data/gpu-test/cache
+  b_cache_dir: test-data/gpu-test/cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country
+      field_b: country
+
 match_fields:
   - field_a: name
     field_b: name
     method: embedding
     weight: 1.0
 
-embeddings:
-  model: "themelder/arctic-embed-xs-entity-resolution"
+thresholds:
+  auto_match: 0.85
+
+output:
+  csv_dir_path: test-data/gpu-test/output
 
 performance:
   encoder_device: gpu
   encoder_batch_size: 256
 
-blocking:
-  fields:
-    - field_a: country
-      field_b: country
-  operator: and
-
-thresholds:
-  auto_match: 0.85
-  review: 0.70
+vector_backend: flat
+top_n: 5
+ann_candidates: 5
