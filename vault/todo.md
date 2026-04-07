@@ -87,51 +87,6 @@ Buys: no staleness problem, durable persistence, multiple melder instances shari
 one index. Costs: network round-trip (~1-5ms) per search, external service
 dependency. Only worth it at 1M+ records or when horizontal scaling is needed.
 
-**2. Persistent edge store for enroll mode.** *(Enroll)*
-Enroll mode currently returns edges in the HTTP response and discards them — no
-persistent record of discovered relationships. Add a persistent edge store
-(in-memory + WAL or SQLite-backed) that maintains bidirectional edges: when
-record Y is enrolled and matches X, both Y→X and X→Y are recorded. Since
-scoring is symmetric (`score_pair(a,b) == score_pair(b,a)`), this requires no
-re-scoring — just symmetric bookkeeping after the single scoring pass. Enables:
-query an enrolled record's current neighbours, survive restarts without losing
-relationships, hook notifications when existing records gain new edges.
-Prerequisite for enroll mode being a real entity resolution service rather than
-a one-shot dedup check.
-
-**3. SQLite output format (`output.db_path` or `.db` extension).** *(Output / UX)*
-Write batch results to a SQLite file: `results`, `field_scores`, `a_records`, `b_records`,
-`unmatched` tables plus pre-built views (`confirmed_matches`, `review_queue`, `near_misses`,
-`match_summary`). Primary tool for Ops users: DB Browser for SQLite (free desktop app).
-Format inferred from file extension — `.db` writes SQLite, `.csv` unchanged. See `sqlite.md`
-for full schema, example queries, and tooling notes. **Note**: `meld tune --no-run` reads CSV
-output back in; any format change must update `src/batch/writer.rs` and
-`src/cli/tune.rs::load_cached_results` in lockstep.
-
-**4. SQLite record store for live and enroll modes.** *(Memory / Scalability)*
-Batch mode already uses SQLite as an optional memory-overflow record store (`batch.db_path`).
-Live and enroll modes currently hold all records in RAM — at large scale this becomes a
-problem. Investigate adding `live.db_path` / `enroll.db_path` to offload the record store
-to SQLite in the same way. The `RecordStore` trait abstraction is already in place; the
-`SqliteStore` implementation exists. Main challenge: live mode is long-running with
-continuous upserts — need to ensure write throughput doesn't degrade latency. WAL mode
-is already enabled on the SQLite connections so concurrent reads are fine.
-
-**5. Richer output file format (JSONL opt-in).** *(Output / UX) -- needs user research*
-Current batch output (results.csv, review.csv, unmatched.csv) is CSV-only. Proposal: infer
-output format from file extension — if the user configures a `.jsonl` path, write JSONL
-(one match object per line); `.csv` paths behave as today. JSONL would include full matched
-records, all field scores, and optionally runner-up candidates. Rationale: CSV works for
-Excel/Ops users; JSONL serves downstream pipelines and analysts. **Pending**: speak to initial
-user base to confirm what richness they actually need from the output — may turn out CSV +
-additional matched-record columns is sufficient and simpler. **Note**: `meld tune --no-run`
-reads results.csv/review.csv/unmatched.csv back in (`src/cli/tune.rs::load_cached_results`);
-any format change must update both the writer (`src/batch/writer.rs`) and the reader in
-tune.rs in lockstep.
-
-**4. GPU encoding on Linux CI / CUDA.** *(Infrastructure — partially done)*
-Linux CUDA path verified manually on Runpod (see completed items). Remaining: integrate into CI (a) adding ORT GPU to the CI runner, (b) whether CUDA execution provider works without a physical GPU, (c) lighter ORT build for testing the `ort-load-dynamic` codepath. Goal: CI tests all features including `gpu-encode`.
-
 ---
 
 *10M+ regime: stateless scoring workers + stateful coordination layer (crossmap,
