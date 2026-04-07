@@ -230,9 +230,7 @@ export ORT_DYLIB_PATH=/path/to/libonnxruntime.so
 
 ### Windows
 
-GPU encoding is not currently supported. The `gpu-encode` feature will
-compile but `encoder_device: gpu` in the config will fall back to CPU with
-a warning.
+Follow the same steps as Linux: download a CUDA-enabled ONNX Runtime GPU build (>= 1.23.x) from [Microsoft's releases](https://github.com/microsoft/onnxruntime/releases), place `onnxruntime.dll` on your PATH or set `ORT_DYLIB_PATH`. Requires the CUDA toolkit.
 
 ### Configuration
 
