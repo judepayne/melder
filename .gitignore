@@ -27,6 +27,8 @@ tufte/
 .opencode/
 .claude/
 opencode.json
+prompts/
+linux_gpu_encode_test.md
 
 # Python bytecode
 __pycache__/
