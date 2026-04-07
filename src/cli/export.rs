@@ -47,7 +47,26 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         let ml = std::path::Path::new(ml_path);
         let manifest = crate::output::OutputManifest::from_config(&cfg);
         let db_path = cfg.output.db_path.as_deref().map(Path::new);
-        match crate::output::build_outputs(ml, None, Some(out_dir), db_path, &manifest) {
+        let sl_path = if cfg.scoring_log.enabled {
+            let sl_dir = cfg.output.csv_dir_path.as_deref().unwrap_or(".");
+            let sl_base = Path::new(sl_dir).join(format!("{}.scoring_log", cfg.job.name));
+            let use_zstd = cfg.scoring_log.compression != "none";
+            let actual = if use_zstd {
+                std::path::PathBuf::from(format!("{}.ndjson.zst", sl_base.display()))
+            } else {
+                std::path::PathBuf::from(format!("{}.ndjson", sl_base.display()))
+            };
+            if actual.exists() { Some(actual) } else { None }
+        } else {
+            None
+        };
+        match crate::output::build_outputs(
+            ml,
+            sl_path.as_deref(),
+            Some(out_dir),
+            db_path,
+            &manifest,
+        ) {
             Ok(report) => {
                 println!("Export complete (build pipeline):");
                 println!(

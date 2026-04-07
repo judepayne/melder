@@ -46,9 +46,31 @@ pub fn cmd_serve(config_path: &Path, port: u16, bind: &str) {
             None
         };
 
+        // Open scoring log if enabled.
+        let (scoring_log_sender, _scoring_log_writer) = if state.config.scoring_log.enabled {
+            let sl_dir = state.config.output.csv_dir_path.as_deref().unwrap_or(".");
+            let sl_base =
+                std::path::Path::new(sl_dir).join(format!("{}.scoring_log", state.config.job.name));
+            let manifest = crate::output::OutputManifest::from_config(&state.config);
+            let use_zstd = state.config.scoring_log.compression != "none";
+            match crate::output::scoring_log::open_scoring_log(&sl_base, use_zstd, &manifest) {
+                Ok((sender, writer)) => (Some(sender), Some(writer)),
+                Err(e) => {
+                    warn!(error = %e, "failed to open scoring log — continuing without");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+
         // Create session (must happen after init_coordinator so Arc is shared
         // only after the coordinator is set up).
-        let session = std::sync::Arc::new(crate::session::Session::new(state.clone(), hook_tx));
+        let session = std::sync::Arc::new(crate::session::Session::new(
+            state.clone(),
+            hook_tx,
+            scoring_log_sender,
+        ));
 
         // Run initial matching pass: score all unmatched B records against A.
         // This ensures that pre-loaded datasets are matched before the API
@@ -127,5 +149,10 @@ pub fn cmd_serve(config_path: &Path, port: u16, bind: &str) {
             matches = sess.match_count.load(std::sync::atomic::Ordering::Relaxed),
             "shutdown complete",
         );
+
+        // Drop session (and its ScoringLogSender) before the writer, so the
+        // channel closes and the writer thread can drain and finalize.
+        drop(session);
+        // _scoring_log_writer drops here, joining the writer thread.
     });
 }

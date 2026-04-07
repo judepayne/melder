@@ -274,12 +274,15 @@ pub struct Session {
     emb_specs: Vec<(String, String, f64)>,
     /// Hook event sender. `None` when hooks are not configured.
     hook_tx: Option<tokio::sync::mpsc::Sender<crate::hooks::HookEvent>>,
+    /// Scoring log sender. `None` when scoring log is not enabled.
+    scoring_log: Option<crate::output::scoring_log::ScoringLogSender>,
 }
 
 impl Session {
     pub fn new(
         state: Arc<LiveMatchState>,
         hook_tx: Option<tokio::sync::mpsc::Sender<crate::hooks::HookEvent>>,
+        scoring_log: Option<crate::output::scoring_log::ScoringLogSender>,
     ) -> Self {
         let emb_specs = crate::vectordb::embedding_field_specs(&state.config);
         Self {
@@ -289,6 +292,7 @@ impl Session {
             match_count: AtomicU64::new(0),
             emb_specs,
             hook_tx,
+            scoring_log,
         }
     }
 
@@ -442,6 +446,10 @@ impl Session {
             };
             let results =
                 pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
+
+            if let Some(ref sl) = self.scoring_log {
+                sl.send(b_id, Side::B, &results);
+            }
 
             // Claim loop — same logic as upsert_record_inner
             for result in &results {
@@ -970,6 +978,10 @@ impl Session {
         let results =
             pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
 
+        if let Some(ref sl) = self.scoring_log {
+            sl.send(&id, side, &results);
+        }
+
         // 10. Claim loop: try candidates in ranked order.
         let _span = info_span!("claim_loop").entered();
         let mut classification = "no_match".to_string();
@@ -1364,6 +1376,10 @@ impl Session {
         };
         let results =
             pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
+
+        if let Some(ref sl) = self.scoring_log {
+            sl.send(id, side, &results);
+        }
 
         let classification = results
             .first()
@@ -2187,6 +2203,10 @@ impl Session {
         };
         let results =
             pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
+
+        if let Some(ref sl) = self.scoring_log {
+            sl.send(&id, side, &results);
+        }
 
         // 3. Add record to pool
         // Handle upsert: remove old blocking entry if exists

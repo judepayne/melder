@@ -45,7 +45,29 @@ pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
             None
         };
 
-        let session = std::sync::Arc::new(crate::session::Session::new(state.clone(), hook_tx));
+        // Open scoring log if enabled.
+        let (scoring_log_sender, _scoring_log_writer) = if state.config.scoring_log.enabled {
+            let sl_dir = state.config.output.csv_dir_path.as_deref().unwrap_or(".");
+            let sl_base =
+                std::path::Path::new(sl_dir).join(format!("{}.scoring_log", state.config.job.name));
+            let manifest = crate::output::OutputManifest::from_config(&state.config);
+            let use_zstd = state.config.scoring_log.compression != "none";
+            match crate::output::scoring_log::open_scoring_log(&sl_base, use_zstd, &manifest) {
+                Ok((sender, writer)) => (Some(sender), Some(writer)),
+                Err(e) => {
+                    warn!(error = %e, "failed to open scoring log — continuing without");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+
+        let session = std::sync::Arc::new(crate::session::Session::new(
+            state.clone(),
+            hook_tx,
+            scoring_log_sender,
+        ));
 
         // Start background WAL flusher
         let wal_state = state.clone();
@@ -97,5 +119,10 @@ pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
         let uptime_s = format!("{:.0}", sess.start_time.elapsed().as_secs_f64());
         let enrollments = sess.upsert_count.load(std::sync::atomic::Ordering::Relaxed);
         info!(uptime_s, enrollments, "shutdown complete");
+
+        // Drop session (and its ScoringLogSender) before the writer, so the
+        // channel closes and the writer thread can drain and finalize.
+        drop(session);
+        // _scoring_log_writer drops here, joining the writer thread.
     });
 }

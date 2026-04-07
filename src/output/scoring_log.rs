@@ -185,9 +185,9 @@ pub fn open_scoring_log(
     header: &crate::output::manifest::OutputManifest,
 ) -> std::io::Result<(ScoringLogSender, ScoringLogWriter)> {
     let actual_path = if use_zstd {
-        path.with_extension("ndjson.zst")
+        PathBuf::from(format!("{}.ndjson.zst", path.display()))
     } else {
-        path.with_extension("ndjson")
+        PathBuf::from(format!("{}.ndjson", path.display()))
     };
 
     if let Some(parent) = actual_path.parent()

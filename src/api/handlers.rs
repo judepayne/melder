@@ -621,6 +621,22 @@ pub async fn review_list(
 // Admin endpoints
 // ---------------------------------------------------------------------------
 
+/// Derive the scoring log file path from config (mirrors open_scoring_log logic).
+fn scoring_log_path_from_config(config: &crate::config::Config) -> Option<std::path::PathBuf> {
+    if !config.scoring_log.enabled {
+        return None;
+    }
+    let sl_dir = config.output.csv_dir_path.as_deref().unwrap_or(".");
+    let sl_base = std::path::Path::new(sl_dir).join(format!("{}.scoring_log", config.job.name));
+    let use_zstd = config.scoring_log.compression != "none";
+    let actual = if use_zstd {
+        std::path::PathBuf::from(format!("{}.ndjson.zst", sl_base.display()))
+    } else {
+        std::path::PathBuf::from(format!("{}.ndjson", sl_base.display()))
+    };
+    if actual.exists() { Some(actual) } else { None }
+}
+
 /// POST /admin/flush — build outputs without shutting down.
 pub async fn admin_flush(State(session): State<AppState>) -> axum::response::Response {
     let ml_path = session
@@ -650,10 +666,12 @@ pub async fn admin_flush(State(session): State<AppState>) -> axum::response::Res
 
     let manifest = crate::output::OutputManifest::from_config(&session.state.config);
 
+    let sl_path = scoring_log_path_from_config(&session.state.config);
+
     match tokio::task::spawn_blocking(move || {
         crate::output::build_outputs(
             std::path::Path::new(&ml_path),
-            None,
+            sl_path.as_deref(),
             csv_dir.as_deref().map(std::path::Path::new),
             db_path.as_deref().map(std::path::Path::new),
             &manifest,
@@ -713,11 +731,12 @@ pub async fn admin_shutdown(State(session): State<AppState>) -> axum::response::
             .match_log_path
             .clone()
             .unwrap_or_else(|| "bench/upsert.wal".to_string());
+        let sl_path = scoring_log_path_from_config(&session.state.config);
         let manifest = crate::output::OutputManifest::from_config(&session.state.config);
         if let Ok(Ok(report)) = tokio::task::spawn_blocking(move || {
             crate::output::build_outputs(
                 std::path::Path::new(&ml_path),
-                None,
+                sl_path.as_deref(),
                 csv_dir.as_deref().map(std::path::Path::new),
                 db_path.as_deref().map(std::path::Path::new),
                 &manifest,
@@ -734,10 +753,21 @@ pub async fn admin_shutdown(State(session): State<AppState>) -> axum::response::
         }
     }
 
-    // Schedule process exit after response is sent.
+    // Signal graceful shutdown after response is sent.
+    // Send SIGTERM to self so the shutdown_signal() future resolves and
+    // the serve.rs cleanup sequence runs (WAL compact, scoring log flush, etc.).
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        std::process::exit(0);
+        #[cfg(unix)]
+        {
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGTERM);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            std::process::exit(0);
+        }
     });
 
     (
