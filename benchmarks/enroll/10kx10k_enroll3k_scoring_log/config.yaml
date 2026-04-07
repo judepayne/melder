@@ -1,0 +1,58 @@
+job:
+  name: enroll_10kx10k_scoring_log
+  description: Enroll benchmark — 10k pool, usearch, scoring log enabled, 3k enrollments
+
+# Pre-load 10k reference entities into the pool at startup.
+dataset:
+  path: benchmarks/data/dataset_a_10k.csv
+  id_field: entity_id
+  format: csv
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  cache_dir: benchmarks/enroll/10kx10k_enroll3k_scoring_log/cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field: country_code
+
+match_fields:
+  - field: legal_name
+    method: embedding
+    weight: 0.55
+  - field: short_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+  - field: country_code
+    method: exact
+    weight: 0.20
+  - field: lei
+    method: exact
+    weight: 0.05
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+vector_backend: usearch
+top_n: 20
+ann_candidates: 20
+
+performance:
+  encoder_pool_size: 4
+  vector_index_mode: "load"
+
+live:
+  skip_initial_match: true
+  match_log_path: benchmarks/enroll/10kx10k_enroll3k_scoring_log/wal/events.ndjson
+
+scoring_log:
+  enabled: true
+  compression: zstd
+
+output:
+  csv_dir_path: benchmarks/enroll/10kx10k_enroll3k_scoring_log/output
+  db_path: benchmarks/enroll/10kx10k_enroll3k_scoring_log/output/results.db

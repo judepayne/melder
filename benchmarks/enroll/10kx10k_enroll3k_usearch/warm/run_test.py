@@ -10,7 +10,7 @@ On first run the cache is empty so the server builds the index (slow).
 Run again afterwards for a true warm measurement.
 
 Run from the project root:
-    python3 benchmarks/live/10kx10k_enroll3k_usearch/warm/run_test.py
+    python3 benchmarks/enroll/10kx10k_enroll3k_usearch/warm/run_test.py
 """
 
 import argparse
@@ -27,7 +27,7 @@ import time
 import urllib.error
 import urllib.request
 
-TEST_DIR = "benchmarks/live/10kx10k_enroll3k_usearch/warm"
+TEST_DIR = "benchmarks/enroll/10kx10k_enroll3k_usearch/warm"
 BINARY_DEFAULT = "./target/release/meld"
 PORT = 8091
 ITERATIONS = 3000

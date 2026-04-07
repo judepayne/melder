@@ -12,7 +12,7 @@ dataset:
 embeddings:
   model: all-MiniLM-L6-v2
   # model: themelder/arctic-embed-xs-entity-resolution
-  cache_dir: benchmarks/live/10kx10k_enroll3k_usearch/warm/cache
+  cache_dir: benchmarks/enroll/10kx10k_enroll3k_usearch/warm/cache
 
 blocking:
   enabled: true
@@ -41,7 +41,7 @@ thresholds:
 
 live:
   skip_initial_match: true
-  match_log_path: benchmarks/live/10kx10k_enroll3k_usearch/warm/wal/events.ndjson
+  match_log_path: benchmarks/enroll/10kx10k_enroll3k_usearch/warm/wal/events.ndjson
 
 performance:
   encoder_pool_size: 4

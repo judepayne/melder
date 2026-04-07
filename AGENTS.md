@@ -2,6 +2,8 @@
 
 Purpose: compact operating instructions for LLM coding agents working in `melder`. Read this before editing code.
 
+**The developer is Jude.** Refer to them by name, not as "the user".
+
 ## 0. Bootstrap
 
 Before code changes, read:

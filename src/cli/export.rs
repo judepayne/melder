@@ -21,7 +21,16 @@ use crate::state::match_log::{MatchLog, MatchLogEvent};
 /// unmatched_b.csv. Reads from SQLite if `live.db_path` is set and the DB
 /// file exists; otherwise reconstructs state from CSV datasets + WAL replay.
 pub fn cmd_export(config_path: &Path, out_dir: &Path) {
-    let cfg = super::load_config_or_exit(config_path);
+    let cfg = match crate::config::load_config(config_path) {
+        Ok(c) => c,
+        Err(_) => match crate::config::load_enroll_config(config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Config error: {}", e);
+                process::exit(1);
+            }
+        },
+    };
 
     // Guard: batch configs have neither match_log_path nor db_path configured.
     if cfg.live.match_log_path.is_none() && cfg.live.db_path.is_none() {

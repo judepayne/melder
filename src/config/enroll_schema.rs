@@ -150,6 +150,12 @@ pub struct EnrollConfig {
     /// Known non-matching pairs to exclude from scoring.
     #[serde(default)]
     pub exclusions: ExclusionsConfig,
+
+    #[serde(default)]
+    pub output: OutputConfig,
+
+    #[serde(default)]
+    pub scoring_log: ScoringLogConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -296,8 +302,8 @@ impl EnrollConfig {
             match_fields,
             output_mapping: Vec::new(),
             thresholds: self.thresholds,
-            output: OutputConfig::default(),
-            scoring_log: ScoringLogConfig::default(),
+            output: self.output,
+            scoring_log: self.scoring_log,
             batch: BatchConfig::default(),
             live: self.live,
             performance: self.performance,
