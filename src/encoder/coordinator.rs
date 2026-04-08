@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel as cbc;
 
-use crate::encoder::EncoderPool;
+use crate::encoder::{Encoder, EncoderPool};
 use crate::error::EncoderError;
 
 /// A batch of texts submitted by one caller, with a channel to return results.

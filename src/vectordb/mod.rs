@@ -38,7 +38,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::config::schema::{BlockingConfig, MatchMethod};
-use crate::encoder::EncoderPool;
+use crate::encoder::{Encoder, EncoderPool};
 use crate::error::MelderError;
 use crate::models::{Record, Side};
 

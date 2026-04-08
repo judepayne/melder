@@ -11,6 +11,7 @@ use std::time::Instant;
 use tracing::{info, info_span, warn};
 
 use crate::bm25::scorer::normalise_bm25;
+use crate::encoder::Encoder;
 use crate::error::SessionError;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};

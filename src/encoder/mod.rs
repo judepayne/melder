@@ -32,6 +32,38 @@ use tracing::{info, info_span};
 use crate::error::EncoderError;
 
 // ---------------------------------------------------------------------------
+// Encoder trait
+// ---------------------------------------------------------------------------
+
+/// Trait for text embedding encoders.
+///
+/// The default implementation is `EncoderPool` (local ONNX inference).
+/// Alternative implementations might call a remote embedding service
+/// over HTTP, use a different model runtime, etc.
+pub trait Encoder: Send + Sync + std::fmt::Debug {
+    /// Encode a batch of texts into embedding vectors.
+    fn encode(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EncoderError>;
+
+    /// Encode a single text, returning a single vector.
+    fn encode_one(&self, text: &str) -> Result<Vec<f32>, EncoderError> {
+        let results = self.encode(&[text])?;
+        results
+            .into_iter()
+            .next()
+            .ok_or_else(|| EncoderError::Inference("empty result from encoder".into()))
+    }
+
+    /// The dimensionality of the embedding vectors produced by this encoder.
+    fn dim(&self) -> usize;
+
+    /// Number of concurrent encoding slots available.
+    fn pool_size(&self) -> usize;
+
+    /// Maximum batch size for a single encode call.
+    fn encode_batch_size(&self) -> usize;
+}
+
+// ---------------------------------------------------------------------------
 // Stderr suppression for CoreML framework noise
 // ---------------------------------------------------------------------------
 
@@ -640,17 +672,14 @@ impl EncoderPool {
             encode_batch_size,
         })
     }
+}
 
-    /// Returns the configured ONNX batch size for encoding.
-    pub fn encode_batch_size(&self) -> usize {
+impl Encoder for EncoderPool {
+    fn encode_batch_size(&self) -> usize {
         self.encode_batch_size
     }
 
-    /// Encode texts synchronously. Acquires the first available encoder slot.
-    ///
-    /// Tries each slot via `try_lock` (round-robin). If all busy, blocks on
-    /// a round-robin slot to distribute contention evenly.
-    pub fn encode(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EncoderError> {
+    fn encode(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EncoderError> {
         let _span = info_span!("onnx_encode", n = texts.len()).entered();
         if texts.is_empty() {
             return Ok(vec![]);
@@ -680,22 +709,11 @@ impl EncoderPool {
             .map_err(|e| EncoderError::Inference(e.to_string()))
     }
 
-    /// Encode a single text, returning a single vector.
-    pub fn encode_one(&self, text: &str) -> Result<Vec<f32>, EncoderError> {
-        let results = self.encode(&[text])?;
-        results
-            .into_iter()
-            .next()
-            .ok_or_else(|| EncoderError::Inference("empty result from encoder".into()))
-    }
-
-    /// Returns the embedding dimension for this pool's model.
-    pub fn dim(&self) -> usize {
+    fn dim(&self) -> usize {
         self.dim
     }
 
-    /// Returns the number of encoder instances in the pool.
-    pub fn pool_size(&self) -> usize {
+    fn pool_size(&self) -> usize {
         self.encoders.len()
     }
 }

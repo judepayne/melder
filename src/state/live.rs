@@ -17,7 +17,7 @@ use crate::config::{Config, MatchMethod};
 use crate::crossmap::{CrossMapOps, MemoryCrossMap};
 use crate::data;
 use crate::encoder::coordinator::EncoderCoordinator;
-use crate::encoder::{EncoderOptions, EncoderPool};
+use crate::encoder::{Encoder, EncoderOptions, EncoderPool};
 use crate::error::MelderError;
 use crate::models::Side;
 use crate::state::match_log::{MatchLog, MatchLogEvent};

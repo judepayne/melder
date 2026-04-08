@@ -101,7 +101,12 @@ Items are ranked by assessed usefulness.
 
 ---
 
-**1. External vector database.** *(Vector index) -- maybe*
+**1. OpenLineage integration.** *(Observability / Governance)*
+Emit OpenLineage JSON events (START, COMPLETE, FAIL) at batch run and live session boundaries. Input facets: dataset paths, schemas, row counts. Output facets: relationships/unmatched/crossmap row counts, scoring config, match statistics. Events to stdout (NDJSON) or configurable HTTP endpoint. Enables melder jobs to appear in enterprise data catalogs (Marquez, DataHub, Atlan, OpenMetadata) alongside Spark/dbt/Airflow jobs. Lightweight — just structured JSON, no new dependencies beyond serde. Key value: governance/compliance teams can trace any match decision back to source datasets and the exact run that produced it.
+
+---
+
+**2. External vector database.** *(Vector index) -- maybe*
 Qdrant / Milvus / Weaviate over gRPC. The `VectorDB` trait surface is already
 the right abstraction -- a client implementation would be a drop-in replacement.
 Buys: no staleness problem, durable persistence, multiple melder instances sharing

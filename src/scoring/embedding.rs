@@ -66,6 +66,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoder::Encoder;
 
     #[test]
     fn identical_vectors() {

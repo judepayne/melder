@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::config::Config;
 use crate::data;
-use crate::encoder::{EncoderOptions, EncoderPool};
+use crate::encoder::{Encoder, EncoderOptions, EncoderPool};
 use crate::error::MelderError;
 use crate::models::Side;
 use crate::store::RecordStore;
