@@ -55,6 +55,7 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
     if let Some(ref ml_path) = cfg.live.match_log_path {
         let ml = std::path::Path::new(ml_path);
         let manifest = crate::output::OutputManifest::from_config(&cfg);
+        let parquet_dir = cfg.output.parquet_dir_path.as_deref().map(Path::new);
         let db_path = cfg.output.db_path.as_deref().map(Path::new);
         let sl_path = if cfg.scoring_log.enabled {
             let sl_dir = cfg.output.csv_dir_path.as_deref().unwrap_or(".");
@@ -73,6 +74,7 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
             ml,
             sl_path.as_deref(),
             Some(out_dir),
+            parquet_dir,
             db_path,
             &manifest,
         ) {

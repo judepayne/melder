@@ -1,5 +1,5 @@
-//! Build pipeline: reads match log + optional scoring log, produces CSVs
-//! and/or SQLite DB.
+//! Build pipeline: reads match log + optional scoring log, produces CSVs,
+//! Parquet, and/or SQLite DB.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -57,6 +57,7 @@ pub fn build_outputs(
     match_log_path: &Path,
     scoring_log_path: Option<&Path>,
     csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
     db_path: Option<&Path>,
     manifest: &OutputManifest,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
@@ -286,6 +287,53 @@ pub fn build_outputs(
             dir = %dir.display(),
             "CSV output written"
         );
+    }
+
+    // Write Parquet outputs.
+    #[cfg(feature = "parquet-format")]
+    if let Some(dir) = parquet_dir {
+        std::fs::create_dir_all(dir)?;
+
+        super::parquet::write_relationships_parquet(
+            &dir.join("relationships.parquet"),
+            &rel_vec,
+            &a_records,
+            &manifest.a_fields,
+            &manifest.a_id_field,
+            &manifest.b_id_field,
+        )
+        .map_err(|e| format!("relationships.parquet: {}", e))?;
+
+        super::parquet::write_unmatched_parquet(
+            &dir.join("unmatched.parquet"),
+            &unmatched,
+            &manifest.b_fields,
+            &manifest.b_id_field,
+        )
+        .map_err(|e| format!("unmatched.parquet: {}", e))?;
+
+        if !candidate_rows.is_empty() {
+            super::parquet::write_candidates_parquet(
+                &dir.join("candidates.parquet"),
+                &candidate_rows,
+                &manifest.b_id_field,
+                &manifest.a_id_field,
+            )
+            .map_err(|e| format!("candidates.parquet: {}", e))?;
+        }
+
+        info!(
+            relationships = match_count + review_count,
+            unmatched = unmatched.len(),
+            field_scores = field_scores.len(),
+            dir = %dir.display(),
+            "Parquet output written"
+        );
+    }
+
+    #[cfg(not(feature = "parquet-format"))]
+    if parquet_dir.is_some() {
+        return Err("parquet output requires the 'parquet-format' feature: cargo build --features parquet-format".into());
     }
 
     // Write SQLite DB.

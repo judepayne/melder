@@ -1,0 +1,66 @@
+job:
+  name: batch_10kx10k_usearch_parquet
+  description: Batch benchmark — 10k × 10k, usearch backend, parquet in + out
+
+datasets:
+  a:
+    path: benchmarks/data/dataset_a_10k.parquet
+    id_field: entity_id
+    format: parquet
+  b:
+    path: benchmarks/data/dataset_b_10k.parquet
+    id_field: counterparty_id
+    format: parquet
+
+cross_map:
+  backend: local
+  path: benchmarks/batch/10kx10k_usearch_parquet/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  # model: themelder/arctic-embed-xs-entity-resolution
+  a_cache_dir: benchmarks/batch/10kx10k_usearch_parquet/cache
+  b_cache_dir: benchmarks/batch/10kx10k_usearch_parquet/cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: embedding
+    weight: 0.55
+  - field_a: short_name
+    field_b: counterparty_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+  - field_a: country_code
+    field_b: domicile
+    method: exact
+    weight: 0.20
+  - field_a: lei
+    field_b: lei_code
+    method: exact
+    weight: 0.05
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+output:
+  parquet_dir_path: benchmarks/batch/10kx10k_usearch_parquet/output
+
+performance:
+  encoder_pool_size: 4
+  vector_index_mode: "load"
+
+vector_backend: usearch
+top_n: 20
+ann_candidates: 20

@@ -81,6 +81,8 @@ Last updated: 2026-04-07 (Linux CUDA GPU encode test verified)
   - **Deferred:** H1 (common-ID TOCTOU — needs atomic crossmap pair ops), H5 (poisoned RwLock — documented pattern, ~100 sites), M4 (crossmap pagination O(n log n) — needs sorted store), L2 (blocking partial-key O(n) — document only).
   - All 4 regression benchmarks green after every commit. 420 tests pass throughout.
 
+- [x] **Parquet output** — New `output.parquet_dir_path` config key writes `relationships.parquet`, `unmatched.parquet`, and `candidates.parquet` with typed Arrow schemas (Float64 scores, UInt8 rank, Utf8 strings). Feature-gated behind `parquet-format` (same flag as input). Coexists freely with CSV and SQLite output — any combination allowed. All 4 build_outputs call sites updated (batch, export, admin/flush, admin/shutdown). EnrollConfig passes through automatically. Fixed pre-existing bug where CSV was unconditionally written to cwd when `csv_dir_path` not set. New benchmark: `benchmarks/batch/10kx10k_usearch_parquet/` (parquet in + out). Docs updated. 420 tests pass, clippy/fmt clean.
+
 ## In Progress
 
 - [ ] **Switch usearch back to crates.io** — PR #720 merged 2026-04-05 but latest crates.io release (v2.24.0, 2026-02-16) predates it. Keep fork dependency until a new usearch release includes the fix, then revert `Cargo.toml` to `version = "2"`. Check periodically: https://crates.io/crates/usearch

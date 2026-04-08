@@ -203,8 +203,13 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         .output
         .csv_dir_path
         .as_deref()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| output_dir.to_path_buf());
+        .map(std::path::PathBuf::from);
+    let parquet_dir = state
+        .config
+        .output
+        .parquet_dir_path
+        .as_deref()
+        .map(Path::new);
     let db_path = state.config.output.db_path.as_deref().map(Path::new);
 
     // Build outputs from the match log (+ scoring log if present).
@@ -212,7 +217,8 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     let report = match crate::output::build_outputs(
         &ml_base,
         sl_path.as_deref(),
-        Some(&csv_dir),
+        csv_dir.as_deref(),
+        parquet_dir,
         db_path,
         &manifest,
     ) {
@@ -230,7 +236,8 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         &report,
         &crossmap,
         crossmap_path,
-        &csv_dir,
+        csv_dir.as_deref(),
+        parquet_dir,
         db_path,
         verbose,
     );
@@ -378,6 +385,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         .as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let parquet_dir_sqlite = cfg.output.parquet_dir_path.as_deref().map(Path::new);
     let out_db_path = cfg.output.db_path.as_deref().map(Path::new);
 
     if let Err(e) = std::fs::create_dir_all(&csv_dir) {
@@ -424,7 +432,8 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         },
         &sqlite_crossmap,
         crossmap_path,
-        &csv_dir,
+        Some(&csv_dir),
+        parquet_dir_sqlite,
         out_db_path,
         verbose,
     );
@@ -530,7 +539,8 @@ fn print_summary(
     report: &crate::output::BuildReport,
     crossmap: &dyn CrossMapOps,
     crossmap_path: &str,
-    csv_dir: &Path,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
     db_path: Option<&Path>,
     verbose: bool,
 ) {
@@ -556,16 +566,30 @@ fn print_summary(
     }
     println!();
     println!("Output files:");
-    println!(
-        "  relationships: {} ({} rows)",
-        csv_dir.join("relationships.csv").display(),
-        report.match_count + report.review_count,
-    );
-    println!(
-        "  unmatched:     {} ({} rows)",
-        csv_dir.join("unmatched.csv").display(),
-        report.no_match_count,
-    );
+    if let Some(dir) = csv_dir {
+        println!(
+            "  relationships: {} ({} rows)",
+            dir.join("relationships.csv").display(),
+            report.match_count + report.review_count,
+        );
+        println!(
+            "  unmatched:     {} ({} rows)",
+            dir.join("unmatched.csv").display(),
+            report.no_match_count,
+        );
+    }
+    if let Some(dir) = parquet_dir {
+        println!(
+            "  relationships: {} ({} rows)",
+            dir.join("relationships.parquet").display(),
+            report.match_count + report.review_count,
+        );
+        println!(
+            "  unmatched:     {} ({} rows)",
+            dir.join("unmatched.parquet").display(),
+            report.no_match_count,
+        );
+    }
     if let Some(db) = db_path {
         println!("  database:      {}", db.display());
     }

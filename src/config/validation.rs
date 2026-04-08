@@ -60,10 +60,13 @@ pub(crate) fn validate(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // output: at least one destination
-    if cfg.output.csv_dir_path.is_none() && cfg.output.db_path.is_none() {
+    if cfg.output.csv_dir_path.is_none()
+        && cfg.output.parquet_dir_path.is_none()
+        && cfg.output.db_path.is_none()
+    {
         return Err(ConfigError::InvalidValue {
             field: "output".into(),
-            message: "at least one of output.csv_dir_path or output.db_path must be set".into(),
+            message: "at least one of output.csv_dir_path, output.parquet_dir_path, or output.db_path must be set".into(),
         });
     }
 

@@ -653,13 +653,14 @@ pub async fn admin_flush(State(session): State<AppState>) -> axum::response::Res
         .clone()
         .unwrap_or_else(|| "bench/upsert.wal".to_string());
     let csv_dir = session.state.config.output.csv_dir_path.clone();
+    let parquet_dir = session.state.config.output.parquet_dir_path.clone();
     let db_path = session.state.config.output.db_path.clone();
 
-    if csv_dir.is_none() && db_path.is_none() {
+    if csv_dir.is_none() && parquet_dir.is_none() && db_path.is_none() {
         return (
             StatusCode::BAD_REQUEST,
             Json(
-                serde_json::json!({"error": "no output.csv_dir_path or output.db_path configured"}),
+                serde_json::json!({"error": "no output.csv_dir_path, output.parquet_dir_path, or output.db_path configured"}),
             ),
         )
             .into_response();
@@ -679,6 +680,7 @@ pub async fn admin_flush(State(session): State<AppState>) -> axum::response::Res
             std::path::Path::new(&ml_path),
             sl_path.as_deref(),
             csv_dir.as_deref().map(std::path::Path::new),
+            parquet_dir.as_deref().map(std::path::Path::new),
             db_path.as_deref().map(std::path::Path::new),
             &manifest,
         )
@@ -727,9 +729,10 @@ pub async fn admin_shutdown(State(session): State<AppState>) -> axum::response::
     }
 
     let csv_dir = session.state.config.output.csv_dir_path.clone();
+    let parquet_dir = session.state.config.output.parquet_dir_path.clone();
     let db_path = session.state.config.output.db_path.clone();
 
-    if csv_dir.is_some() || db_path.is_some() {
+    if csv_dir.is_some() || parquet_dir.is_some() || db_path.is_some() {
         let ml_path = session
             .state
             .config
@@ -744,6 +747,7 @@ pub async fn admin_shutdown(State(session): State<AppState>) -> axum::response::
                 std::path::Path::new(&ml_path),
                 sl_path.as_deref(),
                 csv_dir.as_deref().map(std::path::Path::new),
+                parquet_dir.as_deref().map(std::path::Path::new),
                 db_path.as_deref().map(std::path::Path::new),
                 &manifest,
             )

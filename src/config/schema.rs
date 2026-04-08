@@ -416,6 +416,9 @@ pub struct OutputConfig {
     /// Directory for CSV output files (relationships.csv, unmatched.csv).
     #[serde(default)]
     pub csv_dir_path: Option<String>,
+    /// Directory for Parquet output files (relationships.parquet, unmatched.parquet).
+    #[serde(default)]
+    pub parquet_dir_path: Option<String>,
     /// Path for the SQLite output database.
     #[serde(default)]
     pub db_path: Option<String>,

@@ -318,17 +318,19 @@ thresholds:
 
 ## `output`
 
-Controls where results are written. At least one of `csv_dir_path` or `db_path` should be set in batch mode.
+Controls where results are written. At least one of `csv_dir_path`, `parquet_dir_path`, or `db_path` must be set. Multiple can be set simultaneously.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `csv_dir_path` | no | `None` | Directory for `relationships.csv`, `unmatched.csv`, and `candidates.csv`. Created if it does not exist. |
+| `parquet_dir_path` | no | `None` | Directory for `relationships.parquet`, `unmatched.parquet`, and `candidates.parquet`. Requires `--features parquet-format`. Created if it does not exist. |
 | `db_path` | no | `None` | Path for the output SQLite database with tables and analytical views. |
 | `cleanup_match_log` | no | `false` | Batch mode only. When true, deletes the match log after a successful build. |
 
 ```yaml
 output:
   csv_dir_path: output/
+  parquet_dir_path: output/parquet/
   db_path: output/results.db
 ```
 
