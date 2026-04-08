@@ -75,8 +75,11 @@ pub fn cmd_serve(config_path: &Path, port: u16, bind: &str) {
         // Run initial matching pass: score all unmatched B records against A.
         // This ensures that pre-loaded datasets are matched before the API
         // starts accepting requests.
-        if !state.config.live.skip_initial_match {
-            session.initial_match_pass();
+        if !state.config.live.skip_initial_match
+            && let Err(e) = session.initial_match_pass()
+        {
+            eprintln!("Initial match pass failed (WAL write error): {}", e);
+            process::exit(1);
         }
 
         // Start background crossmap flusher

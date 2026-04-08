@@ -313,7 +313,7 @@ impl Session {
     /// hooks, and review queue entries.
     ///
     /// Skips encoding — records are already in the store and vector index.
-    pub fn initial_match_pass(&self) {
+    pub fn initial_match_pass(&self) -> Result<(), SessionError> {
         let config = &self.state.config;
         let store = &self.state.store;
 
@@ -321,7 +321,7 @@ impl Session {
         let a_count = store.len(Side::A).unwrap_or(0);
         let b_count = store.len(Side::B).unwrap_or(0);
         if a_count == 0 || b_count == 0 {
-            return;
+            return Ok(());
         }
 
         // Collect unmatched B IDs
@@ -331,7 +331,7 @@ impl Session {
                 a_count,
                 b_count, "initial match: all B records already matched"
             );
-            return;
+            return Ok(());
         }
 
         info!(
@@ -470,15 +470,13 @@ impl Session {
                             field_scores: result.field_scores.clone(),
                         });
 
-                        if let Err(e) = self.state.wal.append(&MatchLogEvent::CrossMapConfirm {
+                        self.state.wal.append(&MatchLogEvent::CrossMapConfirm {
                             a_id: a_id.clone(),
                             b_id: b_id.clone(),
                             score: Some(result.score),
                             rank: result.rank,
                             reason: result.reason.clone(),
-                        }) {
-                            warn!(error = %e, "WAL append failed for initial match confirm");
-                        }
+                        })?;
                         self.state.mark_crossmap_dirty();
                         auto_matched += 1;
                         break;
@@ -486,16 +484,14 @@ impl Session {
                     continue;
                 }
                 // Review band
-                if let Err(e) = self.state.wal.append(&MatchLogEvent::ReviewMatch {
+                self.state.wal.append(&MatchLogEvent::ReviewMatch {
                     id: b_id.clone(),
                     side: Side::B,
                     candidate_id: result.matched_id.clone(),
                     score: result.score,
                     rank: result.rank,
                     reason: result.reason.clone(),
-                }) {
-                    warn!(error = %e, "WAL append failed for initial match review");
-                }
+                })?;
                 let key = review_queue_key(Side::B, b_id, &result.matched_id);
                 self.state.insert_review(
                     key,
@@ -526,6 +522,7 @@ impl Session {
             elapsed_s = format!("{:.1}", elapsed),
             "initial match pass complete"
         );
+        Ok(())
     }
 
     /// Upsert a record into the live state and attempt matching.
@@ -682,12 +679,10 @@ impl Session {
                 store.mark_unmatched(Side::B, &b_id)?;
 
                 // WAL
-                if let Err(e) = self.state.wal.append(&MatchLogEvent::CrossMapBreak {
+                self.state.wal.append(&MatchLogEvent::CrossMapBreak {
                     a_id: a_id.clone(),
                     b_id: b_id.clone(),
-                }) {
-                    warn!(error = %e, "WAL append failed for crossmap break");
-                }
+                })?;
 
                 old_mapping = Some(OldMapping { a_id, b_id });
                 self.state.mark_crossmap_dirty();
@@ -700,9 +695,7 @@ impl Session {
         }
 
         // 3. WAL append (zero-clone borrowing serialization).
-        if let Err(e) = self.state.wal.append_upsert(side, &record) {
-            warn!(error = %e, "WAL append failed for upsert");
-        }
+        self.state.wal.append_upsert(side, &record)?;
 
         // 4. Insert/replace record
         store.insert(side, &id, &record)?;
@@ -858,15 +851,13 @@ impl Session {
                     store.mark_matched(Side::A, &a_id)?;
                     store.mark_matched(Side::B, &b_id)?;
 
-                    if let Err(e) = self.state.wal.append(&MatchLogEvent::CrossMapConfirm {
+                    self.state.wal.append(&MatchLogEvent::CrossMapConfirm {
                         a_id: a_id.clone(),
                         b_id: b_id.clone(),
                         score: Some(1.0),
                         rank: None,
                         reason: Some("canonical".into()),
-                    }) {
-                        warn!(error = %e, "WAL append failed for crossmap confirm");
-                    }
+                    })?;
                     self.state.mark_crossmap_dirty();
 
                     self.send_hook(crate::hooks::HookEvent::Confirm {
@@ -1008,15 +999,13 @@ impl Session {
                         field_scores: result.field_scores.clone(),
                     });
 
-                    if let Err(e) = self.state.wal.append(&MatchLogEvent::CrossMapConfirm {
+                    self.state.wal.append(&MatchLogEvent::CrossMapConfirm {
                         a_id,
                         b_id,
                         score: Some(result.score),
                         rank: result.rank,
                         reason: result.reason.clone(),
-                    }) {
-                        warn!(error = %e, "WAL append failed for crossmap confirm");
-                    }
+                    })?;
                     self.state.mark_crossmap_dirty();
                     classification = "auto".to_string();
                     break;
@@ -1024,16 +1013,14 @@ impl Session {
                 continue;
             }
             // Score is in review band
-            if let Err(e) = self.state.wal.append(&MatchLogEvent::ReviewMatch {
+            self.state.wal.append(&MatchLogEvent::ReviewMatch {
                 id: id.clone(),
                 side,
                 candidate_id: result.matched_id.clone(),
                 score: result.score,
                 rank: result.rank,
                 reason: result.reason.clone(),
-            }) {
-                warn!(error = %e, "WAL append failed for review match");
-            }
+            })?;
             let key = review_queue_key(side, &id, &result.matched_id);
             self.state.insert_review(
                 key,
@@ -1153,12 +1140,10 @@ impl Session {
         store.remove(side, id)?;
 
         // Append to WAL
-        if let Err(e) = self.state.wal.append(&MatchLogEvent::RemoveRecord {
+        self.state.wal.append(&MatchLogEvent::RemoveRecord {
             side,
             id: id.to_string(),
-        }) {
-            warn!(error = %e, "WAL append failed for remove record");
-        }
+        })?;
 
         Ok(RemoveResponse {
             status: "removed".to_string(),
@@ -1450,15 +1435,13 @@ impl Session {
         // Drain any review entries involving either ID.
         self.state.drain_reviews_for_pair(a_id, b_id);
 
-        if let Err(e) = self.state.wal.append(&MatchLogEvent::CrossMapConfirm {
+        self.state.wal.append(&MatchLogEvent::CrossMapConfirm {
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
             score: None,
             rank: None,
             reason: Some("crossmap".into()),
-        }) {
-            warn!(error = %e, "WAL append failed for crossmap confirm");
-        }
+        })?;
         self.state.mark_crossmap_dirty();
 
         // Hook: on_confirm (manual)
@@ -1526,12 +1509,10 @@ impl Session {
         // Drain any review entries involving either ID.
         self.state.drain_reviews_for_pair(a_id, b_id);
 
-        if let Err(e) = self.state.wal.append(&MatchLogEvent::CrossMapBreak {
+        self.state.wal.append(&MatchLogEvent::CrossMapBreak {
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
-        }) {
-            warn!(error = %e, "WAL append failed for crossmap break");
-        }
+        })?;
         self.state.mark_crossmap_dirty();
 
         // Hook: on_break
@@ -1552,7 +1533,7 @@ impl Session {
     /// If the pair is currently matched to each other in the CrossMap, the match
     /// is broken first. The pair is then added to the exclusions set and will
     /// never be scored or matched again (until unexcluded).
-    pub fn exclude(&self, a_id: &str, b_id: &str) -> ExcludeResponse {
+    pub fn exclude(&self, a_id: &str, b_id: &str) -> Result<ExcludeResponse, SessionError> {
         let store = &self.state.store;
         let mut match_was_broken = false;
 
@@ -1564,12 +1545,10 @@ impl Session {
             let _ = store.mark_unmatched(Side::B, b_id);
             self.state.drain_reviews_for_pair(a_id, b_id);
 
-            if let Err(e) = self.state.wal.append(&MatchLogEvent::CrossMapBreak {
+            self.state.wal.append(&MatchLogEvent::CrossMapBreak {
                 a_id: a_id.to_string(),
                 b_id: b_id.to_string(),
-            }) {
-                warn!(error = %e, "WAL append failed for crossmap break (exclude)");
-            }
+            })?;
             self.state.mark_crossmap_dirty();
 
             // Hook: on_break (the match was broken as part of the exclude)
@@ -1585,12 +1564,10 @@ impl Session {
         self.state.exclusions.add(a_id, b_id);
 
         // WAL: exclude event
-        if let Err(e) = self.state.wal.append(&MatchLogEvent::Exclude {
+        self.state.wal.append(&MatchLogEvent::Exclude {
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
-        }) {
-            warn!(error = %e, "WAL append failed for exclude");
-        }
+        })?;
 
         // Hook: on_exclude
         self.send_hook(crate::hooks::HookEvent::Exclude {
@@ -1601,40 +1578,38 @@ impl Session {
 
         info!(a_id, b_id, match_was_broken, "exclude");
 
-        ExcludeResponse {
+        Ok(ExcludeResponse {
             excluded: true,
             match_was_broken,
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
-        }
+        })
     }
 
     /// Remove an exclusion for a pair of records.
     ///
     /// After unexcluding, the pair can be matched again on the next upsert
     /// or try-match.
-    pub fn unexclude(&self, a_id: &str, b_id: &str) -> UnexcludeResponse {
+    pub fn unexclude(&self, a_id: &str, b_id: &str) -> Result<UnexcludeResponse, SessionError> {
         let was_excluded = self.state.exclusions.contains(a_id, b_id);
 
         if was_excluded {
             self.state.exclusions.remove(a_id, b_id);
 
             // WAL: unexclude event
-            if let Err(e) = self.state.wal.append(&MatchLogEvent::Unexclude {
+            self.state.wal.append(&MatchLogEvent::Unexclude {
                 a_id: a_id.to_string(),
                 b_id: b_id.to_string(),
-            }) {
-                warn!(error = %e, "WAL append failed for unexclude");
-            }
+            })?;
         }
 
         info!(a_id, b_id, was_excluded, "unexclude");
 
-        UnexcludeResponse {
+        Ok(UnexcludeResponse {
             removed: was_excluded,
             a_id: a_id.to_string(),
             b_id: b_id.to_string(),
-        }
+        })
     }
 
     /// Query a record by ID, returning the record and its crossmap status.
@@ -2215,9 +2190,7 @@ impl Session {
         }
 
         // WAL append
-        if let Err(e) = self.state.wal.append_upsert(side, &record) {
-            tracing::warn!(error = %e, "WAL append failed for enroll upsert");
-        }
+        self.state.wal.append_upsert(side, &record)?;
 
         // Insert into store
         store.insert(side, &id, &record)?;

@@ -134,6 +134,9 @@ pub enum SessionError {
 
     #[error("store error: {0}")]
     Store(#[from] StoreError),
+
+    #[error("WAL write failed: {0}")]
+    Wal(#[from] std::io::Error),
 }
 
 impl SessionError {
@@ -143,7 +146,7 @@ impl SessionError {
             SessionError::MissingField { .. } | SessionError::EmptyId => 400,
             SessionError::NotFound { .. } => 404,
             SessionError::BatchValidation { .. } => 422,
-            SessionError::Encoder(_) | SessionError::Store(_) => 500,
+            SessionError::Encoder(_) | SessionError::Store(_) | SessionError::Wal(_) => 500,
         }
     }
 }

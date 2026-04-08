@@ -1056,13 +1056,15 @@ impl LiveMatchState {
 
     /// Insert a review entry into the queue (and persist via RecordStore).
     pub fn insert_review(&self, key: String, entry: ReviewEntry) {
-        let _ = self.store.persist_review(
+        if let Err(e) = self.store.persist_review(
             &key,
             &entry.id,
             entry.side,
             &entry.candidate_id,
             entry.score,
-        );
+        ) {
+            warn!(error = %e, key, "review persist failed — in-memory only until restart");
+        }
         self.review_queue.insert(key, entry);
     }
 
@@ -1070,7 +1072,9 @@ impl LiveMatchState {
     pub fn drain_reviews_for_id(&self, id: &str) {
         self.review_queue
             .retain(|_, v| v.id != id && v.candidate_id != id);
-        let _ = self.store.remove_reviews_for_id(id);
+        if let Err(e) = self.store.remove_reviews_for_id(id) {
+            warn!(error = %e, id, "review drain (by id) persist failed");
+        }
     }
 
     /// Drain review entries involving either ID (on crossmap confirm/break).
@@ -1078,7 +1082,9 @@ impl LiveMatchState {
         self.review_queue.retain(|_, v| {
             !((v.id == a_id || v.candidate_id == a_id) || (v.id == b_id || v.candidate_id == b_id))
         });
-        let _ = self.store.remove_reviews_for_pair(a_id, b_id);
+        if let Err(e) = self.store.remove_reviews_for_pair(a_id, b_id) {
+            warn!(error = %e, a_id, b_id, "review drain (by pair) persist failed");
+        }
     }
 
     /// Save combined embedding index caches to disk.

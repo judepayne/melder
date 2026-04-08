@@ -428,7 +428,10 @@ pub async fn exclude(
     let a_id = body.a_id;
     let b_id = body.b_id;
     match tokio::task::spawn_blocking(move || session.exclude(&a_id, &b_id)).await {
-        Ok(resp) => json_ok(resp),
+        Ok(Ok(resp)) => json_ok(resp),
+        Ok(Err(e)) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response()
+        }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
 }
@@ -441,7 +444,10 @@ pub async fn unexclude(
     let a_id = body.a_id;
     let b_id = body.b_id;
     match tokio::task::spawn_blocking(move || session.unexclude(&a_id, &b_id)).await {
-        Ok(resp) => json_ok(resp),
+        Ok(Ok(resp)) => json_ok(resp),
+        Ok(Err(e)) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response()
+        }
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
     }
 }
