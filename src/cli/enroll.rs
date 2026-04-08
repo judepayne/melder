@@ -7,6 +7,12 @@ use tracing::{info, warn};
 
 /// Start the enroll-mode HTTP server.
 pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
+    // 0. Early port check — fail fast before expensive state loading.
+    if let Err(e) = std::net::TcpListener::bind(format!("{bind}:{port}")) {
+        eprintln!("Port {port} on {bind} is already in use: {e}");
+        process::exit(1);
+    }
+
     // 1. Load enroll config
     let cfg = match crate::config::load_enroll_config(config_path) {
         Ok(c) => c,

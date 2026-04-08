@@ -7,6 +7,12 @@ use tracing::{info, warn};
 
 /// Start the live-mode HTTP server.
 pub fn cmd_serve(config_path: &Path, port: u16, bind: &str) {
+    // 0. Early port check — fail fast before expensive state loading.
+    if let Err(e) = std::net::TcpListener::bind(format!("{bind}:{port}")) {
+        eprintln!("Port {port} on {bind} is already in use: {e}");
+        process::exit(1);
+    }
+
     // 1. Load config
     let cfg = super::load_config_or_exit(config_path);
 
