@@ -139,9 +139,9 @@ pub fn check_manifest(
 ) -> StaleReason {
     match read_manifest(cache_path) {
         Err(e) => {
-            eprintln!(
-                "Warning: could not read cache manifest ({}), treating as missing",
-                e
+            tracing::warn!(
+                error = %e,
+                "could not read cache manifest, treating as missing"
             );
             StaleReason::Missing
         }

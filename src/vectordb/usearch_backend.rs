@@ -448,12 +448,7 @@ impl VectorDB for UsearchVectorDB {
             })
             .collect();
 
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        results.truncate(k);
+        crate::vectordb::common::sort_and_truncate(&mut results, k);
 
         Ok(results)
     }
@@ -519,11 +514,7 @@ impl VectorDB for UsearchVectorDB {
             })
             .collect();
 
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| crate::vectordb::common::cmp_score_desc(a.score, b.score));
 
         if results.len() < k && state.active_count() >= k {
             tracing::debug!(

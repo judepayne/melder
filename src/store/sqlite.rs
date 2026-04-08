@@ -14,6 +14,12 @@ use crate::config::{BlockingConfig, BlockingFieldPair};
 use crate::error::StoreError;
 use crate::models::{Record, Side};
 
+/// Maximum SQL bind parameters per chunked IN-clause query.
+/// SQLite's default limit is 32766; we use 900 as a conservative
+/// value that works well across configurations and keeps query
+/// plan overhead low.
+const SQL_CHUNK_SIZE: usize = 900;
+
 use super::RecordStore;
 
 /// Pool of read-only SQLite connections with round-robin acquisition.
@@ -454,7 +460,7 @@ impl RecordStore for SqliteStore {
         };
         let mut results = Vec::with_capacity(ids.len());
 
-        for chunk in ids.chunks(900) {
+        for chunk in ids.chunks(SQL_CHUNK_SIZE) {
             let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
             let sql = format!(
                 "SELECT {} FROM {}_records WHERE id IN ({})",
@@ -496,7 +502,7 @@ impl RecordStore for SqliteStore {
             .collect::<Vec<_>>()
             .join(", ");
 
-        for chunk in ids.chunks(900) {
+        for chunk in ids.chunks(SQL_CHUNK_SIZE) {
             let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
             let sql = format!(
                 "SELECT id, {} FROM {}_records WHERE id IN ({})",

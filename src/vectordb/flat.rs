@@ -13,6 +13,7 @@ use std::sync::RwLock;
 use crate::error::IndexError;
 use crate::models::{Record, Side};
 use crate::scoring::embedding::dot_product_f32;
+use crate::vectordb::common::top_k_by_score;
 
 use super::texthash::TextHashStore;
 use super::{SearchResult, VectorDB, VectorDBError};
@@ -156,21 +157,7 @@ impl VecIndex {
             scores.push((i, dot));
         }
 
-        // Filter out NaN scores (corrupted vectors) before ranking.
-        scores.retain(|(_, s)| !s.is_nan());
-
-        // Partial sort: select top-K
-        let k = k.min(scores.len());
-        if k == 0 {
-            return vec![];
-        }
-        scores.select_nth_unstable_by(k.saturating_sub(1), |a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        scores.truncate(k);
-        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        scores
+        top_k_by_score(scores, k)
             .into_iter()
             .map(|(i, s)| (self.ids[i].clone(), s))
             .collect()
@@ -203,19 +190,7 @@ impl VecIndex {
             scores.push((i, dot));
         }
 
-        // Filter out NaN scores (corrupted vectors) before ranking.
-        scores.retain(|(_, s)| !s.is_nan());
-
-        if scores.is_empty() {
-            return vec![];
-        }
-
-        let k = k.min(scores.len());
-        scores.select_nth_unstable_by(k.saturating_sub(1), |a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        scores.truncate(k);
-        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let scores = top_k_by_score(scores, k);
 
         scores
             .into_iter()

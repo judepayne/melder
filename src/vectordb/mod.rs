@@ -9,6 +9,7 @@
 //! Implementations handle their own persistence format, key mapping,
 //! block routing, and concurrency internally.
 
+pub mod common;
 pub mod flat;
 pub mod manifest;
 pub mod texthash;

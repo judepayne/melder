@@ -51,6 +51,12 @@ impl Exclusions {
     pub fn load(path: &Path, a_field: &str, b_field: &str) -> Result<Self, CrossMapError> {
         let ex = Self::new();
 
+        // Clean up stale temp file from a prior interrupted flush.
+        let temp_path = path.with_extension("tmp");
+        if temp_path.exists() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+
         if !path.exists() {
             return Ok(ex);
         }

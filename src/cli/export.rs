@@ -210,6 +210,10 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
 ///
 /// Reads the table schema dynamically (columnar storage — no JSON blob).
 fn query_unmatched(conn: &rusqlite::Connection, side: &str) -> Vec<(String, Record)> {
+    assert!(
+        side == "a" || side == "b",
+        "query_unmatched: side must be \"a\" or \"b\", got \"{side}\""
+    );
     // Discover columns from the table schema (skip "id")
     let columns: Vec<String> = {
         let mut stmt = conn

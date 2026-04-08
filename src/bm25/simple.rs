@@ -560,8 +560,7 @@ impl SimpleBm25 {
         // Build cursors.
         let mut cursors: Vec<WandCursor> = term_postings
             .iter()
-            .enumerate()
-            .map(|(i, tp)| WandCursor::new(i, tp.idf, &tp.blocks, avg_dl))
+            .map(|tp| WandCursor::new(tp.idf, &tp.blocks, avg_dl))
             .collect();
 
         // Min-heap for top-K (smallest score at top for efficient eviction).
@@ -706,9 +705,6 @@ impl SimpleBm25 {
 
 /// Cursor over a single term's BlockedPostingList for WAND traversal.
 struct WandCursor<'a> {
-    /// Index into the parent term_postings vec (for identification).
-    #[allow(dead_code)]
-    term_idx: usize,
     /// IDF for this term.
     idf: f64,
     /// Reference to the blocks (entries, max_tf).
@@ -724,14 +720,13 @@ struct WandCursor<'a> {
 }
 
 impl<'a> WandCursor<'a> {
-    fn new(term_idx: usize, idf: f64, blocks: &'a [(Vec<PostingEntry>, u32)], avg_dl: f64) -> Self {
+    fn new(idf: f64, blocks: &'a [(Vec<PostingEntry>, u32)], avg_dl: f64) -> Self {
         let block_upper_bound = if !blocks.is_empty() {
             compute_upper_bound(blocks[0].1, idf, avg_dl)
         } else {
             0.0
         };
         Self {
-            term_idx,
             idf,
             blocks,
             block_idx: 0,
