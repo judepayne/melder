@@ -70,9 +70,20 @@ Last updated: 2026-04-07 (Linux CUDA GPU encode test verified)
 
 - [x] **Enroll benchmarks restructured** — Moved `benchmarks/live/10kx10k_enroll3k_usearch/` to `benchmarks/enroll/`. New `benchmarks/enroll/10kx10k_enroll3k_scoring_log/` test: 10k pool, 3k enrollments, scoring log enabled, admin/shutdown, meld export builds CSVs + SQLite DB. Validates scoring log (1.4MB), 45k candidates, 196k field_scores.
 
+- [x] **Comprehensive code review + fixes (2026-04-08)** — Full 5-agent review of ~31k lines across 77 Rust source files. 7 commits total:
+  - **Critical (2 fixed):** WAL append errors now propagated via `?` across all 14 sites instead of fire-and-forget `warn!()` — restores crash-recovery contract. Review queue persistence failures in `LiveMatchState` now logged instead of silently discarded via `let _`.
+  - **High (6 fixed):** Batch upsert/match error responses include record IDs (was empty string). Embedding dimension mismatch in flat candidate scan logged. `decompose_emb_scores` warns on non-divisible vector lengths and truncated fields. Flat vector search filters NaN before ranking. Usearch filtered search logs when expansion insufficient. `build_outputs` warns on missing-ID record skips.
+  - **Medium (7 fixed):** Extracted `score_against_pool()` helper in session.rs, eliminating 3-way copy-paste of BM25/synonym/scoring-pool construction (~120 lines removed). Malformed review cursor returns page 0 with warning instead of silent reset. `--bucket-width` validated > 0 in `meld tune`. Weight-sum epsilon widened to 0.01 (named constant). Rank assignment warns when >254 candidates capped at u8.
+  - **Low (6 fixed) + reuse:** New `vectordb/common.rs` with shared search helpers (`cmp_score_desc`, `sort_and_truncate`, `top_k_by_score`) used by both flat and usearch. Crossmap and exclusions `load()` clean up stale `.tmp` files from interrupted flushes. `eprintln!` in manifest changed to `tracing::warn!`. SQL chunk size extracted to named constant. `query_unmatched` side parameter asserted. Dead `WandCursor.term_idx` field removed.
+  - **Config refactor (M2+M3):** Split `loader.rs` (2528 lines) into `loader.rs` (121), `defaults.rs` (238), `validation.rs` (1432), `derivation.rs` (400). Unified match/enroll validation via `validate_common()` — eliminated ~70 lines of duplicated checks. Blocking and exact_prefilter validation unified via `enroll_mode` flag.
+  - **Port-in-use check:** `meld serve` and `meld enroll` now probe the bind address before expensive state loading — exits immediately with clear error if port is already claimed.
+  - **Review queue:** Documented unbounded `DashMap` as deliberate design (in-memory cache over SQLite store, drains naturally on re-upsert/confirm/break/remove).
+  - **Deferred:** H1 (common-ID TOCTOU — needs atomic crossmap pair ops), H5 (poisoned RwLock — documented pattern, ~100 sites), M4 (crossmap pagination O(n log n) — needs sorted store), L2 (blocking partial-key O(n) — document only).
+  - All 4 regression benchmarks green after every commit. 420 tests pass throughout.
+
 ## In Progress
 
-- [ ] **Check upstream PR #720 status** — Melder temporarily uses a forked usearch repo with the `MAP_FAILED` Windows fix. Check https://github.com/unum-cloud/usearch/pull/720 — if merged, revert `Cargo.toml` to `version = "2"`. Due: end of April 2026.
+- [ ] **Switch usearch back to crates.io** — PR #720 merged 2026-04-05 but latest crates.io release (v2.24.0, 2026-02-16) predates it. Keep fork dependency until a new usearch release includes the fix, then revert `Cargo.toml` to `version = "2"`. Check periodically: https://crates.io/crates/usearch
 
 ---
 
