@@ -88,8 +88,17 @@ pub struct LiveMatchState {
     pub wal: MatchLog,
     pub crossmap_dirty: AtomicBool,
     /// Pending review-band matches. Keyed by `"{side}:{id}:{candidate_id}"`.
-    /// Populated on `ReviewMatch` WAL events, drained on crossmap
-    /// confirm/break and record re-upsert.
+    /// Populated on upsert/initial-match when a score falls in the review band,
+    /// drained on crossmap confirm/break and record re-upsert/remove.
+    ///
+    /// Serves a single consumer: `GET /api/v1/review/list`. The queue is an
+    /// in-memory read cache over the store (SQLite `persist_review`); the store
+    /// is the source of truth and survives restarts.
+    ///
+    /// Unbounded by design: the queue naturally drains as records are re-upserted,
+    /// confirmed, broken, or removed. Only a workload that inserts once and never
+    /// resolves would see unbounded growth — if that becomes a real concern,
+    /// add a configurable cap with eviction (data remains in the store).
     pub review_queue: DashMap<String, ReviewEntry>,
     /// Optional user-provided synonym dictionary shared across both sides.
     pub synonym_dictionary: Option<Arc<crate::synonym::dictionary::SynonymDictionary>>,
