@@ -623,6 +623,93 @@ impl Session {
         }
     }
 
+    /// Generate BM25/synonym candidates, build a ScoringPool, run score_pool,
+    /// and optionally send to the scoring log.
+    ///
+    /// Shared helper used by upsert_record_inner, try_match_inner, and enroll_inner
+    /// to avoid triplicating this logic.
+    #[allow(clippy::too_many_arguments)]
+    fn score_against_pool(
+        &self,
+        id: &str,
+        record: &Record,
+        side: Side,
+        combined_vec: &[f32],
+        blocked_ids: &[String],
+        pool_side_state: &crate::state::live::LiveSideState,
+        pool_side: Side,
+        config: &crate::config::schema::Config,
+        ann_candidates: usize,
+        bm25_candidates_n: usize,
+        top_n: usize,
+        syn_fields: &[crate::config::schema::SynonymFieldConfig],
+    ) -> Vec<MatchResult> {
+        // BM25 candidate generation.
+        let (bm25_cand_ids, bm25_scores_map) = if let Some(ref pool_bm25) =
+            pool_side_state.bm25_index
+        {
+            let _span = info_span!("bm25_score").entered();
+            let query_text = pool_bm25.query_text_for(record, side);
+            let self_score = pool_bm25.analytical_self_score(&query_text);
+            let raw_results = pool_bm25.score_blocked(&query_text, blocked_ids, bm25_candidates_n);
+            let scored: Vec<(String, f64)> = raw_results
+                .into_iter()
+                .map(|(cid, raw)| {
+                    let norm = normalise_bm25(raw, self_score);
+                    (cid, norm)
+                })
+                .collect();
+            let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
+            let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
+            (ids, map)
+        } else {
+            (Vec::new(), std::collections::HashMap::new())
+        };
+
+        // Synonym candidate generation.
+        let syn_guard = pool_side_state
+            .synonym_index
+            .as_ref()
+            .map(|mtx| mtx.read().unwrap_or_else(|e| e.into_inner()));
+        let synonym_cand_ids = if !syn_fields.is_empty() {
+            if let Some(ref guard) = syn_guard {
+                pipeline::synonym_candidate_stage(guard, record, side, syn_fields)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        let _span = info_span!("score_pool").entered();
+        let store = &self.state.store;
+        let scoring_query = pipeline::ScoringQuery {
+            id,
+            record,
+            side,
+            combined_vec,
+        };
+        let scoring_pool = pipeline::ScoringPool {
+            store: store.as_ref(),
+            side: pool_side,
+            combined_index: pool_side_state.combined_index.as_deref(),
+            blocked_ids,
+            bm25_candidate_ids: &bm25_cand_ids,
+            bm25_scores_map: &bm25_scores_map,
+            synonym_candidate_ids: &synonym_cand_ids,
+            synonym_dictionary: self.state.synonym_dictionary.as_deref(),
+            exclusions: &self.state.exclusions,
+        };
+        let results =
+            pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
+
+        if let Some(ref sl) = self.scoring_log {
+            sl.send(id, side, &results);
+        }
+
+        results
+    }
+
     /// Upsert a record, running encoding in parallel with BM25/synonym/blocking
     /// work via `rayon::scope`. Handles insertion, crossmap management, and scoring.
     fn upsert_record_inner(
@@ -721,7 +808,6 @@ impl Session {
 
         // Extract references for rayon closures (avoid borrowing &self).
         let this_bm25 = this_side.bm25_index.as_ref();
-        let opp_bm25 = opp_side.bm25_index.as_ref();
         let this_syn = this_side.synonym_index.as_ref();
         let syn_fields = &config.synonym_fields;
         let blocking_enabled = config.blocking.enabled;
@@ -913,65 +999,20 @@ impl Session {
                 .unwrap_or_default()
         };
 
-        // BM25 candidate generation (needs blocked_ids from branch 2).
-        let (bm25_cand_ids, bm25_scores_map) = if let Some(opp_bm25) = opp_bm25 {
-            let _span = info_span!("bm25_score").entered();
-            let query_text = opp_bm25.query_text_for(&record, side);
-            let self_score = opp_bm25.analytical_self_score(&query_text);
-            let raw_results = opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
-            let scored: Vec<(String, f64)> = raw_results
-                .into_iter()
-                .map(|(cid, raw)| {
-                    let norm = normalise_bm25(raw, self_score);
-                    (cid, norm)
-                })
-                .collect();
-            let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
-            let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
-            (ids, map)
-        } else {
-            (Vec::new(), std::collections::HashMap::new())
-        };
-
-        // Synonym candidate generation.
-        let opp_syn_guard = opp_side
-            .synonym_index
-            .as_ref()
-            .map(|mtx| mtx.read().unwrap_or_else(|e| e.into_inner()));
-        let synonym_cand_ids = if !syn_fields.is_empty() {
-            if let Some(ref guard) = opp_syn_guard {
-                pipeline::synonym_candidate_stage(guard, &record, side, syn_fields)
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
-
-        let _span = info_span!("score_pool").entered();
-        let scoring_query = pipeline::ScoringQuery {
-            id: &id,
-            record: &record,
+        let results = self.score_against_pool(
+            &id,
+            &record,
             side,
-            combined_vec: &query_combined_vec,
-        };
-        let scoring_pool = pipeline::ScoringPool {
-            store: store.as_ref(),
-            side: opp,
-            combined_index: opp_side.combined_index.as_deref(),
-            blocked_ids: &blocked_ids,
-            bm25_candidate_ids: &bm25_cand_ids,
-            bm25_scores_map: &bm25_scores_map,
-            synonym_candidate_ids: &synonym_cand_ids,
-            synonym_dictionary: self.state.synonym_dictionary.as_deref(),
-            exclusions: &self.state.exclusions,
-        };
-        let results =
-            pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
-
-        if let Some(ref sl) = self.scoring_log {
-            sl.send(&id, side, &results);
-        }
+            &query_combined_vec,
+            &blocked_ids,
+            opp_side,
+            opp,
+            config,
+            ann_candidates,
+            bm25_candidates_n,
+            top_n,
+            syn_fields,
+        );
 
         // 10. Claim loop: try candidates in ranked order.
         let _span = info_span!("claim_loop").entered();
@@ -1230,7 +1271,6 @@ impl Session {
         let ann_candidates = config.ann_candidates.unwrap_or(50);
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
         let this_side = self.state.side(side);
-        let opp_bm25 = opp_side.bm25_index.as_ref();
         let emb_specs = &self.emb_specs;
         let syn_fields = &config.synonym_fields;
         let blocking_enabled = config.blocking.enabled;
@@ -1308,63 +1348,20 @@ impl Session {
                 .unwrap_or_default()
         };
 
-        // BM25 candidate generation (needs blocked_ids).
-        let (bm25_cand_ids, bm25_scores_map) = if let Some(opp_bm25) = opp_bm25 {
-            let query_text = opp_bm25.query_text_for(&record, side);
-            let self_score = opp_bm25.analytical_self_score(&query_text);
-            let raw_results = opp_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
-            let scored: Vec<(String, f64)> = raw_results
-                .into_iter()
-                .map(|(cid, raw)| {
-                    let norm = normalise_bm25(raw, self_score);
-                    (cid, norm)
-                })
-                .collect();
-            let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
-            let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
-            (ids, map)
-        } else {
-            (Vec::new(), std::collections::HashMap::new())
-        };
-
-        // Synonym candidate generation.
-        let opp_syn_guard = opp_side
-            .synonym_index
-            .as_ref()
-            .map(|mtx| mtx.read().unwrap_or_else(|e| e.into_inner()));
-        let synonym_cand_ids = if !syn_fields.is_empty() {
-            if let Some(ref guard) = opp_syn_guard {
-                pipeline::synonym_candidate_stage(guard, &record, side, syn_fields)
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
-
-        let scoring_query = pipeline::ScoringQuery {
+        let results = self.score_against_pool(
             id,
-            record: &record,
+            &record,
             side,
-            combined_vec: &query_combined_vec,
-        };
-        let scoring_pool = pipeline::ScoringPool {
-            store: store.as_ref(),
-            side: opp,
-            combined_index: opp_side.combined_index.as_deref(),
-            blocked_ids: &blocked_ids,
-            bm25_candidate_ids: &bm25_cand_ids,
-            bm25_scores_map: &bm25_scores_map,
-            synonym_candidate_ids: &synonym_cand_ids,
-            synonym_dictionary: self.state.synonym_dictionary.as_deref(),
-            exclusions: &self.state.exclusions,
-        };
-        let results =
-            pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
-
-        if let Some(ref sl) = self.scoring_log {
-            sl.send(id, side, &results);
-        }
+            &query_combined_vec,
+            &blocked_ids,
+            opp_side,
+            opp,
+            config,
+            ann_candidates,
+            bm25_candidates_n,
+            top_n,
+            syn_fields,
+        );
 
         let classification = results
             .first()
@@ -2122,67 +2119,20 @@ impl Session {
 
         let pool_state = &self.state.a;
 
-        // Acquire synonym index read lock (if configured).
-        let syn_guard = pool_state
-            .synonym_index
-            .as_ref()
-            .map(|lock| lock.read().unwrap_or_else(|e| e.into_inner()));
-
-        let synonym_dict = self.state.synonym_dictionary.as_deref();
-
-        // BM25 candidate generation (SimpleBm25: lock-free, no commit).
-        let (bm25_cand_ids, bm25_scores_map) = if let Some(ref pool_bm25) = pool_state.bm25_index {
-            let query_text = pool_bm25.query_text_for(&record, side);
-            let self_score = pool_bm25.analytical_self_score(&query_text);
-            let raw_results = pool_bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates);
-            let scored: Vec<(String, f64)> = raw_results
-                .into_iter()
-                .map(|(cid, raw)| {
-                    let norm = normalise_bm25(raw, self_score);
-                    (cid, norm)
-                })
-                .collect();
-            let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
-            let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
-            (ids, map)
-        } else {
-            (Vec::new(), std::collections::HashMap::new())
-        };
-
-        // Synonym candidate generation.
-        let synonym_cand_ids = if !config.synonym_fields.is_empty() {
-            if let Some(ref guard) = syn_guard {
-                pipeline::synonym_candidate_stage(guard, &record, side, &config.synonym_fields)
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
-
-        let scoring_query = pipeline::ScoringQuery {
-            id: &id,
-            record: &record,
+        let results = self.score_against_pool(
+            &id,
+            &record,
             side,
-            combined_vec: &combined_vec,
-        };
-        let scoring_pool = pipeline::ScoringPool {
-            store: store.as_ref(),
-            side, // pool_side = same side
-            combined_index: pool_state.combined_index.as_deref(),
-            blocked_ids: &blocked_ids,
-            bm25_candidate_ids: &bm25_cand_ids,
-            bm25_scores_map: &bm25_scores_map,
-            synonym_candidate_ids: &synonym_cand_ids,
-            synonym_dictionary: synonym_dict,
-            exclusions: &self.state.exclusions,
-        };
-        let results =
-            pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
-
-        if let Some(ref sl) = self.scoring_log {
-            sl.send(&id, side, &results);
-        }
+            &combined_vec,
+            &blocked_ids,
+            pool_state,
+            side, // pool_side = same side (enroll)
+            config,
+            ann_candidates,
+            bm25_candidates,
+            top_n,
+            &config.synonym_fields,
+        );
 
         // 3. Add record to pool
         // Handle upsert: remove old blocking entry if exists
@@ -2316,7 +2266,17 @@ impl Session {
         let start = match cursor {
             Some(c) => {
                 if let Some((score_str, cursor_id)) = c.split_once('|') {
-                    let cursor_score: f64 = score_str.parse().unwrap_or(0.0);
+                    let cursor_score: f64 = match score_str.parse() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            warn!(cursor = c, "malformed review cursor — resetting to page 0");
+                            return ReviewListResponse {
+                                total,
+                                reviews: reviews[..limit.unwrap_or(total).min(total)].to_vec(),
+                                next_cursor: None,
+                            };
+                        }
+                    };
                     reviews
                         .iter()
                         .position(|r| {

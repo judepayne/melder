@@ -14,6 +14,10 @@ const VALID_BACKENDS: &[&str] = &["local"];
 /// Valid vector storage backends.
 const VALID_VECTOR_BACKENDS: &[&str] = &["flat", "usearch"];
 
+/// Tolerance for field-weight sum validation (allows floating-point
+/// accumulation error, e.g. 10 fields × 0.1 = 0.9999…8).
+const WEIGHT_SUM_EPSILON: f64 = 0.01;
+
 /// Valid vector quantization types (for usearch index storage).
 const VALID_VECTOR_QUANTIZATIONS: &[&str] = &["f32", "f16", "bf16"];
 
@@ -311,7 +315,7 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // 20. weights sum to 1.0
-    if (weight_sum - 1.0).abs() > 0.001 {
+    if (weight_sum - 1.0).abs() > WEIGHT_SUM_EPSILON {
         return Err(ConfigError::WeightSum { sum: weight_sum });
     }
 
@@ -605,7 +609,7 @@ fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // 6. weights sum to 1.0
-    if (weight_sum - 1.0).abs() > 0.001 {
+    if (weight_sum - 1.0).abs() > WEIGHT_SUM_EPSILON {
         return Err(ConfigError::WeightSum { sum: weight_sum });
     }
 

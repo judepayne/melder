@@ -41,6 +41,14 @@ pub fn cmd_tune(
     bar_width: usize,
     overlap_limit: usize,
 ) {
+    if bucket_width <= 0.0 || !bucket_width.is_finite() {
+        eprintln!(
+            "Error: --bucket-width must be a positive finite number (got {})",
+            bucket_width
+        );
+        std::process::exit(1);
+    }
+
     let opts = TuneOpts {
         no_run,
         bucket_width,

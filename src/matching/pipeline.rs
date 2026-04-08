@@ -225,7 +225,13 @@ pub fn score_pool(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Assign rank (1-based) after sorting.
+    // Assign rank (1-based, capped at u8::MAX) after sorting.
+    if results.len() > 254 {
+        tracing::warn!(
+            candidates = results.len(),
+            "more than 254 candidates — ranks above 255 will be capped"
+        );
+    }
     for (i, r) in results.iter_mut().enumerate() {
         r.rank = Some((i + 1).min(255) as u8);
     }
