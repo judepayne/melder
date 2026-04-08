@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::time::Instant;
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::models::{Record, Side};
 use crate::state::match_log::{MatchLog, MatchLogEvent};
@@ -82,6 +82,11 @@ pub fn build_outputs(
                 };
                 let id = record.get(id_field).cloned().unwrap_or_default();
                 if id.is_empty() {
+                    warn!(
+                        id_field,
+                        side = ?side,
+                        "record missing id field — skipped in output"
+                    );
                     continue;
                 }
                 match side {

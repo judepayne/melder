@@ -1747,14 +1747,15 @@ impl Session {
 
         // 3. Insert + score each record sequentially
         let mut results = Vec::with_capacity(records.len());
-        for record in records {
+        for (i, record) in records.into_iter().enumerate() {
+            let record_id = ids[i].clone();
             let resp = self.upsert_record_inner(side, record, false, side == Side::A);
             match resp {
                 Ok(r) => results.push(r),
                 Err(e) => {
                     results.push(UpsertResponse {
                         status: format!("error: {}", e),
-                        id: String::new(),
+                        id: record_id,
                         side,
                         classification: "error".to_string(),
                         from_crossmap: false,
@@ -1851,7 +1852,7 @@ impl Session {
                 Err(e) => {
                     results.push(MatchResponse {
                         status: format!("error: {}", e),
-                        id: String::new(),
+                        id: rec_id.clone(),
                         side,
                         classification: "error".to_string(),
                         from_crossmap: false,

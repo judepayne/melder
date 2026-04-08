@@ -524,6 +524,17 @@ impl VectorDB for UsearchVectorDB {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+
+        if results.len() < k && state.active_count() >= k {
+            tracing::debug!(
+                requested = k,
+                returned = results.len(),
+                expanded_k,
+                active = state.active_count(),
+                "usearch filtered search returned fewer than K results — \
+                 low filter acceptance rate"
+            );
+        }
         results.truncate(k);
 
         Ok(results)

@@ -156,8 +156,14 @@ impl VecIndex {
             scores.push((i, dot));
         }
 
+        // Filter out NaN scores (corrupted vectors) before ranking.
+        scores.retain(|(_, s)| !s.is_nan());
+
         // Partial sort: select top-K
-        let k = k.min(n);
+        let k = k.min(scores.len());
+        if k == 0 {
+            return vec![];
+        }
         scores.select_nth_unstable_by(k.saturating_sub(1), |a, b| {
             b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
         });
@@ -196,6 +202,9 @@ impl VecIndex {
             let dot = dot_product_f32(query, row);
             scores.push((i, dot));
         }
+
+        // Filter out NaN scores (corrupted vectors) before ranking.
+        scores.retain(|(_, s)| !s.is_nan());
 
         if scores.is_empty() {
             return vec![];

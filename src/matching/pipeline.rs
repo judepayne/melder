@@ -367,6 +367,20 @@ fn decompose_emb_scores<'a>(
     if field_dim == 0 {
         return HashMap::new();
     }
+    debug_assert_eq!(
+        query_combined.len() % emb_specs.len(),
+        0,
+        "combined vector length {} not evenly divisible by {} fields",
+        query_combined.len(),
+        emb_specs.len()
+    );
+    if !query_combined.len().is_multiple_of(emb_specs.len()) {
+        tracing::warn!(
+            vec_len = query_combined.len(),
+            fields = emb_specs.len(),
+            "combined vector not evenly divisible by field count — last field will be truncated"
+        );
+    }
 
     let mut scores = HashMap::with_capacity(emb_specs.len());
 
@@ -375,6 +389,14 @@ fn decompose_emb_scores<'a>(
         let end = start + field_dim;
 
         if end > query_combined.len() || end > pool_combined.len() {
+            tracing::warn!(
+                field_a,
+                field_b,
+                end,
+                query_len = query_combined.len(),
+                pool_len = pool_combined.len(),
+                "embedding decomposition truncated — field scored as 0.0"
+            );
             break;
         }
 

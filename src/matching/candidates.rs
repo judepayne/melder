@@ -19,6 +19,8 @@
 //! an empty vec — other candidate generators (BM25, etc.) provide candidates
 //! independently.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use rayon::prelude::*;
 
 use crate::models::{Record, Side};
@@ -112,6 +114,7 @@ pub fn select_candidates(
 
     let idx = pool_combined_index.unwrap();
 
+    let dim_warned = AtomicBool::new(false);
     let mut scored: Vec<Candidate> = blocked_ids
         .par_iter()
         .filter_map(|id| {
@@ -120,6 +123,14 @@ pub fn select_candidates(
             let dot: f32 = if pool_vec.len() == query_combined_vec.len() {
                 dot_product_f32(query_combined_vec, &pool_vec)
             } else {
+                if !dim_warned.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        id,
+                        expected = query_combined_vec.len(),
+                        got = pool_vec.len(),
+                        "embedding dimension mismatch in flat candidate scan — scoring as 0.0"
+                    );
+                }
                 0.0
             };
             Some(Candidate {
