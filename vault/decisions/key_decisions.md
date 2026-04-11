@@ -3,7 +3,7 @@ type: decision
 module: general
 status: active
 tags: [adr, design-decisions, rationale]
-related_code: [vectordb/mod.rs, crossmap/mod.rs, vectordb/texthash.rs, vectordb/manifest.rs, encoder/coordinator.rs]
+related_code: [vectordb/mod.rs, crossmap/mod.rs, vectordb/texthash.rs, vectordb/manifest.rs, encoder/coordinator.rs, encoder/subprocess/mod.rs, encoder/subprocess/slot.rs, encoder/subprocess/protocol.rs]
 ---
 
 # Key Decisions
@@ -154,6 +154,40 @@ New config section `exact_prefilter` with `{field_a, field_b}` pairs. Runs befor
 `embeddings.model` accepts: named fastembed models, HuggingFace Hub names (containing `/`), local directory paths, or `"builtin"`. Local paths detected by heuristic (absolute, `./`, `../`, `.onnx` suffix, resolves on disk). Directory must contain `model.onnx` plus four standard HuggingFace tokenizer files. Mean pooling applied; output dimension auto-detected from `config.json`'s `hidden_size`.
 
 **Constraint**: `quantized: true` flag is ignored for local paths — point directly to the desired `.onnx` file.
+
+---
+
+## Remote Encoder via Subprocess (`SubprocessEncoder`)
+
+Optional remote encoder path: `embeddings.remote_encoder_cmd` spawns a user-supplied script as a long-lived subprocess pool and delegates text→vector to it via a stdin/stdout protocol. Mutually exclusive with `embeddings.model` (validation XOR). Load-bearing for regulated/large-enterprise customers whose embedding models are walled off behind central internal services.
+
+**Design decisions (in order of blast radius):**
+
+1. **Dispatch: `Arc<dyn Encoder>` across every call site** — `MatchState`, `LiveMatchState`, `EncoderCoordinator`, `vectordb::*`, CLI. The trait was extracted in 3084c6e but not yet used dynamically. Rejected: an `enum EncoderImpl { Local, Remote }` for static dispatch — smaller diff but hard-codes "exactly two impls" and makes future Rust-native HTTP transport a breaking change. Mechanical type migration of ~15 files; no behaviour change on the local path.
+
+2. **Encoder trait extension: `encode_detailed() -> Vec<EncodeResult>` as a default method.** `EncoderPool` inherits the default (no local path change). `SubprocessEncoder` overrides to surface per-record errors from the remote service (e.g. content-policy rejections) so fail-fast tracing can log each failing record individually before collapsing into `EncoderError::BatchError`. Rejected: changing `encode()`'s return type everywhere — widest blast radius for no local-path benefit.
+
+3. **Transport: pipes only (stdin/stdout/stderr).** `sh -c` on Unix, `cmd /C` on Windows, mirroring `src/hooks/writer.rs`. Rejected: unix sockets, shared memory, in-process HTTP. The trait is transport-agnostic so a future Rust-native HTTP transport is possible without a protocol break. stderr is captured and forwarded to `tracing::debug` with a `slot=N` field.
+
+4. **Wire format: NDJSON envelope + binary trailer.** `\n`-terminated UTF-8 JSON lines for control; a 4-byte LE `u32` length prefix followed by raw LE `f32` payload for vector responses. Rejected: pure JSON (3× larger than binary for f32 arrays), Protobuf (dependency), CBOR (dependency). The trailer is only present on successful encode responses; partial responses contain only vectors for `{"ok":true}` entries in the original order.
+
+5. **Per-record errors vs whole-batch errors: both fail the batch (Phase 1 fail-fast).** The protocol distinguishes them (per-record: `{"error":"..."}` entries inside `results`; whole-batch: top-level `{"error":"..."}` with no `results`). Melder logs a structured tracing event for every failed record with full context (text prefix, slot, latency, model_id, command) then surfaces the failure as `EncoderError::BatchError`. A leniency mode with `encode_errors.csv` is additive and may come later if customers demonstrate real need.
+
+6. **No tokio inside `SubprocessEncoder`.** The encoder stack is fully synchronous (`std::sync::Mutex`, OS thread in the coordinator, `std_mpsc` for results) because the `Encoder` trait is sync `&self`. Cannot use tokio internally without spinning up a private runtime or requiring callers to be on one. Rejected: `wait-timeout` crate (for whole-process waits, not per-IO). Per-call timeout uses a per-slot stdout-reader thread pushing frames onto `std::sync::mpsc`, with `encode()` doing `rx.recv_timeout(call_timeout)` — stdlib-only, no new crate.
+
+7. **Respawn logic inline, not in a dedicated thread.** Kill-and-reap happens under the `Mutex<Slot>` guard; the next encode call on that slot runs `Slot::try_respawn` synchronously. Backoff is 1s→60s exponential (same shape as `src/hooks/writer.rs::backoff_duration`). Slot marked `Unhealthy` after 5 consecutive failures within a 60s rolling window. All slots unhealthy → `EncoderError::PoolExhausted` → current batch run aborts.
+
+8. **Fail loudly at startup.** If any slot cannot complete its handshake within the initial respawn cycle, `SubprocessEncoder::new()` returns `EncoderError::RemoteSpawnFailed` and melder exits non-zero. Rejected: starting with a degraded pool. Rationale: "mysteriously slower than configured" is exactly the silent degradation fail-fast-loud is built to prevent. Mid-run degradation still works as expected (slots can individually become unhealthy without killing the whole run).
+
+**Why a subprocess and not in-process HTTP?** The subprocess author owns auth, transport, retries, rate-limiting, request/response shaping, and error classification against their org's API — all the per-organisation concerns that would otherwise bloat melder with a matrix of HTTP clients. The subprocess is a clean boundary for the user to write any-language code against a stable wire protocol. See `docs/remote-encoder.md` for the full user contract and `remote_operation.md` §5 for the Phase 1 design.
+
+**The timeout footgun**: the subprocess's own remote-service timeout must be strictly less than `performance.encoder_call_timeout_ms`. If melder's per-call timeout fires while the script's remote call is still outstanding, melder sends SIGKILL and the script cannot emit a clean error. Load-bearing for user docs — documented in `docs/remote-encoder.md` with a ★ header.
+
+**Hardcoded lifecycle tunables (Phase 1 only; promotable to config later without protocol break)**: handshake timeout 30s; respawn backoff initial 1s, cap 60s; slot-unhealthy threshold 5 failures within 60s; shutdown grace 5s SIGTERM + 5s SIGKILL.
+
+**Related code**: `src/encoder/subprocess/{mod.rs, slot.rs, protocol.rs}`; `src/state/state.rs::build_encoder`; `tests/fixtures/stub_encoder.py` (reference implementation with full failure-injection flags); `tests/remote_encoder.rs` (13 end-to-end integration tests); `benchmarks/batch/10kx10k_remote_encoder/cold/` (worked benchmark example).
+
+**Commits**: `3359bd3` (trait + dispatch migration), `4bf096a` (SubprocessEncoder impl), `72d87e2` (stub + integration tests), `8ad2672` (benchmark), `6a116e9` (user docs). See also [[architecture/threading_model#Remote Encoder Threads]].
 
 ---
 

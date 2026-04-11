@@ -3,7 +3,7 @@ type: architecture
 module: runtime
 status: active
 tags: [threading, concurrency, synchronisation, runtime]
-related_code: [src/main.rs, src/cli/run.rs, src/cli/serve.rs, src/batch/engine.rs, src/session/mod.rs, src/encoder/mod.rs, src/encoder/coordinator.rs]
+related_code: [src/main.rs, src/cli/run.rs, src/cli/serve.rs, src/batch/engine.rs, src/session/mod.rs, src/encoder/mod.rs, src/encoder/coordinator.rs, src/encoder/subprocess/mod.rs, src/encoder/subprocess/slot.rs]
 ---
 
 # Threading Model
@@ -138,13 +138,69 @@ Both hold their locks for sub-millisecond durations under normal load.
 
 ---
 
+## Remote Encoder Threads
+
+When `embeddings.remote_encoder_cmd` is set, melder spawns a pool of user-supplied subprocesses and talks to them via stdin/stdout. The `Encoder` trait implementation (`SubprocessEncoder` in `src/encoder/subprocess/`) is fully synchronous — **no tokio runtime is involved**, even in live mode. The trait is sync `&self` and the `EncoderCoordinator` already runs on a dedicated OS thread, so the subprocess encoder uses `std::process::Command`, stdlib IO, and per-slot watchdog threads.
+
+### Thread budget per slot
+
+Each slot (`encoder_pool_size` slots total) owns three threads:
+
+| Thread | Owns | Role |
+|---|---|---|
+| Coordinator / caller | — | The batch or rayon thread that calls `encoder.encode()`. Blocks on a `std::sync::mpsc::Receiver` with `recv_timeout(encoder_call_timeout_ms)`. |
+| Stdout reader | `ChildStdout` | Parses NDJSON envelopes + binary trailers in a loop. Pushes parsed `Frame` onto the slot's mpsc. Exits on EOF or protocol error. |
+| Stderr drain | `ChildStderr` | Line-buffered reader that forwards each line to `tracing::debug!` with a `slot=N` field. Prevents a chatty script from wedging the IPC channel. |
+
+Plus the subprocess itself (external to melder's address space).
+
+**Total thread budget for an 8-slot pool:**
+
+| Count | Thread | Source |
+|---|---|---|
+| 1 | `EncoderCoordinator` loop | existing (pre-remote) |
+| 8 | stdout reader threads | new (1 per slot) |
+| 8 | stderr drain threads | new (1 per slot) |
+| 0 | respawn threads | respawns happen **inline** inside the `Mutex<Slot>` guard of the calling thread |
+| N | rayon workers (batch) or tokio blocking (live) | existing caller side |
+
+**= 17 new OS threads** for an 8-slot pool. All stdlib — no tokio.
+
+### Slot concurrency model
+
+The slot pool mirrors `EncoderPool`'s try-lock round-robin pattern (`src/encoder/mod.rs:692`). Each slot is `Arc<Mutex<Slot>>`; `encode()` first try-locks every slot in order (skipping `SlotState::Unhealthy` slots), then falls back to a blocking round-robin lock via a shared `AtomicUsize` counter.
+
+```
+caller thread                   Mutex<Slot>                 subprocess
+      │                              │                          │
+      │──► encode(&texts) ──► try_lock() ──► write stdin ────────►
+      │                              │                          │
+      │                              │ recv_timeout(call_timeout)│
+      │                              │          ◄────── stdout ──│
+      │                              │              (from reader thread)
+      │                              │                          │
+      │  ◄── Vec<EncodeResult> ─────│                          │
+```
+
+**Interior mutability**: `encode()` takes `&self` (same as `EncoderPool`), so the `Mutex<Slot>` is what makes the whole `SubprocessEncoder` safely shareable as `Arc<dyn Encoder>`.
+
+### Respawn and slot health
+
+When an encode call fails with `SubprocessDied`, `Timeout`, or `ProtocolViolation`, melder kills the subprocess (dropping stdin → `child.kill()` → `child.wait()`), joins the reader + stderr threads, then attempts one inline respawn + retry before propagating the error. All of this happens **on the caller's thread**, inside the `Mutex<Slot>` guard — no dedicated respawn worker.
+
+Slot failure counters decay after 60 seconds of continuous healthy runtime. After 5 consecutive failures within a 60s rolling window, the slot is marked `Unhealthy` and no more calls are dispatched to it. When every slot becomes unhealthy, `encode()` returns `EncoderError::PoolExhausted` and the current run aborts.
+
+See [[decisions/key_decisions#Remote Encoder via Subprocess]].
+
+---
+
 ## Synchronisation primitives summary
 
 | Primitive | What it guards | Why this choice |
 |---|---|---|
 | `DashMap` | Record stores (A/B records) | Shard-level locking; high read concurrency with negligible write contention |
 | `RwLock` | Blocking indices, vector indices, CrossMap inner | Many concurrent readers, infrequent writers. CrossMap uses a single RwLock (not two DashMaps) to prevent TOCTOU and cross-shard deadlock -- see [[decisions/key_decisions#Principles-Inviolable]] |
-| `std::sync::Mutex` | Encoder pool slots, BM25 indices, WAL writer, SqliteStore connection | Exclusive access required. Encoder slots use try_lock round-robin for fairness |
+| `std::sync::Mutex` | Encoder pool slots (local & remote), BM25 indices, WAL writer, SqliteStore connection | Exclusive access required. Both `EncoderPool` (local ONNX) and `SubprocessEncoder` (remote) use try_lock round-robin across slots for fairness |
 | `DashSet` | Unmatched ID sets | Same as DashMap (shard-level) |
 | `AtomicBool` / `AtomicU64` | CrossMap dirty flag, upsert counter | Lock-free; no contention |
 | mpsc + oneshot channels | Encoding coordinator | Decouples handler tasks from ONNX inference; enables batching without shared mutable state |

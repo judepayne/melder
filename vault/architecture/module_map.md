@@ -21,7 +21,7 @@ Melder is a single Rust crate (`melder`). Binary name is `meld`. All modules are
 | `config/` | `schema.rs`, `loader.rs`, `enroll_schema.rs` | YAML config structs (schema) and parse + validate (loader). See [[architecture/config_reference]]. |
 | `crossmap/` | `mod.rs`, `memory.rs`, `sqlite.rs`, `traits.rs` | Confirmed match pairs with atomic 1:1 claiming. `traits.rs` defines `CrossMapOps`. `memory.rs` = RwLock-backed. `sqlite.rs` = SQLite-backed. See [[decisions/key_decisions#Principles-Inviolable]]. |
 | `data/` | `csv.rs`, `jsonl.rs`, `parquet.rs` | Data loaders for each format. Parquet is feature-gated. |
-| `encoder/` | `mod.rs`, `coordinator.rs` | ONNX encoder pool (mod.rs) and batch coordinator (coordinator.rs) |
+| `encoder/` | `mod.rs`, `coordinator.rs`, `subprocess/{mod.rs, slot.rs, protocol.rs}` | `Encoder` trait + `EncoderPool` (local ONNX via fastembed), batching coordinator, and `SubprocessEncoder` (remote encoder via stdin/stdout subprocess protocol). See [[decisions/key_decisions#Remote Encoder via Subprocess]]. |
 | `fuzzy/` | `mod.rs`, `ratio.rs`, `partial_ratio.rs`, `token_sort.rs`, `wratio.rs` | Fuzzy string matching scorers built on rapidfuzz |
 | `hooks/` | `mod.rs`, `writer.rs` | Pipeline hooks for external callbacks |
 | `matching/` | `blocking.rs`, `candidates.rs`, `pipeline.rs`, `exclusions.rs`, `mod.rs` | Blocking filter, candidate selection, unified scoring pipeline, exclusions |
@@ -58,7 +58,9 @@ main.rs -> cli/* -> {batch/engine, api/server, config/loader, ...}
                     vectordb/* (flat | usearch)
                          |
                          v
-                    encoder/* (ONNX pool)
+                    encoder/* (trait Encoder)
+                         ├─► EncoderPool (local ONNX via fastembed)
+                         └─► SubprocessEncoder (remote subprocess pool)
 ```
 
 ## Feature Flags
