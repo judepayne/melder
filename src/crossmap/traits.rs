@@ -4,6 +4,19 @@
 //! CSV via `flush()`, while `SqliteCrossMap` is write-through (flush is a
 //! no-op). The trait's `flush()` method abstracts this.
 
+/// Result of an atomic `confirm()` call: any record IDs that were displaced
+/// from a prior pairing and now require store-side `mark_unmatched`.
+///
+/// `displaced_b` is the B-side that `a_id` used to be paired with.
+/// `displaced_a` is the A-side that `b_id` used to be paired with.
+/// Both are `None` if neither side had a prior pairing, or if the requested
+/// pair was already installed (idempotent confirm).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ConfirmOutcome {
+    pub displaced_b: Option<String>,
+    pub displaced_a: Option<String>,
+}
+
 /// Runtime operations on a bidirectional A↔B record-pair mapping.
 ///
 /// Thread-safe: all methods take `&self`. Implementations must be `Send + Sync`.
@@ -36,6 +49,16 @@ pub trait CrossMapOps: Send + Sync {
     ///
     /// Returns `true` on success; `false` if either side was already mapped.
     fn claim(&self, a_id: &str, b_id: &str) -> bool;
+
+    /// Atomically install `(a_id, b_id)`, displacing any prior partners on
+    /// either side. Bijection is preserved under a single lock / transaction —
+    /// concurrent `claim()`/`confirm()` callers cannot race in and leave
+    /// orphaned half-pairs (Constitution §3).
+    ///
+    /// Returns the displaced ids so the caller can update store-side
+    /// metadata (e.g. `mark_unmatched`). If `a_id` is already paired with
+    /// `b_id`, this is an idempotent no-op and returns `Default`.
+    fn confirm(&self, a_id: &str, b_id: &str) -> ConfirmOutcome;
 
     /// A→B lookup.
     fn get_b(&self, a_id: &str) -> Option<String>;

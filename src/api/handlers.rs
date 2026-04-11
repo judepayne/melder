@@ -763,21 +763,16 @@ pub async fn admin_shutdown(State(session): State<AppState>) -> axum::response::
         }
     }
 
-    // Signal graceful shutdown after response is sent.
-    // Send SIGTERM to self so the shutdown_signal() future resolves and
-    // the serve.rs cleanup sequence runs (WAL compact, scoring log flush, etc.).
-    tokio::spawn(async {
+    // Trigger graceful shutdown after the response is sent. The notify wakes
+    // `shutdown_signal()` in serve.rs, which lets axum drain in-flight
+    // requests and then runs the full cleanup sequence (WAL compact,
+    // crossmap flush, exclusions flush, vector index cache save). Using a
+    // notify rather than a platform signal means Windows runs the same
+    // cleanup as Unix.
+    let notify = session.shutdown_notify.clone();
+    tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        #[cfg(unix)]
-        {
-            unsafe {
-                libc::kill(libc::getpid(), libc::SIGTERM);
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            std::process::exit(0);
-        }
+        notify.notify_waiters();
     });
 
     (

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, params};
 
-use super::CrossMapOps;
+use super::{ConfirmOutcome, CrossMapOps};
 use crate::store::sqlite::SqliteReaderPool;
 
 /// SQLite-backed bidirectional mapping between A and B record IDs.
@@ -164,6 +164,68 @@ impl CrossMapOps for SqliteCrossMap {
                 tracing::warn!(error = %e, a_id, b_id, "crossmap claim: failed to commit");
                 false
             }
+        }
+    }
+
+    fn confirm(&self, a_id: &str, b_id: &str) -> ConfirmOutcome {
+        // Single transaction: take both prior partners (if any), then insert
+        // the new pair. Bijection is preserved atomically.
+        let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = match conn.transaction() {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::warn!(error = %e, "crossmap confirm: failed to begin transaction");
+                return ConfirmOutcome::default();
+            }
+        };
+
+        // Idempotent no-op: pair already installed.
+        let existing_b: Option<String> = tx
+            .query_row(
+                "SELECT b_id FROM crossmap WHERE a_id = ?1",
+                params![a_id],
+                |row| row.get(0),
+            )
+            .ok();
+        if existing_b.as_deref() == Some(b_id) {
+            return ConfirmOutcome::default();
+        }
+
+        // Take a_id's prior partner (if any). RETURNING gives us the b_id
+        // that was deleted in the same statement.
+        let displaced_b: Option<String> = tx
+            .query_row(
+                "DELETE FROM crossmap WHERE a_id = ?1 RETURNING b_id",
+                params![a_id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        // Take b_id's prior partner (if any).
+        let displaced_a: Option<String> = tx
+            .query_row(
+                "DELETE FROM crossmap WHERE b_id = ?1 RETURNING a_id",
+                params![b_id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Err(e) = tx.execute(
+            "INSERT INTO crossmap (a_id, b_id) VALUES (?1, ?2)",
+            params![a_id, b_id],
+        ) {
+            tracing::warn!(error = %e, a_id, b_id, "crossmap confirm: failed to insert pair");
+            return ConfirmOutcome::default();
+        }
+
+        if let Err(e) = tx.commit() {
+            tracing::warn!(error = %e, a_id, b_id, "crossmap confirm: failed to commit");
+            return ConfirmOutcome::default();
+        }
+
+        ConfirmOutcome {
+            displaced_b,
+            displaced_a,
         }
     }
 
@@ -376,6 +438,64 @@ mod tests {
         cm.remove("A-1", "B-1");
         assert!(cm.claim("A-2", "B-1"));
         assert_eq!(cm.get_a("B-1"), Some("A-2".to_string()));
+    }
+
+    #[test]
+    fn confirm_into_vacant_returns_no_displacements() {
+        let cm = make_crossmap();
+        let outcome = cm.confirm("A-1", "B-1");
+        assert_eq!(outcome.displaced_a, None);
+        assert_eq!(outcome.displaced_b, None);
+        assert_eq!(cm.get_b("A-1"), Some("B-1".to_string()));
+        assert_eq!(cm.get_a("B-1"), Some("A-1".to_string()));
+        assert_eq!(cm.len(), 1);
+    }
+
+    #[test]
+    fn confirm_idempotent_pair_is_noop() {
+        let cm = make_crossmap();
+        cm.add("A-1", "B-1");
+        let outcome = cm.confirm("A-1", "B-1");
+        assert_eq!(outcome, ConfirmOutcome::default());
+        assert_eq!(cm.len(), 1);
+    }
+
+    #[test]
+    fn confirm_displaces_old_b_when_a_was_paired() {
+        let cm = make_crossmap();
+        cm.add("A-1", "B-old");
+        let outcome = cm.confirm("A-1", "B-new");
+        assert_eq!(outcome.displaced_b, Some("B-old".to_string()));
+        assert_eq!(outcome.displaced_a, None);
+        assert_eq!(cm.get_b("A-1"), Some("B-new".to_string()));
+        assert!(cm.get_a("B-old").is_none());
+        assert_eq!(cm.len(), 1);
+    }
+
+    #[test]
+    fn confirm_displaces_old_a_when_b_was_paired() {
+        let cm = make_crossmap();
+        cm.add("A-old", "B-1");
+        let outcome = cm.confirm("A-new", "B-1");
+        assert_eq!(outcome.displaced_a, Some("A-old".to_string()));
+        assert_eq!(outcome.displaced_b, None);
+        assert_eq!(cm.get_b("A-new"), Some("B-1".to_string()));
+        assert!(cm.get_b("A-old").is_none());
+        assert_eq!(cm.len(), 1);
+    }
+
+    #[test]
+    fn confirm_displaces_both_sides() {
+        let cm = make_crossmap();
+        cm.add("A-1", "B-old");
+        cm.add("A-old", "B-1");
+        let outcome = cm.confirm("A-1", "B-1");
+        assert_eq!(outcome.displaced_b, Some("B-old".to_string()));
+        assert_eq!(outcome.displaced_a, Some("A-old".to_string()));
+        assert_eq!(cm.get_b("A-1"), Some("B-1".to_string()));
+        assert!(cm.get_a("B-old").is_none());
+        assert!(cm.get_b("A-old").is_none());
+        assert_eq!(cm.len(), 1);
     }
 
     #[test]

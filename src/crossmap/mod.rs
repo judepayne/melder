@@ -9,4 +9,4 @@ pub mod sqlite;
 pub mod traits;
 
 pub use memory::MemoryCrossMap;
-pub use traits::CrossMapOps;
+pub use traits::{ConfirmOutcome, CrossMapOps};

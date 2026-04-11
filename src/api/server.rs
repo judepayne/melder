@@ -106,6 +106,7 @@ pub async fn start_server(
     port: u16,
     bind: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let shutdown_notify = session.shutdown_notify.clone();
     let app = build_router(session);
 
     let addr = format!("{}:{}", bind, port);
@@ -113,14 +114,16 @@ pub async fn start_server(
     info!(bind, port, "server listening");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_notify))
         .await?;
 
     Ok(())
 }
 
-/// Wait for SIGINT (Ctrl-C) or SIGTERM for graceful shutdown.
-async fn shutdown_signal() {
+/// Wait for SIGINT (Ctrl-C), SIGTERM (Unix), or an in-process notify for
+/// graceful shutdown. The notify path lets `admin_shutdown` trigger the same
+/// cleanup sequence on Windows, where SIGTERM is unavailable.
+async fn shutdown_signal(notify: Arc<tokio::sync::Notify>) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -138,9 +141,14 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    let admin = async {
+        notify.notified().await;
+    };
+
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = admin => {},
     }
 
     info!("shutdown signal received");

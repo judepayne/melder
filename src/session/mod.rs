@@ -276,6 +276,12 @@ pub struct Session {
     hook_tx: Option<tokio::sync::mpsc::Sender<crate::hooks::HookEvent>>,
     /// Scoring log sender. `None` when scoring log is not enabled.
     scoring_log: Option<crate::output::scoring_log::ScoringLogSender>,
+    /// Cross-platform shutdown trigger. `admin_shutdown` notifies waiters on
+    /// this; `start_server`'s graceful-shutdown future selects on it
+    /// alongside `ctrl_c` / `SIGTERM`. Using a `Notify` (rather than a
+    /// platform-specific signal) means the same cleanup path runs on Unix
+    /// and Windows.
+    pub shutdown_notify: Arc<tokio::sync::Notify>,
 }
 
 impl Session {
@@ -293,6 +299,7 @@ impl Session {
             emb_specs,
             hook_tx,
             scoring_log,
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -916,24 +923,22 @@ impl Session {
                 store.common_id_insert(side, cid_val, &id)?;
 
                 if let Some(opp_id) = store.common_id_lookup(opp, cid_val)? {
-                    if let Some(old_opp) = match side {
-                        Side::A => self.state.crossmap.take_a(&id),
-                        Side::B => self.state.crossmap.take_b(&id),
-                    } {
-                        store.mark_unmatched(opp, &old_opp)?;
-                    }
-                    if let Some(old_this) = match side {
-                        Side::A => self.state.crossmap.take_b(&opp_id),
-                        Side::B => self.state.crossmap.take_a(&opp_id),
-                    } {
-                        store.mark_unmatched(side, &old_this)?;
-                    }
-
                     let (a_id, b_id) = match side {
                         Side::A => (id.clone(), opp_id.clone()),
                         Side::B => (opp_id.clone(), id.clone()),
                     };
-                    self.state.crossmap.add(&a_id, &b_id);
+
+                    // Atomically install the pair (Constitution §3): displaces
+                    // any prior partners on either side under a single
+                    // lock / transaction so the bijection cannot be corrupted
+                    // by concurrent claim/confirm callers.
+                    let outcome = self.state.crossmap.confirm(&a_id, &b_id);
+                    if let Some(old_b) = outcome.displaced_b.as_deref() {
+                        store.mark_unmatched(Side::B, old_b)?;
+                    }
+                    if let Some(old_a) = outcome.displaced_a.as_deref() {
+                        store.mark_unmatched(Side::A, old_a)?;
+                    }
                     store.mark_matched(Side::A, &a_id)?;
                     store.mark_matched(Side::B, &b_id)?;
 
@@ -1415,17 +1420,17 @@ impl Session {
             });
         }
 
-        // Break any existing pair for a_id (e.g. a_id was matched to B-other).
-        if let Some(old_b) = self.state.crossmap.take_a(a_id) {
-            store.mark_unmatched(Side::B, &old_b)?;
+        // Atomically install the pair, breaking any prior partners under a
+        // single lock / transaction (Constitution §3 — bijection invariant).
+        // The returned outcome tells us which ids were displaced and need
+        // their store-side `unmatched` flag updated.
+        let outcome = self.state.crossmap.confirm(a_id, b_id);
+        if let Some(old_b) = outcome.displaced_b.as_deref() {
+            store.mark_unmatched(Side::B, old_b)?;
         }
-        // Break any existing pair for b_id (e.g. b_id was matched to A-other).
-        if let Some(old_a) = self.state.crossmap.take_b(b_id) {
-            store.mark_unmatched(Side::A, &old_a)?;
+        if let Some(old_a) = outcome.displaced_a.as_deref() {
+            store.mark_unmatched(Side::A, old_a)?;
         }
-
-        // Now insert the new pair — both sides are guaranteed free.
-        self.state.crossmap.add(a_id, b_id);
         store.mark_matched(Side::A, a_id)?;
         store.mark_matched(Side::B, b_id)?;
 
@@ -1538,8 +1543,8 @@ impl Session {
         if self.state.crossmap.get_b(a_id).as_deref() == Some(b_id) {
             // Break the match
             self.state.crossmap.remove(a_id, b_id);
-            let _ = store.mark_unmatched(Side::A, a_id);
-            let _ = store.mark_unmatched(Side::B, b_id);
+            store.mark_unmatched(Side::A, a_id)?;
+            store.mark_unmatched(Side::B, b_id)?;
             self.state.drain_reviews_for_pair(a_id, b_id);
 
             self.state.wal.append(&MatchLogEvent::CrossMapBreak {

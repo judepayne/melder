@@ -24,7 +24,7 @@ use std::sync::RwLock;
 
 use crate::error::CrossMapError;
 
-use super::CrossMapOps;
+use super::{ConfirmOutcome, CrossMapOps};
 
 use crate::util::rename_replacing;
 
@@ -234,6 +234,37 @@ impl CrossMapOps for MemoryCrossMap {
         g.a_to_b.insert(a_id.to_string(), b_id.to_string());
         g.b_to_a.insert(b_id.to_string(), a_id.to_string());
         true
+    }
+
+    fn confirm(&self, a_id: &str, b_id: &str) -> ConfirmOutcome {
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+
+        // Idempotent no-op: pair already installed.
+        if g.a_to_b.get(a_id).map(String::as_str) == Some(b_id) {
+            return ConfirmOutcome::default();
+        }
+
+        // Take a_id's prior partner (if any) and clean its reverse entry.
+        let displaced_b = g.a_to_b.remove(a_id);
+        if let Some(ref b) = displaced_b {
+            g.b_to_a.remove(b);
+        }
+
+        // Take b_id's prior partner (if any) and clean its reverse entry.
+        let displaced_a = g.b_to_a.remove(b_id);
+        if let Some(ref a) = displaced_a {
+            g.a_to_b.remove(a);
+        }
+
+        // Install the new pair. Both sides are now guaranteed free, so the
+        // bijection is preserved.
+        g.a_to_b.insert(a_id.to_string(), b_id.to_string());
+        g.b_to_a.insert(b_id.to_string(), a_id.to_string());
+
+        ConfirmOutcome {
+            displaced_b,
+            displaced_a,
+        }
     }
 
     fn get_b(&self, a_id: &str) -> Option<String> {
@@ -449,6 +480,133 @@ mod tests {
         // Both directions must be consistent
         let b = cm.get_b("A-contested").expect("A-contested must be mapped");
         assert_eq!(cm.get_a(&b), Some("A-contested".to_string()));
+    }
+
+    #[test]
+    fn confirm_into_vacant_returns_no_displacements() {
+        let cm = MemoryCrossMap::new();
+        let outcome = cm.confirm("A-1", "B-1");
+        assert_eq!(outcome.displaced_a, None);
+        assert_eq!(outcome.displaced_b, None);
+        assert_eq!(cm.get_b("A-1"), Some("B-1".to_string()));
+        assert_eq!(cm.get_a("B-1"), Some("A-1".to_string()));
+        assert_eq!(cm.len(), 1);
+    }
+
+    #[test]
+    fn confirm_idempotent_pair_is_noop() {
+        let cm = MemoryCrossMap::new();
+        cm.add("A-1", "B-1");
+        let outcome = cm.confirm("A-1", "B-1");
+        assert_eq!(outcome, ConfirmOutcome::default());
+        assert_eq!(cm.len(), 1);
+    }
+
+    #[test]
+    fn confirm_displaces_old_b_when_a_was_paired() {
+        let cm = MemoryCrossMap::new();
+        cm.add("A-1", "B-old");
+        let outcome = cm.confirm("A-1", "B-new");
+        assert_eq!(outcome.displaced_b, Some("B-old".to_string()));
+        assert_eq!(outcome.displaced_a, None);
+        assert_eq!(cm.get_b("A-1"), Some("B-new".to_string()));
+        assert_eq!(cm.get_a("B-old"), None);
+        assert_eq!(cm.get_a("B-new"), Some("A-1".to_string()));
+        assert_eq!(cm.len(), 1);
+    }
+
+    #[test]
+    fn confirm_displaces_old_a_when_b_was_paired() {
+        let cm = MemoryCrossMap::new();
+        cm.add("A-old", "B-1");
+        let outcome = cm.confirm("A-new", "B-1");
+        assert_eq!(outcome.displaced_a, Some("A-old".to_string()));
+        assert_eq!(outcome.displaced_b, None);
+        assert_eq!(cm.get_b("A-new"), Some("B-1".to_string()));
+        assert_eq!(cm.get_b("A-old"), None);
+        assert_eq!(cm.len(), 1);
+    }
+
+    #[test]
+    fn confirm_displaces_both_sides() {
+        let cm = MemoryCrossMap::new();
+        cm.add("A-1", "B-old");
+        cm.add("A-old", "B-1");
+        let outcome = cm.confirm("A-1", "B-1");
+        assert_eq!(outcome.displaced_b, Some("B-old".to_string()));
+        assert_eq!(outcome.displaced_a, Some("A-old".to_string()));
+        assert_eq!(cm.get_b("A-1"), Some("B-1".to_string()));
+        assert!(cm.get_a("B-old").is_none());
+        assert!(cm.get_b("A-old").is_none());
+        assert_eq!(cm.len(), 1);
+    }
+
+    #[test]
+    fn confirm_preserves_bijection_under_concurrent_claims() {
+        // Constitution §3 stress test: many threads racing confirm() and
+        // claim() against overlapping ids must always leave the map in a
+        // bijective state — every a_to_b entry has a matching b_to_a entry
+        // and vice versa.
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        for trial in 0..50 {
+            let cm = Arc::new(MemoryCrossMap::new());
+            let barrier = Arc::new(Barrier::new(20));
+            let mut handles = vec![];
+
+            for i in 0..10 {
+                let cm = Arc::clone(&cm);
+                let barrier = Arc::clone(&barrier);
+                handles.push(thread::spawn(move || {
+                    barrier.wait();
+                    cm.confirm(
+                        &format!("A-{}", (i + trial) % 5),
+                        &format!("B-{}", (i + trial) % 5),
+                    );
+                }));
+            }
+            for i in 0..10 {
+                let cm = Arc::clone(&cm);
+                let barrier = Arc::clone(&barrier);
+                handles.push(thread::spawn(move || {
+                    barrier.wait();
+                    cm.claim(
+                        &format!("A-{}", (i + trial + 1) % 5),
+                        &format!("B-{}", (i + trial + 2) % 5),
+                    );
+                }));
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+
+            // Bijection check: every a→b has matching b→a and counts agree.
+            let g = cm.inner.read().unwrap();
+            assert_eq!(
+                g.a_to_b.len(),
+                g.b_to_a.len(),
+                "trial {trial}: a_to_b/b_to_a count mismatch ({} vs {})",
+                g.a_to_b.len(),
+                g.b_to_a.len()
+            );
+            for (a, b) in &g.a_to_b {
+                assert_eq!(
+                    g.b_to_a.get(b),
+                    Some(a),
+                    "trial {trial}: a_to_b[{a}]={b} but b_to_a[{b}]={:?}",
+                    g.b_to_a.get(b)
+                );
+            }
+            for (b, a) in &g.b_to_a {
+                assert_eq!(
+                    g.a_to_b.get(a),
+                    Some(b),
+                    "trial {trial}: b_to_a[{b}]={a} but a_to_b[{a}]={:?}",
+                    g.a_to_b.get(a)
+                );
+            }
+        }
     }
 
     #[test]
