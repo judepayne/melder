@@ -248,15 +248,17 @@ provide per-field explainability data. Disable it explicitly with
 
 **Generating outputs.** Use any of:
 - `meld export --config enroll_config.yaml --out-dir export/` — reads
-  the match log and produces CSVs and/or the SQLite DB via the build pipeline.
+  the match log and produces CSVs, Parquet files, and/or the SQLite
+  DB via the build pipeline.
 - `POST /admin/flush` — triggers a build without shutting down.
   Returns `202 Accepted` with a build ID.
 - `POST /admin/shutdown` — graceful shutdown with a final build.
   SIGTERM triggers the same sequence.
 
-Configure `output.csv_dir_path` and/or `output.db_path` in the config
-to control what is produced. When neither is set, the match log is
-still written and outputs can be generated later with `meld export`.
+Configure any combination of `output.csv_dir_path`,
+`output.parquet_dir_path`, and `output.db_path` in the config to
+control what is produced. When none is set, the match log is still
+written and outputs can be generated later with `meld export`.
 
 ## Persistence
 

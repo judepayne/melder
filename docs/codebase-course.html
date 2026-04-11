@@ -289,7 +289,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
           <tr><td>Barclays Bank PLC</td><td>Barclays Bk</td></tr>
         </tbody>
       </table>
-      <p style="margin-top:var(--space-4)">Melder takes both datasets, compares every record using multiple scoring methods, and classifies each pair as <strong>auto-matched</strong> (high confidence), <strong>review</strong> (borderline), or <strong>unmatched</strong>. Results are written to a unified <code>relationships.csv</code> and optional SQLite database.</p>
+      <p style="margin-top:var(--space-4)">Melder takes both datasets, compares every record using multiple scoring methods, and classifies each pair as <strong>auto-matched</strong> (high confidence), <strong>review</strong> (borderline), or <strong>unmatched</strong>. Results are written to a unified <code>relationships.csv</code>, optional Parquet files, and/or an optional SQLite database.</p>
     </section>
 
     <section class="screen animate-in">
@@ -951,7 +951,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
       <h2 class="screen-heading">Feature Flags</h2>
       <div class="pattern-cards">
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-2)"><h4 class="pattern-title"><code>usearch</code></h4><p class="pattern-desc">Enables the HNSW vector index backend. Without this, only the O(N) flat scan is available. Required for production workloads.</p></div>
-        <div class="pattern-card" style="border-top:3px solid var(--color-actor-4)"><h4 class="pattern-title"><code>parquet-format</code></h4><p class="pattern-desc">Enables loading datasets from Apache Parquet files. Adds parquet and arrow crate dependencies.</p></div>
+        <div class="pattern-card" style="border-top:3px solid var(--color-actor-4)"><h4 class="pattern-title"><code>parquet-format</code></h4><p class="pattern-desc">Enables loading input datasets from Apache Parquet files and writing Parquet output via <code>output.parquet_dir_path</code>. Adds parquet and arrow crate dependencies.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-5)"><h4 class="pattern-title"><code>simd</code></h4><p class="pattern-desc">Hardware-accelerated dot product via SimSIMD. Uses NEON (ARM), AVX2/AVX-512 (x86) for faster vector comparisons.</p></div>
       </div>
       <p style="margin-top:var(--space-4)">Standard production build: <code style="background:var(--color-bg-code);color:#CDD6F4;padding:2px 8px;border-radius:4px;">cargo build --release --features usearch</code></p>

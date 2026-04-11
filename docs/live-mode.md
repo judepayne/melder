@@ -138,8 +138,9 @@ this newline-delimited JSON file. It serves two purposes:
    recovery.
 2. **Output generation** — `meld export` and the admin endpoints
    (`POST /admin/flush`, `POST /admin/shutdown`) read the match log
-   through the build pipeline to produce CSVs and the SQLite output
-   database, the same way batch mode does at end-of-run.
+   through the build pipeline to produce CSVs, Parquet files, and/or
+   the SQLite output database, the same way batch mode does at
+   end-of-run.
 
 On clean shutdown the match log is compacted (duplicate entries
 collapsed) and can be inspected with:
@@ -165,8 +166,9 @@ recovery).
 Two admin endpoints are available on the live-mode server for on-demand
 output generation:
 
-**`POST /admin/flush`** — triggers a build (CSVs and/or SQLite DB)
-without shutting down the server. Returns `202 Accepted` immediately
+**`POST /admin/flush`** — triggers a build (any combination of CSVs,
+Parquet files, and SQLite DB, based on which `output.*_path` fields
+are set) without shutting down the server. Returns `202 Accepted` immediately
 with a build ID. The build runs in a background task; status is
 queryable via `GET /admin/flush/{build_id}`. Multiple concurrent flush
 calls are serialised (one build at a time). Use this for periodic
@@ -198,8 +200,9 @@ How confirmed matches are persisted depends on the storage backend:
 
 Send Ctrl-C, SIGTERM, or `POST /admin/shutdown`. The melder will stop
 accepting new connections, drain in-flight requests, flush and compact
-the match log, run the build pipeline (if `output.csv_dir_path` or
-`output.db_path` is configured), save the cross-map (in-memory mode)
+the match log, run the build pipeline (if any of
+`output.csv_dir_path`, `output.parquet_dir_path`, or `output.db_path`
+is configured), save the cross-map (in-memory mode)
 or no-op (SQLite mode), and persist index caches. No data is lost.
 
 ## Persistence and restart

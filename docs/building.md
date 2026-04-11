@@ -101,7 +101,7 @@ placing it on your PATH.
 |---------|---------|-------------|
 | `usearch` | yes | HNSW approximate nearest-neighbour index. O(log N) candidate search instead of O(N) brute-force. Up to 5x faster at scale. Requires a C++ compiler (MSVC on Windows, GCC/Clang on Unix). |
 | `simd` | no | SimSIMD hardware-accelerated dot product (NEON / SVE / AVX2 / AVX-512). Speeds up cosine similarity computation. Pure Rust — no C++ dependency. |
-| `parquet-format` | no | Read Parquet files as input datasets. All column types (string, integer, float, boolean) are converted to strings internally. Snappy compression supported. |
+| `parquet-format` | no | Read and write Parquet files (input datasets and output run artefacts). On input, all column types (string, integer, float, boolean) are converted to strings internally; Snappy compression supported. On output, enables `output.parquet_dir_path` for writing `relationships.parquet`, `unmatched.parquet`, and (when the scoring log is enabled) `candidates.parquet`. |
 | `builtin-model` | no | Compile an embedding model into the binary. No network access or model download needed at runtime. See [Builtin model](#builtin-model) below. |
 | `gpu-encode` | no | GPU-accelerated ONNX encoding for batch mode. CoreML on macOS, CUDA on Linux. Requires the ONNX Runtime shared library at runtime. See [GPU encoding](#gpu-encoding) below. |
 

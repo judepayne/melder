@@ -57,9 +57,11 @@ A-side pool, and produce output files. During scoring, events are
 written to a match log. At the end of the run, the build pipeline reads
 the match log to produce `relationships.csv` (confirmed matches and
 review-band pairs), `unmatched.csv`, an optional SQLite output database,
-and `candidates.csv` (when the scoring log is enabled). The cross-map
-is updated with auto-matched pairs so that re-running skips
-already-resolved records.
+and `candidates.csv` (when the scoring log is enabled). Parquet
+versions of the same three files are also produced when
+`output.parquet_dir_path` is set (requires the `parquet-format`
+feature). The cross-map is updated with auto-matched pairs so that
+re-running skips already-resolved records.
 
 ```bash
 meld run --config config.yaml
@@ -118,7 +120,8 @@ Generate output files from an existing match log without re-running
 scoring. Uses the same build pipeline as batch end-of-run,
 `POST /admin/flush`, and `POST /admin/shutdown` — one implementation,
 same output shape. Reads the match log (and optional scoring log) to
-produce CSVs and/or the SQLite output database.
+produce any combination of CSVs, Parquet files, and the SQLite output
+database.
 
 This is the primary way to generate outputs from a live or enroll
 server's match log. It can also rebuild batch outputs with different
@@ -134,10 +137,13 @@ meld export --config config.yaml --out-dir export/
 | `--out-dir` | `-o` | Output directory for exported files (required) |
 
 Produces `relationships.csv` and `unmatched.csv` in the output directory.
-If `output.db_path` is set in the config, also produces the SQLite database.
-When a scoring log file exists (from running with `scoring_log.enabled: true`),
-also produces `candidates.csv` (rank 2+ candidates) and populates the
-`field_scores` table in the SQLite database.
+If `output.parquet_dir_path` is set, also produces
+`relationships.parquet` and `unmatched.parquet` (requires the
+`parquet-format` feature). If `output.db_path` is set in the config,
+also produces the SQLite database. When a scoring log file exists
+(from running with `scoring_log.enabled: true`), also produces
+`candidates.csv` / `candidates.parquet` (rank 2+ candidates) and
+populates the `field_scores` table in the SQLite database.
 
 Works with both match-mode (`meld serve`) and enroll-mode (`meld enroll`)
 configs — the config format is auto-detected. Batch mode writes outputs

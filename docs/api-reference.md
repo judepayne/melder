@@ -436,14 +436,16 @@ to re-upsert one of the records to trigger matching.
 
 ## Admin endpoints
 
-Admin endpoints generate output files (CSVs and/or SQLite DB) from the
-match log using the same build pipeline as `meld run` and `meld export`.
-Available in both live and enroll modes.
+Admin endpoints generate output files (any combination of CSVs,
+Parquet files, and the SQLite DB) from the match log using the same
+build pipeline as `meld run` and `meld export`. Available in both live
+and enroll modes.
 
 ### Flush (build without shutdown)
 
 Trigger an output build while the server continues accepting requests.
-Requires `output.csv_dir_path` and/or `output.db_path` to be configured.
+Requires at least one of `output.csv_dir_path`,
+`output.parquet_dir_path`, or `output.db_path` to be configured.
 
 ```
 POST /api/v1/admin/flush

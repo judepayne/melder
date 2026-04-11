@@ -40,9 +40,12 @@ match log (and the optional scoring log) to produce outputs. This means
 a crashed run leaves a recoverable match log, and outputs can be rebuilt
 with `meld export` without re-scoring.
 
-Output files are written to the directory configured by
-`output.csv_dir_path` and/or the SQLite database at `output.db_path`.
-At least one must be set.
+Output is written to any combination of three independent sinks:
+`output.csv_dir_path` (directory for CSV files),
+`output.parquet_dir_path` (directory for Parquet files), and
+`output.db_path` (SQLite database). At least one must be set. Setting
+more than one is allowed — all enabled sinks read from the same match
+log, so enabling Parquet alongside CSV adds no extra scoring work.
 
 ### CSV outputs
 
@@ -51,6 +54,20 @@ At least one must be set.
 | `relationships.csv` | All confirmed matches and review-band pairs. Columns: `b_id`, `a_id`, `score`, `relationship_type` (`match` or `review`), `reason`, `rank`, plus configured A-side fields. Replaces the former `results.csv` + `review.csv` split. |
 | `unmatched.csv` | B records with no match above `review_floor`. Columns: `b_id`, B-side fields, `best_score`, `best_a_id`. The `best_a_id` column is new — it shows the closest A-side record even when below threshold. |
 | `candidates.csv` | Produced only when the scoring log is enabled. Ranks 2..N for every scored query record. Columns: `b_id`, `rank`, `a_id`, `score`. |
+
+### Parquet outputs
+
+When `output.parquet_dir_path` is set, the build pipeline writes
+`relationships.parquet`, `unmatched.parquet`, and (when the scoring log
+is enabled) `candidates.parquet` alongside any CSV output. Contents
+match the CSV files row-for-row. Schemas: record field columns are
+written as `Utf8` (the internal "everything is string" dataset model),
+while engine-generated columns are typed — `score` as `Float64`,
+`rank` as `UInt8`. Writes are atomic (`*.parquet.tmp` then rename).
+
+Requires the `parquet-format` feature at build time (see
+[Building](building.md)). If the binary was built without the feature,
+starting a run with `parquet_dir_path` set returns an error.
 
 ### SQLite output database
 
@@ -159,12 +176,17 @@ datasets:
     format: jsonl   # csv, jsonl, ndjson, parquet
 ```
 
-Parquet support requires a feature flag at build time:
+Parquet support (both input and output) requires a feature flag at
+build time:
 
 ```bash
 cargo build --release --features parquet-format
 ```
 
-All column types (string, integer, float, boolean) are converted to
-strings internally to provide a uniform interface across formats.
-Snappy-compressed Parquet files are supported.
+All input column types (string, integer, float, boolean) are converted
+to strings internally to provide a uniform interface across formats.
+Snappy-compressed Parquet files are supported on input.
+
+Parquet output is controlled by `output.parquet_dir_path` and is
+independent of the input format — you can read CSV and write Parquet,
+or vice versa. See [Output files](#output-files) above.
