@@ -83,9 +83,13 @@ Last updated: 2026-04-07 (Linux CUDA GPU encode test verified)
 
 - [x] **Parquet output** — New `output.parquet_dir_path` config key writes `relationships.parquet`, `unmatched.parquet`, and `candidates.parquet` with typed Arrow schemas (Float64 scores, UInt8 rank, Utf8 strings). Feature-gated behind `parquet-format` (same flag as input). Coexists freely with CSV and SQLite output — any combination allowed. All 4 build_outputs call sites updated (batch, export, admin/flush, admin/shutdown). EnrollConfig passes through automatically. Fixed pre-existing bug where CSV was unconditionally written to cwd when `csv_dir_path` not set. New benchmark: `benchmarks/batch/10kx10k_usearch_parquet/` (parquet in + out). Docs updated. 420 tests pass, clippy/fmt clean.
 
+- [x] **Remote encoder (RemoteEncoder Phase 1)** — Subprocess-backed encoder for organisations that wall off embedding models behind central internal services. New `embeddings.remote_encoder_cmd` config (mutually exclusive with `embeddings.model`); required `performance.encoder_pool_size`; new `performance.encoder_call_timeout_ms`. `Encoder` trait extended with `EncodeResult` + `encode_detailed` default method; dispatch migrated to `Arc<dyn Encoder>` across `MatchState`, `LiveMatchState`, `EncoderCoordinator`, `vectordb::*`, and all CLI call sites. New `src/encoder/subprocess/` module (protocol codec + slot lifecycle + pool wrapper): per-slot reader thread + stderr drain + inline respawn + 1s→60s backoff + slot-unhealthy promotion after 5/60s + fail-loud-at-startup + `encode_detailed` per-record error surfacing. Stdlib-sync throughout — no tokio (the encoder stack is sync because the trait is sync). NDJSON envelope + binary trailer wire format with handshake validation (protocol_version, vector_dim, model_id). Reference stub at `tests/fixtures/stub_encoder.py` doubles as didactic skeleton, integration-test harness (full failure injection), and benchmark workload. 13 real-subprocess integration tests in `tests/remote_encoder.rs` covering happy path, handshake failures, per-record/batch errors, subprocess crash + respawn, call timeout, protocol violation, stderr drain, clean shutdown. New `benchmarks/batch/10kx10k_remote_encoder/cold/` benchmark exercising every new knob. Full user docs at `docs/remote-encoder.md` with wire protocol reference and labelled real-script skeleton. 436 lib + 13 integration tests, clippy/fmt clean. Design spec: `remote_operation.md` (§5 Phase 1). Phase 2 (`RemoteIndexer`+`RemoteSearcher` for remote vector DBs) sketched at high level in the same doc but not built — deferred until a customer demands it.
+
 ## In Progress
 
 - [ ] **Switch usearch back to crates.io** — PR #720 merged 2026-04-05 but latest crates.io release (v2.24.0, 2026-02-16) predates it. Keep fork dependency until a new usearch release includes the fix, then revert `Cargo.toml` to `version = "2"`. Check periodically: https://crates.io/crates/usearch
+
+- [ ] **Investigate silent GPU encode deadlock with pool_size > 1** — On machines with smaller GPUs (e.g. M3 Air), `encoder_pool_size > 1` with `encoder_device: gpu` (CoreML) causes `encode_and_upsert` to silently hang during batch encoding. The dedicated rayon thread pool (sized to pool_size) creates multiple concurrent CoreML ONNX sessions that contend on the GPU. With pool_size=12 the process hangs immediately (no progress logged). With pool_size=4 it runs but decelerates (~49 rec/s vs ~170 rec/s with pool_size=1). Likely cause: CoreML resource exhaustion when multiple sessions compete for GPU access. Tasks: (1) detect the hang (e.g. watchdog timer on encoding progress — if no batch completes within N seconds, abort), (2) warn the user and suggest reducing pool_size or switching to CPU, (3) consider auto-fallback to pool_size=1 for GPU mode. Discovered 2026-04-09 on M3 MacBook Air; the M1 Ultra handled pool_size=12 without issue.
 
 ---
 
@@ -106,12 +110,7 @@ Emit OpenLineage JSON events (START, COMPLETE, FAIL) at batch run and live sessi
 
 ---
 
-**2. External vector database.** *(Vector index) -- maybe*
-Qdrant / Milvus / Weaviate over gRPC. The `VectorDB` trait surface is already
-the right abstraction -- a client implementation would be a drop-in replacement.
-Buys: no staleness problem, durable persistence, multiple melder instances sharing
-one index. Costs: network round-trip (~1-5ms) per search, external service
-dependency. Only worth it at 1M+ records or when horizontal scaling is needed.
+**(removed — script-backed backends Phase 1 shipped, see completed section above; Phase 2 `RemoteIndexer`+`RemoteSearcher` sketch lives in `remote_operation.md` §6 until a customer demands it)**
 
 ---
 

@@ -61,8 +61,8 @@ output:
   csv_dir_path: benchmarks/batch/1Mx1M_usearch/cold/output
 
 performance:
-  encoder_pool_size: 12
-  encoder_device: gpu
+  encoder_pool_size: 4
+  #encoder_device: gpu
   encoder_batch_size: 256
   vector_index_mode: "load"
 
