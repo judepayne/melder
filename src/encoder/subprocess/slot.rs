@@ -124,7 +124,7 @@ impl Slot {
                 // Process died before handshake.
                 let reason = "stdout closed before handshake".to_string();
                 // Best-effort reap.
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 drop(stdin);
                 let _ = reader_handle.join();
@@ -136,7 +136,7 @@ impl Slot {
             }
             Ok(Err(e)) => {
                 let reason = format!("{e}");
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 drop(stdin);
                 let _ = reader_handle.join();
@@ -148,7 +148,7 @@ impl Slot {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 warn!(slot = index, "handshake timeout after 30s");
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 drop(stdin);
                 let _ = reader_handle.join();
@@ -159,7 +159,7 @@ impl Slot {
                 });
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 drop(stdin);
                 let _ = reader_handle.join();
@@ -177,7 +177,7 @@ impl Slot {
                 "unsupported protocol_version {}; only v1 is supported",
                 hs_result.protocol_version
             );
-            let _ = child.kill();
+            kill_process_tree(&mut child);
             let _ = child.wait();
             return Err(EncoderError::HandshakeFailed {
                 slot: index,
@@ -185,7 +185,7 @@ impl Slot {
             });
         }
         if hs_result.vector_dim == 0 {
-            let _ = child.kill();
+            kill_process_tree(&mut child);
             let _ = child.wait();
             return Err(EncoderError::HandshakeFailed {
                 slot: index,
@@ -193,7 +193,7 @@ impl Slot {
             });
         }
         if hs_result.model_id.is_empty() {
-            let _ = child.kill();
+            kill_process_tree(&mut child);
             let _ = child.wait();
             return Err(EncoderError::HandshakeFailed {
                 slot: index,
@@ -207,7 +207,7 @@ impl Slot {
                 "vector_dim mismatch: slot 0 declared {expected}, this slot declared {}",
                 hs_result.vector_dim
             );
-            let _ = child.kill();
+            kill_process_tree(&mut child);
             let _ = child.wait();
             return Err(EncoderError::HandshakeFailed {
                 slot: index,
@@ -371,7 +371,9 @@ impl Slot {
         }
     }
 
-    /// Graceful shutdown: close stdin, wait, SIGTERM, wait, SIGKILL.
+    /// Graceful shutdown: close stdin, wait, SIGTERM (Unix) / TerminateProcess
+    /// (Windows), wait, SIGKILL. Signals are sent to the entire process tree
+    /// on Unix so a wrapping shell + grandchild script both go down together.
     pub(crate) fn shutdown_graceful(&mut self) {
         // Drop stdin → EOF → subprocess should exit cleanly.
         let _ = self.stdin.take();
@@ -387,10 +389,15 @@ impl Slot {
                     Err(_) => break,
                 }
             }
-            // SIGTERM via kill (std doesn't distinguish; on Unix it's SIGKILL,
-            // on Windows TerminateProcess). Phase 1 documents the gap —
-            // portable SIGTERM would require nix, and we promised no new deps.
+            // First nudge: SIGTERM to the whole group on Unix (so both the
+            // shell wrapper and the user script get a chance to clean up).
+            // On non-Unix, fall back to `child.kill()` which is the only
+            // portable signal std exposes.
+            #[cfg(unix)]
+            signal_process_tree(&child, libc::SIGTERM);
+            #[cfg(not(unix))]
             let _ = child.kill();
+
             let term_start = Instant::now();
             while term_start.elapsed() < SHUTDOWN_GRACE_BEFORE_SIGKILL {
                 match child.try_wait() {
@@ -399,6 +406,8 @@ impl Slot {
                     Err(_) => break,
                 }
             }
+            // Final hammer: SIGKILL the whole tree if anything is still alive.
+            kill_process_tree(&mut child);
             let _ = child.wait();
         }
         self.join_threads();
@@ -418,7 +427,7 @@ impl Slot {
         debug!(slot = self.index, reason = %reason, "killing slot");
         let _ = self.stdin.take();
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
+            kill_process_tree(&mut child);
             let _ = child.wait();
         }
         self.join_threads();
@@ -515,6 +524,19 @@ fn spawn_process(command: &str) -> std::io::Result<Pipes> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    // On Unix, put the child in its own process group so we can kill the
+    // entire tree (shell + descendants) via `killpg`. Without this, when
+    // `sh -c "user_script"` does NOT exec-optimize (e.g. dash on Linux with
+    // a quoted argument list), `child.kill()` only reaches `sh` — leaving
+    // the user's script orphaned and any pipe handles it owns wedged.
+    // Reproduced as a 33-minute hang in tests/remote_encoder.rs on
+    // Ubuntu CI when the stub was sleeping in `time.sleep(999)`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
     let mut child = cmd.spawn()?;
     let stdin = child
         .stdin
@@ -594,6 +616,36 @@ fn spawn_stderr_drain(index: usize, stderr: std::process::ChildStderr) -> JoinHa
             }
         })
         .expect("spawn stderr drain thread")
+}
+
+/// Send `signal` to the child's entire process group on Unix, or fall back
+/// to `child.kill()` on other platforms.
+///
+/// Required because we may be talking to a user-supplied shell command line
+/// that wraps the real script (e.g. `sh -c "python3 ..."`); when the shell
+/// does not exec-optimize into the script, signalling only the immediate
+/// child leaves the actual script process orphaned. With `process_group(0)`
+/// set at spawn time, the child is the leader of its own group and
+/// `killpg` reaches the script too.
+#[cfg(unix)]
+fn signal_process_tree(child: &Child, signal: libc::c_int) {
+    let pgid = child.id() as libc::pid_t;
+    // SAFETY: pgid is the pid of an existing child we own and that we set
+    // as its own process-group leader at spawn time. killpg with a positive
+    // pgid is a normal, non-blocking syscall.
+    unsafe {
+        libc::killpg(pgid, signal);
+    }
+}
+
+/// Kill the child process and any descendants in its process group.
+fn kill_process_tree(child: &mut Child) {
+    #[cfg(unix)]
+    signal_process_tree(child, libc::SIGKILL);
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
 }
 
 /// Respawn backoff: 1s, 2s, 4s, …, capped at 60s. Mirrors
