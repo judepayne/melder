@@ -1,0 +1,80 @@
+job:
+  name: batch_10kx10k_remote_encoder_cold
+  description: >
+    Batch benchmark — 10k × 10k, SubprocessEncoder (remote encoder via
+    tests/fixtures/stub_encoder.py), cold run. Exercises every new
+    config knob: remote_encoder_cmd, encoder_pool_size required,
+    encoder_call_timeout_ms, and the XOR with embeddings.model.
+
+datasets:
+  a:
+    path: benchmarks/data/dataset_a_10k.csv
+    id_field: entity_id
+    format: csv
+  b:
+    path: benchmarks/data/dataset_b_10k.csv
+    id_field: counterparty_id
+    format: csv
+
+cross_map:
+  backend: local
+  path: benchmarks/batch/10kx10k_remote_encoder/cold/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+embeddings:
+  # NOTE: no `model` key set — mutually exclusive with remote_encoder_cmd.
+  # The stub's --vector-dim 384 matches the dim of the all-MiniLM family
+  # so the cached vector index is bit-compatible with other 10k benchmarks.
+  # --sleep-ms 5 simulates a low-latency remote service; tune to taste.
+  remote_encoder_cmd: "python3 tests/fixtures/stub_encoder.py --vector-dim 384 --model-id bench-stub --sleep-ms 5"
+  a_cache_dir: benchmarks/batch/10kx10k_remote_encoder/cold/cache
+  b_cache_dir: benchmarks/batch/10kx10k_remote_encoder/cold/cache
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: embedding
+    weight: 0.55
+  - field_a: short_name
+    field_b: counterparty_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+  - field_a: country_code
+    field_b: domicile
+    method: exact
+    weight: 0.20
+  - field_a: lei
+    field_b: lei_code
+    method: exact
+    weight: 0.05
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+output:
+  csv_dir_path: benchmarks/batch/10kx10k_remote_encoder/cold/output
+
+performance:
+  # REQUIRED when remote_encoder_cmd is set. No default. Each subprocess
+  # is an independent slot; pool_size N = N long-lived Python processes.
+  encoder_pool_size: 4
+  encoder_batch_size: 128
+  # Per-call timeout (ms). Defaults to 60000 if unset; set explicitly here
+  # to exercise the config path. A real script's internal remote-service
+  # timeout must be strictly less than this value or melder will kill it
+  # mid-flight — see docs/remote-encoder.md.
+  encoder_call_timeout_ms: 10000
+
+vector_backend: flat
+top_n: 20
+ann_candidates: 20

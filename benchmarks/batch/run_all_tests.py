@@ -48,6 +48,11 @@ TESTS = [
         True,
     ),
     ("bm25-only 10k cold", "benchmarks/batch/10kx10k_bm25only/cold/run_test.py", True),
+    (
+        "remote-encoder 10k cold",
+        "benchmarks/batch/10kx10k_remote_encoder/cold/run_test.py",
+        False,
+    ),
 ]
 
 
