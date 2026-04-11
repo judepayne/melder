@@ -12,6 +12,13 @@ a single pass. Run it with:
 meld run --config config.yaml
 ```
 
+Batch mode works unchanged whether embeddings come from a local ONNX
+model (`embeddings.model`) or a user-supplied subprocess calling your
+organisation's central embedding service
+(`embeddings.remote_encoder_cmd`). See [Remote Encoder](remote-encoder.md)
+for the subprocess path. A worked batch example using the remote encoder
+stub lives at `benchmarks/batch/10kx10k_remote_encoder/cold/`.
+
 ## Command flags
 
 | Flag | Short | Description |

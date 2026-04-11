@@ -116,6 +116,23 @@ embeddings:
   b_cache_dir: cache/b
 ```
 
+**Remote encoder alternative.** If your organisation requires embeddings
+to run behind a central internal service, set
+`embeddings.remote_encoder_cmd` instead of `embeddings.model` (exactly
+one must be set — setting both is a validation error). Melder will
+spawn your user-supplied script as a subprocess pool and talk to it
+over a stdin/stdout protocol. See [Remote Encoder](remote-encoder.md)
+for the full contract.
+
+```yaml
+embeddings:
+  remote_encoder_cmd: "python scripts/my_encoder.py --env prod"
+  a_cache_dir: cache/a
+performance:
+  encoder_pool_size: 8          # required with remote_encoder_cmd
+  encoder_call_timeout_ms: 60000 # optional
+```
+
 ---
 
 ## `vector_backend`

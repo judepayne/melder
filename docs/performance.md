@@ -85,6 +85,22 @@ See [Building: GPU encoding](building.md#gpu-encoding) for setup
 instructions and [Configuration](configuration.md#performance-field-reference)
 for the full field reference.
 
+## Remote encoder throughput
+
+When [`embeddings.remote_encoder_cmd`](remote-encoder.md) is set,
+encoding runs out-of-process via a subprocess pool talking to your
+organisation's central embedding service. Throughput is bounded by
+`encoder_pool_size × (1 / remote_call_latency)` and is typically
+50–200 req/s — an order of magnitude slower than local ONNX — because
+every call pays a network round-trip to the central service.
+
+This is by design: the remote encoder path exists to comply with
+organisational constraints on AI components, not to improve
+performance. If you have the option of running the model locally,
+you will be faster with `embeddings.model`. See
+[Remote Encoder](remote-encoder.md) for the full throughput discussion
+and when each mode is the right fit.
+
 ## BM25-only batch mode
 
 BM25 + fuzzy + exact scoring, `country_code` blocking. The BM25-only
