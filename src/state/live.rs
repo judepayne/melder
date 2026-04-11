@@ -16,8 +16,8 @@ use tracing::{info, warn};
 use crate::config::{Config, MatchMethod};
 use crate::crossmap::{CrossMapOps, MemoryCrossMap};
 use crate::data;
+use crate::encoder::Encoder;
 use crate::encoder::coordinator::EncoderCoordinator;
-use crate::encoder::{Encoder, EncoderOptions, EncoderPool};
 use crate::error::MelderError;
 use crate::models::Side;
 use crate::state::match_log::{MatchLog, MatchLogEvent};
@@ -81,7 +81,7 @@ pub struct LiveMatchState {
     pub b: LiveSideState,
     pub crossmap: Box<dyn CrossMapOps>,
     pub exclusions: crate::matching::exclusions::Exclusions,
-    pub encoder_pool: Arc<EncoderPool>,
+    pub encoder_pool: Arc<dyn Encoder>,
     /// Optional batching coordinator for concurrent encoding.
     /// Created when `performance.encoder_batch_wait_ms > 0`.
     pub coordinator: Option<EncoderCoordinator>,
@@ -134,25 +134,22 @@ impl LiveMatchState {
     pub fn load(config: Config) -> Result<Arc<Self>, MelderError> {
         let start = Instant::now();
 
-        // 1. Init encoder pool
-        if config.performance.encoder_device.as_deref() == Some("gpu") {
+        // 1. Init encoder (local or remote — branch on config).
+        //
+        // Live mode note: GPU is silently ignored (doesn't help per-record
+        // latency) and remote encoders work but are bounded by round-trip
+        // latency. See docs/remote-encoder.md.
+        if config.performance.encoder_device.as_deref() == Some("gpu")
+            && config.embeddings.remote_encoder_cmd.is_none()
+        {
             eprintln!(
                 "NOTE: encoder_device: gpu is ignored in live mode — GPU encoding \
                  does not improve single-record latency. Using CPU."
             );
         }
-        let pool_size = config.performance.encoder_pool_size.unwrap_or(1);
-        info!(model = %config.embeddings.model, pool_size, "initializing encoder pool");
-        let encoder_pool = Arc::new(
-            EncoderPool::new(EncoderOptions {
-                model_name: config.embeddings.model.clone(),
-                pool_size,
-                quantized: config.performance.quantized,
-                gpu: false, // Always CPU in live mode.
-                encode_batch_size: config.performance.encoder_batch_size,
-            })
-            .map_err(MelderError::Encoder)?,
-        );
+        // Live mode always forces CPU — GPU encoding does not improve
+        // per-record latency for single-record upserts.
+        let encoder_pool = crate::state::state::build_encoder(&config, true)?;
         let dim = encoder_pool.dim();
         info!(
             dim,
@@ -233,7 +230,7 @@ impl LiveMatchState {
     fn finish(
         config: Config,
         start: Instant,
-        encoder_pool: Arc<EncoderPool>,
+        encoder_pool: Arc<dyn Encoder>,
         store: Arc<dyn RecordStore>,
         crossmap: Box<dyn CrossMapOps>,
         exclusions: crate::matching::exclusions::Exclusions,
@@ -330,7 +327,7 @@ impl LiveMatchState {
     fn load_memory(
         config: Config,
         start: Instant,
-        encoder_pool: Arc<EncoderPool>,
+        encoder_pool: Arc<dyn Encoder>,
     ) -> Result<Arc<Self>, MelderError> {
         let (records_a_map, ids_a, records_b_map, ids_b) = Self::load_datasets(&config)?;
 
@@ -343,7 +340,7 @@ impl LiveMatchState {
             &ids_a,
             &config,
             true,
-            &encoder_pool,
+            encoder_pool.as_ref(),
             true,
             Some(Path::new(&config.datasets.a.path)),
         )?;
@@ -355,7 +352,7 @@ impl LiveMatchState {
             &ids_b,
             &config,
             false,
-            &encoder_pool,
+            encoder_pool.as_ref(),
             true,
             Some(Path::new(&config.datasets.b.path)),
         )?;
@@ -458,7 +455,7 @@ impl LiveMatchState {
     fn load_enroll(
         config: Config,
         start: Instant,
-        encoder_pool: Arc<EncoderPool>,
+        encoder_pool: Arc<dyn Encoder>,
     ) -> Result<Arc<Self>, MelderError> {
         // Load A-side dataset if configured (optional — pool can start empty)
         let (records_a_map, ids_a) = if !config.datasets.a.path.is_empty() {
@@ -489,7 +486,7 @@ impl LiveMatchState {
             &ids_a,
             &config,
             true,
-            &encoder_pool,
+            encoder_pool.as_ref(),
             true,
             if config.datasets.a.path.is_empty() {
                 None
@@ -565,7 +562,7 @@ impl LiveMatchState {
         store: &Arc<dyn RecordStore>,
         crossmap: &dyn CrossMapOps,
         exclusions: &crate::matching::exclusions::Exclusions,
-        encoder_pool: &Arc<EncoderPool>,
+        encoder_pool: &Arc<dyn Encoder>,
         combined_index_a: Option<&dyn VectorDB>,
         combined_index_b: Option<&dyn VectorDB>,
     ) -> Result<(), MelderError> {
@@ -603,7 +600,7 @@ impl LiveMatchState {
                             } else if let Ok(combined_vec) = vectordb::encode_combined_vector(
                                 record,
                                 &emb_specs,
-                                encoder_pool,
+                                encoder_pool.as_ref(),
                                 is_a,
                             ) {
                                 if !combined_vec.is_empty() {
@@ -697,7 +694,7 @@ impl LiveMatchState {
         config: Config,
         db_path: &str,
         start: Instant,
-        encoder_pool: Arc<EncoderPool>,
+        encoder_pool: Arc<dyn Encoder>,
         pool_config: Option<crate::store::sqlite::SqlitePoolConfig>,
     ) -> Result<Arc<Self>, MelderError> {
         let db_exists = Path::new(db_path).exists();
@@ -810,7 +807,7 @@ impl LiveMatchState {
             &ids_a,
             &config,
             true,
-            &encoder_pool,
+            encoder_pool.as_ref(),
             true,
             None,
         )?;
@@ -822,7 +819,7 @@ impl LiveMatchState {
             &ids_b,
             &config,
             false,
-            &encoder_pool,
+            encoder_pool.as_ref(),
             true,
             None,
         )?;

@@ -64,8 +64,14 @@ pub struct EnrollExactPrefilterConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct EnrollEmbeddingsConfig {
-    /// HuggingFace model name or local ONNX path.
+    /// HuggingFace model name or local ONNX path. Mutually exclusive
+    /// with `remote_encoder_cmd`.
+    #[serde(default)]
     pub model: String,
+    /// Shell command to spawn a user-supplied encoder subprocess.
+    /// Mutually exclusive with `model`. See `docs/remote-encoder.md`.
+    #[serde(default)]
+    pub remote_encoder_cmd: Option<String>,
     /// Single cache directory for the pool's embedding index.
     pub cache_dir: String,
 }
@@ -275,6 +281,7 @@ impl EnrollConfig {
         // Embeddings: cache_dir maps to a_cache_dir
         let embeddings = EmbeddingsConfig {
             model: self.embeddings.model,
+            remote_encoder_cmd: self.embeddings.remote_encoder_cmd,
             a_cache_dir: self.embeddings.cache_dir,
             b_cache_dir: None,
         };

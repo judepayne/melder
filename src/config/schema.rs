@@ -258,9 +258,18 @@ pub struct ExclusionsConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct EmbeddingsConfig {
-    /// HuggingFace model name or local ONNX path.
+    /// HuggingFace model name or local ONNX path. Mutually exclusive with
+    /// `remote_encoder_cmd` — exactly one must be set.
     #[serde(default)]
     pub model: String,
+    /// Shell command to spawn a user-supplied encoder subprocess. When set,
+    /// melder launches this command once per pool slot at startup and talks
+    /// to it via the stdin/stdout protocol documented in
+    /// `docs/remote-encoder.md`. Mutually exclusive with `model`.
+    ///
+    /// Example: `"python scripts/acme_encoder.py --env prod"`.
+    #[serde(default)]
+    pub remote_encoder_cmd: Option<String>,
     /// Directory for A-side combined embedding index cache. Created
     /// automatically on first run; loaded on subsequent runs to skip encoding.
     #[serde(default)]
@@ -633,6 +642,15 @@ pub struct PerformanceConfig {
     /// Only effective in batch mode.
     #[serde(default)]
     pub encoder_batch_size: Option<usize>,
+    /// Per-call timeout (ms) for a `SubprocessEncoder` encode call. Only
+    /// effective when `embeddings.remote_encoder_cmd` is set. If the
+    /// subprocess does not return a response within this window the slot
+    /// is killed and respawned; the in-flight encode call fails.
+    ///
+    /// Defaults to 60000ms (60s) when unset. A subprocess's own remote-service
+    /// timeout must be strictly less than this value.
+    #[serde(default)]
+    pub encoder_call_timeout_ms: Option<u64>,
 }
 
 /// Pipeline hook configuration — a single long-running subprocess that

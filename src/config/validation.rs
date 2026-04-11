@@ -171,8 +171,8 @@ fn validate_common(cfg: &Config) -> Result<(), ConfigError> {
         require_non_empty(&cfg.exclusions.b_id_field, "exclusions.b_id_field")?;
     }
 
-    // embeddings
-    require_non_empty(&cfg.embeddings.model, "embeddings.model")?;
+    // embeddings: exactly one of `model` / `remote_encoder_cmd`
+    validate_embeddings_source(cfg)?;
     require_non_empty(&cfg.embeddings.a_cache_dir, "embeddings.a_cache_dir")?;
 
     // at least one match field
@@ -364,6 +364,13 @@ fn validate_thresholds(cfg: &Config) -> Result<(), ConfigError> {
 }
 
 fn validate_performance(cfg: &Config) -> Result<(), ConfigError> {
+    let remote_set = cfg
+        .embeddings
+        .remote_encoder_cmd
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
     if let Some(pool) = cfg.performance.encoder_pool_size
         && pool < 1
     {
@@ -372,13 +379,31 @@ fn validate_performance(cfg: &Config) -> Result<(), ConfigError> {
             message: "must be >= 1".into(),
         });
     }
+    // When remote_encoder_cmd is set, pool size must be explicit. No default.
+    // See docs/remote-encoder.md — startup cost scales with pool size, so
+    // we require the operator to think about it deliberately.
+    if remote_set && cfg.performance.encoder_pool_size.is_none() {
+        return Err(ConfigError::InvalidValue {
+            field: "performance.encoder_pool_size".into(),
+            message: "required when embeddings.remote_encoder_cmd is set (no default). \
+                      See docs/remote-encoder.md"
+                .into(),
+        });
+    }
     if let Some(ref dev) = cfg.performance.encoder_device {
-        require_one_of(dev, VALID_ENCODER_DEVICES, "performance.encoder_device")?;
-        if dev == "gpu" && !cfg!(feature = "gpu-encode") {
-            return Err(ConfigError::InvalidValue {
-                field: "performance.encoder_device".into(),
-                message: "GPU encoding requires building with --features gpu-encode".into(),
-            });
+        if remote_set {
+            // Silently ignored (documented). Info log for operator visibility.
+            tracing::info!(
+                "performance.encoder_device is ignored when embeddings.remote_encoder_cmd is set"
+            );
+        } else {
+            require_one_of(dev, VALID_ENCODER_DEVICES, "performance.encoder_device")?;
+            if dev == "gpu" && !cfg!(feature = "gpu-encode") {
+                return Err(ConfigError::InvalidValue {
+                    field: "performance.encoder_device".into(),
+                    message: "GPU encoding requires building with --features gpu-encode".into(),
+                });
+            }
         }
     }
     if let Some(bs) = cfg.performance.encoder_batch_size
@@ -389,7 +414,38 @@ fn validate_performance(cfg: &Config) -> Result<(), ConfigError> {
             message: "must be >= 1".into(),
         });
     }
+    if let Some(ms) = cfg.performance.encoder_call_timeout_ms
+        && ms < 1
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "performance.encoder_call_timeout_ms".into(),
+            message: "must be >= 1".into(),
+        });
+    }
     Ok(())
+}
+
+/// Validate that exactly one of `embeddings.model` / `embeddings.remote_encoder_cmd`
+/// is set. Empty-string `model` is treated as unset to avoid requiring
+/// `Option<String>` migration across every existing test fixture.
+fn validate_embeddings_source(cfg: &Config) -> Result<(), ConfigError> {
+    let has_model = !cfg.embeddings.model.trim().is_empty();
+    let has_remote = cfg
+        .embeddings
+        .remote_encoder_cmd
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    match (has_model, has_remote) {
+        (false, false) => Err(ConfigError::MissingField {
+            field: "embeddings.model or embeddings.remote_encoder_cmd".into(),
+        }),
+        (true, true) => Err(ConfigError::InvalidValue {
+            field: "embeddings".into(),
+            message: "set exactly one of `model` or `remote_encoder_cmd` — not both".into(),
+        }),
+        _ => Ok(()),
+    }
 }
 
 /// Validate blocking config. When `enroll_mode` is true, only checks field_a
@@ -1203,6 +1259,129 @@ output: { csv_dir_path: /tmp/test/output }
         apply_defaults(&mut cfg);
         validate(&cfg).unwrap();
         assert!(cfg.hooks.command.is_none());
+    }
+
+    // --- Remote encoder (XOR with model) ---
+
+    #[test]
+    fn remote_encoder_xor_neither_set_rejected() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings: { a_cache_dir: i }
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { csv_dir_path: /tmp/test/output }
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("embeddings.model or embeddings.remote_encoder_cmd"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn remote_encoder_xor_both_set_rejected() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings:
+  model: m
+  remote_encoder_cmd: "python enc.py"
+  a_cache_dir: i
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { csv_dir_path: /tmp/test/output }
+performance:
+  encoder_pool_size: 4
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.to_string().contains("exactly one of"), "got: {err}");
+    }
+
+    #[test]
+    fn remote_encoder_requires_pool_size() {
+        // remote_encoder_cmd set but no encoder_pool_size → reject.
+        // Defaults do NOT fill in a pool size when remote_encoder_cmd is
+        // set, so the normal loader path surfaces the error.
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings:
+  remote_encoder_cmd: "python enc.py"
+  a_cache_dir: i
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { csv_dir_path: /tmp/test/output }
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.to_string().contains("encoder_pool_size"), "got: {err}");
+    }
+
+    #[test]
+    fn remote_encoder_valid_config_accepted() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings:
+  remote_encoder_cmd: "python enc.py"
+  a_cache_dir: i
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { csv_dir_path: /tmp/test/output }
+performance:
+  encoder_pool_size: 4
+  encoder_call_timeout_ms: 30000
+"#;
+        parse_and_validate(yaml).unwrap();
+    }
+
+    #[test]
+    fn remote_encoder_zero_timeout_rejected() {
+        let yaml = r#"
+job:
+  name: test
+datasets:
+  a: { path: "a.csv", id_field: id }
+  b: { path: "b.csv", id_field: id }
+cross_map: { backend: local, path: "cm.csv", a_id_field: a, b_id_field: b }
+embeddings:
+  remote_encoder_cmd: "python enc.py"
+  a_cache_dir: i
+match_fields:
+  - { field_a: f, field_b: f, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { csv_dir_path: /tmp/test/output }
+performance:
+  encoder_pool_size: 4
+  encoder_call_timeout_ms: 0
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("encoder_call_timeout_ms"),
+            "got: {err}"
+        );
     }
 
     // --- Encoder ---

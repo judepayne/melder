@@ -18,6 +18,7 @@
 //!   (defaults to `themelder/arctic-embed-xs-entity-resolution`).
 
 pub mod coordinator;
+pub mod subprocess;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -35,14 +36,41 @@ use crate::error::EncoderError;
 // Encoder trait
 // ---------------------------------------------------------------------------
 
+/// Per-record encoding outcome.
+///
+/// Used by `Encoder::encode_detailed` to surface per-record errors
+/// (e.g. a remote embedding service rejecting a single text for content
+/// policy reasons) without failing the whole batch at the trait level.
+/// Phase 1's fail-fast policy still collapses any error here into a
+/// whole-batch failure at the call site, but preserves per-record context
+/// in tracing events before doing so.
+#[derive(Debug, Clone)]
+pub enum EncodeResult {
+    Vector(Vec<f32>),
+    Error(String),
+}
+
 /// Trait for text embedding encoders.
 ///
 /// The default implementation is `EncoderPool` (local ONNX inference).
 /// Alternative implementations might call a remote embedding service
-/// over HTTP, use a different model runtime, etc.
+/// via subprocess (`SubprocessEncoder`), use a different model runtime, etc.
 pub trait Encoder: Send + Sync + std::fmt::Debug {
     /// Encode a batch of texts into embedding vectors.
+    ///
+    /// Local-encoder simple path: all-or-nothing. Remote encoders can
+    /// emit per-record errors; callers that want to distinguish per-record
+    /// from whole-batch failures should call `encode_detailed` instead.
     fn encode(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EncoderError>;
+
+    /// Per-record-aware encoding. The default impl wraps `encode()` so
+    /// existing impls don't need to change; `SubprocessEncoder` overrides
+    /// this to return per-record `EncodeResult::Error` variants for records
+    /// the remote service rejected.
+    fn encode_detailed(&self, texts: &[&str]) -> Result<Vec<EncodeResult>, EncoderError> {
+        self.encode(texts)
+            .map(|vs| vs.into_iter().map(EncodeResult::Vector).collect())
+    }
 
     /// Encode a single text, returning a single vector.
     fn encode_one(&self, text: &str) -> Result<Vec<f32>, EncoderError> {

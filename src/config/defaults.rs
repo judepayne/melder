@@ -17,8 +17,21 @@ pub(crate) fn apply_defaults(cfg: &mut Config) {
         cfg.live.crossmap_flush_secs = Some(5);
     }
 
-    // Default encoder_pool_size to 1 if not set.
-    if cfg.performance.encoder_pool_size.is_none() || cfg.performance.encoder_pool_size == Some(0) {
+    // Default encoder_pool_size to 1 if not set — but only for local
+    // encoders. When `embeddings.remote_encoder_cmd` is set the operator
+    // MUST specify pool size explicitly; validation will reject a missing
+    // value with a clear error. See docs/remote-encoder.md for why this
+    // is not silently defaulted.
+    let remote_set = cfg
+        .embeddings
+        .remote_encoder_cmd
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !remote_set
+        && (cfg.performance.encoder_pool_size.is_none()
+            || cfg.performance.encoder_pool_size == Some(0))
+    {
         cfg.performance.encoder_pool_size = Some(1);
     }
 

@@ -665,7 +665,7 @@ fn run_pipeline(
         &b_ids,
         &state.config,
         false,
-        &state.encoder_pool,
+        state.encoder_pool.as_ref(),
         false,
         Some(std::path::Path::new(&state.config.datasets.b.path)),
     ) {

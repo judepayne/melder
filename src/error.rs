@@ -83,6 +83,42 @@ pub enum EncoderError {
 
     #[error("pool exhausted (all {pool_size} encoders busy)")]
     PoolExhausted { pool_size: usize },
+
+    // --- Remote encoder variants (SubprocessEncoder) ---
+    /// Subprocess failed to emit a valid handshake within the 30s window,
+    /// or emitted an invalid one (bad version, zero dim, empty model_id).
+    #[error("remote encoder handshake failed (slot {slot}): {reason}")]
+    HandshakeFailed { slot: usize, reason: String },
+
+    /// A call exceeded `encoder_call_timeout_ms`. The slot has been killed
+    /// and will be respawned.
+    #[error("remote encoder call timed out after {elapsed_ms}ms (slot {slot})")]
+    Timeout { slot: usize, elapsed_ms: u64 },
+
+    /// Subprocess died mid-call (crash, OOM, non-zero exit, broken pipe).
+    #[error("remote encoder subprocess died (slot {slot}): {reason}")]
+    SubprocessDied { slot: usize, reason: String },
+
+    /// Subprocess produced output that did not parse as a valid protocol
+    /// message (malformed JSON, truncated trailer, unknown message type).
+    #[error("remote encoder protocol violation (slot {slot}): {reason}")]
+    ProtocolViolation { slot: usize, reason: String },
+
+    /// Subprocess explicitly reported a whole-batch error (rate limit after
+    /// internal retries, auth failure, etc.). Final — melder does not retry.
+    #[error("remote encoder batch error (slot {slot}): {message}")]
+    BatchError { slot: usize, message: String },
+
+    /// Slot crossed the consecutive-failure threshold and is no longer
+    /// dispatched to.
+    #[error("remote encoder slot {slot} marked unhealthy")]
+    SlotUnhealthy { slot: usize },
+
+    /// Remote encoder spawn failed at startup — every slot failed to
+    /// handshake within the initial respawn cycle. Fail-loud: melder
+    /// will not start with a degraded remote encoder pool.
+    #[error("remote encoder spawn failed ({command}): {reason}")]
+    RemoteSpawnFailed { command: String, reason: String },
 }
 
 #[derive(Debug, thiserror::Error)]

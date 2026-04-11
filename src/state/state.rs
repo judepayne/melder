@@ -13,6 +13,85 @@ use crate::store::RecordStore;
 use crate::store::memory::MemoryStore;
 use crate::vectordb::{self, VectorDB};
 
+/// Construct the encoder for the given config.
+///
+/// Branches on `embeddings.remote_encoder_cmd`: if set, spawns a
+/// `SubprocessEncoder` pool; otherwise constructs the local ONNX
+/// `EncoderPool`. Both return `Arc<dyn Encoder>` so downstream code is
+/// oblivious to the backend.
+///
+/// `force_cpu` is honoured only for the local ONNX path (live mode sets
+/// this to `true` — GPU does not improve single-record latency).
+pub(crate) fn build_encoder(
+    config: &Config,
+    force_cpu: bool,
+) -> Result<Arc<dyn Encoder>, MelderError> {
+    if let Some(cmd) = config
+        .embeddings
+        .remote_encoder_cmd
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        // Remote path: validation guarantees pool_size is set.
+        let pool_size = config
+            .performance
+            .encoder_pool_size
+            .expect("validated: encoder_pool_size required with remote_encoder_cmd");
+        let batch_size = config.performance.encoder_batch_size.unwrap_or(256);
+        let timeout_ms = config.performance.encoder_call_timeout_ms.unwrap_or(60_000);
+        eprintln!(
+            "Initializing remote encoder (cmd={:?}, pool_size={}, timeout_ms={})...",
+            cmd, pool_size, timeout_ms
+        );
+        let enc = crate::encoder::subprocess::SubprocessEncoder::new(
+            cmd.to_string(),
+            pool_size,
+            batch_size,
+            std::time::Duration::from_millis(timeout_ms),
+        )
+        .map_err(MelderError::Encoder)?;
+        eprintln!(
+            "Remote encoder ready (dim={}, model_id={})",
+            enc.dim(),
+            enc.model_id()
+        );
+        Ok(Arc::new(enc))
+    } else {
+        let gpu = !force_cpu && config.performance.encoder_device.as_deref() == Some("gpu");
+        let pool_size = config.performance.encoder_pool_size.unwrap_or_else(|| {
+            if gpu {
+                let cores = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4);
+                let default = ((cores as f64 * 0.6).round() as usize).max(2);
+                eprintln!(
+                    "NOTE: encoder_pool_size not set — defaulting to {} for GPU \
+                     (~60% of {} cores). Set explicitly to tune.",
+                    default, cores
+                );
+                default
+            } else {
+                1
+            }
+        });
+        eprintln!(
+            "Initializing encoder pool (model={}, pool_size={}, device={})...",
+            config.embeddings.model,
+            pool_size,
+            if gpu { "gpu" } else { "cpu" }
+        );
+        let pool = EncoderPool::new(EncoderOptions {
+            model_name: config.embeddings.model.clone(),
+            pool_size,
+            quantized: config.performance.quantized,
+            gpu,
+            encode_batch_size: config.performance.encoder_batch_size,
+        })
+        .map_err(MelderError::Encoder)?;
+        Ok(Arc::new(pool))
+    }
+}
+
 /// Options controlling what to load.
 #[derive(Debug, Clone)]
 pub struct LoadOptions {
@@ -33,7 +112,10 @@ pub struct MatchState {
     pub ids_b: Option<Vec<String>>,
     /// Combined embedding index for side B. None if not loaded or no embedding fields.
     pub combined_index_b: Option<Box<dyn VectorDB>>,
-    pub encoder_pool: EncoderPool,
+    /// The encoder: local `EncoderPool` (ONNX via fastembed) or a
+    /// `SubprocessEncoder` (user-supplied remote script), selected at
+    /// load time based on `embeddings.remote_encoder_cmd`.
+    pub encoder_pool: Arc<dyn Encoder>,
 }
 
 impl std::fmt::Debug for MatchState {
@@ -64,39 +146,9 @@ impl std::fmt::Debug for MatchState {
 pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, MelderError> {
     let start = Instant::now();
 
-    // 1. Create encoder pool
-    let gpu = config.performance.encoder_device.as_deref() == Some("gpu");
-    let pool_size = config.performance.encoder_pool_size.unwrap_or_else(|| {
-        if gpu {
-            // ~60% of CPU cores keeps GPU fed without starving tokenisation.
-            let cores = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-            let default = ((cores as f64 * 0.6).round() as usize).max(2);
-            eprintln!(
-                "NOTE: encoder_pool_size not set — defaulting to {} for GPU \
-                 (~60% of {} cores). Set explicitly to tune.",
-                default, cores
-            );
-            default
-        } else {
-            1
-        }
-    });
-    eprintln!(
-        "Initializing encoder pool (model={}, pool_size={}, device={})...",
-        config.embeddings.model,
-        pool_size,
-        if gpu { "gpu" } else { "cpu" }
-    );
-    let encoder_pool = EncoderPool::new(EncoderOptions {
-        model_name: config.embeddings.model.clone(),
-        pool_size,
-        quantized: config.performance.quantized,
-        gpu,
-        encode_batch_size: config.performance.encoder_batch_size,
-    })
-    .map_err(MelderError::Encoder)?;
+    // 1. Create encoder (local or remote — branch on config). Batch mode
+    //    honours `encoder_device: gpu` when set.
+    let encoder_pool = build_encoder(&config, false)?;
     eprintln!(
         "Encoder ready (dim={}), took {:.1}s",
         encoder_pool.dim(),
@@ -126,7 +178,7 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
         &ids_a,
         &config,
         true,
-        &encoder_pool,
+        encoder_pool.as_ref(),
         false,
         Some(Path::new(&config.datasets.a.path)),
     )?;
@@ -155,7 +207,7 @@ pub fn load_state(config: Config, opts: &LoadOptions) -> Result<MatchState, Meld
             &ids,
             &config,
             false,
-            &encoder_pool,
+            encoder_pool.as_ref(),
             false,
             Some(Path::new(&config.datasets.b.path)),
         )?;

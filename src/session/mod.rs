@@ -11,7 +11,6 @@ use std::time::Instant;
 use tracing::{info, info_span, warn};
 
 use crate::bm25::scorer::normalise_bm25;
-use crate::encoder::Encoder;
 use crate::error::SessionError;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
@@ -617,7 +616,7 @@ impl Session {
             crate::vectordb::encode_combined_vector(
                 record,
                 emb_specs,
-                &self.state.encoder_pool,
+                self.state.encoder_pool.as_ref(),
                 is_a_side,
             )
             .map_err(melder_to_session_err)

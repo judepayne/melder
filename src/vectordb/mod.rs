@@ -38,7 +38,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::config::schema::{BlockingConfig, MatchMethod};
-use crate::encoder::{Encoder, EncoderPool};
+use crate::encoder::Encoder;
 use crate::error::MelderError;
 use crate::models::{Record, Side};
 
@@ -317,14 +317,14 @@ pub fn combined_cache_path(cache_dir: &str, side_prefix: &str, hash: &str) -> Pa
 pub fn encode_combined_vector(
     record: &Record,
     emb_specs: &[(String, String, f64)],
-    encoder_pool: &EncoderPool,
+    encoder: &dyn Encoder,
     is_a_side: bool,
 ) -> Result<Vec<f32>, MelderError> {
     if emb_specs.is_empty() {
         return Ok(Vec::new());
     }
 
-    let field_dim = encoder_pool.dim();
+    let field_dim = encoder.dim();
     let mut combined = Vec::with_capacity(field_dim * emb_specs.len());
 
     for (field_a, field_b, weight) in emb_specs {
@@ -334,9 +334,7 @@ pub fn encode_combined_vector(
             .map(|v| v.trim().to_string())
             .unwrap_or_default();
 
-        let mut unit_vec = encoder_pool
-            .encode_one(&text)
-            .map_err(MelderError::Encoder)?;
+        let mut unit_vec = encoder.encode_one(&text).map_err(MelderError::Encoder)?;
 
         // Scale by √weight so dot products equal the weighted cosine sum.
         let sqrt_w = weight.sqrt() as f32;
@@ -380,7 +378,7 @@ pub fn build_or_load_combined_index(
     ids: &[String],
     config: &Config,
     is_a_side: bool,
-    encoder_pool: &EncoderPool,
+    encoder: &dyn Encoder,
     skip_deletes: bool,
     source_path: Option<&Path>,
 ) -> Result<Option<Box<dyn VectorDB>>, MelderError> {
@@ -398,7 +396,7 @@ pub fn build_or_load_combined_index(
         None
     };
 
-    let field_dim = encoder_pool.dim();
+    let field_dim = encoder.dim();
     let combined_dim = field_dim * emb_specs.len();
     let vq = config
         .performance
@@ -557,7 +555,7 @@ pub fn build_or_load_combined_index(
                             &to_encode,
                             records,
                             &emb_specs,
-                            encoder_pool,
+                            encoder,
                             combined_dim,
                             is_a_side,
                             side_enum,
@@ -620,7 +618,7 @@ pub fn build_or_load_combined_index(
         &all_ids,
         records,
         &emb_specs,
-        encoder_pool,
+        encoder,
         combined_dim,
         is_a_side,
         side_enum,
@@ -678,7 +676,7 @@ fn encode_and_upsert(
     ids: &[&String],
     records: &HashMap<String, Record>,
     emb_specs: &[(String, String, f64)],
-    encoder_pool: &EncoderPool,
+    encoder: &dyn Encoder,
     combined_dim: usize,
     is_a_side: bool,
     side_enum: Side,
@@ -687,17 +685,17 @@ fn encode_and_upsert(
     if ids.is_empty() {
         return Ok(());
     }
-    let batch_size = encoder_pool.encode_batch_size().max(64);
+    let batch_size = encoder.encode_batch_size().max(64);
     let total = ids.len();
     let done_counter = AtomicUsize::new(0);
 
     // Use a dedicated thread pool sized to the encoder pool to prevent
     // deadlock: if we use the global rayon pool, N workers all call
-    // encoder_pool.encode() but only pool_size can acquire a session.
+    // encoder.encode() but only pool_size can acquire a session.
     // The blocked workers starve ONNX's internal rayon tasks (which need
     // the same global pool), causing a deadlock.
     let encode_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(encoder_pool.pool_size())
+        .num_threads(encoder.pool_size())
         .build()
         .map_err(|e| MelderError::Other(anyhow::anyhow!("rayon pool build: {}", e)))?;
 
@@ -721,9 +719,7 @@ fn encode_and_upsert(
                     .collect();
 
                 let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                let vecs = encoder_pool
-                    .encode(&text_refs)
-                    .map_err(MelderError::Encoder)?;
+                let vecs = encoder.encode(&text_refs).map_err(MelderError::Encoder)?;
 
                 let sqrt_w = weight.sqrt() as f32;
                 for (i, mut vec) in vecs.into_iter().enumerate() {

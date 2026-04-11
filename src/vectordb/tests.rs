@@ -709,7 +709,11 @@ mod usearch_block_tests {
         let results = loaded.search(&query, 10, &rec_us, Side::A).unwrap();
         for r in &results {
             let num: usize = r.id.strip_prefix("id_").unwrap().parse().unwrap();
-            assert!(num % 2 == 0, "US block search returned GB record: {}", r.id);
+            assert!(
+                num.is_multiple_of(2),
+                "US block search returned GB record: {}",
+                r.id
+            );
         }
     }
 

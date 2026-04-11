@@ -1,17 +1,19 @@
 //! Encoding coordinator: batches concurrent encoding requests for throughput.
 //!
-//! The coordinator sits between request handlers and the `EncoderPool`. Instead
-//! of each request independently acquiring an encoder slot and running a
-//! single-text ONNX call, the coordinator collects requests that arrive
-//! within a configurable time window (`batch_wait`) and dispatches them as
-//! a single batched `encode()` call. ONNX transformers are batch-efficient:
-//! encoding N texts in one call is significantly faster than N sequential
-//! single-text calls because self-attention computation is shared.
+//! The coordinator sits between request handlers and the underlying
+//! `Encoder` (local ONNX pool or remote subprocess). Instead of each request
+//! independently acquiring an encoder slot and running a single-text call,
+//! the coordinator collects requests that arrive within a configurable time
+//! window (`batch_wait`) and dispatches them as a single batched `encode()`
+//! call. ONNX transformers are batch-efficient: encoding N texts in one call
+//! is significantly faster than N sequential single-text calls because
+//! self-attention computation is shared. Remote encoders benefit too, since
+//! one subprocess round-trip carries many texts.
 //!
 //! ## Architecture
 //!
 //! ```text
-//!   caller 1 ─► submit(texts) ──► crossbeam ──► background thread ──► EncoderPool.encode(batch)
+//!   caller 1 ─► submit(texts) ──► crossbeam ──► background thread ──► Encoder.encode(batch)
 //!   caller 2 ─► submit(texts) ──┘                                      │
 //!   caller 3 ─► submit(texts) ──┘                                      ▼
 //!                     ◄── std::sync::mpsc ◄── scatter results back to each caller
@@ -35,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel as cbc;
 
-use crate::encoder::{Encoder, EncoderPool};
+use crate::encoder::Encoder;
 use crate::error::EncoderError;
 
 /// A batch of texts submitted by one caller, with a channel to return results.
@@ -46,11 +48,12 @@ struct EncodeRequest {
     tx: std_mpsc::Sender<Result<Vec<Vec<f32>>, EncoderError>>,
 }
 
-/// Batching coordinator that wraps an `EncoderPool`.
+/// Batching coordinator that wraps an `Encoder`.
 ///
 /// Submit texts via [`encode_many`]; the coordinator collects them into
-/// batches and dispatches to the underlying pool. All public methods are
-/// synchronous — safe to call from any thread.
+/// batches and dispatches to the underlying encoder (local ONNX pool or
+/// remote subprocess encoder). All public methods are synchronous — safe
+/// to call from any thread.
 pub struct EncoderCoordinator {
     submit_tx: cbc::Sender<EncodeRequest>,
     /// Hold the thread handle so we can join on drop.
@@ -71,14 +74,14 @@ impl EncoderCoordinator {
     /// Spawns a background OS thread that collects requests and dispatches
     /// batched encode calls. No tokio runtime required.
     ///
-    /// - `encoder_pool`: the underlying pool of ONNX sessions.
+    /// - `encoder`: the underlying encoder (local pool or remote subprocess).
     /// - `batch_wait`: how long to collect requests after the first arrival
     ///   before dispatching. Typical values: 2–10ms.
-    pub fn new(encoder_pool: Arc<EncoderPool>, batch_wait: Duration) -> Self {
+    pub fn new(encoder: Arc<dyn Encoder>, batch_wait: Duration) -> Self {
         let (submit_tx, submit_rx) = cbc::unbounded();
         let handle = thread::Builder::new()
             .name("encoder-coordinator".into())
-            .spawn(move || coordinator_loop(encoder_pool, submit_rx, batch_wait))
+            .spawn(move || coordinator_loop(encoder, submit_rx, batch_wait))
             .expect("failed to spawn encoder coordinator thread");
         Self {
             submit_tx,
@@ -108,7 +111,7 @@ impl EncoderCoordinator {
 
 /// Background thread that collects requests and dispatches batches.
 fn coordinator_loop(
-    encoder_pool: Arc<EncoderPool>,
+    encoder: Arc<dyn Encoder>,
     rx: cbc::Receiver<EncodeRequest>,
     batch_wait: Duration,
 ) {
@@ -156,7 +159,7 @@ fn coordinator_loop(
 
         // Encode the full batch.
         let text_refs: Vec<&str> = all_texts.iter().map(|s| s.as_str()).collect();
-        let encode_result = encoder_pool.encode(&text_refs);
+        let encode_result = encoder.encode(&text_refs);
 
         // Scatter results back to each caller.
         match encode_result {
