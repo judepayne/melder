@@ -4,6 +4,8 @@
 //! CSV via `flush()`, while `SqliteCrossMap` is write-through (flush is a
 //! no-op). The trait's `flush()` method abstracts this.
 
+use crate::error::CrossMapError;
+
 /// Result of an atomic `confirm()` call: any record IDs that were displaced
 /// from a prior pairing and now require store-side `mark_unmatched`.
 ///
@@ -28,7 +30,7 @@ pub trait CrossMapOps: Send + Sync {
     fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     /// Insert a pair unconditionally in both directions.
-    fn add(&self, a_id: &str, b_id: &str);
+    fn add(&self, a_id: &str, b_id: &str) -> Result<(), CrossMapError>;
 
     /// Remove a pair unconditionally in both directions. No-op if absent.
     fn remove(&self, a_id: &str, b_id: &str);
@@ -58,7 +60,7 @@ pub trait CrossMapOps: Send + Sync {
     /// Returns the displaced ids so the caller can update store-side
     /// metadata (e.g. `mark_unmatched`). If `a_id` is already paired with
     /// `b_id`, this is an idempotent no-op and returns `Default`.
-    fn confirm(&self, a_id: &str, b_id: &str) -> ConfirmOutcome;
+    fn confirm(&self, a_id: &str, b_id: &str) -> Result<ConfirmOutcome, CrossMapError>;
 
     /// A→B lookup.
     fn get_b(&self, a_id: &str) -> Option<String>;

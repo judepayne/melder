@@ -932,7 +932,7 @@ impl Session {
                     // any prior partners on either side under a single
                     // lock / transaction so the bijection cannot be corrupted
                     // by concurrent claim/confirm callers.
-                    let outcome = self.state.crossmap.confirm(&a_id, &b_id);
+                    let outcome = self.state.crossmap.confirm(&a_id, &b_id)?;
                     if let Some(old_b) = outcome.displaced_b.as_deref() {
                         store.mark_unmatched(Side::B, old_b)?;
                     }
@@ -1424,7 +1424,7 @@ impl Session {
         // single lock / transaction (Constitution §3 — bijection invariant).
         // The returned outcome tells us which ids were displaced and need
         // their store-side `unmatched` flag updated.
-        let outcome = self.state.crossmap.confirm(a_id, b_id);
+        let outcome = self.state.crossmap.confirm(a_id, b_id)?;
         if let Some(old_b) = outcome.displaced_b.as_deref() {
             store.mark_unmatched(Side::B, old_b)?;
         }
@@ -1495,15 +1495,12 @@ impl Session {
     pub fn break_crossmap(&self, a_id: &str, b_id: &str) -> Result<BreakResponse, SessionError> {
         let store = &self.state.store;
 
-        // Validate the pair exists
-        let existing = self.state.crossmap.get_b(a_id);
-        if existing.as_deref() != Some(b_id) {
+        // Atomically remove only if the exact pair still exists.
+        if !self.state.crossmap.remove_if_exact(a_id, b_id) {
             return Err(SessionError::NotFound {
                 message: format!("crossmap pair ({}, {}) not found", a_id, b_id),
             });
         }
-
-        self.state.crossmap.remove(a_id, b_id);
 
         store.mark_unmatched(Side::A, a_id)?;
         store.mark_unmatched(Side::B, b_id)?;
@@ -1539,10 +1536,8 @@ impl Session {
         let store = &self.state.store;
         let mut match_was_broken = false;
 
-        // Check if the pair is currently matched to each other
-        if self.state.crossmap.get_b(a_id).as_deref() == Some(b_id) {
-            // Break the match
-            self.state.crossmap.remove(a_id, b_id);
+        // Atomically break only if the exact pair still exists.
+        if self.state.crossmap.remove_if_exact(a_id, b_id) {
             store.mark_unmatched(Side::A, a_id)?;
             store.mark_unmatched(Side::B, b_id)?;
             self.state.drain_reviews_for_pair(a_id, b_id);

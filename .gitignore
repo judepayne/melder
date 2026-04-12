@@ -26,6 +26,7 @@ tufte/
 # AI/editor tool config
 .opencode/
 .claude/
+.pi/
 opencode.json
 prompts/
 linux_gpu_encode_test.md

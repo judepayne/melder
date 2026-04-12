@@ -672,7 +672,7 @@ live:
             store.insert(Side::B, "B-2", &rec_b2).unwrap();
 
             // A-1 ↔ B-1 confirmed; A-2 and B-2 are unmatched.
-            crossmap.add("A-1", "B-1");
+            crossmap.add("A-1", "B-1").unwrap();
 
             let db_conn = conn.lock().unwrap_or_else(|e| e.into_inner());
             db_conn

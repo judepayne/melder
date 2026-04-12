@@ -143,7 +143,7 @@ pub fn cmd_crossmap_import(config_path: &Path, import_path: &Path) {
 
     let import_count = import_cm.len();
     for (a_id, b_id) in import_cm.pairs() {
-        crossmap.add(&a_id, &b_id);
+        crossmap.add(&a_id, &b_id).unwrap();
     }
 
     // Save

@@ -337,7 +337,10 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     let mem_crossmap = load_crossmap(crossmap_path, &cfg);
     // Import into SqliteCrossMap
     for (a_id, b_id) in mem_crossmap.pairs() {
-        sqlite_crossmap.add(&a_id, &b_id);
+        if let Err(e) = sqlite_crossmap.add(&a_id, &b_id) {
+            eprintln!("Failed to import crossmap pair ({a_id}, {b_id}) into SQLite: {e}");
+            process::exit(1);
+        }
     }
     if !mem_crossmap.is_empty() {
         eprintln!("Imported {} crossmap pairs into SQLite", mem_crossmap.len());
@@ -414,7 +417,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     let pairs = sqlite_crossmap.pairs();
     let save_cm = crate::crossmap::MemoryCrossMap::new();
     for (a_id, b_id) in &pairs {
-        save_cm.add(a_id, b_id);
+        save_cm.add(a_id, b_id).unwrap();
     }
     save_crossmap(&save_cm, crossmap_path, &cfg);
     print_summary(

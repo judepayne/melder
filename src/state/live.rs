@@ -612,7 +612,7 @@ impl LiveMatchState {
                     }
                 }
                 MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } => {
-                    crossmap.add(a_id, b_id);
+                    crossmap.add(a_id, b_id)?;
                 }
                 MatchLogEvent::ReviewMatch { .. } => {
                     // Informational — no state change on replay.
@@ -742,7 +742,7 @@ impl LiveMatchState {
             {
                 let pairs = mem_cm.pairs();
                 for (a_id, b_id) in &pairs {
-                    crossmap.add(a_id, b_id);
+                    crossmap.add(a_id, b_id)?;
                 }
                 info!(pairs = pairs.len(), "imported crossmap into sqlite");
             }

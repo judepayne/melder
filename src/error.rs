@@ -137,12 +137,21 @@ pub enum CrossMapError {
 
     #[error("csv error: {0}")]
     Csv(#[from] csv::Error),
+
+    #[error("sqlite error: {0}")]
+    Sqlite(String),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("sqlite error: {0}")]
     Sqlite(String),
+}
+
+impl From<rusqlite::Error> for CrossMapError {
+    fn from(e: rusqlite::Error) -> Self {
+        CrossMapError::Sqlite(e.to_string())
+    }
 }
 
 impl From<rusqlite::Error> for StoreError {
@@ -171,6 +180,9 @@ pub enum SessionError {
     #[error("store error: {0}")]
     Store(#[from] StoreError),
 
+    #[error("crossmap error: {0}")]
+    CrossMap(#[from] CrossMapError),
+
     #[error("WAL write failed: {0}")]
     Wal(#[from] std::io::Error),
 }
@@ -182,7 +194,10 @@ impl SessionError {
             SessionError::MissingField { .. } | SessionError::EmptyId => 400,
             SessionError::NotFound { .. } => 404,
             SessionError::BatchValidation { .. } => 422,
-            SessionError::Encoder(_) | SessionError::Store(_) | SessionError::Wal(_) => 500,
+            SessionError::Encoder(_)
+            | SessionError::Store(_)
+            | SessionError::CrossMap(_)
+            | SessionError::Wal(_) => 500,
         }
     }
 }

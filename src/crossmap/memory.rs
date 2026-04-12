@@ -130,7 +130,7 @@ impl MemoryCrossMap {
             let a_id = row.get(a_idx).unwrap_or("").trim().to_string();
             let b_id = row.get(b_idx).unwrap_or("").trim().to_string();
             if !a_id.is_empty() && !b_id.is_empty() {
-                cm.add(&a_id, &b_id);
+                cm.add(&a_id, &b_id)?;
             }
         }
 
@@ -177,10 +177,11 @@ impl CrossMapOps for MemoryCrossMap {
         Ok(())
     }
 
-    fn add(&self, a_id: &str, b_id: &str) {
+    fn add(&self, a_id: &str, b_id: &str) -> Result<(), CrossMapError> {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
         g.a_to_b.insert(a_id.to_string(), b_id.to_string());
         g.b_to_a.insert(b_id.to_string(), a_id.to_string());
+        Ok(())
     }
 
     fn remove(&self, a_id: &str, b_id: &str) {
@@ -236,12 +237,12 @@ impl CrossMapOps for MemoryCrossMap {
         true
     }
 
-    fn confirm(&self, a_id: &str, b_id: &str) -> ConfirmOutcome {
+    fn confirm(&self, a_id: &str, b_id: &str) -> Result<ConfirmOutcome, CrossMapError> {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
 
         // Idempotent no-op: pair already installed.
         if g.a_to_b.get(a_id).map(String::as_str) == Some(b_id) {
-            return ConfirmOutcome::default();
+            return Ok(ConfirmOutcome::default());
         }
 
         // Take a_id's prior partner (if any) and clean its reverse entry.
@@ -261,10 +262,10 @@ impl CrossMapOps for MemoryCrossMap {
         g.a_to_b.insert(a_id.to_string(), b_id.to_string());
         g.b_to_a.insert(b_id.to_string(), a_id.to_string());
 
-        ConfirmOutcome {
+        Ok(ConfirmOutcome {
             displaced_b,
             displaced_a,
-        }
+        })
     }
 
     fn get_b(&self, a_id: &str) -> Option<String> {
@@ -316,8 +317,8 @@ mod tests {
     #[test]
     fn add_and_lookup() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-1");
-        cm.add("A-2", "B-2");
+        cm.add("A-1", "B-1").unwrap();
+        cm.add("A-2", "B-2").unwrap();
 
         assert_eq!(cm.get_b("A-1"), Some("B-1".to_string()));
         assert_eq!(cm.get_a("B-1"), Some("A-1".to_string()));
@@ -332,8 +333,8 @@ mod tests {
     #[test]
     fn remove_pair() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-1");
-        cm.add("A-2", "B-2");
+        cm.add("A-1", "B-1").unwrap();
+        cm.add("A-2", "B-2").unwrap();
 
         cm.remove("A-1", "B-1");
         assert!(cm.get_b("A-1").is_none());
@@ -345,7 +346,7 @@ mod tests {
     #[test]
     fn remove_if_exact_matches() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-1");
+        cm.add("A-1", "B-1").unwrap();
         assert!(cm.remove_if_exact("A-1", "B-1"));
         assert!(cm.get_b("A-1").is_none());
         assert!(cm.get_a("B-1").is_none());
@@ -354,7 +355,7 @@ mod tests {
     #[test]
     fn remove_if_exact_wrong_pair_is_noop() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-1");
+        cm.add("A-1", "B-1").unwrap();
         // Wrong b_id — should be a no-op
         assert!(!cm.remove_if_exact("A-1", "B-99"));
         assert_eq!(cm.get_b("A-1"), Some("B-1".to_string()));
@@ -364,7 +365,7 @@ mod tests {
     #[test]
     fn take_a_removes_both_directions() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-1");
+        cm.add("A-1", "B-1").unwrap();
         assert_eq!(cm.take_a("A-1"), Some("B-1".to_string()));
         assert!(cm.get_b("A-1").is_none());
         assert!(cm.get_a("B-1").is_none());
@@ -374,7 +375,7 @@ mod tests {
     #[test]
     fn take_b_removes_both_directions() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-1");
+        cm.add("A-1", "B-1").unwrap();
         assert_eq!(cm.take_b("B-1"), Some("A-1".to_string()));
         assert!(cm.get_b("A-1").is_none());
         assert!(cm.get_a("B-1").is_none());
@@ -485,7 +486,7 @@ mod tests {
     #[test]
     fn confirm_into_vacant_returns_no_displacements() {
         let cm = MemoryCrossMap::new();
-        let outcome = cm.confirm("A-1", "B-1");
+        let outcome = cm.confirm("A-1", "B-1").unwrap();
         assert_eq!(outcome.displaced_a, None);
         assert_eq!(outcome.displaced_b, None);
         assert_eq!(cm.get_b("A-1"), Some("B-1".to_string()));
@@ -496,8 +497,8 @@ mod tests {
     #[test]
     fn confirm_idempotent_pair_is_noop() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-1");
-        let outcome = cm.confirm("A-1", "B-1");
+        cm.add("A-1", "B-1").unwrap();
+        let outcome = cm.confirm("A-1", "B-1").unwrap();
         assert_eq!(outcome, ConfirmOutcome::default());
         assert_eq!(cm.len(), 1);
     }
@@ -505,8 +506,8 @@ mod tests {
     #[test]
     fn confirm_displaces_old_b_when_a_was_paired() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-old");
-        let outcome = cm.confirm("A-1", "B-new");
+        cm.add("A-1", "B-old").unwrap();
+        let outcome = cm.confirm("A-1", "B-new").unwrap();
         assert_eq!(outcome.displaced_b, Some("B-old".to_string()));
         assert_eq!(outcome.displaced_a, None);
         assert_eq!(cm.get_b("A-1"), Some("B-new".to_string()));
@@ -518,8 +519,8 @@ mod tests {
     #[test]
     fn confirm_displaces_old_a_when_b_was_paired() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-old", "B-1");
-        let outcome = cm.confirm("A-new", "B-1");
+        cm.add("A-old", "B-1").unwrap();
+        let outcome = cm.confirm("A-new", "B-1").unwrap();
         assert_eq!(outcome.displaced_a, Some("A-old".to_string()));
         assert_eq!(outcome.displaced_b, None);
         assert_eq!(cm.get_b("A-new"), Some("B-1".to_string()));
@@ -530,9 +531,9 @@ mod tests {
     #[test]
     fn confirm_displaces_both_sides() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-old");
-        cm.add("A-old", "B-1");
-        let outcome = cm.confirm("A-1", "B-1");
+        cm.add("A-1", "B-old").unwrap();
+        cm.add("A-old", "B-1").unwrap();
+        let outcome = cm.confirm("A-1", "B-1").unwrap();
         assert_eq!(outcome.displaced_b, Some("B-old".to_string()));
         assert_eq!(outcome.displaced_a, Some("A-old".to_string()));
         assert_eq!(cm.get_b("A-1"), Some("B-1".to_string()));
@@ -563,7 +564,8 @@ mod tests {
                     cm.confirm(
                         &format!("A-{}", (i + trial) % 5),
                         &format!("B-{}", (i + trial) % 5),
-                    );
+                    )
+                    .unwrap();
                 }));
             }
             for i in 0..10 {
@@ -612,8 +614,8 @@ mod tests {
     #[test]
     fn pairs_returns_all() {
         let cm = MemoryCrossMap::new();
-        cm.add("A-1", "B-1");
-        cm.add("A-2", "B-2");
+        cm.add("A-1", "B-1").unwrap();
+        cm.add("A-2", "B-2").unwrap();
 
         let mut pairs = cm.pairs();
         pairs.sort();
@@ -633,7 +635,7 @@ mod tests {
 
         let cm = MemoryCrossMap::new();
         for i in 0..5 {
-            cm.add(&format!("A-{}", i), &format!("B-{}", i));
+            cm.add(&format!("A-{}", i), &format!("B-{}", i)).unwrap();
         }
         cm.save(&path, "entity_id", "counterparty_id").unwrap();
 
