@@ -432,6 +432,93 @@ live:
 
 ---
 
+## Memory management
+
+Melder’s memory use usually comes from four places:
+
+1. **record storage** — input records, review queue, crossmap, blocking data
+2. **vector indices** — the combined embedding indices for A and B
+3. **encoder sessions** — one copy of the ONNX model per `encoder_pool_size` slot
+4. **BM25 and other runtime structures** — token statistics, candidate buffers, etc.
+
+No single setting caps total process memory. Different settings control different parts of the footprint.
+
+### Main memory levers
+
+| Lever | Affects | Best for | What it does | Typical tradeoff |
+|---|---|---|---|---|
+| `batch.db_path` | record storage | batch | Stores records in SQLite instead of RAM | Lower memory, slower than pure in-memory |
+| `live.db_path` | record storage | live / enroll | Stores records, crossmap, and reviews in SQLite | Lower memory, modest throughput cost |
+| `batch.sqlite_cache_mb`, `batch.sqlite_read_pool_size`, `batch.sqlite_pool_worker_cache_mb` | SQLite page cache | batch | Controls SQLite cache budget in batch mode | Lower cache = lower RAM, more disk I/O |
+| `live.sqlite_cache_mb`, `live.sqlite_read_pool_size`, `live.sqlite_pool_worker_cache_mb` | SQLite page cache | live / enroll | Controls SQLite cache budget in live mode | Lower cache = lower RAM, more disk I/O |
+| `performance.vector_quantization: f16` or `bf16` | vector indices | all usearch modes | Stores vectors at lower precision | Much smaller indices, usually negligible quality loss |
+| `performance.vector_index_mode: mmap` | vector indices | warm batch runs only | Memory-maps usearch index instead of copying it into heap | Lower memory, less predictable latency |
+| `performance.encoder_pool_size` | encoder model memory | all embedding modes | Controls number of parallel ONNX sessions | Lower value saves RAM, reduces encode throughput |
+| `performance.quantized: true` | encoder model memory | local ONNX embedding runs | Uses INT8 encoder model instead of full-precision model | Lower memory, often faster, model-dependent |
+
+### Which knobs to use in which mode
+
+**Batch mode**
+- If records are main problem, use `batch.db_path`.
+- If vectors are main problem, use `vector_quantization: f16` first.
+- For very large **warm** usearch runs, try `vector_index_mode: mmap`.
+- Lower `encoder_pool_size` if model copies dominate RAM.
+- Note: current SQLite batch path is for SQLite-backed record storage; embedding-heavy runs still need their own vector-memory tuning.
+
+**Live mode (`meld serve`)**
+- Use `live.db_path` if you want records offloaded from RAM.
+- Use `vector_quantization: f16` to shrink vector indices.
+- Keep `vector_index_mode: load`. `mmap` is read-only and not suitable for live upserts.
+- Reduce `encoder_pool_size` if you need to trade throughput for lower memory.
+
+**Enroll mode**
+- Same guidance as live mode: mutable index, so use `load`, not `mmap`.
+- `vector_quantization` and lower `encoder_pool_size` are the main vector/encoder levers.
+
+### What these settings usually save
+
+These are rough rules of thumb, not guarantees:
+
+- **SQLite record storage (`batch.db_path`, `live.db_path`)**  
+  Usually biggest win when records dominate memory. Can turn “does not fit in RAM” jobs into runnable ones. Cost is extra I/O and lower throughput.
+
+- **`vector_quantization: f16` / `bf16`**  
+  Usually cuts vector-index size by roughly **40–50%** with little or no noticeable quality loss. Best first lever for embedding-heavy jobs.
+
+- **`vector_index_mode: mmap`**  
+  Often saves close to **one full in-memory copy of the usearch index** on warm batch runs, because the graph is traversed from a memory-mapped file instead of copied into heap memory.  
+  However, this is **not a hard RAM cap**: the OS may still keep much of the mapped file resident if the workload touches it heavily. Expect lower private heap usage, but RSS depends on access pattern.
+
+- **Lower `encoder_pool_size`**  
+  Saves roughly one model copy per slot removed. Good when startup or encode memory is too high. Cost is lower encoding throughput.
+
+- **`performance.quantized: true`**  
+  Can reduce encoder memory and usually improve encoding speed, but depends on the model path you are using.
+
+### Approximate SQLite cache budget
+
+If you use SQLite storage, the page-cache budget is roughly:
+
+- **batch:**  
+  `batch.sqlite_cache_mb + batch.sqlite_read_pool_size × batch.sqlite_pool_worker_cache_mb`
+- **live / enroll:**  
+  `live.sqlite_cache_mb + live.sqlite_read_pool_size × live.sqlite_pool_worker_cache_mb`
+
+This covers SQLite cache only. It does **not** include vector indices, encoder models, BM25, or other heap allocations.
+
+### Recommended order of attack
+
+If memory is too high:
+
+1. Move records to SQLite (`batch.db_path` or `live.db_path`) if record storage is large.
+2. Set `vector_quantization: f16` if embeddings are enabled.
+3. Reduce `encoder_pool_size` if encoder slots are large.
+4. For large warm **batch** usearch runs, experiment with `vector_index_mode: mmap`.
+
+Best settings depend heavily on dataset size, number of embedding fields, model choice, and workload shape. Start with these levers, then benchmark on your own data.
+
+---
+
 ## `performance`
 
 All fields are optional with sensible defaults. Omit the section if unsure.
