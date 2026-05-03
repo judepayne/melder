@@ -779,7 +779,7 @@ These are genuine matches that score near the review floor. Every single one is 
 | LC | Luna-Adams Capital | 0.602 |
 | HIL | Holland Inc Limited | 0.602 |
 
-These only survive because the address field carries them (addresses are near-identical in the heavy-noise treatment). The name embedding contributes almost nothing — no embedding model can relate "TAALC" to "Thompson, Alexander and Lane Capital". This is a documented blind spot (see `vault/ideas/Acronym Matching.md`) that requires either a dedicated acronym expansion module or a shared identifier to bypass scoring.
+These only survive because the address field carries them (addresses are near-identical in the heavy-noise treatment). The name embedding contributes almost nothing — no embedding model can relate "TAALC" to "Thompson, Alexander and Lane Capital". This is a documented blind spot for embedding/BM25/fuzzy methods; Melder's synonym/acronym scorer is the dedicated mechanism for these cases.
 
 **Conclusion:** The overlap zone is bounded by two irreducible problems: common-word false matches (addressable by BM25 IDF weighting) and acronym true matches (requires a purpose-built mechanism). Training can thin the neck but cannot break it — these are fundamentally different problems from what embedding fine-tuning solves.
 
@@ -969,7 +969,7 @@ Diminishing returns. Overlap plateaus at 0.002, and the matched distribution sta
 - **Precision holds steady.** Precision stays in the 89.3-89.6% range across all weights. BM25 is not introducing new false positives into auto-match.
 - **Use in moderation.** While overlap continues to decrease with higher BM25 weights, the matched score distribution starts spreading downward at 30-40%. More matched records shift from auto-match into review (5,320 at 10% vs 5,163 at 40%), meaning humans review more true matches. The sweet spot is around **20% BM25** — it captures most of the overlap reduction (0.005 vs 0.046 baseline) while keeping the matched distribution tight and auto-match count high.
 - **Zero false positives in auto-match.** Maintained across all BM25 weights, as in experiment 5.
-- **Acronym matches remain unsolved.** BM25 cannot help with "TAALC" vs "Thompson, Alexander and Lane Capital" any more than embeddings can — this requires a dedicated mechanism (see `vault/ideas/Acronym Matching.md`).
+- **Acronym matches remain unsolved by BM25.** BM25 cannot help with "TAALC" vs "Thompson, Alexander and Lane Capital" any more than embeddings can — these require Melder's synonym/acronym scorer.
 
 ---
 

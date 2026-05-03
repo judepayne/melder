@@ -74,9 +74,11 @@ starting a run with `parquet_dir_path` set returns an error.
 When `output.db_path` is set, the build pipeline writes a SQLite
 database with tables `a_records`, `b_records`, `relationships`,
 `field_scores` (populated when the scoring log is on), and `metadata`.
-Eleven analytical views are included (e.g. `confirmed_matches`,
-`review_queue`, `unmatched_a`, `unmatched_b`, `relationship_detail`).
-See the output data design for the full schema.
+Eleven analytical views are included: `confirmed_matches`,
+`scored_matches`, `asserted_matches`, `review_queue`, `near_misses`,
+`runner_ups`, `unmatched_a`, `unmatched_b`, `broken_matches`, `summary`,
+and `relationship_detail`. The authoritative schema is in
+`src/output/db.rs`; view definitions are in `src/output/views.sql`.
 
 ### Match log
 

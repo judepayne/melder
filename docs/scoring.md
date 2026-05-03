@@ -75,7 +75,7 @@ uses ~50-100MB of RAM.
 > For domain-specific use cases (e.g. counterparty reconciliation),
 > general-purpose models can be fine-tuned on your own matched pairs to
 > improve accuracy. The melder's own crossmap output is the training data
-> source. See [Fine Tuning Embeddings](../vault/training/fine_tuning_guide.md) for a guide,
+> source. See [Fine Tuning Embeddings](fine-tuning.md) for a guide,
 > and [Accuracy & Tuning](accuracy-and-tuning.md) for a worked example showing
 > the impact of fine-tuning.
 
@@ -110,9 +110,10 @@ match_fields:
 models. Also works as the sole candidate filter when no embedding fields
 are configured (fast start, no ONNX model, no vector index).
 
-**Trade-off:** requires `cargo build --release --features bm25`. Adds
-a Tantivy index build at startup (~25ms for 10k records). Cannot
-understand meaning — "JPM" and "J.P. Morgan" share no tokens.
+**Trade-off:** BM25 is lexical, not semantic. It is always compiled in
+and uses Melder's custom `SimpleBm25` scorer with instant write visibility
+and a WAND path for large blocks. It still cannot understand meaning —
+"JPM" and "J.P. Morgan" share no tokens unless you add synonym support.
 
 ## Synonym
 

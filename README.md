@@ -119,9 +119,9 @@ configuration examples, and trade-offs for each method.
 
 Browse all documentation on the **[documentation site](https://judepayne.github.io/melder/)**, or jump directly:
 
-[Configuration](docs/configuration.md) | [Scoring Methods](docs/scoring.md) | [Accuracy & Tuning](docs/accuracy-and-tuning.md) | [Batch Mode](docs/batch-mode.md) | [Live Mode](docs/live-mode.md) | [Enroll Mode](docs/enroll-mode.md) | [API Reference](docs/api-reference.md) | [CLI Reference](docs/cli-reference.md) | [Hooks](docs/hooks.md) | [Performance](docs/performance.md) | [Vector Caching](docs/vector-caching.md) | [Building](docs/building.md)
+[Configuration](docs/configuration.md) | [Scoring Methods](docs/scoring.md) | [Accuracy & Tuning](docs/accuracy-and-tuning.md) | [Fine-Tuning](docs/fine-tuning.md) | [Batch Mode](docs/batch-mode.md) | [Live Mode](docs/live-mode.md) | [Enroll Mode](docs/enroll-mode.md) | [API Reference](docs/api-reference.md) | [CLI Reference](docs/cli-reference.md) | [Hooks](docs/hooks.md) | [Performance](docs/performance.md) | [Vector Caching](docs/vector-caching.md) | [Building](docs/building.md)
 
-**Tutorials:** [Batch Worked Example](examples/batch/README.md) | [Live Worked Example](examples/live/README.md) | [Fine-Tuning Guide](vault/training/fine_tuning_guide.md)
+**Tutorials:** [Batch Worked Example](examples/batch/README.md) | [Live Worked Example](examples/live/README.md) | [Fine-Tuning Guide](docs/fine-tuning.md)
 
 ## Project structure
 

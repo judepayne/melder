@@ -771,7 +771,7 @@ penalises these common terms without affecting distinctive matches.
 If the overlap coefficient remains above ~0.05 after weight tuning,
 the embedding model may not understand your domain well enough. Fine-
 tuning with LoRA is safe (no catastrophic forgetting) and uses your
-own crossmap as training data. See [Fine Tuning Embeddings](../vault/training/fine_tuning_guide.md)
+own crossmap as training data. See [Fine Tuning Embeddings](fine-tuning.md)
 for a step-by-step guide.
 
 Key findings from our experiments:

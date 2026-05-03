@@ -960,11 +960,10 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
     <section class="screen animate-in">
       <h2 class="screen-heading">Where to Start Contributing</h2>
       <div class="step-cards">
-        <div class="step-card"><div class="step-num">1</div><div class="step-body"><strong>Read vault/project_overview.md</strong><p>The single source of truth. Architecture, module map, current work, backlog.</p></div></div>
+        <div class="step-card"><div class="step-num">1</div><div class="step-body"><strong>Read AGENTS.md</strong><p>The canonical contributor guide: invariants, architecture map, feature pointers, and build/test expectations.</p></div></div>
         <div class="step-card"><div class="step-num">2</div><div class="step-body"><strong>Run the tests</strong><p><code>cargo test --all-features</code> — all 396 tests should pass in under 1 second.</p></div></div>
         <div class="step-card"><div class="step-num">3</div><div class="step-body"><strong>Run a benchmark</strong><p><code>python3 benchmarks/live/10kx10k_inject3k_usearch/warm/run_test.py</code> — see the engine in action.</p></div></div>
         <div class="step-card"><div class="step-num">4</div><div class="step-body"><strong>Trace an upsert</strong><p>Start at <code>api/handlers.rs::upsert_handler</code> and follow the calls through Session → Pipeline → CrossMap.</p></div></div>
-        <div class="step-card"><div class="step-num">5</div><div class="step-body"><strong>Check the backlog</strong><p><code>vault/todo.md</code> has the task list. Pick something that interests you.</p></div></div>
       </div>
     </section>
 

@@ -6,12 +6,9 @@ Purpose: compact operating instructions for LLM coding agents working in `melder
 
 ## 0. Bootstrap
 
-Before code changes, read:
-- `vault/project_overview.md` (source of truth: architecture, module map, current state, backlog, benchmarks, training loop)
-- `vault/decisions/key_decisions.md` when touching an area with prior tradeoffs/rejections
-- `vault/ideas/discarded_ideas.md` before reviving an old approach
+Before code changes, read this file completely and use the feature pointers below for targeted context. Check `.pi/todos/` before starting medium/large work so you do not duplicate active tasks.
 
-If a requested change conflicts with the Constitution, say so before proceeding.
+If a requested change conflicts with the invariants in §2, say so before proceeding.
 
 ## 1. Core Identity
 
@@ -66,19 +63,40 @@ Rules:
 - `src/main.rs`: CLI dispatch only
 - `src/lib.rs`: module declarations only
 - `src/config/`: YAML schema + validation (`schema.rs`, `loader.rs`, `enroll_schema.rs`)
+- `src/data/`: CSV / JSONL / Parquet dataset loaders and streaming loaders
 - `src/matching/`: pipeline, blocking, candidates, exclusions
-- `src/scoring/`: exact / embedding / numeric / composite scoring
+- `src/scoring/`: exact / embedding / numeric / synonym / composite scoring
 - `src/fuzzy/`: ratio, partial_ratio, token_sort, wratio
-- `src/encoder/`: ONNX session pool, local/HF/builtin model loading, optional batching coordinator
+- `src/synonym/`: acronym generation, synonym dictionary, bidirectional synonym index
+- `src/encoder/`: `Encoder` trait; local ONNX pool; local/HF/builtin model loading; optional batching coordinator; subprocess remote encoder
 - `src/vectordb/`: `VectorDB` trait; flat + usearch backends; manifest + text hash caches
 - `src/store/`: `RecordStore` trait; memory + sqlite implementations
 - `src/crossmap/`: `CrossMapOps`; memory + sqlite bijection implementations
 - `src/bm25/`: `SimpleBm25` scorer, WAND path for large blocks
 - `src/session/`: operational core for live/enroll flows
 - `src/state/`: startup loading, WAL, backend construction
-- `src/batch/`: batch engine + CSV writers
+- `src/batch/`: batch engine; event-sourced match log production
+- `src/output/`: build CSV / Parquet / SQLite outputs from match log + scoring log
+- `src/hooks/`: long-running hook subprocess for pipeline event callbacks
 - `src/api/`: axum router + handlers
-- `src/cli/`: one file per subcommand
+- `src/cli/`: one file per subcommand (`run`, `serve`, `enroll`, `validate`, `tune`, `cache`, `crossmap`, `export`)
+
+## 4a. Feature Pointers
+
+When a task mentions these features, start with the listed docs/code:
+
+- Remote/org-specific encoder execution: `docs/remote-encoder.md`, `src/encoder/subprocess/`, `tests/remote_encoder.rs`.
+- Pipeline hooks: `docs/hooks.md`, `src/hooks/`.
+- Output/export/scoring-log pipeline: `docs/batch-mode.md`, `docs/configuration.md#scoring_log`, `src/output/`, `src/cli/export.rs`.
+- CLI utilities: `docs/cli-reference.md`, `src/cli/{validate,tune,cache,crossmap,export}.rs`.
+- Threshold tuning / accuracy diagnostics: `docs/accuracy-and-tuning.md`, `src/cli/tune.rs`.
+- Vector cache commands and invalidation: `docs/vector-caching.md`, `src/cli/cache.rs`, `src/vectordb/{manifest,texthash}.rs`.
+- Data formats and streaming: `docs/batch-mode.md#data-formats`, `src/data/`.
+- Synonym/acronym matching: `docs/scoring.md#synonym`, `src/synonym/`.
+- Common ID fast path: `docs/configuration.md#datasets`, `src/config/derivation.rs`, `src/matching/pipeline.rs`.
+- Live admin flush/shutdown and WAL lifecycle: `docs/live-mode.md`, `docs/api-reference.md`, `src/state/match_log.rs`.
+- Batch SQLite mode: `docs/batch-mode.md#sqlite-batch-mode-large-datasets`, `src/batch/`, `src/store/sqlite.rs`.
+- Enroll-specific config/endpoints: `docs/enroll-mode.md`, `src/config/enroll_schema.rs`, `src/api/handlers.rs`.
 
 ## 5. Preferred Design Moves
 
@@ -144,9 +162,9 @@ Rules:
 
 ## 12. Docs / Session Hygiene
 
-- After significant work, update `vault/project_overview.md` concisely: current state, completed items, new backlog, architecture changes, benchmark/perf facts, training-loop state if relevant.
-- Delegate heavier documentation to doc-agent when available: decisions, failed attempts, todo cleanup, architecture notes.
-- Do not bloat overview with long narratives.
+- If a change affects user-visible behaviour, update the relevant file in `docs/` and any worked examples that would otherwise become stale.
+- Keep `AGENTS.md` current when architecture, invariants, build/test expectations, or feature entry points change.
+- Use `.pi/todos/` for active/backlog work tracking; close or update todos as work completes.
 
 ## 13. Practical Guardrails
 

@@ -19,9 +19,9 @@ This directory contains fixed datasets and a controlled training loop for compar
 | `informal_analysis_unmatched.md` | Analysis of why unmatched records score high |
 | `AGENTS.md` | This file — instructions for the agent |
 
-Related vault docs:
-- `vault/decisions/training_experiments_log.md` — full history of pre-science experiments
-- `vault/ideas/discarded_ideas.md` — why BGE-small can't stretch
+Related docs:
+- `docs/fine-tuning.md` — user-facing fine-tuning guide
+- `benchmarks/accuracy/science/experiments.md` — experiment history and findings
 
 ## Before Running an Experiment
 
@@ -111,7 +111,7 @@ The key metrics to watch (all from holdout):
 - **MNRL > CosineSimilarityLoss** — ranking objective preserves recall better than absolute calibration.
 - **Base model + review_floor=0.60 is the strongest baseline** — ~99.5% combined recall with no training. The only problem is ~3,000 non-matches in the review queue.
 - **Training's proven value is cleaning review** — pushes non-matches out of review (3,004 → 209 in best run). The cost is some recall loss.
-- **Acronym matching is a blind spot** — no embedding model, BM25, or fuzzy scorer can match "TRMS" to "Taylor, Reeves and Mcdaniel SRL". Documented in `vault/ideas/Acronym Matching.md`.
+- **Acronym matching is a blind spot for embeddings/BM25/fuzzy** — no embedding model, BM25, or fuzzy scorer can match "TRMS" to "Taylor, Reeves and Mcdaniel SRL" on its own. Use Melder's synonym/acronym scorer for these cases; see `docs/scoring.md#synonym`.
 - **The end-game is multi-method** — once we've optimised the embedding model, melder's composite scoring pipeline (embedding + wratio + BM25) will cover remaining gaps.
 
 ## Available Loss Functions
