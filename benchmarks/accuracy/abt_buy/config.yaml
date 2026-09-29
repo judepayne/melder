@@ -1,0 +1,49 @@
+job:
+  name: accuracy_abt_buy
+  description: Accuracy benchmark — Abt-Buy (Leipzig), real product data, embedding + BM25 + fuzzy
+datasets:
+  a:
+    path: benchmarks/accuracy/abt_buy/data/abt.csv
+    id_field: abt_id
+    format: csv
+  b:
+    path: benchmarks/accuracy/abt_buy/data/buy.csv
+    id_field: buy_id
+    format: csv
+cross_map:
+  backend: local
+  path: benchmarks/accuracy/abt_buy/crossmap.csv
+  a_id_field: abt_id
+  b_id_field: buy_id
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: benchmarks/accuracy/abt_buy/cache
+  b_cache_dir: benchmarks/accuracy/abt_buy/cache
+match_fields:
+- field_a: name
+  field_b: name
+  method: embedding
+  weight: 0.4
+- method: bm25
+  weight: 0.4
+  fields:
+  - field_a: name
+    field_b: name
+  - field_a: description
+    field_b: description
+- field_a: name
+  field_b: name
+  method: fuzzy
+  scorer: token_sort
+  weight: 0.2
+thresholds:
+  auto_match: 0.7
+  review_floor: 0.4
+output:
+  csv_dir_path: benchmarks/accuracy/abt_buy/output/
+performance:
+  encoder_pool_size: 4
+vector_backend: flat
+top_n: 10
+ann_candidates: 50
+bm25_candidates: 20
