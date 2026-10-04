@@ -31,6 +31,7 @@ Run from the project root:
 import argparse
 import csv
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ import sys
 import time
 import urllib.request
 import zipfile
+from itertools import groupby
 
 TEST_DIR = "benchmarks/accuracy/abt_buy"
 DATA_DIR = f"{TEST_DIR}/data"
@@ -124,30 +126,48 @@ def max_bipartite_matching(pairs: set[tuple[str, str]]) -> int:
     return sum(1 for b in adj if augment(b, set()))
 
 
-def load_outputs() -> tuple[set, set, dict[str, tuple[str, float]]]:
-    """Return (auto pairs, review pairs, top candidate per B record)."""
+def load_outputs() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """Return the final auto-match and review pairs."""
     auto: set[tuple[str, str]] = set()
     review: set[tuple[str, str]] = set()
-    top: dict[str, tuple[str, float]] = {}
 
     with open(f"{TEST_DIR}/output/relationships.csv", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             pair = (row["abt_id"], row["buy_id"])
-            score = float(row["score"])
             if row["relationship_type"] == "match":
                 auto.add(pair)
             else:
                 review.add(pair)
-            best = top.get(row["buy_id"])
-            if best is None or score > best[1]:
-                top[row["buy_id"]] = (row["abt_id"], score)
 
-    with open(f"{TEST_DIR}/output/unmatched.csv", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            if row.get("best_a_id") and row["buy_id"] not in top:
-                top[row["buy_id"]] = (row["best_a_id"], float(row["best_score"]))
+    return auto, review
 
-    return auto, review, top
+
+def load_rank_one_candidates() -> dict[str, tuple[str, float]]:
+    """Return each B record's genuine rank-one scored candidate."""
+    path = f"{TEST_DIR}/output/accuracy_abt_buy.scoring_log.ndjson"
+    top: dict[str, tuple[str, float]] = {}
+
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            event = json.loads(line)
+            if event.get("type") != "scored" or event.get("query_side") != "b":
+                continue
+
+            rank_one = next(
+                (
+                    candidate
+                    for candidate in event.get("candidates", [])
+                    if candidate.get("rank") == 1
+                ),
+                None,
+            )
+            if rank_one is not None:
+                top[event["query_id"]] = (
+                    rank_one["matched_id"],
+                    float(rank_one["score"]),
+                )
+
+    return top
 
 
 def prf(predicted: set, gt: set) -> tuple[float, float, float]:
@@ -160,21 +180,37 @@ def prf(predicted: set, gt: set) -> tuple[float, float, float]:
 
 def oracle_f1(top: dict[str, tuple[str, float]], gt: set) -> tuple[float, float]:
     """Best F1 over any single threshold on top-1 candidates."""
-    ranked = sorted(((s, (a, b) in gt) for b, (a, s) in top.items()), reverse=True)
-    best_f1, best_t, tp = 0.0, 1.0, 0
-    for i, (score, correct) in enumerate(ranked, start=1):
-        tp += correct
-        p, r = tp / i, tp / len(gt)
-        f1 = 2 * p * r / (p + r) if p + r else 0.0
+    ranked = sorted(
+        ((score, (a_id, b_id) in gt) for b_id, (a_id, score) in top.items()),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+    best_f1, best_t = 0.0, 1.0
+    true_positives = 0
+    selected = 0
+
+    for score, score_group in groupby(ranked, key=lambda item: item[0]):
+        group = list(score_group)
+        selected += len(group)
+        true_positives += sum(correct for _, correct in group)
+        precision = true_positives / selected
+        recall = true_positives / len(gt)
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if precision + recall
+            else 0.0
+        )
         if f1 > best_f1:
             best_f1, best_t = f1, score
+
     return best_f1, best_t
 
 
 def evaluate() -> None:
     gt = load_ground_truth()
     ceiling = max_bipartite_matching(gt)
-    auto, review, top = load_outputs()
+    auto, review = load_outputs()
+    top = load_rank_one_candidates()
 
     auto_p, auto_r, auto_f1 = prf(auto, gt)
     combined = auto | review

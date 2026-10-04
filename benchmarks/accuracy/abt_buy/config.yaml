@@ -41,6 +41,9 @@ thresholds:
   review_floor: 0.4
 output:
   csv_dir_path: benchmarks/accuracy/abt_buy/output/
+scoring_log:
+  enabled: true
+  compression: none
 performance:
   encoder_pool_size: 4
 vector_backend: flat
