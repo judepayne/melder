@@ -22,11 +22,11 @@ mod tests;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread;
 use std::time::Instant;
-
-use rayon::prelude::*;
 
 use manifest::{
     StaleReason, blocking_hash, check_manifest, file_fingerprint, make_manifest, read_manifest,
@@ -689,72 +689,125 @@ fn encode_and_upsert(
     let total = ids.len();
     let done_counter = AtomicUsize::new(0);
 
-    // Use a dedicated thread pool sized to the encoder pool to prevent
-    // deadlock: if we use the global rayon pool, N workers all call
-    // encoder.encode() but only pool_size can acquire a session.
-    // The blocked workers starve ONNX's internal rayon tasks (which need
-    // the same global pool), causing a deadlock.
-    let encode_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(encoder.pool_size())
-        .build()
-        .map_err(|e| MelderError::Other(anyhow::anyhow!("rayon pool build: {}", e)))?;
+    // Tokenization uses nested Rayon work while holding an encoder session
+    // mutex. Outer encoding jobs must not share that Rayon queue: a worker
+    // waiting for tokenization could steal another encoding job and block on
+    // a session whose suspended call cannot finish. Scoped OS workers keep
+    // session acquisition outside Rayon, even when our caller is a Rayon job.
+    let process_chunk = |chunk: &[&String]| {
+        let mut combined_vecs: Vec<Vec<f32>> = vec![Vec::with_capacity(combined_dim); chunk.len()];
 
-    encode_pool.install(|| {
-        ids.par_chunks(batch_size).try_for_each(|chunk| {
-            let mut combined_vecs: Vec<Vec<f32>> =
-                vec![Vec::with_capacity(combined_dim); chunk.len()];
+        for (field_a, field_b, weight) in emb_specs {
+            let field_name = if is_a_side { field_a } else { field_b };
+            let texts: Vec<String> = chunk
+                .iter()
+                .map(|id| {
+                    records
+                        .get(id.as_str())
+                        .expect("id must exist in records")
+                        .get(field_name)
+                        .map(|v| v.trim().to_string())
+                        .unwrap_or_default()
+                })
+                .collect();
 
-            for (field_a, field_b, weight) in emb_specs {
-                let field_name = if is_a_side { field_a } else { field_b };
-                let texts: Vec<String> = chunk
-                    .iter()
-                    .map(|id| {
-                        records
-                            .get(id.as_str())
-                            .expect("id must exist in records")
-                            .get(field_name)
-                            .map(|v| v.trim().to_string())
-                            .unwrap_or_default()
-                    })
-                    .collect();
+            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            let vecs = encoder.encode(&text_refs).map_err(MelderError::Encoder)?;
 
-                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                let vecs = encoder.encode(&text_refs).map_err(MelderError::Encoder)?;
+            let sqrt_w = weight.sqrt() as f32;
+            for (i, mut vec) in vecs.into_iter().enumerate() {
+                for v in &mut vec {
+                    *v *= sqrt_w;
+                }
+                combined_vecs[i].extend_from_slice(&vec);
+            }
+        }
 
-                let sqrt_w = weight.sqrt() as f32;
-                for (i, mut vec) in vecs.into_iter().enumerate() {
-                    for v in &mut vec {
-                        *v *= sqrt_w;
+        for (i, id) in chunk.iter().enumerate() {
+            let record = records.get(id.as_str()).unwrap();
+            index
+                .upsert(id, &combined_vecs[i], record, side_enum)
+                .map_err(|e| MelderError::Other(anyhow::anyhow!("{}", e)))?;
+        }
+
+        let done = done_counter.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+        // Log progress periodically — roughly every 1024 records.
+        if done % 1024 < batch_size || done >= total {
+            let pct = done as f64 / total as f64 * 100.0;
+            info!(
+                side = side_label,
+                encoded = done,
+                total = total,
+                pct = format!("{:.0}", pct).as_str(),
+                "embedding encoding progress"
+            );
+        }
+
+        Ok::<(), MelderError>(())
+    };
+
+    let chunk_count = total.div_ceil(batch_size);
+    let worker_count = encoder.pool_size().max(1).min(chunk_count);
+    let next_chunk = AtomicUsize::new(0);
+    let cancelled = AtomicBool::new(false);
+
+    thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        let mut first_error = None;
+        for worker_id in 0..worker_count {
+            let worker = thread::Builder::new()
+                .name(format!("meld-encode-{worker_id}"))
+                .spawn_scoped(scope, || {
+                    while !cancelled.load(Ordering::Relaxed) {
+                        let chunk_id = next_chunk.fetch_add(1, Ordering::Relaxed);
+                        if chunk_id >= chunk_count {
+                            break;
+                        }
+                        let start = chunk_id * batch_size;
+                        let end = (start + batch_size).min(total);
+                        // Cancel immediately on panic too, rather than waiting
+                        // for the caller to reach this worker's join handle.
+                        let result =
+                            catch_unwind(AssertUnwindSafe(|| process_chunk(&ids[start..end])))
+                                .unwrap_or_else(|_| {
+                                    Err(MelderError::Other(anyhow::anyhow!(
+                                        "encoding worker panicked"
+                                    )))
+                                });
+                        if let Err(error) = result {
+                            cancelled.store(true, Ordering::Relaxed);
+                            return Err(error);
+                        }
                     }
-                    combined_vecs[i].extend_from_slice(&vec);
+                    Ok(())
+                });
+            match worker {
+                Ok(worker) => workers.push(worker),
+                Err(error) => {
+                    cancelled.store(true, Ordering::Relaxed);
+                    first_error = Some(MelderError::Other(anyhow::anyhow!(
+                        "encoding worker spawn: {error}"
+                    )));
+                    break;
                 }
             }
+        }
 
-            for (i, id) in chunk.iter().enumerate() {
-                let record = records.get(id.as_str()).unwrap();
-                index
-                    .upsert(id, &combined_vecs[i], record, side_enum)
-                    .map_err(|e| MelderError::Other(anyhow::anyhow!("{}", e)))?;
+        // Join every worker, including on error, so no encoding or upserts
+        // continue after this function returns to its caller.
+        for worker in workers {
+            let result = worker.join().unwrap_or_else(|_| {
+                Err(MelderError::Other(anyhow::anyhow!(
+                    "encoding worker panicked"
+                )))
+            });
+            if let Err(error) = result {
+                cancelled.store(true, Ordering::Relaxed);
+                first_error.get_or_insert(error);
             }
-
-            let done = done_counter.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
-            // Log progress periodically — roughly every 1024 records.
-            if done % 1024 < batch_size || done >= total {
-                let pct = done as f64 / total as f64 * 100.0;
-                info!(
-                    side = side_label,
-                    encoded = done,
-                    total = total,
-                    pct = format!("{:.0}", pct).as_str(),
-                    "embedding encoding progress"
-                );
-            }
-
-            Ok::<(), MelderError>(())
-        })
-    })?;
-
-    Ok(())
+        }
+        first_error.map_or(Ok(()), Err)
+    })
 }
 
 /// Create parent directories for `path` if they don't exist.

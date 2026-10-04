@@ -213,6 +213,13 @@ pool at startup. **No edges are generated** for these records — they are
 loaded directly into the store and indices. This is the "known entities"
 reference set.
 
+The server becomes ready only after this startup loading completes. When
+embedding vectors need to be built or refreshed, encoding uses up to
+`performance.encoder_pool_size` dedicated workers, separate from the
+parallel tokenizer workers. This avoids nested tokenizer work blocking
+on encoder sessions held by unfinished encoding jobs. No tokenizer
+parallelism override is required.
+
 Edges only come from subsequent `/enroll` or `/enroll-batch` calls. If
 you need all-pairs edges within the initial dataset, use `meld run`
 with the same dataset on both sides, or call `/enroll-batch` after
