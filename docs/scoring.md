@@ -254,3 +254,15 @@ and flushed to the exclusions CSV on shutdown.
 
 See [Configuration](configuration.md) for the `exclusions` config section
 and [API Reference](api-reference.md) for the endpoint documentation.
+
+## Candidate ranking and ties
+
+Batch, live, and enroll use the same final candidate ranking: composite
+score descending, then record ID ascending when scores are exactly equal.
+This tie-breaker is applied before assigning ranks and truncating to `top_n`;
+it does not change scores or thresholds. Equality uses the full score, not
+its rounded output representation.
+
+For the same scored candidate set, ties therefore have repeatable ranks and
+cutoff membership. Approximate candidate generation and concurrent CrossMap
+claims can still vary independently of this ranking rule.
