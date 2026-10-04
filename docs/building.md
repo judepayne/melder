@@ -290,6 +290,13 @@ All generators use seed 42 for deterministic output.
 
 - **`accuracy/10kx10k_exclusions`** generates its own data during
   Phase 0 of its `run_test.py` (uses `n_exact=1000`).
+- **`accuracy/abt_buy/`** runs on real third-party data: the Abt-Buy
+  product benchmark from the Leipzig database group (1,081 × 1,092
+  records, 1,097 true pairs). Phase 0 of its `run_test.py` downloads the
+  data into `accuracy/abt_buy/data/` (gitignored, not committed) and
+  converts it from Latin-1 to UTF-8. The ground truth includes some 1:N
+  pairs, so the evaluation reports a 1:1 ceiling (1,076) alongside
+  precision, recall and F1.
 - **`accuracy/science/`** is a research journal documenting fine-tuning
   experiments, not a standard benchmark suite. See
   `benchmarks/accuracy/science/experiments.md` for the full history.

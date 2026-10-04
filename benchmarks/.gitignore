@@ -55,3 +55,6 @@ data/*.parquet
 !accuracy/enroll_5k_inject1k/data/*.csv
 !accuracy/enroll_5k_inject1k/expected/
 !accuracy/enroll_5k_inject1k/expected/*.csv
+
+# ---- Abt-Buy (third-party data, downloaded on demand by run_test.py) ----
+accuracy/abt_buy/data/
