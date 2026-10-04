@@ -70,8 +70,8 @@ pub struct ScoringPool<'a> {
 ///
 /// Runs independent candidate generators (ANN, BM25, synonym), unions their
 /// results, then scores all candidates on every configured match_field.
-/// Returns a sorted `Vec<MatchResult>` (descending by score), truncated to
-/// `top_n` entries.
+/// Returns a sorted `Vec<MatchResult>` (descending by score, then ascending
+/// by matched record ID for equal scores), truncated to `top_n` entries.
 ///
 /// BM25 and synonym candidate generation is handled by the *caller* — this
 /// function receives pre-computed candidate IDs and BM25 scores via
@@ -218,11 +218,12 @@ pub fn score_pool(
         ));
     }
 
-    // Sort by score descending.
+    // Sort by score descending, breaking ties by record ID ascending.
     results.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.matched_id.cmp(&b.matched_id))
     });
 
     // Assign rank (1-based, capped at u8::MAX) after sorting.
@@ -875,6 +876,78 @@ output:
                 w[0].score,
                 w[1].score
             );
+        }
+    }
+
+    #[test]
+    fn score_pool_equal_scores_use_id_order_before_truncation() {
+        let store = make_store();
+        for (id, name) in [
+            ("ENT-000025", "Gibson Group"),
+            ("ENR-0000094", "Gibson Group"),
+            ("a-no-match", "Other Company"),
+        ] {
+            store
+                .insert(Side::A, id, &make_record(&[("name", name)]))
+                .expect("test records should insert");
+        }
+        let config = make_config_exact("name", "name");
+        let record = make_record(&[("name", "Gibson Group")]);
+        let bm25_scores = HashMap::new();
+        let exclusions = crate::matching::exclusions::Exclusions::new();
+        let expected = ["ENR-0000094", "ENT-000025", "a-no-match"];
+
+        // Cover both enroll (same side) and batch/live (opposite side),
+        // with every input permutation and cutoffs inside/outside the tie.
+        for side in [Side::A, Side::B] {
+            for order in [
+                [0, 1, 2],
+                [0, 2, 1],
+                [1, 0, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+                [2, 1, 0],
+            ] {
+                let ids: Vec<String> = order.iter().map(|&i| expected[i].to_string()).collect();
+                let query = ScoringQuery {
+                    id: "query",
+                    record: &record,
+                    side,
+                    combined_vec: &[],
+                };
+                let pool = ScoringPool {
+                    store: &store,
+                    side: Side::A,
+                    combined_index: None,
+                    blocked_ids: &ids,
+                    bm25_candidate_ids: &ids,
+                    bm25_scores_map: &bm25_scores,
+                    synonym_candidate_ids: &[],
+                    synonym_dictionary: None,
+                    exclusions: &exclusions,
+                };
+                for top_n in [0, 1, 2, 3] {
+                    let results = score_pool(&query, &pool, &config, 50, top_n);
+                    let count = if top_n == 0 { 3 } else { top_n };
+                    let actual: Vec<&str> = results
+                        .iter()
+                        .map(|result| result.matched_id.as_str())
+                        .collect();
+                    assert_eq!(
+                        actual,
+                        expected[..count],
+                        "score then ID ordering must ignore input order: side={side:?}, order={order:?}, top_n={top_n}",
+                    );
+                    for (i, result) in results.iter().enumerate() {
+                        assert_eq!(result.rank, Some((i + 1) as u8), "rank follows tie order");
+                        assert_eq!(
+                            result.score,
+                            if i < 2 { 1.0 } else { 0.0 },
+                            "ID tie-breaking must not change scores or outrank higher scores",
+                        );
+                    }
+                }
+            }
         }
     }
 
