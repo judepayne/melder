@@ -740,6 +740,53 @@ Each step addressed a specific, identifiable problem:
 
 ---
 
+## Results on public benchmarks
+
+The experiments above use synthetic counterparty data. To check the
+pipeline against something with published baselines, two of the Leipzig
+entity resolution benchmarks (Köpcke, Thor & Rahm, 2010) are wired into
+`benchmarks/accuracy/` as `abt_buy` and `dblp_acm`. Each runner downloads
+its data on demand, runs `meld run` once, and scores the output against
+the perfect mapping.
+
+Both configs were written once by hand, before the first run, and not
+adjusted afterwards. No fine-tuning, no training data, and the stock
+`all-MiniLM-L6-v2` model.
+
+| Dataset | Records (A × B) | True pairs | Magellan | DeepMatcher | Ditto | Melder, untuned |
+|---|---|---|---|---|---|---|
+| Abt-Buy (products, textual) | 1,081 × 1,092 | 1,097 | 43.6 | 62.8 | 89.3 | 83.2 |
+| DBLP-ACM (citations, structured) | 2,616 × 2,294 | 2,224 | 98.4 | 98.4 | 99.0 | 98.6 |
+
+All figures are F1. Magellan and DeepMatcher are from Mudgal et al.
+(2018); Ditto is from Li et al. (2020). Both of those train on labelled
+pairs from the dataset itself and report pairwise F1 on a held-out test
+split of blocked candidate pairs. Melder's figures are on the whole
+dataset: for DBLP-ACM it is the F1 of auto-matched pairs at the config's
+own thresholds (precision 99.2%, recall 97.9%); for Abt-Buy it is the
+oracle F1, the best single threshold over each B record's rank-one
+scored candidate, which is optimistic because the threshold is chosen
+on the test set. At the config's own thresholds Abt-Buy auto-match
+precision is 90.4% at 51.5% recall, with 81.8% combined recall across
+auto and review. So the comparison is rough, but it
+places an untuned pipeline alongside trained matchers on the clean
+dataset and well above the classic baselines on the hard one.
+
+DBLP-ACM runs cold, including encoding both sides, in about 5 seconds on
+an Apple M5 Max laptop.
+
+References:
+
+- Köpcke, H., Thor, A. & Rahm, E. (2010). Evaluation of entity
+  resolution approaches on real-world match problems. *PVLDB* 3(1).
+  Datasets: [dbs.uni-leipzig.de/research/projects/benchmark-datasets-for-entity-resolution](https://dbs.uni-leipzig.de/research/projects/benchmark-datasets-for-entity-resolution)
+- Mudgal, S. et al. (2018). Deep learning for entity matching: a design
+  space exploration. *SIGMOD 2018*.
+- Li, Y. et al. (2020). Deep entity matching with pre-trained language
+  models. *PVLDB* 14(1).
+
+---
+
 ## Guidelines for your own dataset
 
 The experiments above provide a template. Not every dataset needs every

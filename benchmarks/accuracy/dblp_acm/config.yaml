@@ -1,0 +1,56 @@
+job:
+  name: accuracy_dblp_acm
+  description: Accuracy benchmark — DBLP-ACM (Leipzig), real bibliographic data, embedding + BM25 + fuzzy + exact year
+datasets:
+  a:
+    path: benchmarks/accuracy/dblp_acm/data/dblp.csv
+    id_field: dblp_id
+    format: csv
+  b:
+    path: benchmarks/accuracy/dblp_acm/data/acm.csv
+    id_field: acm_id
+    format: csv
+cross_map:
+  backend: local
+  path: benchmarks/accuracy/dblp_acm/crossmap.csv
+  a_id_field: dblp_id
+  b_id_field: acm_id
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: benchmarks/accuracy/dblp_acm/cache
+  b_cache_dir: benchmarks/accuracy/dblp_acm/cache
+match_fields:
+- field_a: title
+  field_b: title
+  method: embedding
+  weight: 0.35
+- method: bm25
+  weight: 0.35
+  fields:
+  - field_a: title
+    field_b: title
+  - field_a: authors
+    field_b: authors
+- field_a: title
+  field_b: title
+  method: fuzzy
+  scorer: token_sort
+  weight: 0.2
+- field_a: year
+  field_b: year
+  method: exact
+  weight: 0.1
+thresholds:
+  auto_match: 0.8
+  review_floor: 0.5
+output:
+  csv_dir_path: benchmarks/accuracy/dblp_acm/output/
+scoring_log:
+  enabled: true
+  compression: none
+performance:
+  encoder_pool_size: 4
+vector_backend: flat
+top_n: 10
+ann_candidates: 50
+bm25_candidates: 20

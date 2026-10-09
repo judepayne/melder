@@ -297,6 +297,11 @@ All generators use seed 42 for deterministic output.
   converts it from Latin-1 to UTF-8. The ground truth includes some 1:N
   pairs, so the evaluation reports a 1:1 ceiling (1,076) alongside
   precision, recall and F1.
+- **`accuracy/dblp_acm/`** runs on real third-party data: the DBLP-ACM
+  bibliographic benchmark from the Leipzig database group (2,616 × 2,294
+  records, 2,224 true pairs, strictly 1:1). Phase 0 of its `run_test.py`
+  downloads the data into `accuracy/dblp_acm/data/` (gitignored, not
+  committed), normalises encodings and unescapes HTML entities.
 - **`accuracy/science/`** is a research journal documenting fine-tuning
   experiments, not a standard benchmark suite. See
   `benchmarks/accuracy/science/experiments.md` for the full history.

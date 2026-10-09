@@ -58,3 +58,5 @@ data/*.parquet
 
 # ---- Abt-Buy (third-party data, downloaded on demand by run_test.py) ----
 accuracy/abt_buy/data/
+# ---- DBLP-ACM (third-party data, downloaded on demand by run_test.py) ----
+accuracy/dblp_acm/data/
