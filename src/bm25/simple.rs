@@ -4,7 +4,8 @@
 //! and blocked posting lists in concurrent `DashMap` structures. Writes are
 //! instantly visible (no commit step). Queries use either exhaustive
 //! blocked-set scoring (small blocks) or Block-Max WAND (large blocks) —
-//! the caller sees a single `score_blocked()` interface.
+//! restricted queries use `score_blocked()`, while `score_all()` searches the
+//! whole index without building an eligibility filter.
 //!
 //! Posting lists use compact `u32` doc IDs for cache-friendly WAND traversal.
 //! Posting lists are divided into blocks of ~128 entries with precomputed
@@ -422,6 +423,13 @@ impl SimpleBm25 {
         concat_fields(record, &self.fields, query_side)
     }
 
+    /// Search all indexed documents without constructing an eligibility filter.
+    ///
+    /// Returns top-K as `(id, raw_bm25_score)`. An empty index returns no results.
+    pub fn score_all(&self, query_text: &str, top_k: usize) -> Vec<(String, f32)> {
+        self.score(query_text, None, top_k)
+    }
+
     /// Score blocked candidates, returning top-K as `(id, raw_bm25_score)`.
     ///
     /// Automatically selects exhaustive or WAND strategy based on
@@ -432,7 +440,16 @@ impl SimpleBm25 {
         blocked_ids: &[String],
         top_k: usize,
     ) -> Vec<(String, f32)> {
-        if query_text.is_empty() || blocked_ids.is_empty() || top_k == 0 {
+        self.score(query_text, Some(blocked_ids), top_k)
+    }
+
+    fn score(
+        &self,
+        query_text: &str,
+        blocked_ids: Option<&[String]>,
+        top_k: usize,
+    ) -> Vec<(String, f32)> {
+        if query_text.is_empty() || blocked_ids.is_some_and(|ids| ids.is_empty()) || top_k == 0 {
             return Vec::new();
         }
 
@@ -466,40 +483,48 @@ impl SimpleBm25 {
             return Vec::new();
         }
 
-        if blocked_ids.len() <= self.exhaustive_threshold {
+        let pool_size = blocked_ids.map_or_else(|| self.num_docs(), |ids| ids.len());
+        if pool_size <= self.exhaustive_threshold {
             self.score_exhaustive(&term_idfs, blocked_ids, avg_dl, top_k)
         } else {
             self.score_wand(&term_idfs, blocked_ids, avg_dl, top_k)
         }
     }
 
-    /// Exhaustive scoring: iterate all blocked docs. O(B × K).
+    // Exhaustive scoring: iterate eligible docs without an all-ID filter.
     fn score_exhaustive(
         &self,
         term_idfs: &[(&str, u32, f64)],
-        blocked_ids: &[String],
+        blocked_ids: Option<&[String]>,
         avg_dl: f64,
         top_k: usize,
     ) -> Vec<(String, f32)> {
-        let mut scores: Vec<(String, f32)> = blocked_ids
-            .iter()
-            .filter_map(|doc_id| {
-                let meta = self.docs.get(doc_id)?;
-                let dl = meta.length as f64;
-                let mut score = 0.0f64;
-                for &(term, _qtf, idf) in term_idfs {
-                    let tf = meta.terms.get(term).copied().unwrap_or(0) as f64;
-                    if tf > 0.0 {
-                        score += bm25_term_score(tf, idf, dl, avg_dl);
-                    }
+        let score_document = |meta: &DocMeta| {
+            let dl = meta.length as f64;
+            let mut score = 0.0f64;
+            for &(term, _qtf, idf) in term_idfs {
+                let tf = meta.terms.get(term).copied().unwrap_or(0) as f64;
+                if tf > 0.0 {
+                    score += bm25_term_score(tf, idf, dl, avg_dl);
                 }
-                if score > 0.0 {
-                    Some((doc_id.clone(), score as f32))
-                } else {
-                    None
-                }
-            })
-            .collect();
+            }
+            (score > 0.0).then_some(score as f32)
+        };
+        let mut scores: Vec<(String, f32)> = if let Some(ids) = blocked_ids {
+            ids.iter()
+                .filter_map(|id| {
+                    let meta = self.docs.get(id)?;
+                    score_document(&meta).map(|score| (id.clone(), score))
+                })
+                .collect()
+        } else {
+            self.docs
+                .iter()
+                .filter_map(|entry| {
+                    score_document(entry.value()).map(|score| (entry.key().clone(), score))
+                })
+                .collect()
+        };
 
         partial_top_k(&mut scores, top_k);
         scores
@@ -516,17 +541,15 @@ impl SimpleBm25 {
     fn score_wand(
         &self,
         term_idfs: &[(&str, u32, f64)],
-        blocked_ids: &[String],
+        blocked_ids: Option<&[String]>,
         avg_dl: f64,
         top_k: usize,
     ) -> Vec<(String, f32)> {
-        // Build allowed set of compact IDs for blocking filter.
-        let allowed: std::collections::HashSet<u32> = blocked_ids
-            .iter()
-            .filter_map(|id| self.id_map.to_u32(id))
-            .collect();
+        // Unrestricted searches need neither ID enumeration nor a membership set.
+        let allowed: Option<std::collections::HashSet<u32>> =
+            blocked_ids.map(|ids| ids.iter().filter_map(|id| self.id_map.to_u32(id)).collect());
 
-        if allowed.is_empty() {
+        if allowed.as_ref().is_some_and(|ids| ids.is_empty()) {
             return Vec::new();
         }
 
@@ -609,7 +632,7 @@ impl SimpleBm25 {
 
             if all_at_pivot {
                 // Score this document fully.
-                if allowed.contains(&pivot_doc) {
+                if allowed.as_ref().is_none_or(|ids| ids.contains(&pivot_doc)) {
                     let dl = self.id_map.to_str(pivot_doc).as_str().to_string();
                     let dl_val = self.docs.get(&dl).map(|m| m.length as f64).unwrap_or(1.0);
 
@@ -1245,6 +1268,155 @@ mod tests {
         ];
         let text = concat_fields(&rec, &fields, Side::A);
         assert_eq!(text, "Apple tech");
+    }
+
+    #[test]
+    fn score_all_matches_all_ids_across_search_threshold() {
+        for size in [1, 5_000, 5_001] {
+            let idx = SimpleBm25::new(&test_fields(), Side::A);
+            let ids: Vec<String> = (0..size).map(|i| format!("doc_{i}")).collect();
+            for (i, id) in ids.iter().enumerate() {
+                let name = format!("shared unique{i}");
+                idx.upsert(id, &make_record(&[("name_a", &name)]));
+            }
+
+            // Fetch every tied result when comparing exhaustive and WAND paths:
+            // the existing exhaustive selector does not specify tie-breaking.
+            for (query, top_k) in [
+                ("shared", size),
+                ("shared unique0", size),
+                ("unique0", 10),
+                ("missing", 10),
+            ] {
+                let expected: HashMap<String, f32> =
+                    idx.score_blocked(query, &ids, top_k).into_iter().collect();
+                let actual: HashMap<String, f32> =
+                    idx.score_all(query, top_k).into_iter().collect();
+                assert_eq!(
+                    actual.len(),
+                    expected.len(),
+                    "result count differs for size={size}, query={query}"
+                );
+                for (id, expected_score) in &expected {
+                    assert!(
+                        actual.contains_key(id),
+                        "missing result {id} for size={size}"
+                    );
+                    assert!(
+                        (actual[id] - expected_score).abs() < 1e-5,
+                        "score differs for size={size}, query={query}, id={id}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn score_all_top_k_matches_restricted_wand() {
+        let idx = SimpleBm25 {
+            exhaustive_threshold: 0,
+            ..SimpleBm25::new(&test_fields(), Side::A)
+        };
+        let ids: Vec<String> = (0..300).map(|i| format!("doc_{i}")).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let name = format!("{} unique{i}", "shared ".repeat(i % 9 + 1));
+            idx.upsert(id, &make_record(&[("name_a", &name)]));
+        }
+        for top_k in [1, 10, 300, 400] {
+            let expected: HashMap<String, f32> = idx
+                .score_blocked("shared", &ids, top_k)
+                .into_iter()
+                .collect();
+            let actual: HashMap<String, f32> = idx.score_all("shared", top_k).into_iter().collect();
+            assert_eq!(actual, expected, "top-K differs for top_k={top_k}");
+        }
+    }
+
+    #[test]
+    fn score_all_small_pool_retains_stronger_match_in_later_block() {
+        let idx = SimpleBm25::new(&test_fields(), Side::A);
+        let ids: Vec<String> = (0..600).map(|i| format!("doc_{i}")).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let text = match i {
+                0 => "x ".repeat(10),
+                599 => "x ".repeat(100),
+                _ => format!("x {}", "filler ".repeat(99)),
+            };
+            idx.upsert(id, &make_record(&[("name_a", &text)]));
+        }
+        let expected = idx.score_blocked("x", &ids, 1);
+        assert_eq!(expected[0].0, "doc_599", "later document scores highest");
+        assert_eq!(
+            idx.score_all("x", 1),
+            expected,
+            "small unrestricted pools must preserve exhaustive scoring"
+        );
+    }
+
+    #[test]
+    fn score_all_multi_term_top_k_matches_exhaustive_scores() {
+        let idx = SimpleBm25::new(&test_fields(), Side::A);
+        let mut seed = 7_u64;
+        let ids: Vec<String> = (0..800).map(|i| format!("doc_{i}")).collect();
+        for id in &ids {
+            let mut text = String::new();
+            for term in 0..12 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let count = (seed >> 32) % 6;
+                text.push_str(&format!("term{term} ").repeat(count as usize));
+            }
+            idx.upsert(id, &make_record(&[("name_a", &text)]));
+        }
+        for query in ["term0 term1", "term2 term5 term9", "term1 term7 term11"] {
+            for top_k in [1, 10, 50] {
+                let expected = idx.score_blocked(query, &ids, top_k);
+                let actual = idx.score_all(query, top_k);
+                assert_eq!(actual.len(), expected.len(), "query={query}, k={top_k}");
+                for ((_, score), (_, expected_score)) in actual.iter().zip(&expected) {
+                    assert!(
+                        (score - expected_score).abs() < 1e-5,
+                        "top-K score differs for query={query}, k={top_k}: {score} != {expected_score}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn score_all_preserves_empty_and_restricted_searches() {
+        let idx = SimpleBm25::new(&test_fields(), Side::A);
+        assert!(idx.score_all("apple", 10).is_empty(), "empty index");
+        idx.upsert("apple", &make_record(&[("name_a", "apple")]));
+        idx.upsert("pear", &make_record(&[("name_a", "pear")]));
+
+        for (query, top_k) in [("", 10), ("?!", 10), ("missing", 10), ("apple", 0)] {
+            assert!(
+                idx.score_all(query, top_k).is_empty(),
+                "query={query:?}, top_k={top_k} should yield no candidates"
+            );
+        }
+        assert_eq!(idx.score_all("apple", 10).len(), 1, "unrestricted hit");
+        assert!(
+            idx.score_blocked("apple", &[], 10).is_empty(),
+            "restricted-empty must not become unrestricted"
+        );
+        for ids in [vec!["pear".to_string()], vec!["unknown".to_string()]] {
+            assert!(
+                idx.score_blocked("apple", &ids, 10).is_empty(),
+                "restricted search must not leak excluded documents"
+            );
+        }
+    }
+
+    #[test]
+    fn score_all_reflects_document_updates_and_removal() {
+        let idx = SimpleBm25::new(&test_fields(), Side::A);
+        idx.upsert("one", &make_record(&[("name_a", "apple")]));
+        idx.upsert("one", &make_record(&[("name_a", "pear")]));
+        assert!(idx.score_all("apple", 10).is_empty(), "old terms removed");
+        assert_eq!(idx.score_all("pear", 10).len(), 1, "updated terms found");
+        idx.remove("one");
+        assert!(idx.score_all("pear", 10).is_empty(), "removed document");
     }
 
     #[test]

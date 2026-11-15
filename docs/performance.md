@@ -103,9 +103,55 @@ and when each mode is the right fit.
 
 ## BM25-only batch mode
 
-BM25 + fuzzy + exact scoring, `country_code` blocking. The BM25-only
-fast path queries the Tantivy index directly with blocking filters,
-avoiding the need to fetch all blocked records.
+BM25 + fuzzy + exact scoring, `country_code` blocking. BM25 retrieves
+its top candidates from the index before full record scoring. Large
+eligible pools use WAND to skip documents that cannot beat the current
+best candidates.
+
+When blocking is disabled, batch mode searches the whole BM25 index
+without constructing a per-query eligibility set. Small pools retain
+exhaustive scoring; large pools retain WAND. The A-side ID list is
+collected once and shared across batch queries, preserving the existing
+shared scoring pipeline and flat-vector search behavior. This is selected
+automatically from `blocking.enabled`; there is no new configuration.
+Blocked searches and live/enroll behavior are unchanged.
+
+### Unblocked batch BM25 comparison
+
+Measured against commit `877f261` on Apple M1 Ultra (20 cores, 64 GB),
+default-feature release builds, four Rayon threads, median of three runs.
+Each case has **1,000 B queries**, not a full square A × A workload.
+Selective queries use unique tokens; common-term queries also include two
+tokens present in every A record. Both binaries produced identical output
+CSVs in every run: 900 matches and 100 unmatched queries.
+
+| A pool | Query type | Scoring before → after | Wall time before → after |
+|---|---|---:|---:|
+| 10,000 | Selective | 0.321s → 0.011s | 0.511s → 0.508s |
+| 10,000 | Common terms | 0.957s → 0.887s | 1.124s → 1.066s |
+| 100,000 | Selective | 3.968s → 0.014s | 4.509s → 0.569s |
+| 100,000 | Common terms | 13.333s → 8.065s | 13.957s → 8.660s |
+
+Scoring times are estimates reconstructed from the CLI's rounded
+records/second throughput, because its duration display rounds to 0.1s.
+Wall times include startup, index construction, and exports. These synthetic
+results isolate the removed bookkeeping; they are not production speedup
+guarantees. Common-term searches still pay posting-list copying and search
+costs, so the gain can be much smaller or within measurement noise.
+
+Reproduce with separate baseline and candidate release binaries:
+
+```bash
+python3 benchmarks/batch/unblocked_bm25/run_test.py \
+  --baseline /path/to/baseline/meld --candidate ./target/release/meld \
+  --pool-sizes 10000 100000 --queries 1000 --repeats 3 --threads 4 \
+  --output /tmp/unblocked-bm25-comparison.json
+```
+
+The script preserves per-run logs and reports scoring/wall medians and
+output equivalence. Every run uses a fresh crossmap and output directory.
+
+### Blocked batch benchmarks
 
 10k × 10k:
 

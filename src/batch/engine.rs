@@ -402,6 +402,13 @@ pub fn run_batch(
 
     // Score all B records in a single parallel pass.
     let scoring_start = Instant::now();
+
+    // Without blocking, share one A-side ID snapshot across all B queries.
+    let all_a_ids = if config.blocking.enabled {
+        Vec::new()
+    } else {
+        store.ids(Side::A)?
+    };
     let progress = AtomicUsize::new(0);
     let work_total = work_ids.len();
 
@@ -435,12 +442,14 @@ pub fn run_batch(
             }
 
             // Pre-query the blocking index via the store.
-            let blocked_ids: Vec<String> = if config.blocking.enabled {
-                store
+            let query_blocked_ids;
+            let blocked_ids: &[String] = if config.blocking.enabled {
+                query_blocked_ids = store
                     .blocking_query(&b_record, Side::B, Side::A)
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                &query_blocked_ids
             } else {
-                store.ids(Side::A).unwrap_or_default()
+                &all_a_ids
             };
 
             // Fetch the query combined vec from the B-side index.
@@ -456,7 +465,11 @@ pub fn run_batch(
             let (bm25_cand_ids, bm25_scores_map) = if let Some(ref bm25) = bm25_index_a {
                 let query_text = bm25.query_text_for(&b_record, Side::B);
                 let self_score = bm25.analytical_self_score(&query_text);
-                let raw_results = bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
+                let raw_results = if config.blocking.enabled {
+                    bm25.score_blocked(&query_text, blocked_ids, bm25_candidates_n)
+                } else {
+                    bm25.score_all(&query_text, bm25_candidates_n)
+                };
                 let scored: Vec<(String, f64)> = raw_results
                     .into_iter()
                     .map(|(cid, raw)| {
@@ -497,7 +510,7 @@ pub fn run_batch(
                 store,
                 side: Side::A,
                 combined_index: combined_index_a,
-                blocked_ids: &blocked_ids,
+                blocked_ids,
                 bm25_candidate_ids: &bm25_cand_ids,
                 bm25_scores_map: &bm25_scores_map,
                 synonym_candidate_ids: &synonym_cand_ids,
@@ -639,4 +652,307 @@ pub fn run_batch(
         unmatched,
         stats,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use crate::crossmap::MemoryCrossMap;
+    use crate::matching::exclusions::Exclusions;
+    use crate::store::memory::MemoryStore;
+
+    use super::*;
+
+    fn make_config(blocking: bool) -> Result<Config, Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+job:
+  name: batch_bm25_test
+vector_backend: flat
+datasets:
+  a: {{ path: a.csv, id_field: id, format: csv }}
+  b: {{ path: b.csv, id_field: id, format: csv }}
+cross_map:
+  path: crossmap.csv
+  a_id_field: id
+  b_id_field: id
+embeddings:
+  model: test
+  a_cache_dir: cache
+blocking:
+  enabled: {blocking}
+  fields:
+    - field_a: region
+      field_b: region
+match_fields:
+  - method: bm25
+    weight: 1.0
+    fields:
+      - field_a: name
+        field_b: name
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+output:
+  csv_dir_path: output
+"#
+            ),
+        )?;
+        Ok(crate::config::load_config(&path)?)
+    }
+
+    fn make_record(id: &str, name: &str, region: &str) -> Record {
+        [("id", id), ("name", name), ("region", region)]
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    fn make_pool(size: usize) -> HashMap<String, Record> {
+        let mut records = HashMap::new();
+        if size > 0 {
+            records.insert("a1".into(), make_record("a1", "quartz cobalt", "west"));
+        }
+        if size > 1 {
+            records.insert("a2".into(), make_record("a2", "saffron orchid", "east"));
+        }
+        for i in 2..size {
+            let id = format!("filler{i}");
+            records.insert(id.clone(), make_record(&id, "unrelated filler", "other"));
+        }
+        records
+    }
+
+    #[test]
+    fn batch_bm25_unblocked_blocked_and_empty_pools() -> Result<(), Box<dyn Error>> {
+        // Exercise both small pools and the large-pool BM25 search path.
+        for size in [2, 5002] {
+            for (blocking, empty_block, empty_pool) in [
+                (false, false, false),
+                (true, false, false),
+                (true, true, false),
+                (false, false, true),
+                (true, false, true),
+            ] {
+                let config = make_config(blocking)?;
+                let records_b = HashMap::from([
+                    (
+                        "b1".into(),
+                        make_record(
+                            "b1",
+                            "quartz cobalt",
+                            if empty_block { "missing" } else { "west" },
+                        ),
+                    ),
+                    (
+                        "b2".into(),
+                        make_record(
+                            "b2",
+                            "saffron orchid",
+                            if empty_block { "missing" } else { "east" },
+                        ),
+                    ),
+                ]);
+                let store = MemoryStore::from_records(
+                    make_pool(if empty_pool { 0 } else { size }),
+                    records_b,
+                    &config.blocking,
+                );
+                let crossmap = MemoryCrossMap::new();
+                let result = run_batch(
+                    &config,
+                    &store,
+                    None,
+                    None,
+                    &crossmap,
+                    &Exclusions::new(),
+                    None,
+                    true,
+                    None,
+                    None,
+                )?;
+                assert_eq!(result.stats.total_b, 2, "all B queries must be processed");
+                assert!(result.review.is_empty(), "no review scores expected");
+                if empty_block || empty_pool {
+                    assert!(
+                        result.matched.is_empty(),
+                        "empty candidate pools cannot match"
+                    );
+                    assert_eq!(result.unmatched.len(), 2, "both queries must be unmatched");
+                    assert!(
+                        result.unmatched.iter().all(|(_, _, score)| score.is_none()),
+                        "empty pools must not produce candidate scores"
+                    );
+                    assert_eq!(crossmap.get_a("b1"), None, "no claim for b1");
+                    assert_eq!(crossmap.get_a("b2"), None, "no claim for b2");
+                } else {
+                    let mut links: Vec<_> = result
+                        .matched
+                        .iter()
+                        .map(|m| (m.query_id.as_str(), m.matched_id.as_str()))
+                        .collect();
+                    links.sort_unstable();
+                    assert_eq!(
+                        links,
+                        vec![("b1", "a1"), ("b2", "a2")],
+                        "BM25 links must agree for size={size}, blocking={blocking}"
+                    );
+                    assert!(
+                        result.matched.iter().all(|m| (m.score - 1.0).abs() < 1e-6),
+                        "identical text must retain normalized self-score"
+                    );
+                    assert!(result.unmatched.is_empty(), "both queries should match");
+                    assert_eq!(crossmap.get_a("b1").as_deref(), Some("a1"), "claim b1");
+                    assert_eq!(crossmap.get_a("b2").as_deref(), Some("a2"), "claim b2");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn batch_bm25_preserves_flat_vector_candidates() -> Result<(), Box<dyn Error>> {
+        let mut config = make_config(false)?;
+        config.vector_backend = "flat".into();
+        config.ann_candidates = Some(1);
+        config.top_n = Some(1);
+        config.thresholds.auto_match = 0.7;
+        config.match_fields[0].weight = 0.25;
+        config.match_fields.push(serde_yaml::from_str(
+            "{field_a: name, field_b: name, method: embedding, weight: 0.75}",
+        )?);
+        let query = make_record("b1", "quartz cobalt", "west");
+        let store = MemoryStore::from_records(
+            make_pool(2),
+            HashMap::from([("b1".into(), query.clone())]),
+            &config.blocking,
+        );
+        let index_a = crate::vectordb::flat::FlatVectorDB::new(2);
+        let index_b = crate::vectordb::flat::FlatVectorDB::new(2);
+        let scale = 0.75_f32.sqrt();
+        for (id, vector) in [("a1", [0.0, scale]), ("a2", [scale, 0.0])] {
+            let record = store.get(Side::A, id)?.ok_or("missing test A record")?;
+            index_a.upsert(id, &vector, &record, Side::A)?;
+        }
+        index_b.upsert("b1", &[scale, 0.0], &query, Side::B)?;
+        let crossmap = MemoryCrossMap::new();
+        let result = run_batch(
+            &config,
+            &store,
+            Some(&index_a),
+            Some(&index_b),
+            &crossmap,
+            &Exclusions::new(),
+            None,
+            true,
+            None,
+            None,
+        )?;
+        assert_eq!(result.matched.len(), 1, "vector candidate must be retained");
+        assert_eq!(
+            result.matched[0].matched_id, "a2",
+            "flat search must find a candidate absent from BM25 results"
+        );
+        assert!(
+            (result.matched[0].score - 0.75).abs() < 1e-6,
+            "weighted embedding score must be preserved"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn batch_bm25_respects_nonempty_blocks() -> Result<(), Box<dyn Error>> {
+        let config = make_config(true)?;
+        // The globally perfect match is outside the block; the nonempty block
+        // contains only unrelated text, so unrestricted BM25 must not be used.
+        let store = MemoryStore::from_records(
+            make_pool(2),
+            HashMap::from([("b1".into(), make_record("b1", "quartz cobalt", "east"))]),
+            &config.blocking,
+        );
+        let crossmap = MemoryCrossMap::new();
+        let result = run_batch(
+            &config,
+            &store,
+            None,
+            None,
+            &crossmap,
+            &Exclusions::new(),
+            None,
+            true,
+            None,
+            None,
+        )?;
+        assert!(result.matched.is_empty(), "cannot match outside the block");
+        assert!(
+            result.review.is_empty(),
+            "unrelated block has no review candidate"
+        );
+        assert_eq!(result.unmatched.len(), 1, "query must remain unmatched");
+        assert_eq!(result.unmatched[0].2, None, "no BM25 overlap inside block");
+        assert_eq!(crossmap.get_a("b1"), None, "no out-of-block claim");
+        Ok(())
+    }
+
+    #[test]
+    fn batch_bm25_preserves_exclusions_and_atomic_claims() -> Result<(), Box<dyn Error>> {
+        for blocking in [false, true] {
+            let config = make_config(blocking)?;
+            let store = MemoryStore::from_records(
+                make_pool(5002),
+                HashMap::from([
+                    ("b1".into(), make_record("b1", "quartz cobalt", "west")),
+                    ("b2".into(), make_record("b2", "quartz cobalt", "west")),
+                    ("b3".into(), make_record("b3", "saffron orchid", "east")),
+                ]),
+                &config.blocking,
+            );
+            let crossmap = MemoryCrossMap::new();
+            let exclusions = Exclusions::new();
+            exclusions.add("a2", "b3");
+            let result = run_batch(
+                &config,
+                &store,
+                None,
+                None,
+                &crossmap,
+                &exclusions,
+                None,
+                true,
+                None,
+                None,
+            )?;
+            assert_eq!(result.matched.len(), 1, "only one query can claim a1");
+            assert_eq!(
+                result.matched[0].matched_id, "a1",
+                "excluded a2 cannot match"
+            );
+            assert!(result.review.is_empty(), "no review candidates expected");
+            assert_eq!(
+                result.unmatched.len(),
+                2,
+                "excluded query and claim loser are unmatched"
+            );
+            assert_eq!(
+                crossmap.has_b("b1") as usize + crossmap.has_b("b2") as usize,
+                1,
+                "parallel claims must preserve the bijection"
+            );
+            assert!(!crossmap.has_a("a2"), "excluded A must remain unclaimed");
+            assert!(!crossmap.has_b("b3"), "excluded B must remain unclaimed");
+            assert!(
+                result
+                    .unmatched
+                    .iter()
+                    .any(|(id, _, score)| id == "b3" && score.is_none()),
+                "excluded candidate must be filtered before scoring"
+            );
+        }
+        Ok(())
+    }
 }
