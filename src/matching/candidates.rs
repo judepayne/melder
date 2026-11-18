@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rayon::prelude::*;
 
+use crate::error::StoreError;
 use crate::models::{Record, Side};
 use crate::scoring::embedding::dot_product_f32;
 use crate::store::RecordStore;
@@ -74,7 +75,39 @@ pub fn select_candidates(
     query_side: Side,
     backend: &str,
 ) -> Vec<Candidate> {
+    select_candidates_checked(
+        query_combined_vec,
+        top_n,
+        pool_combined_index,
+        blocked_ids,
+        pool_store,
+        pool_side,
+        query_record,
+        query_side,
+        backend,
+        false,
+    )
+    .unwrap_or_default()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn select_candidates_checked(
+    query_combined_vec: &[f32],
+    top_n: usize,
+    pool_combined_index: Option<&dyn VectorDB>,
+    blocked_ids: &[String],
+    pool_store: &dyn RecordStore,
+    pool_side: Side,
+    query_record: &Record,
+    query_side: Side,
+    backend: &str,
+    strict: bool,
+) -> Result<Vec<Candidate>, StoreError> {
     let has_embeddings = !query_combined_vec.is_empty();
+    let load_record = |id: &str| match pool_store.get(pool_side, id) {
+        Err(_) if !strict => Ok(None),
+        result => result,
+    };
 
     // usearch path: block-aware ANN search — O(log N).
     #[cfg(feature = "usearch")]
@@ -84,41 +117,37 @@ pub fn select_candidates(
     {
         let k = if top_n > 0 { top_n } else { usize::MAX };
         if let Ok(results) = idx.search(query_combined_vec, k, query_record, query_side) {
-            return results
-                .into_iter()
-                .filter_map(|r| {
-                    pool_store
-                        .get(pool_side, &r.id)
-                        .ok()
-                        .flatten()
-                        .map(|record| Candidate {
-                            id: r.id.clone(),
-                            record,
-                            combined_dot: r.score as f64,
-                        })
-                })
-                .collect();
+            let mut hits = Vec::with_capacity(results.len());
+            for r in results {
+                if let Some(record) = load_record(&r.id)? {
+                    hits.push(Candidate {
+                        id: r.id,
+                        record,
+                        combined_dot: r.score as f64,
+                    });
+                }
+            }
+            return Ok(hits);
         }
     }
 
     // flat path (also fallback for usearch when no embedding fields):
     // iterate blocked_ids, compute dot products, sort, truncate.
-    let _ = backend; // suppress unused warning in non-usearch builds
+    let _ = (backend, query_record, query_side); // unused without usearch
 
-    if !has_embeddings || pool_combined_index.is_none() {
-        // No embedding fields configured — return empty. Other candidate
-        // generators (BM25, synonym, etc.) provide candidates independently
-        // and are unioned by the pipeline.
-        return Vec::new();
-    }
-
-    let idx = pool_combined_index.unwrap();
+    let Some(idx) = pool_combined_index.filter(|_| has_embeddings) else {
+        return Ok(Vec::new());
+    };
 
     let dim_warned = AtomicBool::new(false);
     let mut scored: Vec<Candidate> = blocked_ids
         .par_iter()
         .filter_map(|id| {
-            let record = pool_store.get(pool_side, id).ok().flatten()?;
+            let record = match load_record(id) {
+                Ok(Some(record)) => record,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error)),
+            };
             let pool_vec = idx.get(id).ok().flatten().unwrap_or_default();
             let dot: f32 = if pool_vec.len() == query_combined_vec.len() {
                 dot_product_f32(query_combined_vec, &pool_vec)
@@ -133,13 +162,13 @@ pub fn select_candidates(
                 }
                 0.0
             };
-            Some(Candidate {
+            Some(Ok(Candidate {
                 id: id.clone(),
                 record,
                 combined_dot: dot as f64,
-            })
+            }))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     scored.sort_by(|a, b| {
         b.combined_dot
@@ -151,7 +180,7 @@ pub fn select_candidates(
         scored.truncate(top_n);
     }
 
-    scored
+    Ok(scored)
 }
 
 #[cfg(test)]

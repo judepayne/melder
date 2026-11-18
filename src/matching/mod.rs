@@ -3,4 +3,5 @@
 pub mod blocking;
 pub mod candidates;
 pub mod exclusions;
+pub mod local;
 pub mod pipeline;

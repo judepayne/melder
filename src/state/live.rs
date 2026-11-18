@@ -5,6 +5,7 @@
 //! and common ID indices are held by the shared `RecordStore` on
 //! `LiveMatchState`.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -238,6 +239,22 @@ impl LiveMatchState {
         combined_index_b: Option<Box<dyn VectorDB>>,
         label: &str,
     ) -> Result<Arc<Self>, MelderError> {
+        // CrossMap is authoritative on both backends, including after a crash
+        // between assignment publication and metadata updates.
+        for side in [Side::A, Side::B] {
+            for id in store.ids(side)? {
+                let matched = match side {
+                    Side::A => crossmap.has_a(&id),
+                    Side::B => crossmap.has_b(&id),
+                };
+                if matched {
+                    store.mark_matched(side, &id)?;
+                    store.remove_query_reviews(side, &id)?;
+                } else {
+                    store.mark_unmatched(side, &id)?;
+                }
+            }
+        }
         // Build BM25 indices if configured
         let (bm25_index_a, bm25_index_b) = Self::build_bm25_indices(&store, &config, start)?;
 
@@ -422,7 +439,7 @@ impl LiveMatchState {
         let wal_events = MatchLog::replay(Path::new(wal_path))
             .map_err(|e| MelderError::Other(anyhow::anyhow!("WAL replay failed: {}", e)))?;
 
-        if !wal_events.is_empty() {
+        let recovered_reviews = if !wal_events.is_empty() {
             Self::replay_wal(
                 &wal_events,
                 &config,
@@ -432,13 +449,15 @@ impl LiveMatchState {
                 &encoder_pool,
                 combined_index_a.as_deref(),
                 combined_index_b.as_deref(),
-            )?;
-        }
+            )?
+        } else {
+            DashMap::new()
+        };
 
         // Build common_id_index for each side if configured
         Self::build_common_id_index(&store, &config);
 
-        Self::finish(
+        let state = Self::finish(
             config,
             start,
             encoder_pool,
@@ -448,7 +467,11 @@ impl LiveMatchState {
             combined_index_a,
             combined_index_b,
             "",
-        )
+        )?;
+        for (key, entry) in recovered_reviews {
+            state.review_queue.insert(key, entry);
+        }
+        Ok(state)
     }
 
     /// Enroll-mode startup: single-pool, no B-side, no crossmap.
@@ -565,25 +588,75 @@ impl LiveMatchState {
         encoder_pool: &Arc<dyn Encoder>,
         combined_index_a: Option<&dyn VectorDB>,
         combined_index_b: Option<&dyn VectorDB>,
-    ) -> Result<(), MelderError> {
-        let emb_specs = vectordb::embedding_field_specs(config);
-        let mut wal_skipped = 0usize;
-        let mut wal_encoded = 0usize;
+    ) -> Result<DashMap<String, ReviewEntry>, MelderError> {
+        // MemoryStore intentionally does not persist reviews. Reconstruct the
+        // cache explicitly rather than pretending persist_review stores them.
+        let reviews: DashMap<String, ReviewEntry> = DashMap::new();
+        // The CSV snapshot may be newer than earlier WAL frames. Rebuild the
+        // reassignment footprint from its history, retaining untouched pairs.
+        // Work on a temporary memory map so invalid history leaves the loaded
+        // snapshot intact. This path runs before the server is published.
+        let original_crossmap = crossmap;
+        let replay_map = MemoryCrossMap::new();
+        let mut touched_a = HashSet::new();
+        let mut touched_b = HashSet::new();
+        for event in wal_events {
+            if let MatchLogEvent::CrossMapReassign {
+                old_a_id,
+                old_b_id,
+                replacements,
+            } = event
+            {
+                touched_a.insert(old_a_id.as_str());
+                touched_b.insert(old_b_id.as_str());
+                for pair in replacements {
+                    touched_a.insert(pair.a_id.as_str());
+                    touched_b.insert(pair.b_id.as_str());
+                }
+            }
+        }
+        let new_history = wal_events
+            .iter()
+            .any(|event| matches!(event, MatchLogEvent::AssignmentDelta(_)));
+        if new_history {
+            let pairs = crate::state::match_log::reconstruct_assignment_history(
+                wal_events,
+                &original_crossmap.pairs(),
+            )
+            .map_err(|e| MelderError::Other(anyhow::anyhow!(e)))?;
+            for (a, b) in pairs {
+                replay_map.claim(&a, &b);
+            }
+        }
+        let rebuild = new_history || !touched_a.is_empty();
+        if rebuild && !new_history {
+            for (a, b) in original_crossmap.pairs() {
+                if !touched_a.contains(a.as_str()) && !touched_b.contains(b.as_str()) {
+                    replay_map.claim(&a, &b);
+                }
+            }
+        }
+        let crossmap: &dyn CrossMapOps = if rebuild {
+            &replay_map
+        } else {
+            original_crossmap
+        };
+        // Retained WAL segments can contain many versions of an ID. Repair
+        // each touched vector against the final record, not historical text.
+        let mut touched_vectors_a = HashSet::new();
+        let mut touched_vectors_b = HashSet::new();
 
         info!(events = wal_events.len(), "replaying WAL");
         for event in wal_events {
             match event {
                 MatchLogEvent::UpsertRecord { side, record } => {
-                    let is_a = *side == Side::A;
                     let id_field = match side {
                         Side::A => &config.datasets.a.id_field,
                         Side::B => &config.datasets.b.id_field,
                     };
-                    let side_idx = match side {
-                        Side::A => combined_index_a,
-                        Side::B => combined_index_b,
-                    };
                     if let Some(id) = record.get(id_field) {
+                        store.remove_query_reviews(*side, id)?;
+                        reviews.retain(|_, row| row.side != *side || row.id != *id);
                         // Remove old record from blocking index before overwrite
                         if let Some(old_rec) = store.get(*side, id).ok().flatten() {
                             let _ = store.blocking_remove(*side, id, &old_rec);
@@ -592,47 +665,122 @@ impl LiveMatchState {
                         let _ = store.insert(*side, id, record);
                         let _ = store.blocking_insert(*side, id, record);
 
-                        // Re-encode combined vector only if not already
-                        // present in the cached index (saved at shutdown).
-                        if let Some(idx) = side_idx {
-                            if idx.contains(id) {
-                                wal_skipped += 1;
-                            } else if let Ok(combined_vec) = vectordb::encode_combined_vector(
-                                record,
-                                &emb_specs,
-                                encoder_pool.as_ref(),
-                                is_a,
-                            ) {
-                                if !combined_vec.is_empty() {
-                                    let _ = idx.upsert(id, &combined_vec, record, *side);
-                                }
-                                wal_encoded += 1;
-                            }
-                        }
+                        match side {
+                            Side::A => touched_vectors_a.insert(id.as_str()),
+                            Side::B => touched_vectors_b.insert(id.as_str()),
+                        };
                     }
                 }
                 MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } => {
-                    crossmap.add(a_id, b_id)?;
+                    if !new_history {
+                        crossmap.confirm(a_id, b_id)?;
+                    }
+                    store.remove_query_reviews(Side::A, a_id)?;
+                    store.remove_query_reviews(Side::B, b_id)?;
+                    reviews.retain(|_, row| {
+                        !((row.side == Side::A && row.id == *a_id)
+                            || (row.side == Side::B && row.id == *b_id))
+                    });
                 }
-                MatchLogEvent::ReviewMatch { .. } => {
-                    // Informational — no state change on replay.
+                MatchLogEvent::AssignmentDelta(delta) => {
+                    // Membership was validated and reconstructed before replaying
+                    // any store metadata; never replay over a newer snapshot.
+                    reviews.retain(|_, row| {
+                        !delta.replacements.iter().any(|pair| {
+                            (row.side == Side::A && row.id == pair.a_id)
+                                || (row.side == Side::B && row.id == pair.b_id)
+                        })
+                    });
+                    for pair in &delta.replacements {
+                        store.remove_query_reviews(Side::A, &pair.a_id)?;
+                        store.remove_query_reviews(Side::B, &pair.b_id)?;
+                    }
+                }
+                MatchLogEvent::CrossMapReassign {
+                    old_a_id,
+                    old_b_id,
+                    replacements,
+                } => {
+                    let pairs = replacements
+                        .each_ref()
+                        .map(|pair| (pair.a_id.as_str(), pair.b_id.as_str()));
+                    // A flushed crossmap snapshot may already contain this event.
+                    // Only the complete replacement is an idempotent replay.
+                    let already_applied = pairs.iter().all(|(a_id, b_id)| {
+                        crossmap.get_b(a_id).as_deref() == Some(*b_id)
+                            && crossmap.get_a(b_id).as_deref() == Some(*a_id)
+                    });
+                    if !new_history
+                        && !already_applied
+                        && !crossmap.replace_pairs(&[(old_a_id, old_b_id)], &pairs)?
+                    {
+                        return Err(MelderError::Other(anyhow::anyhow!(
+                            "WAL reassignment invariant failed for {} <-> {}",
+                            old_a_id,
+                            old_b_id,
+                        )));
+                    }
+                    reviews.retain(|_, row| {
+                        !replacements.iter().any(|pair| {
+                            (row.side == Side::A && row.id == pair.a_id)
+                                || (row.side == Side::B && row.id == pair.b_id)
+                        })
+                    });
+                    for pair in replacements {
+                        store.remove_query_reviews(Side::A, &pair.a_id)?;
+                        store.remove_query_reviews(Side::B, &pair.b_id)?;
+                    }
+                }
+                MatchLogEvent::ReviewMatch {
+                    id,
+                    side,
+                    candidate_id,
+                    score,
+                    ..
+                } => {
+                    reviews.insert(
+                        review_queue_key(*side, id, candidate_id),
+                        ReviewEntry {
+                            id: id.clone(),
+                            side: *side,
+                            candidate_id: candidate_id.clone(),
+                            score: *score,
+                        },
+                    );
+                    store.persist_review(
+                        &review_queue_key(*side, id, candidate_id),
+                        id,
+                        *side,
+                        candidate_id,
+                        *score,
+                    )?;
                 }
                 MatchLogEvent::CrossMapBreak { a_id, b_id } => {
-                    crossmap.remove(a_id, b_id);
+                    if !new_history {
+                        crossmap.remove(a_id, b_id);
+                    }
                 }
                 MatchLogEvent::RemoveRecord { side, id } => {
-                    let side_idx = match side {
-                        Side::A => combined_index_a,
-                        Side::B => combined_index_b,
-                    };
                     // Remove from blocking index (needs record data)
                     if let Some(rec) = store.get(*side, id).ok().flatten() {
                         let _ = store.blocking_remove(*side, id, &rec);
                     }
+                    reviews.retain(|_, row| {
+                        if row.side == *side {
+                            row.id != *id
+                        } else {
+                            row.candidate_id != *id
+                        }
+                    });
+                    store.remove_reviews_for_id(*side, id)?;
                     let _ = store.remove(*side, id);
-                    // Remove from combined index
-                    if let Some(idx) = side_idx {
-                        let _ = idx.remove(id);
+                    match side {
+                        Side::A => touched_vectors_a.insert(id.as_str()),
+                        Side::B => touched_vectors_b.insert(id.as_str()),
+                    };
+                    // Membership for new history is already at its final state.
+                    if new_history {
+                        continue;
                     }
                     // Break any crossmap pair involving this ID
                     match side {
@@ -659,6 +807,40 @@ impl LiveMatchState {
                 }
             }
         }
+        let emb_specs = vectordb::embedding_field_specs(config);
+        let mut wal_skipped = 0usize;
+        let mut wal_encoded = 0usize;
+        for (side, index, ids) in [
+            (Side::A, combined_index_a, touched_vectors_a),
+            (Side::B, combined_index_b, touched_vectors_b),
+        ] {
+            let Some(index) = index else { continue };
+            let mut ids: Vec<_> = ids.into_iter().collect();
+            ids.sort_unstable();
+            for id in ids {
+                let Some(record) = store.get(side, id)? else {
+                    index.remove(id).map_err(anyhow::Error::new)?;
+                    continue;
+                };
+                let hash = vectordb::texthash::compute_text_hash(&record, &emb_specs, side);
+                if index.contains(id) && index.text_hash_for(id) == Some(hash) {
+                    wal_skipped += 1;
+                    continue;
+                }
+                let vector = vectordb::encode_combined_vector(
+                    &record,
+                    &emb_specs,
+                    encoder_pool.as_ref(),
+                    side == Side::A,
+                )?;
+                if !vector.is_empty() {
+                    index
+                        .upsert(id, &vector, &record, side)
+                        .map_err(anyhow::Error::new)?;
+                    wal_encoded += 1;
+                }
+            }
+        }
         if wal_skipped > 0 || wal_encoded > 0 {
             info!(
                 skipped = wal_skipped,
@@ -667,25 +849,50 @@ impl LiveMatchState {
             );
         }
 
-        // Rebuild unmatched sets after WAL replay
-        for id in store.unmatched_ids(Side::A).unwrap_or_default() {
-            let _ = store.mark_matched(Side::A, &id);
-        }
-        for id in store.unmatched_ids(Side::B).unwrap_or_default() {
-            let _ = store.mark_matched(Side::B, &id);
-        }
-        for id in store.ids(Side::A).unwrap_or_default() {
-            if !crossmap.has_a(&id) {
-                let _ = store.mark_unmatched(Side::A, &id);
+        if rebuild {
+            for (a, b) in original_crossmap.pairs() {
+                original_crossmap.remove(&a, &b);
+            }
+            for (a, b) in replay_map.pairs() {
+                if !original_crossmap.claim(&a, &b) {
+                    return Err(MelderError::Other(anyhow::anyhow!(
+                        "crossmap changed during startup replay"
+                    )));
+                }
             }
         }
-        for id in store.ids(Side::B).unwrap_or_default() {
-            if !crossmap.has_b(&id) {
-                let _ = store.mark_unmatched(Side::B, &id);
+
+        // Reconcile metadata from authoritative final membership, never from
+        // historical scores or transient assignments in an interrupted chain.
+        for side in [Side::A, Side::B] {
+            for id in store.ids(side)? {
+                let matched = match side {
+                    Side::A => crossmap.has_a(&id),
+                    Side::B => crossmap.has_b(&id),
+                };
+                if matched {
+                    store.mark_matched(side, &id)?;
+                    store.remove_query_reviews(side, &id)?;
+                } else {
+                    store.mark_unmatched(side, &id)?;
+                }
             }
         }
+        reviews.retain(|_, row| match row.side {
+            Side::A => !crossmap.has_a(&row.id),
+            Side::B => !crossmap.has_b(&row.id),
+        });
         info!("WAL replay complete");
-        Ok(())
+        Ok(reviews)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn restart_sqlite_with_encoder(
+        config: Config,
+        db_path: &str,
+        encoder: Arc<dyn Encoder>,
+    ) -> Result<Arc<Self>, MelderError> {
+        Self::load_sqlite(config, db_path, Instant::now(), encoder, None)
     }
 
     /// SQLite-backed startup: cold start (create + populate) or warm start
@@ -1075,12 +1282,20 @@ impl LiveMatchState {
     }
 
     /// Drain review entries for a given record ID (on re-upsert or remove).
-    pub fn drain_reviews_for_id(&self, id: &str) {
-        self.review_queue
-            .retain(|_, v| v.id != id && v.candidate_id != id);
-        if let Err(e) = self.store.remove_reviews_for_id(id) {
-            warn!(error = %e, id, "review drain (by id) persist failed");
-        }
+    pub fn drain_reviews_for_id(
+        &self,
+        side: Side,
+        id: &str,
+    ) -> Result<(), crate::error::StoreError> {
+        self.store.remove_reviews_for_id(side, id)?;
+        self.review_queue.retain(|_, row| {
+            if row.side == side {
+                row.id != id
+            } else {
+                row.candidate_id != id
+            }
+        });
+        Ok(())
     }
 
     /// Drain review entries involving either ID (on crossmap confirm/break).
@@ -1146,6 +1361,202 @@ impl LiveMatchState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct UnusedEncoder;
+
+    impl Encoder for UnusedEncoder {
+        fn encode(&self, _: &[&str]) -> Result<Vec<Vec<f32>>, crate::error::EncoderError> {
+            panic!("reassignment replay must not encode")
+        }
+        fn dim(&self) -> usize {
+            0
+        }
+        fn pool_size(&self) -> usize {
+            1
+        }
+        fn encode_batch_size(&self) -> usize {
+            1
+        }
+    }
+
+    #[test]
+    fn replay_reassignment_is_atomic_and_duplicate_safe() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            r#"
+job:
+  name: replay
+vector_backend: flat
+cross_map: {path: crossmap.csv, a_id_field: id, b_id_field: id}
+datasets:
+  a: {path: a.csv, id_field: id}
+  b: {path: b.csv, id_field: id}
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: cache
+match_fields:
+  - {field_a: name, field_b: name, method: exact, weight: 1.0}
+thresholds: {auto_match: 0.85, review_floor: 0.6}
+output: {csv_dir_path: out}
+"#,
+        )
+        .expect("config file");
+        let config = crate::config::load_config(&path).expect("config");
+        let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::from_records(
+            Default::default(),
+            Default::default(),
+            &config.blocking,
+        ));
+        let crossmap = MemoryCrossMap::new();
+        crossmap.add("A1", "B1").expect("incumbent");
+        let event: MatchLogEvent = serde_json::from_str(r#"{"type":"crossmap_reassign","old_a_id":"A1","old_b_id":"B1","replacements":[{"a_id":"A1","b_id":"B2","score":0.91},{"a_id":"A2","b_id":"B1","score":0.87}]}"#).expect("event");
+        let encoder: Arc<dyn Encoder> = Arc::new(UnusedEncoder);
+        let exclusions = crate::matching::exclusions::Exclusions::new();
+        let confirm = MatchLogEvent::CrossMapConfirm {
+            a_id: "A1".into(),
+            b_id: "B1".into(),
+            score: Some(0.9),
+            rank: Some(1),
+            reason: Some("top_scoring".into()),
+        };
+        LiveMatchState::replay_wal(
+            &[confirm.clone(), event.clone(), event.clone()],
+            &config,
+            &store,
+            &crossmap,
+            &exclusions,
+            &encoder,
+            None,
+            None,
+        )
+        .expect("replay and duplicate");
+        assert_eq!(
+            crossmap.len(),
+            2,
+            "both replacements installed exactly once"
+        );
+        assert_eq!(
+            crossmap.get_b("A1").as_deref(),
+            Some("B2"),
+            "first replacement"
+        );
+        assert_eq!(
+            crossmap.get_b("A2").as_deref(),
+            Some("B1"),
+            "second replacement"
+        );
+        // A later augmentation can appear in the flushed CSV snapshot before
+        // the older reassignment is replayed. Reconstruct the whole footprint.
+        assert!(
+            crossmap
+                .replace_pairs(&[("A2", "B1")], &[("A2", "B3"), ("A3", "B1")])
+                .expect("later snapshot")
+        );
+        crossmap
+            .add("untouched_a", "untouched_b")
+            .expect("protected snapshot pair");
+        let later: MatchLogEvent = serde_json::from_str(r#"{"type":"crossmap_reassign","old_a_id":"A2","old_b_id":"B1","replacements":[{"a_id":"A2","b_id":"B3","score":0.92},{"a_id":"A3","b_id":"B1","score":0.88}]}"#).expect("later event");
+        LiveMatchState::replay_wal(
+            &[confirm, event.clone(), later],
+            &config,
+            &store,
+            &crossmap,
+            &exclusions,
+            &encoder,
+            None,
+            None,
+        )
+        .expect("replay from newer snapshot");
+        assert_eq!(
+            crossmap.get_b("A2").as_deref(),
+            Some("B3"),
+            "later match retained"
+        );
+        assert_eq!(
+            crossmap.get_b("A3").as_deref(),
+            Some("B1"),
+            "later relocated match retained"
+        );
+        assert_eq!(
+            crossmap.get_b("untouched_a").as_deref(),
+            Some("untouched_b"),
+            "unknown untouched snapshot retained"
+        );
+        crossmap.remove("A2", "B3");
+        crossmap.remove("A3", "B1");
+        crossmap.remove("untouched_a", "untouched_b");
+        assert!(
+            LiveMatchState::replay_wal(
+                &[event],
+                &config,
+                &store,
+                &crossmap,
+                &exclusions,
+                &encoder,
+                None,
+                None
+            )
+            .is_err(),
+            "partial replacement must fail replay"
+        );
+        assert_eq!(crossmap.len(), 1, "failed replay cannot partially add");
+
+        // New WAL can begin with a displacement of a pair preloaded from CSV,
+        // while the snapshot already contains the replacement. Orphan-owned
+        // reviews pointing to a newly occupied candidate must survive.
+        for (a, b) in crossmap.pairs() {
+            crossmap.remove(&a, &b);
+        }
+        crossmap.claim("A1", "B2");
+        let history: Vec<MatchLogEvent> = [
+            r#"{"type":"upsert_record","side":"a","record":{"id":"A1"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"id":"B1"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"id":"B2"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"id":"B3"}}"#,
+            r#"{"type":"review_match","side":"b","id":"B1","candidate_id":"A1","score":0.7}"#,
+            r#"{"type":"review_match","side":"b","id":"B2","candidate_id":"other","score":0.7}"#,
+            r#"{"type":"assignment_delta","version":1,"attempt_id":3,"step_index":0,"proposer":{"side":"b","id":"B2"},"expected":[{"a_id":"A1","b_id":"B1"}],"replacements":[{"a_id":"A1","b_id":"B2","score_b_to_a":0.9,"score_a_to_b":0.95,"rank":null,"reason":null}],"newly_unmatched":[{"side":"b","id":"B1"}],"previous_receiver_score":0.8}"#,
+            r#"{"type":"review_match","side":"b","id":"B3","candidate_id":"A1","score":0.7}"#,
+            // Deleting A:B3 must not delete the review owned by B:B3.
+            r#"{"type":"review_match","side":"b","id":"other","candidate_id":"B3","score":0.7}"#,
+            r#"{"type":"remove_record","side":"a","id":"B3"}"#,
+        ].iter().map(|line| serde_json::from_str(line).expect("delta history")).collect();
+        let reviews = LiveMatchState::replay_wal(
+            &history,
+            &config,
+            &store,
+            &crossmap,
+            &exclusions,
+            &encoder,
+            None,
+            None,
+        )
+        .expect("preloaded delta replay");
+        assert_eq!(
+            crossmap.get_b("A1").as_deref(),
+            Some("B2"),
+            "restore committed prefix"
+        );
+        let unmatched = store.unmatched_ids(Side::B).expect("unmatched IDs");
+        assert!(
+            unmatched.contains(&"B1".into()) && !unmatched.contains(&"B2".into()),
+            "orphan flags follow final membership"
+        );
+        assert_eq!(
+            reviews.len(),
+            2,
+            "only resolved or deleted endpoints removed"
+        );
+        assert!(reviews.contains_key(&review_queue_key(Side::B, "B3", "A1")));
+        assert!(!reviews.contains_key(&review_queue_key(Side::B, "other", "B3")));
+        assert!(
+            reviews.iter().all(|entry| entry.value().id != "B2"),
+            "no stale accepted owner review"
+        );
+    }
 
     #[test]
     fn review_queue_key_format() {

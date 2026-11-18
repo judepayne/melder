@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn derived_fields_bench_live() {
         let cfg = load_config(Path::new(
-            "benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml",
+            "benchmarks/live/10kx10k_inject3k_flat/warm/config.yaml",
         ))
         .unwrap();
         assert!(cfg.required_fields_a.contains(&"entity_id".to_string()));
@@ -214,6 +214,7 @@ mod tests {
     #[test]
     fn bm25_fields_derived_from_fuzzy_and_embedding() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -244,6 +245,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn bm25_fields_explicit_overrides_derivation() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -273,6 +275,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn bm25_not_in_required_fields() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -304,6 +307,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn bm25_inline_takes_priority_over_derivation() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -338,6 +342,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn synonym_fields_auto_derived_from_match_fields() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -369,6 +374,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn synonym_fields_explicit_with_custom_generators_kept() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:

@@ -394,10 +394,15 @@ These views require the scoring log to be populated:
 
 ## `batch`
 
-Settings for `meld run`. Controls in-memory vs SQLite storage for large datasets.
+Settings for `meld run`. Controls assignment policy and in-memory vs SQLite storage for large datasets.
+
+`assignment.strategy` defaults to `greedy`, currently the only supported batch
+value. `maximum_weight` is reserved for a later implementation and is rejected
+at parse time, not silently treated as greedy.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
+| `assignment.strategy` | no | `greedy` | Typed batch assignment policy. Only `greedy` is currently available. |
 | `db_path` | no | `None` | When set, stores records in SQLite instead of RAM. File is created fresh and deleted after the run. |
 | `sqlite_read_pool_size` | no | num_cpus | Read connection pool size. |
 | `sqlite_pool_worker_cache_mb` | no | `128` | Page cache per read connection in MB. |
@@ -416,8 +421,10 @@ Settings for `meld serve`. Ignored by `meld run`.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `match_log_path` | no | `"wal.ndjson"` | Path for the match log (WAL). Every event is appended here; compacted on clean shutdown. |
-| `crossmap_flush_secs` | no | `5` | How often to flush the in-memory crossmap to disk. Ignored with `db_path`. |
+| `assignment.strategy` | no | `greedy` | `greedy` or opt-in `deferred_acceptance`. Enroll only supports `greedy`. |
+| `assignment.max_displacements` | no | `32` | Nonnegative integer budget of successful displacements per live assignment attempt. Zero allows reciprocal free matches but no displacement. Ignored by greedy. |
+| `match_log_path` | no | `"bench/upsert.wal"` | Base path for timestamped match-log (WAL) segments, not one file overwritten on each start. Clean shutdown compacts only the current segment; prior segments are retained. |
+| `crossmap_flush_secs` | no | `5` | Interval in seconds for flushing dirty in-memory CrossMap state to its configured CSV. Separate from WAL flushing; SQLite CrossMap writes are already durable. |
 | `db_path` | no | `None` | SQLite database for durable storage. Cold start loads from CSV; warm start opens directly (instant restarts). |
 | `sqlite_cache_mb` | no | `64` | SQLite page cache for the write connection in MB. |
 | `sqlite_read_pool_size` | no | `4` | Number of read-only SQLite connections. |
@@ -428,7 +435,36 @@ Settings for `meld serve`. Ignored by `meld run`.
 live:
   db_path: data/live.db
   match_log_path: wal.ndjson
+  assignment:
+    strategy: deferred_acceptance   # default: greedy
+    max_displacements: 4            # default: 32; example smaller work budget
 ```
+
+Assignment strategy names use snake_case; unknown strategies and unknown fields
+inside `assignment` are rejected. Omitting `assignment`, or omitting its strategy,
+retains greedy behavior. Omitting `max_displacements` retains 32; explicit zero is
+not replaced by the default. Negative, fractional and overflowing budgets are
+rejected; there is no unlimited sentinel. Values above 32 are allowed: 32 is an
+initial conservative engineering work budget, not a benchmark-proven optimum or
+a hard maximum.
+
+The live budget counts successful displacements, not candidate checks, seeds or
+free claims. At the cap, the current orphan can still try reciprocal free matches
+in its existing shortlist; zero permits these free claims without any displacement.
+The cap is not a wall-clock latency bound. Deferred acceptance is a synchronous,
+symmetric, event-triggered policy, with no background continuation or guarantee of
+order independence or a globally optimal assignment. Enroll rejects
+`deferred_acceptance` rather than enabling reassignment through its shared live
+configuration. These settings are YAML-only; there is no CLI override.
+
+See [Deferred acceptance](live-mode.md#deferred-acceptance) for acceptance,
+protection and failure semantics, and [Deferred-acceptance performance](performance.md#deferred-acceptance-performance)
+for measured trade-offs and workload limits.
+
+The example WAL base `wal.ndjson` creates timestamped segments alongside that
+path. Keep retained segments for recovery and export; shutdown compaction is not
+an archive-retention policy. WAL appends are buffered, with a separate periodic
+flush (every second in `meld serve`), not an fsync for every accepted pair.
 
 ---
 

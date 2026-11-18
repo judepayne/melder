@@ -260,6 +260,17 @@ impl RecordStore for MemoryStore {
         Ok(())
     }
 
+    fn common_id_remove_owned(
+        &self,
+        side: Side,
+        common_id: &str,
+        record_id: &str,
+    ) -> Result<(), StoreError> {
+        self.common_ids(side)
+            .remove_if(common_id, |_, owner| owner == record_id);
+        Ok(())
+    }
+
     // --- Exact prefilter ---
 
     fn build_exact_index(&self, side: Side, field_names: &[String]) -> Result<(), StoreError> {
@@ -318,7 +329,11 @@ impl RecordStore for MemoryStore {
         Ok(())
     }
 
-    fn remove_reviews_for_id(&self, _id: &str) -> Result<(), StoreError> {
+    fn remove_query_reviews(&self, _side: Side, _id: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    fn remove_reviews_for_id(&self, _side: Side, _id: &str) -> Result<(), StoreError> {
         Ok(())
     }
 

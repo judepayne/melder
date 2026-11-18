@@ -209,6 +209,34 @@ SQLite is ~18% slower on throughput but has better tail latency (p95/p99).
 The trade-off is durability and instant warm restarts (~0.4s vs ~18s for
 in-memory cold start).
 
+### Deferred acceptance performance
+
+[Deferred acceptance](live-mode.md#deferred-acceptance) is off by default.
+In the existing warm live benchmarks, leaving it off kept throughput
+close to main. Turning it on roughly halved throughput.
+
+| Workload | Assignment mode | Throughput | Request run time | p95 latency |
+|---|---|---:|---:|---:|
+| 10k × 10k, 3,000 requests | Main (greedy) | 1,601 req/s | 1.87 s | 20.7 ms |
+| | New build, off | 1,592 req/s | 1.89 s | 20.2 ms |
+| | New build, on | 785 req/s | 3.82 s | 23.6 ms |
+| 100k × 100k, 10,000 requests | Main (greedy) | 1,289 req/s | 7.76 s | 22.3 ms |
+| | New build, off | 1,263 req/s | 7.92 s | 22.5 ms |
+| | New build, on | 574 req/s | 17.42 s | 30.3 ms |
+
+Figures are medians of three runs per mode and workload on an Apple M3 with
+16 GiB RAM: in-memory storage, USearch, 10 concurrent clients, and identical
+starting cache bytes. Request run time excludes server startup and shutdown.
+Startup time was essentially unchanged. All 117,000 requests completed without
+errors.
+
+With the feature off, the final pairings matched main in every run. With it on,
+there were only one and six displacements per run at 10k and 100k, respectively.
+The cost isn't limited to completed displacements: live mutations run one at a
+time and automatic proposals are checked in both directions. The benchmark did
+not measure how much cost came from each, or whether the resulting matches were
+more accurate.
+
 ## Low-encoding-ratio performance
 
 When fewer requests require encoding (40% instead of 80%), throughput
@@ -255,7 +283,7 @@ degradation, no scoring drift, and zero errors.
 
 ### Dashboard
 
-![Soak test dashboard](../benchmarks/soak/10kx10k_usearch/soak_dashboard.png)
+![Soak test dashboard](img/soak_dashboard.png)
 
 All four charts show near-ideal behaviour:
 

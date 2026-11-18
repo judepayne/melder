@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use tracing::info_span;
 
 use crate::config::{Config, MatchMethod};
+use crate::error::StoreError;
 use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::scoring;
@@ -83,8 +84,50 @@ pub fn score_pool(
     ann_candidates: usize,
     top_n: usize,
 ) -> Vec<MatchResult> {
+    score_pool_internal(query, pool, config, ann_candidates, top_n, &[], false)
+        .expect("lenient scoring does not propagate store errors")
+}
+
+/// Score the ordinary candidate union plus caller-validated verification IDs.
+///
+/// The caller supplies at most two verification IDs, validates current vectors,
+/// and provides their normalized BM25 scores in `pool.bm25_scores_map` (absent
+/// hits mean zero). Verification IDs outside `blocked_ids` are ignored. All
+/// candidates share exclusion, scoring, ranking, gap and truncation handling;
+/// use `top_n = 0` to retain the entire union for verification.
+///
+/// Candidate record fetch errors are propagated instead of suppressed.
+pub fn score_pool_verified(
+    query: &ScoringQuery<'_>,
+    pool: &ScoringPool<'_>,
+    config: &Config,
+    ann_candidates: usize,
+    top_n: usize,
+    verification_ids: &[String],
+) -> Result<Vec<MatchResult>, StoreError> {
+    score_pool_internal(
+        query,
+        pool,
+        config,
+        ann_candidates,
+        top_n,
+        verification_ids,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score_pool_internal(
+    query: &ScoringQuery<'_>,
+    pool: &ScoringPool<'_>,
+    config: &Config,
+    ann_candidates: usize,
+    top_n: usize,
+    verification_ids: &[String],
+    strict: bool,
+) -> Result<Vec<MatchResult>, StoreError> {
     if pool.blocked_ids.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let has_embeddings = !query.combined_vec.is_empty();
@@ -109,7 +152,7 @@ pub fn score_pool(
     // ANN candidates (empty if no embedding fields configured).
     let ann_cands = {
         let _span = info_span!("ann_candidates").entered();
-        candidates::select_candidates(
+        candidates::select_candidates_checked(
             query.combined_vec,
             ann_candidates,
             pool.combined_index,
@@ -119,7 +162,8 @@ pub fn score_pool(
             query.record,
             query.side,
             &config.vector_backend,
-        )
+            strict,
+        )?
     };
 
     // --- Stage 3: Union candidates ---
@@ -129,13 +173,18 @@ pub fn score_pool(
     let ann_id_set: std::collections::HashSet<&str> =
         ann_cands.iter().map(|c| c.id.as_str()).collect();
 
-    // Collect non-ANN candidate IDs (BM25 + synonym), deduplicated.
+    // Collect non-ANN candidate IDs (BM25 + synonym + verification), deduplicated.
+    // Only caller-validated verification IDs within the blocking pool may be added.
+    let verified_ids = verification_ids
+        .iter()
+        .filter(|id| pool.blocked_ids.contains(id));
     let mut extra_ids: Vec<String> = Vec::new();
     let mut extra_id_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     for id in pool
         .bm25_candidate_ids
         .iter()
         .chain(pool.synonym_candidate_ids.iter())
+        .chain(verified_ids)
     {
         if !ann_id_set.contains(id.as_str()) && extra_id_set.insert(id.clone()) {
             extra_ids.push(id.clone());
@@ -146,24 +195,18 @@ pub fn score_pool(
     let extra_cands: Vec<candidates::Candidate> = if extra_ids.is_empty() {
         Vec::new()
     } else {
-        let records = if scoring_fields.is_empty() {
-            match pool.store.get_many(pool.side, &extra_ids) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to fetch extra candidate records");
-                    Vec::new()
-                }
-            }
+        let fetched = if scoring_fields.is_empty() {
+            pool.store.get_many(pool.side, &extra_ids)
         } else {
-            match pool
-                .store
+            pool.store
                 .get_many_fields(pool.side, &extra_ids, &scoring_fields)
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to fetch extra candidate records");
-                    Vec::new()
-                }
+        };
+        let records = match fetched {
+            Ok(records) => records,
+            Err(e) if strict => return Err(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to fetch extra candidate records");
+                Vec::new()
             }
         };
         records
@@ -178,7 +221,7 @@ pub fn score_pool(
 
     // Build the full union: ANN candidates + extra candidates (BM25/synonym).
     if ann_cands.is_empty() && extra_cands.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     // Self-match exclusion: when query_side == pool_side (enroll mode),
@@ -258,7 +301,7 @@ pub fn score_pool(
         }
     }
 
-    results
+    Ok(results)
 }
 
 /// Score a single candidate through full per-field scoring.
@@ -664,6 +707,7 @@ thresholds:
   review_floor: 0.60
 output:
   csv_dir_path: /tmp/test/output
+vector_backend: flat
 "#
         );
         // Use load pipeline: parse → defaults → validate → derive.
@@ -947,6 +991,227 @@ output:
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn verified_union_is_deduplicated_before_gap_and_truncation() {
+        let store = make_store();
+        let idx = FlatVectorDB::new(2);
+        let record = make_record(&[("name", "Acme")]);
+        for id in ["a1", "a2"] {
+            store
+                .insert(Side::A, id, &record)
+                .expect("test record should insert");
+        }
+        idx.upsert("a1", &[1.0, 0.0], &record, Side::A)
+            .expect("test vector should insert");
+        idx.upsert("a2", &[0.0, 1.0], &record, Side::A)
+            .expect("test vector should insert");
+        let mut config = make_config_exact("name", "name");
+        config.vector_backend = "flat".into();
+        config.thresholds.min_score_gap = Some(0.1);
+        let ids = vec!["a1".into(), "a2".into()];
+        let scores = HashMap::new();
+        let exclusions = crate::matching::exclusions::Exclusions::new();
+        let query = ScoringQuery {
+            id: "query",
+            record: &record,
+            side: Side::B,
+            combined_vec: &[1.0, 0.0],
+        };
+        let pool = ScoringPool {
+            store: &store,
+            side: Side::A,
+            combined_index: Some(&idx),
+            blocked_ids: &ids,
+            bm25_candidate_ids: &ids[..1],
+            bm25_scores_map: &scores,
+            synonym_candidate_ids: &ids[..1],
+            synonym_dictionary: None,
+            exclusions: &exclusions,
+        };
+        let ordinary = score_pool(&query, &pool, &config, 1, 0);
+        assert_eq!(ordinary.len(), 1, "retrieval limit must stay unchanged");
+        assert_eq!(ordinary[0].classification, Classification::Auto);
+        let empty_verified = score_pool_verified(&query, &pool, &config, 1, 0, &[])
+            .expect("empty verification should score");
+        assert_eq!(empty_verified[0].score, ordinary[0].score);
+        assert_eq!(empty_verified[0].classification, ordinary[0].classification);
+
+        for verification in [ids.clone(), vec!["a2".into(), "a2".into()]] {
+            for top_n in [0, 1] {
+                let results = score_pool_verified(&query, &pool, &config, 1, top_n, &verification)
+                    .expect("verification should score");
+                assert_eq!(results.len(), if top_n == 0 { 2 } else { 1 });
+                assert_eq!(results[0].matched_id, "a1", "ties use ID order");
+                assert_eq!(results[0].rank, Some(1));
+                assert_eq!(
+                    results[0].classification,
+                    Classification::Review,
+                    "verification runner-up must affect gap even with top_n=1",
+                );
+                assert_eq!(results[0].reason.as_deref(), Some("downgraded"));
+                if top_n == 0 {
+                    assert_eq!(results[1].matched_id, "a2");
+                    assert_eq!(results[1].rank, Some(2));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn verified_ids_respect_blocking_exclusions_and_self_filter() {
+        let store = make_store();
+        let record = make_record(&[("name", "Acme")]);
+        for id in ["query", "excluded", "outside", "allowed"] {
+            store
+                .insert(Side::A, id, &record)
+                .expect("test record should insert");
+        }
+        let config = make_config_exact("name", "name");
+        let ids = vec!["query".into(), "excluded".into(), "allowed".into()];
+        let scores = HashMap::new();
+        let exclusions = crate::matching::exclusions::Exclusions::new();
+        exclusions.add("query", "excluded");
+        let query = ScoringQuery {
+            id: "query",
+            record: &record,
+            side: Side::A,
+            combined_vec: &[],
+        };
+        let mut pool = ScoringPool {
+            store: &store,
+            side: Side::A,
+            combined_index: None,
+            blocked_ids: &ids,
+            bm25_candidate_ids: &[],
+            bm25_scores_map: &scores,
+            synonym_candidate_ids: &[],
+            synonym_dictionary: None,
+            exclusions: &exclusions,
+        };
+        for verification in [
+            vec!["query".into(), "excluded".into()],
+            vec!["outside".into(), "outside".into()],
+        ] {
+            let results = score_pool_verified(&query, &pool, &config, 1, 0, &verification)
+                .expect("filtered verification should succeed");
+            assert!(results.is_empty(), "ineligible IDs must never be scored");
+        }
+        let verification = vec!["allowed".into()];
+        assert_eq!(
+            score_pool_verified(&query, &pool, &config, 1, 0, &verification)
+                .expect("eligible verification should score")
+                .len(),
+            1,
+            "verification can add an otherwise unretrieved candidate",
+        );
+        pool.blocked_ids = &[];
+        assert!(
+            score_pool_verified(&query, &pool, &config, 1, 0, &verification)
+                .expect("empty block should succeed")
+                .is_empty(),
+            "verification cannot bypass an empty block",
+        );
+    }
+
+    #[test]
+    fn verified_bm25_uses_supplied_scores_and_missing_hits_are_zero() {
+        let store = make_store();
+        let record = Record::new();
+        let ids = vec!["scored".to_owned(), "zero".to_owned()];
+        for id in &ids {
+            store
+                .insert(Side::A, id, &record)
+                .expect("test record should insert");
+        }
+        let mut config = make_config_exact("name", "name");
+        config.match_fields[0].method = MatchMethod::Bm25;
+        let scores = HashMap::from([("scored".into(), 0.93)]);
+        let exclusions = crate::matching::exclusions::Exclusions::new();
+        let query = ScoringQuery {
+            id: "query",
+            record: &record,
+            side: Side::B,
+            combined_vec: &[],
+        };
+        let pool = ScoringPool {
+            store: &store,
+            side: Side::A,
+            combined_index: None,
+            blocked_ids: &ids,
+            bm25_candidate_ids: &[],
+            bm25_scores_map: &scores,
+            synonym_candidate_ids: &[],
+            synonym_dictionary: None,
+            exclusions: &exclusions,
+        };
+        let results = score_pool_verified(&query, &pool, &config, 1, 0, &ids)
+            .expect("BM25 verification should score");
+        assert_eq!(results.len(), 2, "zero BM25 hit must not omit the pair");
+        assert_eq!(results[0].matched_id, "scored");
+        assert!(
+            (results[0].score - 0.93).abs() < 1e-9,
+            "use normalized BM25"
+        );
+        assert_eq!(results[1].score, 0.0, "absent hit means zero");
+    }
+
+    #[test]
+    fn verified_propagates_extra_fetch_errors_but_greedy_stays_lenient() {
+        let dir = tempfile::tempdir().expect("test directory should create");
+        let columns = vec!["name".into()];
+        let (store, _, writer) = crate::store::sqlite::open_sqlite(
+            &dir.path().join("records.db"),
+            &BlockingConfig::default(),
+            None,
+            &columns,
+            &columns,
+        )
+        .expect("test store should open");
+        writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute_batch("DROP TABLE a_records")
+            .expect("test table should drop to inject read failure");
+        let record = Record::new();
+        let ids = vec!["unreadable".into()];
+        let scores = HashMap::new();
+        let exclusions = crate::matching::exclusions::Exclusions::new();
+        let query = ScoringQuery {
+            id: "query",
+            record: &record,
+            side: Side::B,
+            combined_vec: &[],
+        };
+        // Cover both full-record and projected-field extra fetches, and
+        // failures from every extra-candidate source, even with no verification.
+        for method in [MatchMethod::Exact, MatchMethod::Bm25] {
+            let mut config = make_config_exact("name", "name");
+            config.match_fields[0].method = method;
+            for source in 0..3 {
+                let pool = ScoringPool {
+                    store: &store,
+                    side: Side::A,
+                    combined_index: None,
+                    blocked_ids: &ids,
+                    bm25_candidate_ids: if source == 0 { &ids } else { &[] },
+                    bm25_scores_map: &scores,
+                    synonym_candidate_ids: if source == 1 { &ids } else { &[] },
+                    synonym_dictionary: None,
+                    exclusions: &exclusions,
+                };
+                let verification = if source == 2 { ids.as_slice() } else { &[] };
+                assert!(
+                    score_pool_verified(&query, &pool, &config, 1, 0, verification).is_err(),
+                    "strict extra fetch failure must propagate: source={source}",
+                );
+                assert!(
+                    score_pool(&query, &pool, &config, 1, 0).is_empty(),
+                    "greedy fetch failure must retain its lenient behavior",
+                );
             }
         }
     }

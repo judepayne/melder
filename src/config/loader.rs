@@ -84,10 +84,10 @@ mod tests {
     #[test]
     fn load_bench_live() {
         let cfg = load_config(Path::new(
-            "benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml",
+            "benchmarks/live/10kx10k_inject3k_flat/warm/config.yaml",
         ))
         .unwrap();
-        assert_eq!(cfg.job.name, "live_10kx10k_usearch_warm");
+        assert_eq!(cfg.job.name, "live_10kx10k_flat_warm");
         assert_eq!(cfg.performance.encoder_pool_size, Some(4));
         assert_eq!(cfg.top_n, Some(5));
         assert_eq!(cfg.live.crossmap_flush_secs, Some(5));
@@ -107,15 +107,13 @@ mod tests {
         assert_eq!(cfg.performance.encoder_pool_size, Some(2));
     }
 
+    #[cfg(feature = "usearch")]
     #[test]
     fn enroll_full_pipeline() {
         let cfg = load_enroll_config(Path::new(
             "benchmarks/enroll/10kx10k_enroll3k_scoring_log/config.yaml",
-        ));
-        // If the fixture exists, validate the full pipeline runs.
-        // If not (e.g. in CI without benchmark data), skip silently.
-        if let Ok(cfg) = cfg {
-            assert!(cfg.is_enroll_mode());
-        }
+        ))
+        .expect("load the checked-in USearch enroll configuration");
+        assert!(cfg.is_enroll_mode());
     }
 }

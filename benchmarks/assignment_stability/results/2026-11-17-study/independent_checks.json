@@ -1,0 +1,38 @@
+{
+  "method": "Per-record frequency identity, independent of pairwise distance matrices",
+  "bootstrap_samples_checked_per_mode": [
+    0,
+    1,
+    2,
+    9,
+    99,
+    499,
+    999,
+    1999,
+    2999,
+    4999
+  ],
+  "modes": {
+    "shuffle": {
+      "paired_runs": 100,
+      "within_binary_pair_count": 4950,
+      "independent_mean_changed_b": {
+        "baseline": 462.37838383838385,
+        "experimental": 455.7076767676768
+      },
+      "independent_basic_ci_matches": true,
+      "weighted_frequency_bootstrap_matches": true
+    },
+    "fixed": {
+      "paired_runs": 50,
+      "within_binary_pair_count": 1225,
+      "independent_mean_changed_b": {
+        "baseline": 462.810612244898,
+        "experimental": 455.86448979591836
+      },
+      "independent_basic_ci_matches": true,
+      "weighted_frequency_bootstrap_matches": true
+    }
+  },
+  "script_sha256": "e7d60f55363116c750e7b510c630c5cc4188688e26e149051a2d9ebe99fb792d"
+}

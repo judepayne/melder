@@ -34,6 +34,9 @@ jobs:
       - name: cargo test
         run: cargo test --features usearch,parquet-format,simd -- --test-threads=1
 
+      - name: Test the flat-only build
+        run: cargo test --no-default-features -- --test-threads=1
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest

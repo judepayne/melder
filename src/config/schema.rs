@@ -468,7 +468,56 @@ fn default_scoring_log_compression() -> String {
     "zstd".to_string()
 }
 
-/// Batch-mode SQLite configuration.
+/// Live assignment policy. Greedy preserves the default claim behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveAssignmentStrategy {
+    #[default]
+    Greedy,
+    DeferredAcceptance,
+}
+
+/// Live assignment settings. The budget counts successful displacements only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveAssignmentConfig {
+    #[serde(default)]
+    pub strategy: LiveAssignmentStrategy,
+    /// Zero permits reciprocal free matches but forbids displacement.
+    #[serde(default = "default_max_displacements")]
+    pub max_displacements: usize,
+}
+
+impl Default for LiveAssignmentConfig {
+    fn default() -> Self {
+        Self {
+            strategy: LiveAssignmentStrategy::Greedy,
+            max_displacements: default_max_displacements(),
+        }
+    }
+}
+
+fn default_max_displacements() -> usize {
+    32
+}
+
+/// Batch assignment policy. Maximum-weight assignment is not yet available.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchAssignmentStrategy {
+    #[default]
+    Greedy,
+}
+
+/// Batch assignment settings, reserved for future optimization strategies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchAssignmentConfig {
+    #[serde(default)]
+    pub strategy: BatchAssignmentStrategy,
+}
+
+/// Batch-mode assignment and SQLite configuration.
 ///
 /// When `db_path` is set, `meld run` stores records in SQLite instead of
 /// in-memory DashMap. The database is created fresh each run and deleted
@@ -476,6 +525,8 @@ fn default_scoring_log_compression() -> String {
 /// available RAM (e.g. 55M records).
 #[derive(Debug, Deserialize, Default)]
 pub struct BatchConfig {
+    #[serde(default)]
+    pub assignment: BatchAssignmentConfig,
     /// Path to the SQLite database file for batch mode.
     ///
     /// When set, batch mode uses `SqliteStore` instead of `MemoryStore`.
@@ -497,6 +548,8 @@ pub struct BatchConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct LiveConfig {
+    #[serde(default)]
+    pub assignment: LiveAssignmentConfig,
     #[serde(default)]
     pub match_log_path: Option<String>,
     /// How often dirty CrossMap state is flushed to disk (seconds). Default 5.
@@ -685,6 +738,116 @@ pub fn default_operator() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assignment_defaults() {
+        let live: LiveConfig = serde_yaml::from_str("{}").expect("valid empty live config");
+        let batch: BatchConfig = serde_yaml::from_str("{}").expect("valid empty batch config");
+        assert_eq!(
+            live.assignment,
+            LiveAssignmentConfig::default(),
+            "omitted live assignment"
+        );
+        assert_eq!(
+            live.assignment.strategy,
+            LiveAssignmentStrategy::Greedy,
+            "live defaults to greedy"
+        );
+        assert_eq!(
+            live.assignment.max_displacements, 32,
+            "default budget is 32"
+        );
+        assert_eq!(
+            batch.assignment.strategy,
+            BatchAssignmentStrategy::Greedy,
+            "batch defaults to greedy"
+        );
+        for yaml in ["{}", "strategy: greedy"] {
+            let config: LiveAssignmentConfig =
+                serde_yaml::from_str(yaml).expect("valid live assignment");
+            assert_eq!(
+                config,
+                LiveAssignmentConfig::default(),
+                "defaults for {yaml}"
+            );
+        }
+        let batch: BatchAssignmentConfig =
+            serde_yaml::from_str("{}").expect("valid empty assignment");
+        assert_eq!(
+            batch,
+            BatchAssignmentConfig::default(),
+            "empty batch assignment defaults"
+        );
+    }
+
+    #[test]
+    fn live_assignment_displacement_budget() {
+        for (budget, expected) in [
+            ("", 32),
+            ("max_displacements: 0", 0),
+            ("max_displacements: 1", 1),
+            ("max_displacements: 64", 64),
+        ] {
+            let yaml = format!("assignment:\n  strategy: deferred_acceptance\n  {budget}\n");
+            let live: LiveConfig = serde_yaml::from_str(&yaml).expect("valid live assignment");
+            assert_eq!(
+                live.assignment.strategy,
+                LiveAssignmentStrategy::DeferredAcceptance,
+                "snake_case strategy accepted"
+            );
+            assert_eq!(
+                live.assignment.max_displacements, expected,
+                "budget for {yaml}"
+            );
+        }
+    }
+
+    #[test]
+    fn assignment_rejects_invalid_values() {
+        for strategy in [
+            "unknown",
+            "DeferredAcceptance",
+            "deferred-acceptance",
+            "maximum_weight",
+        ] {
+            let yaml = format!("strategy: {strategy}");
+            assert!(
+                serde_yaml::from_str::<LiveAssignmentConfig>(&yaml).is_err(),
+                "reject live strategy {strategy}"
+            );
+        }
+        for strategy in ["unknown", "Greedy", "maximum_weight", "deferred_acceptance"] {
+            let yaml = format!("assignment: {{ strategy: {strategy} }}");
+            assert!(
+                serde_yaml::from_str::<BatchConfig>(&yaml).is_err(),
+                "reject unavailable batch strategy {strategy}"
+            );
+        }
+        for budget in ["-1", "1.5", "18446744073709551616", "null", "unlimited"] {
+            let yaml = format!("max_displacements: {budget}");
+            assert!(
+                serde_yaml::from_str::<LiveAssignmentConfig>(&yaml).is_err(),
+                "reject invalid budget {budget}"
+            );
+        }
+        for yaml in ["stratgey: deferred_acceptance", "max_displacement: 1"] {
+            assert!(
+                serde_yaml::from_str::<LiveAssignmentConfig>(yaml).is_err(),
+                "reject misspelled live setting {yaml}"
+            );
+        }
+        assert!(
+            serde_yaml::from_str::<BatchAssignmentConfig>("stratgey: maximum_weight").is_err(),
+            "do not silently ignore misspelled batch strategy"
+        );
+        let batch: BatchConfig = serde_yaml::from_str("assignment: { strategy: greedy }")
+            .expect("greedy batch assignment is available");
+        assert_eq!(
+            batch.assignment.strategy,
+            BatchAssignmentStrategy::Greedy,
+            "explicit greedy accepted"
+        );
+    }
 
     #[test]
     fn deserialize_bench_live_yaml() {

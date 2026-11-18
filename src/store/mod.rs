@@ -169,6 +169,14 @@ pub trait RecordStore: Send + Sync {
     /// Remove a common_id mapping.
     fn common_id_remove(&self, side: Side, common_id: &str) -> Result<(), StoreError>;
 
+    /// Remove a common ID only when the specified record still owns its mapping.
+    fn common_id_remove_owned(
+        &self,
+        side: Side,
+        common_id: &str,
+        record_id: &str,
+    ) -> Result<(), StoreError>;
+
     // --- Review persistence ---
 
     /// Persist a review entry (write-through for SQLite, no-op for memory).
@@ -181,8 +189,11 @@ pub trait RecordStore: Send + Sync {
         score: f64,
     ) -> Result<(), StoreError>;
 
-    /// Remove review entries where `id` or `candidate_id` equals the given ID.
-    fn remove_reviews_for_id(&self, id: &str) -> Result<(), StoreError>;
+    /// Remove reviews whose query is exactly `(side, id)`, preserving candidate-only matches.
+    fn remove_query_reviews(&self, side: Side, id: &str) -> Result<(), StoreError>;
+
+    /// Remove reviews involving the specified endpoint, as owner or candidate.
+    fn remove_reviews_for_id(&self, side: Side, id: &str) -> Result<(), StoreError>;
 
     /// Remove review entries involving either of the two IDs.
     fn remove_reviews_for_pair(&self, a_id: &str, b_id: &str) -> Result<(), StoreError>;

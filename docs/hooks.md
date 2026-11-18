@@ -54,11 +54,29 @@ or when a match is manually confirmed via `POST /crossmap/confirm`.
 
 `source` is `"auto"` for threshold-based matches or `"manual"` for API
 confirms. Manual confirms have `score: 0.0` and no `field_scores`.
+With YAML opt-in `live.assignment.strategy: deferred_acceptance`, each committed
+free acceptance emits one `on_confirm` with `source: "deferred_acceptance"`.
+A displacement emits an `on_break` for the old pair, then one `on_confirm` for
+the replacement. Its `score` and `field_scores` use canonical B→A scoring;
+the `assignment_delta` WAL event retains both directional scores and the
+receiver's prior score. Hooks do not include that complete audit payload.
+
+A displaced endpoint can rematch in a later synchronous step, producing another
+confirm, or remain unmatched/reviewable. Do not assume every break has two
+replacement confirms or that a request is one transaction. Events describe
+completed steps, not necessarily the final state after the whole chain/bulk.
+Hook delivery remains best-effort and can be dropped; use WAL and final CrossMap
+membership for audit/reconciliation, not hooks alone. Default `greedy` performs
+no displacement, and there is no background assignment worker. See
+[Live Mode](live-mode.md#live-assignment-policy).
 
 ### `on_review` — pair enters review queue
 
 Fired when a record's best match falls in the review band
-(`review_floor` <= score < `auto_match`).
+(`review_floor` <= score < `auto_match`). With deferred acceptance, an unmatched
+endpoint can also enter review with an above-threshold candidate rejected by
+assignment competition or reciprocal/ambiguity safeguards; this is not an
+accepted link.
 
 ```json
 {
@@ -90,8 +108,9 @@ candidates.
 
 ### `on_break` — confirmed match broken
 
-Fired when a previously confirmed match is broken via
-`POST /crossmap/break`.
+Fired when a previously confirmed match is broken, including via
+`POST /crossmap/break` or a committed deferred-acceptance displacement.
+`on_break` has no `source` field.
 
 ```json
 {

@@ -1,0 +1,70 @@
+job:
+  name: assignment_competition
+  description: Calibrated five-candidate competition on a 10k background
+
+datasets:
+  a:
+    path: __DATA_A__
+    id_field: entity_id
+    format: csv
+  b:
+    path: __DATA_B__
+    id_field: counterparty_id
+    format: csv
+
+cross_map:
+  backend: local
+  path: __CROSSMAP__
+  a_id_field: entity_id
+  b_id_field: counterparty_id
+
+exact_prefilter:
+  enabled: false
+
+embeddings:
+  model: all-MiniLM-L6-v2
+  a_cache_dir: __CACHE__
+  b_cache_dir: __CACHE__
+
+blocking:
+  enabled: true
+  operator: and
+  fields:
+    - field_a: country_code
+      field_b: domicile
+    - field_a: competition_group
+      field_b: competition_group
+
+match_fields:
+  - field_a: legal_name
+    field_b: counterparty_name
+    method: embedding
+    weight: 0.55
+  - field_a: short_name
+    field_b: counterparty_name
+    method: fuzzy
+    scorer: partial_ratio
+    weight: 0.20
+  - field_a: country_code
+    field_b: domicile
+    method: exact
+    weight: 0.20
+  - field_a: lei
+    field_b: lei_code
+    method: exact
+    weight: 0.05
+
+thresholds:
+  auto_match: 0.85
+  review_floor: 0.60
+
+output:
+  csv_dir_path: __OUTPUT__
+
+performance:
+  encoder_pool_size: 4
+  vector_index_mode: load
+
+vector_backend: usearch
+ann_candidates: 100
+top_n: __TOP_N__

@@ -17,11 +17,16 @@ use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::live::{LiveMatchState, ReviewEntry, review_queue_key};
 use crate::state::match_log::MatchLogEvent;
 
+mod assignment;
+#[cfg(test)]
+mod assignment_tests;
+
 /// Response types for API serialization.
 pub mod response {
     use serde::Serialize;
 
     use crate::models::Side;
+    use crate::state::match_log::{AssignmentDelta, AssignmentEndpoint};
 
     #[derive(Debug, Serialize)]
     pub struct MatchEntry {
@@ -49,6 +54,16 @@ pub mod response {
     }
 
     #[derive(Debug, Serialize)]
+    pub struct AssignmentSummary {
+        pub strategy: &'static str,
+        pub displacements: usize,
+        pub limit_reached: bool,
+        pub changes: Vec<AssignmentDelta>,
+        pub unmatched: Vec<AssignmentEndpoint>,
+        pub partner: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
     pub struct UpsertResponse {
         pub status: String,
         pub id: String,
@@ -58,6 +73,8 @@ pub mod response {
         pub matches: Vec<MatchEntry>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub old_mapping: Option<OldMapping>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub assignment: Option<AssignmentSummary>,
     }
 
     #[derive(Debug, Serialize)]
@@ -115,6 +132,8 @@ pub mod response {
         pub side: Side,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         pub crossmap_broken: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub assignment: Option<AssignmentSummary>,
     }
 
     #[derive(Debug, Serialize)]
@@ -276,6 +295,7 @@ pub struct Session {
     hook_tx: Option<tokio::sync::mpsc::Sender<crate::hooks::HookEvent>>,
     /// Scoring log sender. `None` when scoring log is not enabled.
     scoring_log: Option<crate::output::scoring_log::ScoringLogSender>,
+    assignment: Option<assignment::LiveAssignmentState>,
     /// Cross-platform shutdown trigger. `admin_shutdown` notifies waiters on
     /// this; `start_server`'s graceful-shutdown future selects on it
     /// alongside `ctrl_c` / `SIGTERM`. Using a `Notify` (rather than a
@@ -291,6 +311,9 @@ impl Session {
         scoring_log: Option<crate::output::scoring_log::ScoringLogSender>,
     ) -> Self {
         let emb_specs = crate::vectordb::embedding_field_specs(&state.config);
+        let enabled = state.config.live.assignment.strategy
+            == crate::config::LiveAssignmentStrategy::DeferredAcceptance;
+        info!(strategy = ?state.config.live.assignment.strategy, max_displacements = state.config.live.assignment.max_displacements, "live assignment policy");
         Self {
             state,
             start_time: Instant::now(),
@@ -299,6 +322,7 @@ impl Session {
             emb_specs,
             hook_tx,
             scoring_log,
+            assignment: enabled.then(assignment::LiveAssignmentState::default),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -332,7 +356,16 @@ impl Session {
         }
 
         // Collect unmatched B IDs
-        let unmatched_b: Vec<String> = store.unmatched_ids(Side::B).unwrap_or_default();
+        let mut unmatched_b: Vec<String> = store.unmatched_ids(Side::B).unwrap_or_default();
+        if self.assignment.is_some() {
+            let _guard = self.assignment_guard()?;
+            unmatched_b.sort_unstable();
+            for id in unmatched_b {
+                let seed = (Side::B, id);
+                self.reconcile_assignment(seed.clone(), vec![seed])?;
+            }
+            return Ok(());
+        }
         if unmatched_b.is_empty() {
             info!(
                 a_count,
@@ -547,6 +580,7 @@ impl Session {
         side: Side,
         record: Record,
     ) -> Result<UpsertResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
         let _span = info_span!("upsert_record").entered();
         let config = &self.state.config;
         let is_a_side = side == Side::A;
@@ -576,7 +610,12 @@ impl Session {
             }
         };
 
-        self.upsert_record_inner(side, record, needs_encoding, is_a_side)
+        let mut orphans = Vec::new();
+        let mut response = self
+            .upsert_record_inner(side, record, needs_encoding, is_a_side, &mut orphans, None)
+            .inspect_err(|e| self.assignment_failed(e))?;
+        self.finish_upsert_assignment(&mut response, orphans)?;
+        Ok(response)
     }
 
     /// Encode a record's embedding fields into a combined vector.
@@ -725,6 +764,8 @@ impl Session {
         record: Record,
         needs_encoding: bool,
         is_a_side: bool,
+        orphans: &mut Vec<assignment::Entity>,
+        prepared_vector: Option<Vec<f32>>,
     ) -> Result<UpsertResponse, SessionError> {
         let config = &self.state.config;
         let store = &self.state.store;
@@ -755,12 +796,16 @@ impl Session {
 
             // Clear stale review entries for this record (re-upsert
             // invalidates any prior review-band match).
-            self.state.drain_reviews_for_id(&id);
+            if self.assignment.is_some() {
+                self.clear_assignment_review(side, &id)?;
+            } else {
+                self.state.drain_reviews_for_id(side, &id)?;
+            }
 
             // Check crossmap — if matched, atomically read-and-remove the pair.
             let paired_id = match side {
-                Side::A => self.state.crossmap.take_a(&id),
-                Side::B => self.state.crossmap.take_b(&id),
+                Side::A => self.state.crossmap.take_a(&id)?,
+                Side::B => self.state.crossmap.take_b(&id)?,
             };
 
             if let Some(paired_id) = paired_id {
@@ -768,6 +813,10 @@ impl Session {
                     Side::A => (id.clone(), paired_id.clone()),
                     Side::B => (paired_id.clone(), id.clone()),
                 };
+                self.forget_assignment(&a_id, &b_id);
+                if self.assignment.is_some() {
+                    orphans.push((opp, paired_id));
+                }
                 // Add both back to unmatched
                 store.mark_unmatched(Side::A, &a_id)?;
                 store.mark_unmatched(Side::B, &b_id)?;
@@ -782,8 +831,15 @@ impl Session {
                 self.state.mark_crossmap_dirty();
             }
 
-            // Remove old record from blocking index
+            // Retire the old common ID without erasing a duplicate's newer entry.
             if let Some(old_rec) = store.get(side, &id)? {
+                let cid_field = match side {
+                    Side::A => config.datasets.a.common_id_field.as_deref(),
+                    Side::B => config.datasets.b.common_id_field.as_deref(),
+                };
+                if let Some(old_cid) = cid_field.and_then(|field| old_rec.get(field)) {
+                    store.common_id_remove_owned(side, old_cid.trim(), &id)?;
+                }
                 store.blocking_remove(side, &id, &old_rec)?;
             }
         }
@@ -914,6 +970,20 @@ impl Session {
             };
         }
 
+        if self.assignment.is_some()
+            && let Some(prepared) = prepared_vector
+        {
+            combined_vec = prepared;
+        }
+        // Install the updated vector before a canonical fast return in proposal mode.
+        if self.assignment.is_some()
+            && !combined_vec.is_empty()
+            && let Some(ref idx) = this_side.combined_index
+        {
+            idx.upsert(&id, &combined_vec, &record, side)
+                .map_err(|e| SessionError::Assignment(e.to_string()))?;
+        }
+
         // --- Common ID check (must be sequential — has side effects) ---
         if let Some(cid_field) = this_cid_field
             && let Some(cid_val) = record.get(cid_field)
@@ -922,7 +992,19 @@ impl Session {
             if !cid_val.is_empty() {
                 store.common_id_insert(side, cid_val, &id)?;
 
-                if let Some(opp_id) = store.common_id_lookup(opp, cid_val)? {
+                let opp_cid_field = match opp {
+                    Side::A => config.datasets.a.common_id_field.as_deref(),
+                    Side::B => config.datasets.b.common_id_field.as_deref(),
+                };
+                if let Some(opp_id) = store.common_id_lookup(opp, cid_val)?
+                    // An index entry alone is not canonical identity evidence.
+                    && store.get(opp, &opp_id)?.as_ref().is_some_and(|candidate| {
+                        opp_cid_field
+                            .and_then(|field| candidate.get(field))
+                            .is_some_and(|value| value.trim() == cid_val)
+                    })
+                    && self.can_confirm_canonical(side, &id, &opp_id)
+                {
                     let (a_id, b_id) = match side {
                         Side::A => (id.clone(), opp_id.clone()),
                         Side::B => (opp_id.clone(), id.clone()),
@@ -933,6 +1015,13 @@ impl Session {
                     // lock / transaction so the bijection cannot be corrupted
                     // by concurrent claim/confirm callers.
                     let outcome = self.state.crossmap.confirm(&a_id, &b_id)?;
+                    self.protect_assignment(&a_id, &b_id);
+                    if self.assignment.is_some() {
+                        self.clear_assignment_review(Side::A, &a_id)?;
+                        self.clear_assignment_review(Side::B, &b_id)?;
+                        orphans.extend(outcome.displaced_a.iter().map(|id| (Side::A, id.clone())));
+                        orphans.extend(outcome.displaced_b.iter().map(|id| (Side::B, id.clone())));
+                    }
                     if let Some(old_b) = outcome.displaced_b.as_deref() {
                         store.mark_unmatched(Side::B, old_b)?;
                     }
@@ -978,9 +1067,24 @@ impl Session {
                         from_crossmap: false,
                         matches: vec![match_entry],
                         old_mapping,
+                        assignment: None,
                     });
                 }
             }
+        }
+
+        if self.assignment.is_some() {
+            self.upsert_count.fetch_add(1, Ordering::Relaxed);
+            return Ok(UpsertResponse {
+                status: status.into(),
+                id,
+                side,
+                classification: "no_match".into(),
+                from_crossmap: false,
+                matches: vec![],
+                old_mapping,
+                assignment: None,
+            });
         }
 
         // --- Sequential tail (after parallel join) ---
@@ -1117,11 +1221,22 @@ impl Session {
             from_crossmap: false,
             matches,
             old_mapping,
+            assignment: None,
         })
     }
 
     /// Remove a record by ID. Breaks any crossmap pair, removes from all indices.
     pub fn remove_record(&self, side: Side, id: &str) -> Result<RemoveResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
+        self.remove_record_under_gate(side, id)
+            .inspect_err(|e| self.assignment_failed(e))
+    }
+
+    fn remove_record_under_gate(
+        &self,
+        side: Side,
+        id: &str,
+    ) -> Result<RemoveResponse, SessionError> {
         let store = &self.state.store;
         let opp = side.opposite();
 
@@ -1132,10 +1247,15 @@ impl Session {
 
         // Break any crossmap pair (atomic read+remove to avoid TOCTOU)
         let paired_id = match side {
-            Side::A => self.state.crossmap.take_a(id),
-            Side::B => self.state.crossmap.take_b(id),
+            Side::A => self.state.crossmap.take_a(id)?,
+            Side::B => self.state.crossmap.take_b(id)?,
         };
         let broken: Vec<String> = if let Some(ref pid) = paired_id {
+            let (a_id, b_id) = match side {
+                Side::A => (id, pid.as_str()),
+                Side::B => (pid.as_str(), id),
+            };
+            self.forget_assignment(a_id, b_id);
             store.mark_unmatched(opp, pid)?;
             self.state.mark_crossmap_dirty();
             vec![pid.clone()]
@@ -1144,7 +1264,7 @@ impl Session {
         };
 
         // Drain any review entries involving this record.
-        self.state.drain_reviews_for_id(id);
+        self.state.drain_reviews_for_id(side, id)?;
 
         // Remove from blocking index
         store.blocking_remove(side, id, &record)?;
@@ -1178,7 +1298,7 @@ impl Session {
         {
             let cid_val = cid_val.trim();
             if !cid_val.is_empty() {
-                store.common_id_remove(side, cid_val)?;
+                store.common_id_remove_owned(side, cid_val, id)?;
             }
         }
 
@@ -1191,16 +1311,45 @@ impl Session {
             id: id.to_string(),
         })?;
 
+        let assignment = if self.assignment.is_some() {
+            let seeds = paired_id.into_iter().map(|id| (opp, id)).collect();
+            Some(self.reconcile_assignment((side, id.into()), seeds)?.0)
+        } else {
+            None
+        };
         Ok(RemoveResponse {
             status: "removed".to_string(),
             id: id.to_string(),
             side,
             crossmap_broken: broken,
+            assignment,
         })
+    }
+
+    fn finish_upsert_assignment(
+        &self,
+        response: &mut UpsertResponse,
+        orphans: Vec<assignment::Entity>,
+    ) -> Result<(), SessionError> {
+        if self.assignment.is_none() {
+            return Ok(());
+        }
+        let root = (response.side, response.id.clone());
+        let seeds = std::iter::once(root.clone()).chain(orphans).collect();
+        let (summary, candidates) = self.reconcile_assignment(root, seeds)?;
+        response.classification = self
+            .assignment_classification(response.side, &response.id, summary.partner.as_deref())
+            .into();
+        if !candidates.is_empty() {
+            response.matches = build_match_entries(&candidates);
+        }
+        response.assignment = Some(summary);
+        Ok(())
     }
 
     /// Try matching a record without persisting it (read-only).
     pub fn try_match(&self, side: Side, record: Record) -> Result<MatchResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
         let config = &self.state.config;
         let is_a_side = side == Side::A;
         let id_field = match side {
@@ -1406,6 +1555,16 @@ impl Session {
     /// is broken and the old partner is marked unmatched before inserting
     /// the new pair. This preserves the bijection invariant (Constitution §3).
     pub fn confirm_match(&self, a_id: &str, b_id: &str) -> Result<ConfirmResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
+        self.confirm_match_under_gate(a_id, b_id)
+            .inspect_err(|e| self.assignment_failed(e))
+    }
+
+    fn confirm_match_under_gate(
+        &self,
+        a_id: &str,
+        b_id: &str,
+    ) -> Result<ConfirmResponse, SessionError> {
         let store = &self.state.store;
 
         // Validate both IDs exist
@@ -1425,6 +1584,7 @@ impl Session {
         // The returned outcome tells us which ids were displaced and need
         // their store-side `unmatched` flag updated.
         let outcome = self.state.crossmap.confirm(a_id, b_id)?;
+        self.protect_assignment(a_id, b_id);
         if let Some(old_b) = outcome.displaced_b.as_deref() {
             store.mark_unmatched(Side::B, old_b)?;
         }
@@ -1493,6 +1653,17 @@ impl Session {
 
     /// Break a crossmap pair.
     pub fn break_crossmap(&self, a_id: &str, b_id: &str) -> Result<BreakResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
+        self.break_crossmap_under_gate(a_id, b_id)
+            .inspect_err(|e| self.assignment_failed(e))
+    }
+
+    fn break_crossmap_under_gate(
+        &self,
+        a_id: &str,
+        b_id: &str,
+    ) -> Result<BreakResponse, SessionError> {
+        self.forget_assignment(a_id, b_id);
         let store = &self.state.store;
 
         // Atomically remove only if the exact pair still exists.
@@ -1533,6 +1704,13 @@ impl Session {
     /// is broken first. The pair is then added to the exclusions set and will
     /// never be scored or matched again (until unexcluded).
     pub fn exclude(&self, a_id: &str, b_id: &str) -> Result<ExcludeResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
+        self.exclude_under_gate(a_id, b_id)
+            .inspect_err(|e| self.assignment_failed(e))
+    }
+
+    fn exclude_under_gate(&self, a_id: &str, b_id: &str) -> Result<ExcludeResponse, SessionError> {
+        self.forget_assignment(a_id, b_id);
         let store = &self.state.store;
         let mut match_was_broken = false;
 
@@ -1588,6 +1766,16 @@ impl Session {
     /// After unexcluding, the pair can be matched again on the next upsert
     /// or try-match.
     pub fn unexclude(&self, a_id: &str, b_id: &str) -> Result<UnexcludeResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
+        self.unexclude_under_gate(a_id, b_id)
+            .inspect_err(|e| self.assignment_failed(e))
+    }
+
+    fn unexclude_under_gate(
+        &self,
+        a_id: &str,
+        b_id: &str,
+    ) -> Result<UnexcludeResponse, SessionError> {
         let was_excluded = self.state.exclusions.contains(a_id, b_id);
 
         if was_excluded {
@@ -1676,6 +1864,7 @@ impl Session {
         side: Side,
         records: Vec<Record>,
     ) -> Result<BatchUpsertResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
         if records.is_empty() {
             return Err(SessionError::BatchValidation {
                 message: "records array is empty".into(),
@@ -1700,6 +1889,7 @@ impl Session {
         };
         let this_side = self.state.side(side);
 
+        let mut enabled_vectors = Vec::<Vec<f32>>::new().into_iter();
         // 1. Extract record IDs up front
         let ids: Vec<String> = records
             .iter()
@@ -1734,22 +1924,47 @@ impl Session {
                 }
             }
 
-            // Store combined vecs in the combined index.
-            if let Some(ref idx) = this_side.combined_index {
-                for (i, rec_id) in ids.iter().enumerate() {
-                    let _ = idx.upsert(rec_id, &combined_vecs[i], &records[i], side);
+            // Proposal mode installs each encoded vector with its record below.
+            if self.assignment.is_none() {
+                if let Some(ref idx) = this_side.combined_index {
+                    for (i, rec_id) in ids.iter().enumerate() {
+                        let _ = idx.upsert(rec_id, &combined_vecs[i], &records[i], side);
+                    }
                 }
+            } else {
+                enabled_vectors = combined_vecs.into_iter();
             }
         }
 
-        // 3. Insert + score each record sequentially
+        // 3. Install records, then run proposals after the whole bulk is installed.
         let mut results = Vec::with_capacity(records.len());
+        let mut seed_lists = Vec::new();
         for (i, record) in records.into_iter().enumerate() {
             let record_id = ids[i].clone();
-            let resp = self.upsert_record_inner(side, record, false, side == Side::A);
+            let mut orphans = Vec::new();
+            let vector = enabled_vectors.next();
+            let resp = self.upsert_record_inner(
+                side,
+                record,
+                false,
+                side == Side::A,
+                &mut orphans,
+                vector,
+            );
             match resp {
-                Ok(r) => results.push(r),
+                Ok(r) => {
+                    if self.assignment.is_some() {
+                        seed_lists.push((results.len(), orphans));
+                    }
+                    results.push(r);
+                }
                 Err(e) => {
+                    self.assignment_failed(&e);
+                    if self.assignment.is_some()
+                        && !matches!(e, SessionError::MissingField { .. } | SessionError::EmptyId)
+                    {
+                        return Err(e);
+                    }
                     results.push(UpsertResponse {
                         status: format!("error: {}", e),
                         id: record_id,
@@ -1758,11 +1973,25 @@ impl Session {
                         from_crossmap: false,
                         matches: vec![],
                         old_mapping: None,
+                        assignment: None,
                     });
                 }
             }
         }
 
+        if self.assignment.is_some() {
+            for (i, orphans) in seed_lists {
+                self.finish_upsert_assignment(&mut results[i], orphans)?;
+            }
+            for response in &mut results {
+                if let Some(summary) = &mut response.assignment {
+                    self.refresh_assignment_summary(summary, side, &response.id);
+                    response.classification = self
+                        .assignment_classification(side, &response.id, summary.partner.as_deref())
+                        .into();
+                }
+            }
+        }
         Ok(BatchUpsertResponse { results })
     }
 
@@ -1775,6 +2004,7 @@ impl Session {
         side: Side,
         records: Vec<Record>,
     ) -> Result<BatchMatchResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
         if records.is_empty() {
             return Err(SessionError::BatchValidation {
                 message: "records array is empty".into(),
@@ -1868,6 +2098,7 @@ impl Session {
         side: Side,
         ids: Vec<String>,
     ) -> Result<BatchRemoveResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
         if ids.is_empty() {
             return Err(SessionError::BatchValidation {
                 message: "ids array is empty".into(),
@@ -1885,12 +2116,17 @@ impl Session {
 
         let mut results = Vec::with_capacity(ids.len());
         for id in &ids {
-            match self.remove_record(side, id) {
+            match self
+                .remove_record_under_gate(side, id)
+                .inspect_err(|e| self.assignment_failed(e))
+            {
                 Ok(r) => results.push(r),
                 Err(e) => {
-                    // Surface the actual error rather than masking store/IO
-                    // errors as "not_found". NotFound is a legitimate status;
-                    // other errors indicate infrastructure problems.
+                    // The gate was checked once before the loop. Never use it
+                    // to continue other deletions after a proposal has failed.
+                    if self.assignment.is_some() && !matches!(e, SessionError::NotFound { .. }) {
+                        return Err(e);
+                    }
                     let status = match &e {
                         SessionError::NotFound { .. } => "not_found".to_string(),
                         other => format!("error: {}", other),
@@ -1900,6 +2136,7 @@ impl Session {
                         id: id.clone(),
                         side,
                         crossmap_broken: vec![],
+                        assignment: None,
                     });
                 }
             }

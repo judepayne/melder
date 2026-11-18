@@ -1,0 +1,4 @@
+# Local dataset copies and regenerable large run artifacts.
+/data/
+/artifacts/
+__pycache__/

@@ -50,10 +50,40 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         process::exit(1);
     }
 
+    // SQLite is authoritative: never substitute a possibly incomplete WAL.
+    if let Some(db_path) = cfg
+        .live
+        .db_path
+        .as_deref()
+        .map(Path::new)
+        .filter(|p| p.exists())
+    {
+        export_sqlite(&cfg, db_path, out_dir);
+        return;
+    }
+
     // Try the new build pipeline if a match log path is configured.
     // Also produce a SQLite DB if output.db_path is set.
     if let Some(ref ml_path) = cfg.live.match_log_path {
         let ml = std::path::Path::new(ml_path);
+        let events = MatchLog::replay(ml).unwrap_or_else(|e| {
+            eprintln!("WAL replay failed: {}", e);
+            process::exit(1);
+        });
+        let has_assignment = events
+            .iter()
+            .any(|event| matches!(event, MatchLogEvent::AssignmentDelta(_)));
+        let input = if has_assignment {
+            match load_build_input(&cfg) {
+                Ok(input) => input,
+                Err(e) => {
+                    eprintln!("Failed to load export snapshot: {}", e);
+                    process::exit(1);
+                }
+            }
+        } else {
+            crate::output::build::BuildInput::default()
+        };
         let manifest = crate::output::OutputManifest::from_config(&cfg);
         let parquet_dir = cfg.output.parquet_dir_path.as_deref().map(Path::new);
         let db_path = cfg.output.db_path.as_deref().map(Path::new);
@@ -70,13 +100,14 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         } else {
             None
         };
-        match crate::output::build_outputs(
+        match crate::output::build::build_outputs_with_input(
             ml,
             sl_path.as_deref(),
             Some(out_dir),
             parquet_dir,
             db_path,
             &manifest,
+            input,
         ) {
             Ok(report) => {
                 println!("Export complete (build pipeline):");
@@ -89,13 +120,16 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
                     println!("  database:          {}", db.display());
                 }
                 println!("  elapsed:           {:.1}s", report.elapsed_secs);
+                // Retain the legacy four-CSV interface for assignment exports
+                // which previously used only the memory exporter.
+                if has_assignment && parquet_dir.is_none() && db_path.is_none() {
+                    export_memory(&cfg, out_dir);
+                }
                 return;
             }
             Err(e) => {
-                eprintln!(
-                    "Warning: build pipeline failed ({}), falling back to legacy export",
-                    e
-                );
+                eprintln!("Export failed: {}", e);
+                process::exit(1);
             }
         }
     }
@@ -115,10 +149,44 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
     }
 }
 
+fn load_build_input(
+    cfg: &Config,
+) -> Result<crate::output::build::BuildInput, Box<dyn std::error::Error>> {
+    let (a_records, _) = crate::data::load_dataset(
+        Path::new(&cfg.datasets.a.path),
+        &cfg.datasets.a.id_field,
+        &cfg.required_fields_a,
+        cfg.datasets.a.format.as_deref(),
+    )?;
+    let (b_records, _) = crate::data::load_dataset(
+        Path::new(&cfg.datasets.b.path),
+        &cfg.datasets.b.id_field,
+        &cfg.required_fields_b,
+        cfg.datasets.b.format.as_deref(),
+    )?;
+    let crossmap_path = Path::new(cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv"));
+    let snapshot_pairs = if crossmap_path.exists() {
+        crate::crossmap::MemoryCrossMap::load(
+            crossmap_path,
+            &cfg.cross_map.a_id_field,
+            &cfg.cross_map.b_id_field,
+        )?
+        .pairs()
+    } else {
+        Vec::new()
+    };
+    Ok(crate::output::build::BuildInput {
+        a_records,
+        b_records,
+        snapshot_pairs,
+        current_reviews: None,
+    })
+}
+
 // --- SQLite path -------------------------------------------------------------
 
 fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
-    let conn = match rusqlite::Connection::open(db_path) {
+    let mut database = match rusqlite::Connection::open(db_path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
@@ -129,6 +197,14 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
             process::exit(1);
         }
     };
+
+    // One read transaction keeps all four CSVs on the same committed snapshot.
+    // Assignment membership commits before derived flags/reviews, so export must
+    // use CrossMap directly rather than requiring a server restart to repair them.
+    let conn = database.transaction().unwrap_or_else(|e| {
+        eprintln!("Failed to begin SQLite export snapshot: {e}");
+        process::exit(1);
+    });
 
     // results.csv — confirmed crossmap pairs.
     let pairs: Vec<(String, String)> = {
@@ -156,9 +232,14 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
 
     // review.csv — pending review-band matches.
     let reviews: Vec<ReviewRow> = {
-        let mut stmt = match conn
-            .prepare("SELECT id, side, candidate_id, score FROM reviews ORDER BY score DESC")
-        {
+        let mut stmt = match conn.prepare(
+            "SELECT id, side, candidate_id, score FROM reviews r \
+                 WHERE (r.side = 'a' AND NOT EXISTS \
+                    (SELECT 1 FROM crossmap c WHERE c.a_id = r.id)) \
+                    OR (r.side = 'b' AND NOT EXISTS \
+                    (SELECT 1 FROM crossmap c WHERE c.b_id = r.id)) \
+                 ORDER BY score DESC",
+        ) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to query reviews: {}", e);
@@ -251,10 +332,9 @@ fn query_unmatched(conn: &rusqlite::Connection, side: &str) -> Vec<(String, Reco
     };
 
     let sql = format!(
-        "SELECT {} FROM {}_records r \
-         INNER JOIN {}_unmatched u ON r.id = u.id \
-         ORDER BY r.id",
-        col_list, side, side
+        "SELECT {col_list} FROM {side}_records r \
+         WHERE NOT EXISTS (SELECT 1 FROM crossmap c WHERE c.{side}_id = r.id) \
+         ORDER BY r.id"
     );
     let mut stmt = conn.prepare(&sql).unwrap_or_else(|e| {
         eprintln!("Failed to query {side} unmatched records: {e}");
@@ -333,11 +413,29 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
         let events = match MatchLog::replay(Path::new(wal_base)) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("Warning: WAL replay failed: {}", e);
-                vec![]
+                eprintln!("WAL replay failed: {}", e);
+                process::exit(1);
             }
         };
 
+        let final_pairs = if events
+            .iter()
+            .any(|event| matches!(event, MatchLogEvent::AssignmentDelta(_)))
+        {
+            let snapshot: Vec<_> = crossmap_a_to_b
+                .iter()
+                .map(|(a, b)| (a.clone(), b.clone()))
+                .collect();
+            Some(
+                crate::state::match_log::reconstruct_assignment_history(&events, &snapshot)
+                    .unwrap_or_else(|e| {
+                        eprintln!("WAL assignment replay failed: {}", e);
+                        process::exit(1);
+                    }),
+            )
+        } else {
+            None
+        };
         for event in events {
             match event {
                 MatchLogEvent::UpsertRecord { side, record } => {
@@ -350,7 +448,8 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
                         continue;
                     }
                     // Re-upsert clears any stale review entries for this id.
-                    drain_reviews_for_id(&mut review_map, &id);
+                    let owner_side = if side == Side::A { "a" } else { "b" };
+                    review_map.retain(|_, row| row.side != owner_side || row.id != id);
                     match side {
                         Side::A => {
                             record_map_a.insert(id, record);
@@ -361,26 +460,83 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
                     }
                 }
                 MatchLogEvent::RemoveRecord { side, id } => {
-                    drain_reviews_for_id(&mut review_map, &id);
+                    let removed_side = if side == Side::A { "a" } else { "b" };
+                    review_map.retain(|_, row| {
+                        if row.side == removed_side {
+                            row.id != id
+                        } else {
+                            row.candidate_id != id
+                        }
+                    });
                     match side {
                         Side::A => {
                             record_map_a.remove(&id);
+                            if let Some(b) = crossmap_a_to_b.remove(&id) {
+                                crossmap_b_to_a.remove(&b);
+                            }
                         }
                         Side::B => {
                             record_map_b.remove(&id);
+                            if let Some(a) = crossmap_b_to_a.remove(&id) {
+                                crossmap_a_to_b.remove(&a);
+                            }
                         }
                     }
                 }
                 MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } => {
-                    // A confirm resolves pending reviews for both ids.
-                    drain_reviews_for_id(&mut review_map, &a_id);
-                    drain_reviews_for_id(&mut review_map, &b_id);
+                    // Resolve owners, not unrelated queries pointing at a candidate.
+                    review_map.retain(|_, row| {
+                        !((row.side == "a" && row.id == a_id)
+                            || (row.side == "b" && row.id == b_id))
+                    });
+                    if let Some(b) = crossmap_a_to_b.remove(&a_id) {
+                        crossmap_b_to_a.remove(&b);
+                    }
+                    if let Some(a) = crossmap_b_to_a.remove(&b_id) {
+                        crossmap_a_to_b.remove(&a);
+                    }
                     crossmap_b_to_a.insert(b_id.clone(), a_id.clone());
                     crossmap_a_to_b.insert(a_id, b_id);
                 }
+                MatchLogEvent::AssignmentDelta(delta) => {
+                    review_map.retain(|_, row| {
+                        !delta.replacements.iter().any(|pair| {
+                            (row.side == "a" && row.id == pair.a_id)
+                                || (row.side == "b" && row.id == pair.b_id)
+                        })
+                    });
+                }
+                MatchLogEvent::CrossMapReassign {
+                    old_a_id,
+                    old_b_id,
+                    replacements,
+                } => {
+                    crossmap_a_to_b.remove(&old_a_id);
+                    crossmap_b_to_a.remove(&old_b_id);
+                    review_map.retain(|_, row| {
+                        !replacements.iter().any(|pair| {
+                            (row.side == "a" && row.id == pair.a_id)
+                                || (row.side == "b" && row.id == pair.b_id)
+                        })
+                    });
+                    for pair in replacements {
+                        // Remove stale reverse/forward entries before installation,
+                        // including when replaying over an already-flushed snapshot.
+                        if let Some(b_id) = crossmap_a_to_b.remove(&pair.a_id) {
+                            crossmap_b_to_a.remove(&b_id);
+                        }
+                        if let Some(a_id) = crossmap_b_to_a.remove(&pair.b_id) {
+                            crossmap_a_to_b.remove(&a_id);
+                        }
+                        crossmap_b_to_a.insert(pair.b_id.clone(), pair.a_id.clone());
+                        crossmap_a_to_b.insert(pair.a_id, pair.b_id);
+                    }
+                }
                 MatchLogEvent::CrossMapBreak { a_id, b_id } => {
-                    crossmap_a_to_b.remove(&a_id);
-                    crossmap_b_to_a.remove(&b_id);
+                    if crossmap_a_to_b.get(&a_id) == Some(&b_id) {
+                        crossmap_a_to_b.remove(&a_id);
+                        crossmap_b_to_a.remove(&b_id);
+                    }
                     // A break doesn't re-add to review — the match is simply gone.
                 }
                 MatchLogEvent::ReviewMatch {
@@ -413,6 +569,18 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
                 }
             }
         }
+        if let Some(pairs) = final_pairs {
+            crossmap_a_to_b.clear();
+            crossmap_b_to_a.clear();
+            for (a, b) in pairs {
+                crossmap_a_to_b.insert(a.clone(), b.clone());
+                crossmap_b_to_a.insert(b, a);
+            }
+        }
+        review_map.retain(|_, row| match row.side.as_str() {
+            "a" => !crossmap_a_to_b.contains_key(&row.id),
+            _ => !crossmap_b_to_a.contains_key(&row.id),
+        });
     }
 
     // Derive unmatched: records not present in the crossmap.
@@ -466,12 +634,6 @@ struct ReviewRow {
     side: String,
     candidate_id: String,
     score: f64,
-}
-
-/// Remove all review entries where the given id appears as either the
-/// record id or the candidate id.
-fn drain_reviews_for_id(map: &mut HashMap<String, ReviewRow>, id: &str) {
-    map.retain(|_, v| v.id != id && v.candidate_id != id);
 }
 
 fn write_results_or_exit(path: &Path, pairs: &[(String, String)], a_field: &str, b_field: &str) {
@@ -597,6 +759,7 @@ mod tests {
             r#"
 job:
   name: test_export
+vector_backend: flat
 datasets:
   a:
     path: {a_csv}
@@ -635,6 +798,74 @@ live:
         let config_path = dir.path().join("config.yaml");
         std::fs::write(&config_path, yaml).unwrap();
         crate::config::load_config(&config_path).expect("failed to load test config")
+    }
+
+    #[test]
+    fn assignment_cli_build_exports_snapshot_to_configured_database() {
+        let dir = tempdir().expect("tempdir");
+        let a = dir.path().join("a.csv");
+        let b = dir.path().join("b.csv");
+        let wal = dir.path().join("wal.ndjson");
+        std::fs::write(&a, "entity_id,name\nA1,One\nAX,Untouched\n").expect("A");
+        std::fs::write(
+            &b,
+            "counterparty_id,cpty_name\nB1,Old\nB2,New\nBX,Untouched\n",
+        )
+        .expect("B");
+        std::fs::write(
+            dir.path().join("crossmap.csv"),
+            "entity_id,counterparty_id\nA1,B2\nAX,BX\n",
+        )
+        .expect("snapshot");
+        let log = MatchLog::open(&wal).expect("log");
+        log.append(&serde_json::from_str::<MatchLogEvent>(
+            r#"{"type":"assignment_delta","version":1,"attempt_id":1,"step_index":0,"proposer":{"side":"b","id":"B2"},"expected":[{"a_id":"A1","b_id":"B1"}],"replacements":[{"a_id":"A1","b_id":"B2","score_b_to_a":0.91,"score_a_to_b":0.96,"rank":null,"reason":null}],"newly_unmatched":[{"side":"b","id":"B1"}],"previous_receiver_score":0.8}"#,
+        ).expect("event")).expect("append");
+        log.flush().expect("flush");
+        let cfg = write_and_load_config(&dir, &a, &b, &wal, None);
+        let input = load_build_input(&cfg).expect("input");
+        assert_eq!(input.a_records.len(), 2, "load original A records");
+        assert_eq!(input.b_records.len(), 3, "load original B records");
+        assert_eq!(input.snapshot_pairs.len(), 2, "load all snapshot pairs");
+        let config = dir.path().join("config.yaml");
+        let db = dir.path().join("output.db");
+        let yaml = std::fs::read_to_string(&config).expect("config");
+        let output = format!("output:\n  db_path: {}\n", db.display());
+        #[cfg(feature = "parquet-format")]
+        let output = format!(
+            "{output}  parquet_dir_path: {}\n",
+            dir.path().join("parquet").display()
+        );
+        std::fs::write(&config, yaml.replace("output:\n", &output)).expect("configured outputs");
+        let out = dir.path().join("export");
+        cmd_export(&config, &out);
+        let conn = rusqlite::Connection::open(&db).expect("output DB");
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM relationships WHERE relationship_type='match'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("matches");
+        assert_eq!(
+            count, 2,
+            "CLI builds unrelated snapshot pair as well as assignment"
+        );
+        let relationships = std::fs::read_to_string(out.join("relationships.csv")).expect("CSV");
+        assert!(
+            relationships.contains("AX") && relationships.contains("BX"),
+            "CSV retains untouched pair"
+        );
+        let unmatched = std::fs::read_to_string(out.join("unmatched.csv")).expect("unmatched");
+        assert!(
+            unmatched.contains("B1") && unmatched.contains("Old"),
+            "unmatched output retains original dataset fields"
+        );
+        #[cfg(feature = "parquet-format")]
+        assert!(
+            dir.path().join("parquet/relationships.parquet").exists(),
+            "configured Parquet no longer rejected"
+        );
     }
 
     #[test]
@@ -737,6 +968,115 @@ live:
     }
 
     #[test]
+    fn sqlite_export_uses_membership_before_restart_repairs_metadata() {
+        use crate::store::sqlite::open_sqlite;
+
+        for side in [Side::A, Side::B] {
+            let dir = tempdir().expect("fixture directory");
+            let db_path = dir.path().join("live.db");
+            let out_dir = dir.path().join("export");
+            let bc = BlockingConfig {
+                enabled: false,
+                operator: "and".into(),
+                fields: vec![],
+                field_a: None,
+                field_b: None,
+            };
+            {
+                let (store, crossmap, _) = open_sqlite(
+                    &db_path,
+                    &bc,
+                    None,
+                    &["entity_id".into()],
+                    &["counterparty_id".into()],
+                )
+                .expect("open database");
+                // Identical IDs on opposite sides must not share review ownership.
+                for s in [Side::A, Side::B] {
+                    for id in ["receiver", "old", "new"] {
+                        store.insert(s, id, &Record::new()).expect("insert record");
+                        store.mark_unmatched(s, id).expect("initial flags");
+                    }
+                }
+                let (old, new) = if side == Side::A {
+                    (("old", "receiver"), ("new", "receiver"))
+                } else {
+                    (("receiver", "old"), ("receiver", "new"))
+                };
+                crossmap.add(old.0, old.1).expect("initial pair");
+                store.mark_matched(side, "old").expect("old flags");
+                store
+                    .mark_matched(side.opposite(), "receiver")
+                    .expect("receiver flags");
+                store
+                    .persist_review("resolved", "new", side, "receiver", 0.8)
+                    .expect("new endpoint's stale review");
+                store
+                    .persist_review("unrelated", "new", side.opposite(), "receiver", 0.7)
+                    .expect("opposite side review");
+                assert!(
+                    crossmap
+                        .apply_assignment_delta(&[old], &[new])
+                        .expect("commit assignment"),
+                    "fixture must commit the displacement"
+                );
+                // Simulate interruption here: deliberately do not update any
+                // flags or reviews, and never call the warm server loader.
+            }
+            let a_csv = dir.path().join("a.csv");
+            let b_csv = dir.path().join("b.csv");
+            std::fs::write(&a_csv, "entity_id\n").expect("A fixture");
+            std::fs::write(&b_csv, "counterparty_id\n").expect("B fixture");
+            let cfg = write_and_load_config(
+                &dir,
+                &a_csv,
+                &b_csv,
+                &dir.path().join("wal.ndjson"),
+                Some(&db_path),
+            );
+            std::fs::create_dir_all(&out_dir).expect("output directory");
+            export_sqlite(&cfg, &db_path, &out_dir);
+            let mut unmatched = csv::Reader::from_path(out_dir.join(if side == Side::A {
+                "unmatched_a.csv"
+            } else {
+                "unmatched_b.csv"
+            }))
+            .expect("unmatched output");
+            let ids: Vec<String> = unmatched
+                .records()
+                .map(|row| row.expect("CSV row")[0].to_owned())
+                .collect();
+            assert!(
+                ids.contains(&"old".into()),
+                "orphan must be exported: {ids:?}"
+            );
+            assert!(
+                !ids.contains(&"new".into()),
+                "matched endpoint excluded: {ids:?}"
+            );
+            let mut review =
+                csv::Reader::from_path(out_dir.join("review.csv")).expect("review output");
+            let rows: Vec<_> = review.records().map(|r| r.expect("review row")).collect();
+            assert_eq!(rows.len(), 1, "only unmatched owner's review survives");
+            assert_eq!(
+                &rows[0][1],
+                if side == Side::A { "b" } else { "a" },
+                "review filtering must distinguish owner side"
+            );
+            let results =
+                std::fs::read_to_string(out_dir.join("results.csv")).expect("pair output");
+            assert!(
+                results.contains(if side == Side::A {
+                    "new,receiver"
+                } else {
+                    "receiver,new"
+                }),
+                "pair output must reflect committed membership: {results}"
+            );
+        }
+    }
+
+    #[test]
     fn memory_export_with_wal() {
         let dir = tempdir().unwrap();
         let out_dir = dir.path().join("export");
@@ -823,6 +1163,44 @@ live:
         let ub = std::fs::read_to_string(out_dir.join("unmatched_b.csv")).unwrap();
         assert!(ub.contains("B-2"), "B-2 not in unmatched_b: {ub}");
         assert!(!ub.contains("B-1"), "matched B-1 in unmatched_b");
+    }
+
+    #[test]
+    fn memory_export_reassignment_updates_both_maps_and_reviews() {
+        let dir = tempdir().expect("tempdir");
+        let out = dir.path().join("export");
+        std::fs::create_dir_all(&out).expect("output dir");
+        let a = dir.path().join("a.csv");
+        let b = dir.path().join("b.csv");
+        let wal = dir.path().join("wal.ndjson");
+        std::fs::write(&a, "entity_id,name\nA1,One\nA2,Two\n").expect("A CSV");
+        std::fs::write(&b, "counterparty_id,cpty_name\nB1,One\nB2,Two\n").expect("B CSV");
+        let log = MatchLog::open(&wal).expect("log");
+        for line in [
+            r#"{"type":"crossmap_confirm","a_id":"A1","b_id":"B1","score":0.8}"#,
+            r#"{"type":"review_match","side":"b","id":"B2","candidate_id":"A2","score":0.7}"#,
+            r#"{"type":"crossmap_reassign","old_a_id":"A1","old_b_id":"B1","replacements":[{"a_id":"A1","b_id":"B2","score":0.91,"rank":2},{"a_id":"A2","b_id":"B1","score":0.87}]}"#,
+        ] {
+            log.append(&serde_json::from_str(line).expect("event"))
+                .expect("append");
+        }
+        log.flush().expect("flush");
+        let cfg = write_and_load_config(&dir, &a, &b, &wal, None);
+        export_memory(&cfg, &out);
+        let results = std::fs::read_to_string(out.join("results.csv")).expect("results");
+        assert!(
+            results.contains("A1,B2") && results.contains("A2,B1"),
+            "both replacement pairs: {results}"
+        );
+        assert!(!results.contains("A1,B1"), "old pair removed");
+        for name in ["unmatched_a.csv", "unmatched_b.csv", "review.csv"] {
+            let contents = std::fs::read_to_string(out.join(name)).expect("output");
+            assert_eq!(
+                contents.lines().count(),
+                1,
+                "{name} must have only header: {contents}"
+            );
+        }
     }
 
     #[test]

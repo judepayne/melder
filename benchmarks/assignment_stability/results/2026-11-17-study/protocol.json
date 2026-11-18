@@ -1,0 +1,41 @@
+{
+  "status": "prespecified_before_measurements",
+  "date": "2026-11-17",
+  "campaigns": {
+    "shuffle": {"paired_runs": 100, "csv_order": "100 seeded permutations", "seed": 20261117},
+    "fixed": {"paired_runs": 50, "csv_order": "same original copied B file bytes and path in every process"}
+  },
+  "measured_subprocesses": 300,
+  "previous_first_pass_outcomes_excluded": true,
+  "datasets": "Unmodified existing 10k A and 10k B company records, positive oracle 7000, ambiguous cohort 2000, known unmatched 1000",
+  "configuration": "Existing config.template.yaml: top_n20, ann_candidates20, country blocking, unchanged weighted scores and thresholds",
+  "rayon_threads": 8,
+  "cache_control": "Reuse first-pass prepared vector/index cache bytes for every run and both campaigns; fresh crossmaps and outputs",
+  "execution_order": "Shuffle campaign then fixed campaign. Alternate baseline/experiment and experiment/baseline within successive pairs. Sequential subprocesses only.",
+  "primary_metric": {
+    "definition": "Mean fraction of B records whose A ID or unmatched state differs between two distinct runs of the same binary",
+    "estimator": "U-statistic over all unordered within-binary run pairs",
+    "effect": "baseline minus experimental mean changed-B fraction; positive means more stable experimentally",
+    "relative_effect": "100 * effect / baseline changed-B fraction, undefined if baseline fraction is zero",
+    "not_primary": ["number ever varying across all runs", "number of distinct complete outcomes", "median pairwise distance"]
+  },
+  "inference": {
+    "resampling_unit": "Whole paired run indices, preserving baseline/experimental pairing; never individual B records or individual pairwise comparisons",
+    "bootstrap_replicates": 5000,
+    "shuffle_bootstrap_seed": 20261118,
+    "fixed_bootstrap_seed": 20261119,
+    "sampling": "Sample n paired run indices with replacement. Duplicate original index has zero Hamming distance to itself. Use n*(n-1)/2 bootstrap-position pairs as denominator.",
+    "interval": "Two-sided 95% basic bootstrap: [2*point - q97.5, 2*point - q2.5], linear-interpolated quantiles",
+    "interpretation": "Intervals excluding zero indicate evidence for a directional change on this corpus/cache/thread setup. No assertion of deterministic complete assignments.",
+    "multiple_questions": "Separate prespecified shuffled-input and fixed-input questions; no pooled effect and no familywise coverage claim",
+    "assumptions": "Fresh process run pairs approximately independent/exchangeable conditional on mode and fixed corpus. Frozen ANN cache. Does not establish generalization across corpora, graph builds or thread counts.",
+    "optional_stopping": "None; run all planned 300 subprocesses regardless of intermediate outcomes"
+  },
+  "secondary_checks": {
+    "quality": "Paired mean experimental-minus-baseline oracle TP, known-positive wrong A assignments, known-unmatched automatic matches, ambiguous automatic matches, strict precision/recall and count; same whole-pair bootstrap",
+    "oracle_caveat": "The strict positive oracle excludes ambiguous B records. Do not interpret every non-oracle pair as a proven identity error.",
+    "performance": "All-run wall/RSS summaries and paired wall ratios, including outliers; descriptive, no performance-based exclusions",
+    "integrity": "Bijection, active-output totals, identical B bytes within pairs, identical B path across fixed runs, distinct shuffle permutations, cache hits/no encoding, source/input/binary hashes, independent WAL fold to final CSV"
+  },
+  "source_changes": "Benchmark Python/docs only; no Rust implementation changes, commits or merges"
+}

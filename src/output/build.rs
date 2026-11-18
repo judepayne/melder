@@ -48,6 +48,17 @@ struct NoMatchInfo {
     best_a_id: Option<String>,
 }
 
+/// Original dataset records and a possibly newer crossmap snapshot for replay.
+#[derive(Default)]
+pub(crate) struct BuildInput {
+    pub a_records: HashMap<String, Record>,
+    pub b_records: HashMap<String, Record>,
+    pub snapshot_pairs: Vec<(String, String)>,
+    /// Present for an in-process snapshot taken under the live mutation gate.
+    /// In that case membership, records and reviews are authoritative.
+    pub current_reviews: Option<Vec<crate::state::live::ReviewEntry>>,
+}
+
 /// Build output files from a match log.
 ///
 /// Reads the match log, replays events to build in-memory state, then writes
@@ -61,18 +72,73 @@ pub fn build_outputs(
     db_path: Option<&Path>,
     manifest: &OutputManifest,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    build_outputs_with_input(
+        match_log_path,
+        scoring_log_path,
+        csv_dir,
+        parquet_dir,
+        db_path,
+        manifest,
+        BuildInput::default(),
+    )
+}
+
+/// Build full outputs from original records, a crossmap snapshot, and WAL history.
+///
+/// Snapshot pairs may be newer than the WAL's initial state. Assignment history
+/// determines touched membership; unrelated snapshot pairs are retained.
+pub(crate) fn build_outputs_with_input(
+    match_log_path: &Path,
+    scoring_log_path: Option<&Path>,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+    input: BuildInput,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
     let start = Instant::now();
 
     // Replay match log events.
     let events = MatchLog::replay(match_log_path)?;
 
+    // Validate assignment ownership before creating any output files.
+    let final_pairs = if input.current_reviews.is_some() {
+        Some(input.snapshot_pairs.clone())
+    } else if events
+        .iter()
+        .any(|event| matches!(event, MatchLogEvent::AssignmentDelta(_)))
+    {
+        Some(crate::state::match_log::reconstruct_assignment_history(
+            &events,
+            &input.snapshot_pairs,
+        )?)
+    } else {
+        None
+    };
+
     // Build in-memory state from events.
-    let mut a_records: HashMap<String, Record> = HashMap::new();
-    let mut b_records: HashMap<String, Record> = HashMap::new();
+    let mut a_records = input.a_records;
+    let mut b_records = input.b_records;
     // Keyed by (a_id, b_id) for dedup — later events overwrite earlier.
     let mut relationships: HashMap<(String, String), Relationship> = HashMap::new();
+    let mut review_queries: HashMap<(String, String), Side> = HashMap::new();
+    let mut match_metadata = HashMap::new();
     let mut no_match_map: HashMap<String, NoMatchInfo> = HashMap::new();
     let warnings = Vec::new();
+
+    for (a_id, b_id) in input.snapshot_pairs {
+        relationships.insert(
+            (a_id.clone(), b_id.clone()),
+            Relationship {
+                a_id,
+                b_id,
+                score: None,
+                rank: None,
+                relationship_type: "match".to_string(),
+                reason: None,
+            },
+        );
+    }
 
     for event in &events {
         match event {
@@ -88,6 +154,22 @@ pub fn build_outputs(
                         side = ?side,
                         "record missing id field — skipped in output"
                     );
+                    continue;
+                }
+                relationships.retain(|key, rel| {
+                    rel.relationship_type != "review"
+                        || match review_queries.get(key) {
+                            Some(owner) if owner == side => match side {
+                                Side::A => rel.a_id != id,
+                                Side::B => rel.b_id != id,
+                            },
+                            _ => true,
+                        }
+                });
+                if *side == Side::B {
+                    no_match_map.remove(&id);
+                }
+                if input.current_reviews.is_some() {
                     continue;
                 }
                 match side {
@@ -106,6 +188,23 @@ pub fn build_outputs(
                 rank,
                 reason,
             } => {
+                match_metadata.insert(
+                    (a_id.clone(), b_id.clone()),
+                    (*score, *rank, reason.clone()),
+                );
+                relationships.retain(|key, rel| {
+                    rel.relationship_type != "review"
+                        || match review_queries.get(key) {
+                            Some(Side::A) => rel.a_id != *a_id,
+                            _ => rel.b_id != *b_id,
+                        }
+                });
+                for rel in relationships.values_mut() {
+                    if rel.relationship_type == "match" && (rel.a_id == *a_id || rel.b_id == *b_id)
+                    {
+                        rel.relationship_type = "broken".to_string();
+                    }
+                }
                 // Remove any prior "broken" entry for this pair.
                 relationships.insert(
                     (a_id.clone(), b_id.clone()),
@@ -121,6 +220,89 @@ pub fn build_outputs(
                 // A confirmed pair clears any no-match status for this B.
                 no_match_map.remove(b_id);
             }
+            MatchLogEvent::AssignmentDelta(delta) => {
+                for pair in &delta.expected {
+                    if let Some(rel) = relationships
+                        .get_mut(&(pair.a_id.clone(), pair.b_id.clone()))
+                        .filter(|rel| rel.relationship_type == "match")
+                    {
+                        rel.relationship_type = "broken".to_string();
+                    }
+                }
+                relationships.retain(|key, rel| {
+                    rel.relationship_type != "review"
+                        || !delta
+                            .replacements
+                            .iter()
+                            .any(|pair| match review_queries.get(key) {
+                                Some(Side::A) => rel.a_id == pair.a_id,
+                                _ => rel.b_id == pair.b_id,
+                            })
+                });
+                for endpoint in &delta.newly_unmatched {
+                    if endpoint.side == Side::B {
+                        no_match_map.remove(&endpoint.id);
+                    }
+                }
+                for pair in &delta.replacements {
+                    match_metadata.insert(
+                        (pair.a_id.clone(), pair.b_id.clone()),
+                        (Some(pair.score_b_to_a), pair.rank, pair.reason.clone()),
+                    );
+                    no_match_map.remove(&pair.b_id);
+                    relationships.insert(
+                        (pair.a_id.clone(), pair.b_id.clone()),
+                        Relationship {
+                            a_id: pair.a_id.clone(),
+                            b_id: pair.b_id.clone(),
+                            score: Some(pair.score_b_to_a),
+                            rank: pair.rank,
+                            relationship_type: "match".to_string(),
+                            reason: pair.reason.clone(),
+                        },
+                    );
+                }
+            }
+            MatchLogEvent::CrossMapReassign {
+                old_a_id,
+                old_b_id,
+                replacements,
+            } => {
+                if let Some(rel) = relationships.get_mut(&(old_a_id.clone(), old_b_id.clone())) {
+                    rel.relationship_type = "broken".to_string();
+                }
+                // Resolve reviews owned by now-matched queries. Other queries
+                // may still need review even if their candidate just got claimed.
+                relationships.retain(|key, rel| {
+                    rel.relationship_type != "review"
+                        || !replacements
+                            .iter()
+                            .any(|pair| match review_queries.get(key) {
+                                Some(Side::A) => rel.a_id == pair.a_id,
+                                _ => rel.b_id == pair.b_id,
+                            })
+                });
+                // This map is keyed by B IDs; A/B identifier namespaces can overlap.
+                no_match_map.remove(old_b_id);
+                for pair in replacements {
+                    match_metadata.insert(
+                        (pair.a_id.clone(), pair.b_id.clone()),
+                        (Some(pair.score), pair.rank, pair.reason.clone()),
+                    );
+                    no_match_map.remove(&pair.b_id);
+                    relationships.insert(
+                        (pair.a_id.clone(), pair.b_id.clone()),
+                        Relationship {
+                            a_id: pair.a_id.clone(),
+                            b_id: pair.b_id.clone(),
+                            score: Some(pair.score),
+                            rank: pair.rank,
+                            relationship_type: "match".to_string(),
+                            reason: pair.reason.clone(),
+                        },
+                    );
+                }
+            }
             MatchLogEvent::ReviewMatch {
                 id,
                 side,
@@ -133,6 +315,7 @@ pub fn build_outputs(
                     Side::A => (id.clone(), candidate_id.clone()),
                     Side::B => (candidate_id.clone(), id.clone()),
                 };
+                review_queries.insert((a_id.clone(), b_id.clone()), *side);
                 relationships.insert(
                     (a_id.clone(), b_id.clone()),
                     Relationship {
@@ -144,8 +327,10 @@ pub fn build_outputs(
                         reason: reason.clone(),
                     },
                 );
-                // A review clears no-match status for this B.
-                no_match_map.remove(&b_id);
+                // Only a B-owned review clears that query's no-match status.
+                if *side == Side::B {
+                    no_match_map.remove(&b_id);
+                }
             }
             MatchLogEvent::CrossMapBreak { a_id, b_id } => {
                 // Replace the match with a "broken" record if it existed.
@@ -155,10 +340,23 @@ pub fn build_outputs(
             }
             MatchLogEvent::NoMatchBelow {
                 query_id,
+                query_side,
                 best_candidate_id,
                 best_score,
-                ..
             } => {
+                relationships.retain(|key, rel| {
+                    rel.relationship_type != "review"
+                        || match review_queries.get(key) {
+                            Some(owner) if owner == query_side => match query_side {
+                                Side::A => rel.a_id != *query_id,
+                                Side::B => rel.b_id != *query_id,
+                            },
+                            _ => true,
+                        }
+                });
+                if *query_side != Side::B {
+                    continue;
+                }
                 no_match_map.insert(
                     query_id.clone(),
                     NoMatchInfo {
@@ -167,18 +365,95 @@ pub fn build_outputs(
                     },
                 );
             }
-            MatchLogEvent::RemoveRecord { side, id } => match side {
-                Side::A => {
-                    a_records.remove(id);
+            MatchLogEvent::RemoveRecord { side, id } => {
+                relationships.retain(|_, rel| match side {
+                    Side::A => rel.a_id != *id,
+                    Side::B => rel.b_id != *id,
+                });
+                if input.current_reviews.is_some() {
+                    continue;
                 }
-                Side::B => {
-                    b_records.remove(id);
-                    no_match_map.remove(id);
+                match side {
+                    Side::A => {
+                        a_records.remove(id);
+                    }
+                    Side::B => {
+                        b_records.remove(id);
+                        no_match_map.remove(id);
+                    }
                 }
-            },
+            }
             MatchLogEvent::Exclude { .. } | MatchLogEvent::Unexclude { .. } => {
                 // Exclusions don't affect output.
             }
+        }
+    }
+
+    if let Some(reviews) = input.current_reviews {
+        relationships.retain(|_, rel| rel.relationship_type != "review");
+        review_queries.clear();
+        for review in reviews {
+            let (a_id, b_id) = match review.side {
+                Side::A => (review.id, review.candidate_id),
+                Side::B => (review.candidate_id, review.id),
+            };
+            let key = (a_id.clone(), b_id.clone());
+            review_queries.insert(key.clone(), review.side);
+            relationships.insert(
+                key,
+                Relationship {
+                    a_id,
+                    b_id,
+                    score: Some(review.score),
+                    rank: None,
+                    relationship_type: "review".into(),
+                    reason: None,
+                },
+            );
+        }
+    }
+
+    if let Some(pairs) = final_pairs {
+        let pairs: std::collections::HashSet<_> = pairs.into_iter().collect();
+        let matched_a: std::collections::HashSet<_> =
+            pairs.iter().map(|(a, _)| a.as_str()).collect();
+        let matched_b: std::collections::HashSet<_> =
+            pairs.iter().map(|(_, b)| b.as_str()).collect();
+        relationships.retain(|key, rel| {
+            rel.relationship_type != "review"
+                || match review_queries.get(key) {
+                    Some(Side::A) => !matched_a.contains(rel.a_id.as_str()),
+                    _ => !matched_b.contains(rel.b_id.as_str()),
+                }
+        });
+        for b_id in &matched_b {
+            no_match_map.remove(*b_id);
+        }
+        for (key, rel) in &mut relationships {
+            if rel.relationship_type == "match" && !pairs.contains(key) {
+                rel.relationship_type = "broken".to_string();
+            }
+        }
+        // A review or later stale snapshot must not hide authoritative membership.
+        // Preserve canonical B-to-A metadata from replay whenever it is available.
+        for (a_id, b_id) in pairs {
+            let (score, rank, reason) = match_metadata
+                .remove(&(a_id.clone(), b_id.clone()))
+                .unwrap_or_default();
+            let rel = relationships
+                .entry((a_id.clone(), b_id.clone()))
+                .or_insert(Relationship {
+                    a_id,
+                    b_id,
+                    score: None,
+                    rank: None,
+                    relationship_type: "match".to_string(),
+                    reason: None,
+                });
+            rel.relationship_type = "match".to_string();
+            rel.score = score;
+            rel.rank = rank;
+            rel.reason = reason;
         }
     }
 
@@ -191,7 +466,11 @@ pub fn build_outputs(
     // Derive unmatched B records: those not in any match/review relationship.
     let matched_b_ids: std::collections::HashSet<&str> = rel_vec
         .iter()
-        .filter(|r| r.relationship_type == "match" || r.relationship_type == "review")
+        .filter(|r| {
+            r.relationship_type == "match"
+                || (r.relationship_type == "review"
+                    && review_queries.get(&(r.a_id.clone(), r.b_id.clone())) != Some(&Side::A))
+        })
         .map(|r| r.b_id.as_str())
         .collect();
 
@@ -486,4 +765,295 @@ fn read_scoring_log(
         "scoring log read"
     );
     Ok((field_scores, candidates))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_build_retains_untouched_pairs_and_original_records() {
+        for snapshot_b in ["B1", "B2"] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("matches.ndjson");
+            let log = MatchLog::open(&path).expect("log");
+            for line in [
+                r#"{"type":"no_match_below","query_side":"b","query_id":"shared","best_candidate_id":"old","best_score":0.4}"#,
+                r#"{"type":"review_match","side":"a","id":"A3","candidate_id":"shared","score":0.7}"#,
+                r#"{"type":"review_match","side":"b","id":"B3","candidate_id":"A3","score":0.7}"#,
+                r#"{"type":"upsert_record","side":"b","record":{"id":"B3","name":"updated"}}"#,
+                r#"{"type":"assignment_delta","version":1,"attempt_id":3,"step_index":0,"proposer":{"side":"b","id":"B2"},"expected":[{"a_id":"A1","b_id":"B1"}],"replacements":[{"a_id":"A1","b_id":"B2","score_b_to_a":0.91,"score_a_to_b":0.95,"rank":2,"reason":"embedding"}],"newly_unmatched":[{"side":"b","id":"B1"}],"previous_receiver_score":0.8}"#,
+            ] {
+                log.append(&serde_json::from_str(line).expect("event"))
+                    .expect("append");
+            }
+            log.flush().expect("flush");
+            let records = |ids: &[&str]| {
+                ids.iter()
+                    .map(|id| {
+                        (
+                            (*id).to_string(),
+                            Record::from([
+                                ("id".into(), (*id).into()),
+                                ("name".into(), format!("original {id}")),
+                            ]),
+                        )
+                    })
+                    .collect()
+            };
+            let input = BuildInput {
+                a_records: records(&["A1", "A3", "untouched-a"]),
+                b_records: records(&["B1", "B2", "B3", "shared", "untouched-b"]),
+                snapshot_pairs: vec![
+                    ("A1".into(), snapshot_b.into()),
+                    ("untouched-a".into(), "untouched-b".into()),
+                ],
+                current_reviews: None,
+            };
+            let manifest = OutputManifest {
+                mode: crate::config::Mode::Match,
+                job_name: "test".into(),
+                a_id_field: "id".into(),
+                b_id_field: "id".into(),
+                a_fields: vec!["name".into()],
+                b_fields: vec!["name".into()],
+                auto_match: 0.85,
+                review_floor: 0.6,
+                min_score_gap: None,
+                top_n: 5,
+                model: String::new(),
+            };
+            let db = dir.path().join("output.db");
+            let parquet = cfg!(feature = "parquet-format").then_some(dir.path());
+            let report = build_outputs_with_input(
+                &path,
+                None,
+                Some(dir.path()),
+                parquet,
+                Some(&db),
+                &manifest,
+                input,
+            )
+            .expect("snapshot-aware build");
+            assert_eq!(
+                (
+                    report.a_record_count,
+                    report.b_record_count,
+                    report.match_count,
+                    report.review_count,
+                    report.no_match_count
+                ),
+                (3, 5, 2, 1, 3),
+                "full records and untouched membership survive snapshots of either age"
+            );
+            let conn = rusqlite::Connection::open(&db).expect("DB");
+            let score: (f64, u8, String) = conn.query_row(
+                "SELECT score, rank, reason FROM relationships WHERE a_id='A1' AND b_id='B2' AND relationship_type='match'",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).expect("canonical pair");
+            assert_eq!(score, (0.91, 2, "embedding".into()), "B-to-A metadata");
+            let untouched: i64 = conn.query_row(
+                "SELECT count(*) FROM relationships WHERE a_id='untouched-a' AND b_id='untouched-b' AND relationship_type='match'",
+                [], |row| row.get(0),
+            ).expect("untouched pair");
+            assert_eq!(untouched, 1, "unrelated preloaded pair included in DB");
+            let mut csv = csv::Reader::from_path(dir.path().join("unmatched.csv")).expect("CSV");
+            let rows: Vec<HashMap<String, String>> =
+                csv.deserialize().map(|r| r.expect("row")).collect();
+            let shared = rows
+                .iter()
+                .find(|r| r.get("id").map(String::as_str) == Some("shared"))
+                .expect("A-owned review does not own B unmatched status");
+            assert_eq!(
+                shared.get("best_score").map(String::as_str),
+                Some("0.4000"),
+                "A review cannot clear B no-match metadata"
+            );
+            #[cfg(feature = "parquet-format")]
+            {
+                let reader =
+                    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                        std::fs::File::open(dir.path().join("relationships.parquet"))
+                            .expect("Parquet"),
+                    )
+                    .expect("Parquet reader")
+                    .build()
+                    .expect("batches");
+                let rows: usize = reader.map(|batch| batch.expect("batch").num_rows()).sum();
+                assert_eq!(
+                    rows, 3,
+                    "Parquet includes both matches and the surviving review"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn assignment_build_handles_preloaded_orphan_reviews_and_removal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("matches.ndjson");
+        let log = MatchLog::open(&path).expect("log");
+        for line in [
+            r#"{"type":"upsert_record","side":"a","record":{"id":"A1"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"id":"B1"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"id":"B2"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"id":"B3"}}"#,
+            r#"{"type":"review_match","side":"b","id":"B1","candidate_id":"A1","score":0.7}"#,
+            r#"{"type":"review_match","side":"b","id":"B2","candidate_id":"other","score":0.7}"#,
+            r#"{"type":"assignment_delta","version":1,"attempt_id":3,"step_index":0,"proposer":{"side":"b","id":"B2"},"expected":[{"a_id":"A1","b_id":"B1"}],"replacements":[{"a_id":"A1","b_id":"B2","score_b_to_a":0.91,"score_a_to_b":0.95,"rank":null,"reason":null}],"newly_unmatched":[{"side":"b","id":"B1"}],"previous_receiver_score":0.8}"#,
+            r#"{"type":"review_match","side":"b","id":"B3","candidate_id":"A1","score":0.7}"#,
+        ] {
+            log.append(&serde_json::from_str(line).expect("event"))
+                .expect("append");
+        }
+        log.flush().expect("flush");
+        let manifest = OutputManifest {
+            mode: crate::config::Mode::Match,
+            job_name: "test".into(),
+            a_id_field: "id".into(),
+            b_id_field: "id".into(),
+            a_fields: vec![],
+            b_fields: vec![],
+            auto_match: 0.85,
+            review_floor: 0.6,
+            min_score_gap: None,
+            top_n: 5,
+            model: String::new(),
+        };
+        let db = dir.path().join("output.db");
+        let report = build_outputs(&path, None, Some(dir.path()), None, Some(&db), &manifest)
+            .expect("build");
+        assert_eq!(
+            (report.match_count, report.review_count),
+            (1, 2),
+            "retain orphan and unrelated candidate-pointing reviews"
+        );
+        let conn = rusqlite::Connection::open(&db).expect("output DB");
+        let pair: (String, String, f64) = conn
+            .query_row(
+                "SELECT a_id, b_id, score FROM relationships WHERE relationship_type = 'match'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("accepted SQL pair");
+        assert_eq!(
+            pair,
+            ("A1".into(), "B2".into(), 0.91),
+            "SQLite output uses the same accepted pair and primary score"
+        );
+        let mut csv = csv::Reader::from_path(dir.path().join("relationships.csv")).expect("CSV");
+        let rows: Vec<HashMap<String, String>> =
+            csv.deserialize().map(|r| r.expect("row")).collect();
+        let accepted = rows
+            .iter()
+            .find(|row| row.get("relationship_type").map(String::as_str) == Some("match"))
+            .expect("match row");
+        assert_eq!(
+            accepted.get("score").map(String::as_str),
+            Some("0.9100"),
+            "output uses canonical B-to-A score"
+        );
+        assert_eq!(
+            accepted.get("rank").map(String::as_str),
+            Some(""),
+            "verification-only rank remains absent"
+        );
+        log.append(&MatchLogEvent::RemoveRecord {
+            side: Side::B,
+            id: "B2".into(),
+        })
+        .expect("remove");
+        log.flush().expect("flush remove");
+        let removed =
+            build_outputs(&path, None, None, None, None, &manifest).expect("rebuild after remove");
+        assert_eq!(
+            removed.match_count, 0,
+            "record removal also removes accepted relationship"
+        );
+    }
+
+    #[test]
+    fn reassignment_build_preserves_metadata_and_clears_stale_status() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("matches.ndjson");
+        let log = MatchLog::open(&path).expect("open log");
+        for line in [
+            r#"{"type":"upsert_record","side":"b","record":{"id":"B1"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"id":"B2"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"id":"A1"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"id":"B3"}}"#,
+            r#"{"type":"no_match_below","query_side":"b","query_id":"A1","best_candidate_id":"A9","best_score":0.45}"#,
+            r#"{"type":"crossmap_confirm","a_id":"A1","b_id":"B1","score":0.8}"#,
+            r#"{"type":"review_match","side":"b","id":"B2","candidate_id":"A9","score":0.7}"#,
+            r#"{"type":"review_match","side":"a","id":"A2","candidate_id":"B9","score":0.7}"#,
+            r#"{"type":"review_match","side":"b","id":"B3","candidate_id":"A2","score":0.7}"#,
+            r#"{"type":"no_match_below","query_side":"b","query_id":"B2","best_score":0.2}"#,
+            r#"{"type":"crossmap_reassign","old_a_id":"A1","old_b_id":"B1","replacements":[{"a_id":"A1","b_id":"B2","score":0.91,"rank":2},{"a_id":"A2","b_id":"B1","score":0.87,"rank":3,"reason":"exact"}]}"#,
+        ] {
+            log.append(&serde_json::from_str(line).expect("event"))
+                .expect("append");
+        }
+        log.flush().expect("flush");
+        let manifest = OutputManifest {
+            mode: crate::config::Mode::Match,
+            job_name: "test".into(),
+            a_id_field: "id".into(),
+            b_id_field: "id".into(),
+            a_fields: vec![],
+            b_fields: vec![],
+            auto_match: 0.85,
+            review_floor: 0.6,
+            min_score_gap: None,
+            top_n: 5,
+            model: String::new(),
+        };
+        let report =
+            build_outputs(&path, None, Some(dir.path()), None, None, &manifest).expect("build");
+        assert_eq!(
+            (
+                report.match_count,
+                report.broken_count,
+                report.review_count,
+                report.no_match_count
+            ),
+            (2, 1, 1, 1),
+            "resolve only matched queries; unrelated review and B-side A1 remain"
+        );
+        let mut unmatched =
+            csv::Reader::from_path(dir.path().join("unmatched.csv")).expect("unmatched CSV");
+        let unmatched_rows: Vec<_> = unmatched
+            .deserialize::<std::collections::HashMap<String, String>>()
+            .map(|r| r.expect("unmatched row"))
+            .collect();
+        assert_eq!(
+            unmatched_rows.len(),
+            1,
+            "only unrelated B-side A1 is unmatched"
+        );
+        assert_eq!(
+            unmatched_rows[0].get("best_score").map(String::as_str),
+            Some("0.4500"),
+            "A-side endpoint must not clear another B record's score"
+        );
+        let mut reader = csv::Reader::from_path(dir.path().join("relationships.csv")).expect("CSV");
+        let headers = reader.headers().expect("headers").clone();
+        let index = |name: &str| headers.iter().position(|h| h == name).expect("column");
+        let rows: Vec<_> = reader.records().map(|r| r.expect("row")).collect();
+        for (a, b, score, rank, reason) in [
+            ("A1", "B2", 0.91, "2", ""),
+            ("A2", "B1", 0.87, "3", "exact"),
+        ] {
+            let row = rows
+                .iter()
+                .find(|r| &r[0] == b && &r[1] == a)
+                .expect("replacement row");
+            assert_eq!(
+                row[index("score")].parse::<f64>().expect("score"),
+                score,
+                "own score"
+            );
+            assert_eq!(&row[index("rank")], rank, "own rank");
+            assert_eq!(&row[index("reason")], reason, "own reason");
+        }
+    }
 }

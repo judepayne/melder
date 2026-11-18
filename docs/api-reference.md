@@ -2,8 +2,11 @@
 
 # Live Mode API Reference
 
-All endpoints are under `/api/v1/`. The server is started with
+Matching, health and status endpoints are under `/api/v1/`; admin endpoints
+are at the root `/admin/`. The server is started with
 `meld serve --config config.yaml --port 8090`.
+
+Table paths below are relative to `/api/v1/` except the explicit `/admin/` paths.
 
 > For enroll-mode endpoints (`meld enroll`), see [Enroll Mode](enroll-mode.md).
 
@@ -35,9 +38,8 @@ All endpoints are under `/api/v1/`. The server is started with
 | GET | `/review/list` | List pending review-band matches (paginated) |
 | POST | `/exclude` | Exclude a pair (known non-match). Breaks existing match if present |
 | DELETE | `/exclude` | Remove an exclusion, allowing the pair to match again |
-| POST | `/admin/flush` | Trigger output build without shutting down |
-| GET | `/admin/flush/{build_id}` | Check status of a flush build |
-| POST | `/admin/shutdown` | Graceful shutdown with final output build |
+| POST | `/admin/flush` | Build configured outputs synchronously without shutting down (root path) |
+| POST | `/admin/shutdown` | Attempt configured output build, then acknowledge and initiate shutdown (root path) |
 | GET | `/health` | Health check |
 | GET | `/status` | Detailed server status (record counts, uptime) |
 
@@ -86,6 +88,85 @@ Response:
 The `status` field will be `"added"` for new records or `"updated"` for
 existing records that were modified.
 
+### Live assignment summary
+
+Live defaults to `live.assignment.strategy: greedy`. YAML opt-in
+`deferred_acceptance` can add an `assignment` object to successful upsert/remove
+responses (and corresponding bulk items); it is omitted for greedy and where no
+summary is produced. There is no request/CLI strategy override. Enroll is unchanged.
+See [Deferred acceptance](live-mode.md#deferred-acceptance) for the live policy.
+
+For example, a reciprocal free acceptance can return:
+
+```json
+{
+  "strategy": "deferred_acceptance",
+  "displacements": 0,
+  "limit_reached": false,
+  "changes": [
+    {
+      "version": 1,
+      "attempt_id": 0,
+      "step_index": 0,
+      "proposer": {"side": "a", "id": "ENT-001"},
+      "expected": [],
+      "replacements": [
+        {
+          "a_id": "ENT-001",
+          "b_id": "CP-042",
+          "score_b_to_a": 0.92,
+          "score_a_to_b": 0.91,
+          "rank": null,
+          "reason": "top_scoring"
+        }
+      ],
+      "newly_unmatched": [],
+      "previous_receiver_score": null
+    }
+  ],
+  "unmatched": [],
+  "partner": "CP-042"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `strategy` | `deferred_acceptance` |
+| `displacements` | Successful displacements in this attempt; free acceptances do not count |
+| `limit_reached` | A further otherwise-qualified displacement was suppressed by `live.assignment.max_displacements`, not merely that the count equals the cap |
+| `changes` | Ordered committed steps: `expected` old A/B pairs and scored `replacements`, with proposer, zero-based step index and prior receiver score (null for a free acceptance) |
+| `unmatched` | Final unmatched affected endpoints, each identified by `side` and `id` |
+| `partner` | Incoming endpoint's final opposite-side partner, or null; null for a removed endpoint |
+
+Replacement `rank` is the canonical B→A rank, or null when available only through
+verification; `reason` is the canonical scoring reason and may be null. Scores
+can differ by direction. `newly_unmatched` records the orphan **at that step**;
+it may be rematched later. `changes` is history, not a final pair set.
+
+`matches` remains query-direction ranked candidate evidence, **not accepted
+assignments**. An `auto` candidate alone does not prove acceptance. Upsert's
+top-level `classification` and `assignment.partner` reflect final membership;
+use CrossMap lookup for current accepted links. Bulk upsert summaries and
+classifications are refreshed after all item attempts, because later seeds can
+displace earlier temporary matches.
+
+New pairs must qualify reciprocally, including ambiguity safeguards. Only
+session-created ordinary automatic incumbents can be displaced, and only for a
+strictly higher current receiver score; ties retain them. The default cap is 32
+successful displacements per attempt; zero allows reciprocal free matches only.
+Proposals wait synchronously for the mutation window: there is no background
+assignment worker, order-independence or global-optimality guarantee. Read-only
+`try_match`/`match_batch` do not install or displace links. Manual confirm/break and
+exclude/unexclude do not trigger automatic rematching.
+
+A chain can commit a prefix before an error; errors do not mean all earlier
+steps were undone. Each step preserves the bijection atomically, not an entire
+request transaction. WAL append is buffered, not per-step fsync. Memory recovers
+from WAL/snapshots; SQLite is authoritative without WAL replay. An ambiguous
+append, failed rollback or postcommit metadata failure blocks further optimizing
+mutations until recovery/restart. See [Live Mode](live-mode.md#assignment-persistence-and-failures).
+Batch maximum-weight assignment is not yet integrated.
+
 ## Removing a record
 
 Remove a record by ID. This removes it from all indices (embedding,
@@ -114,7 +195,10 @@ Response:
 ```
 
 The `crossmap_broken` array lists any opposite-side IDs whose pairing
-was broken by the removal. It is omitted when empty.
+was broken by the removal. It is omitted when empty. With deferred acceptance,
+the surviving partner is synchronously seeded for rematching and may no longer
+be unmatched at response time; the optional `assignment` summary records the
+result.
 
 ## Batch operations
 
@@ -153,6 +237,12 @@ Each entry in `results` has the same shape as a single `/add` response.
 If a record fails (e.g. missing ID field), its entry has
 `"status": "error"` with a message — the rest of the batch still
 succeeds.
+
+With deferred acceptance, valid records and their indices are installed before
+proposals start. Successful item seeds run in request order, each with its own
+displacement cap; final summaries/classifications are refreshed after all seeds.
+Per-item changes remain committed history, not a guarantee that those links
+survived later items.
 
 ### Match batch
 
@@ -443,52 +533,43 @@ and enroll modes.
 
 ### Flush (build without shutdown)
 
-Trigger an output build while the server continues accepting requests.
+Build configured outputs without shutting down. The request waits for the build
+to finish; the server remains running. Deferred acceptance holds its exclusive
+mutation gate while taking the snapshot and building outputs, so mutations can
+wait behind the build.
+
 Requires at least one of `output.csv_dir_path`,
 `output.parquet_dir_path`, or `output.db_path` to be configured.
 
 ```
-POST /api/v1/admin/flush
+POST /admin/flush
 ```
 
-Response (`202 Accepted`):
+Response (`200 OK`, build completed):
 
 ```json
 {
-  "build_id": "build_20260406T120000Z",
-  "status": "accepted"
+  "status": "complete",
+  "matches": 1200,
+  "review": 30,
+  "unmatched": 70,
+  "elapsed_secs": 4.2
 }
 ```
 
-The build runs in a background task. Multiple concurrent flush calls
-are serialised — only one build runs at a time.
-
-Check build status:
-
-```
-GET /api/v1/admin/flush/build_20260406T120000Z
-```
-
-```json
-{
-  "build_id": "build_20260406T120000Z",
-  "status": "completed",
-  "duration_ms": 4200,
-  "files_written": ["output/relationships.csv", "output/unmatched.csv", "output/results.db"]
-}
-```
-
-Possible `status` values: `accepted`, `running`, `completed`, `failed`.
-On failure, the response includes an `error` field with details.
+There is no build ID or polling route. Missing output configuration returns
+`400 Bad Request`; a build or worker failure returns `500 Internal Server Error`.
+Error responses contain an `error` field. Do not assume concurrent flush requests
+are universally serialized; greedy mode has no dedicated build lock.
 
 ### Shutdown (build then exit)
 
-Graceful shutdown with a final output build. The server stops accepting
-new requests, drains in-flight work, flushes the match log and scoring
-log, runs the build pipeline, and exits.
+Attempt a final output build if any output destination is configured, waiting
+for that attempt **before** acknowledging shutdown. The server has not yet stopped
+accepting requests during this build; this is not a post-drain final snapshot.
 
 ```
-POST /api/v1/admin/shutdown
+POST /admin/shutdown
 ```
 
 Response (`202 Accepted`):
@@ -499,9 +580,15 @@ Response (`202 Accepted`):
 }
 ```
 
-On build failure, the server exits with a non-zero code. The match log
-remains on disk and outputs can be rebuilt with `meld export`.
+Build failures are logged as warnings; the endpoint still returns the acknowledgment
+above and initiates shutdown. It does not report build success, and output failure
+does not guarantee a nonzero process exit. Check server logs and use `meld export`
+with the retained match logs to rebuild outputs if needed.
 
-SIGTERM triggers the same shutdown sequence, so standard process
-management tools (Docker, Kubernetes, systemd) work correctly by
-default.
+After acknowledgment, graceful shutdown stops accepting requests and drains
+in-flight work. Cleanup flushes and compacts the WAL's current segment (retaining
+prior segments), flushes CrossMap and exclusions, and saves vector-index caches.
+
+SIGTERM and Ctrl-C initiate graceful shutdown and cleanup, **not** the admin
+endpoint's output build. To build outputs before exit, use this endpoint; to build
+them after shutdown, use `meld export`.

@@ -109,7 +109,6 @@ pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
         if let Err(e) = state.wal.compact(id_field, id_field) {
             warn!(error = %e, "wal compact failed");
         }
-        state.wal.cleanup_old_files();
 
         // Flush exclusions
         if let Err(e) = state.exclusions.flush() {

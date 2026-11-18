@@ -89,26 +89,33 @@ pub fn cmd_serve(config_path: &Path, port: u16, bind: &str) {
         }
 
         // Start background crossmap flusher
-        let flush_state = state.clone();
+        let flush_session = session.clone();
         let flush_secs = state.config.live.crossmap_flush_secs.unwrap_or(5);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(flush_secs));
             loop {
                 interval.tick().await;
-                if let Err(e) = flush_state.flush_crossmap() {
-                    warn!(error = %e, "crossmap flush failed");
+                let session = flush_session.clone();
+                match tokio::task::spawn_blocking(move || session.flush_assignment_crossmap()).await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!(error = %e, "crossmap flush failed"),
+                    Err(e) => warn!(error = %e, "crossmap flush worker failed"),
                 }
             }
         });
 
         // Start background WAL flusher
-        let wal_state = state.clone();
+        let wal_session = session.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
             loop {
                 interval.tick().await;
-                if let Err(e) = wal_state.wal.flush() {
-                    warn!(error = %e, "wal flush failed");
+                let session = wal_session.clone();
+                match tokio::task::spawn_blocking(move || session.flush_assignment_log()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!(error = %e, "wal flush failed"),
+                    Err(e) => warn!(error = %e, "wal flush worker failed"),
                 }
             }
         });
@@ -131,13 +138,12 @@ pub fn cmd_serve(config_path: &Path, port: u16, bind: &str) {
         let a_id_field = &state.config.datasets.a.id_field;
         let b_id_field = &state.config.datasets.b.id_field;
         if let Err(e) = state.wal.compact(a_id_field, b_id_field) {
-            warn!(error = %e, "wal compact failed");
+            warn!(error = %e, "wal compact failed; retaining original logs");
         }
-        state.wal.cleanup_old_files();
 
         // Final crossmap flush
         state.mark_crossmap_dirty(); // force flush
-        if let Err(e) = state.flush_crossmap() {
+        if let Err(e) = session.flush_assignment_crossmap() {
             warn!(error = %e, "final crossmap flush failed");
         }
 

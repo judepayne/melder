@@ -4,6 +4,7 @@
 //! reviews, breaks, removes, excludes. Canonical input for output generation.
 //! Provides replay for crash recovery and compaction for space reclamation.
 
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -53,20 +54,120 @@ fn filename_timestamp() -> String {
     iso8601_now().replace([':', '-'], "")
 }
 
-/// Generate a WAL filename with a startup timestamp.
-///
-/// Given a configured path like `bench/live_upserts.ndjson`, produces
-/// `bench/live_upserts_20260311T184207Z.ndjson`.
-fn timestamped_wal_path(base: &Path) -> PathBuf {
-    let ts = filename_timestamp();
+// Fixed-width sequences sort after legacy unsuffixed files for the same second.
+fn timestamped_wal_path(base: &Path, ts: &str, sequence: u32) -> PathBuf {
     let stem = base.file_stem().unwrap_or_default().to_string_lossy();
     let ext = base.extension().unwrap_or_default().to_string_lossy();
     let new_name = if ext.is_empty() {
-        format!("{}_{}", stem, ts)
+        format!("{}_{}_{:06}", stem, ts, sequence)
     } else {
-        format!("{}_{}.{}", stem, ts, ext)
+        format!("{}_{}_{:06}.{}", stem, ts, sequence, ext)
     };
     base.with_file_name(new_name)
+}
+
+/// One scored replacement pair in an atomic reassignment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReassignmentMatch {
+    pub a_id: String,
+    pub b_id: String,
+    pub score: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Canonical A/B pair expected by an assignment transition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentPair {
+    pub a_id: String,
+    pub b_id: String,
+}
+
+/// Side-qualified endpoint (A and B IDs have separate namespaces).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentEndpoint {
+    pub side: Side,
+    pub id: String,
+}
+
+/// Installed pair with current scores in both directions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentMatch {
+    pub a_id: String,
+    pub b_id: String,
+    pub score_b_to_a: f64,
+    pub score_a_to_b: f64,
+    pub rank: Option<u8>,
+    pub reason: Option<String>,
+}
+
+/// One committed live deferred-acceptance step. Version 1 implies the strategy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentDelta {
+    pub version: u8,
+    pub attempt_id: u64,
+    pub step_index: usize,
+    pub proposer: AssignmentEndpoint,
+    pub expected: Vec<AssignmentPair>,
+    pub replacements: Vec<AssignmentMatch>,
+    pub newly_unmatched: Vec<AssignmentEndpoint>,
+    pub previous_receiver_score: Option<f64>,
+}
+
+impl AssignmentDelta {
+    /// Reject unsupported schemas and internally inconsistent live transitions.
+    pub fn validate(&self) -> io::Result<()> {
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid assignment_delta v1");
+        if self.version != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported assignment_delta version {}", self.version),
+            ));
+        }
+        // V1 is one free acceptance or one displacement, not batch publication.
+        if self.expected.len() > 1 || self.replacements.len() != 1 {
+            return Err(invalid());
+        }
+        let replacement = &self.replacements[0];
+        if !replacement.score_b_to_a.is_finite()
+            || !replacement.score_a_to_b.is_finite()
+            || self
+                .previous_receiver_score
+                .is_some_and(|score| !score.is_finite())
+            || self.expected.is_empty() != self.previous_receiver_score.is_none()
+        {
+            return Err(invalid());
+        }
+        let (proposer, receiver) = match self.proposer.side {
+            Side::A => (replacement.a_id.as_str(), replacement.b_id.as_str()),
+            Side::B => (replacement.b_id.as_str(), replacement.a_id.as_str()),
+        };
+        if self.proposer.id != proposer {
+            return Err(invalid());
+        }
+        let mut unmatched = HashSet::new();
+        for pair in &self.expected {
+            let (old_proposer, old_receiver) = match self.proposer.side {
+                Side::A => (pair.a_id.as_str(), pair.b_id.as_str()),
+                Side::B => (pair.b_id.as_str(), pair.a_id.as_str()),
+            };
+            if old_receiver != receiver || old_proposer == proposer {
+                return Err(invalid());
+            }
+            unmatched.insert((self.proposer.side, old_proposer));
+        }
+        let recorded: HashSet<_> = self
+            .newly_unmatched
+            .iter()
+            .map(|e| (e.side, e.id.as_str()))
+            .collect();
+        if recorded.len() != self.newly_unmatched.len() || recorded != unmatched {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
 
 /// Match log event types.
@@ -93,6 +194,14 @@ pub enum MatchLogEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    #[serde(rename = "crossmap_reassign")]
+    CrossMapReassign {
+        old_a_id: String,
+        old_b_id: String,
+        replacements: [ReassignmentMatch; 2],
+    },
+    #[serde(rename = "assignment_delta")]
+    AssignmentDelta(AssignmentDelta),
     #[serde(rename = "review_match")]
     ReviewMatch {
         /// The ID of the record that was upserted.
@@ -129,6 +238,202 @@ pub enum MatchLogEvent {
     Unexclude { a_id: String, b_id: String },
 }
 
+/// Reconstruct membership independently of a possibly newer CSV snapshot.
+///
+/// Delta expectations on endpoints with no earlier membership history describe
+/// initially preloaded pairs. Later stale expectations are never inferred.
+/// Untouched snapshot pairs are retained; restored links carry no provenance.
+pub fn reconstruct_assignment_history(
+    events: &[MatchLogEvent],
+    snapshot: &[(String, String)],
+) -> io::Result<Vec<(String, String)>> {
+    use crate::crossmap::{CrossMapOps, MemoryCrossMap};
+
+    let mut footprint = HashSet::new();
+    for event in events {
+        match event {
+            MatchLogEvent::AssignmentDelta(delta) => {
+                delta.validate()?;
+                for pair in &delta.expected {
+                    footprint.insert((pair.a_id.as_str(), pair.b_id.as_str()));
+                }
+                for pair in &delta.replacements {
+                    footprint.insert((pair.a_id.as_str(), pair.b_id.as_str()));
+                }
+            }
+            MatchLogEvent::CrossMapReassign {
+                old_a_id,
+                old_b_id,
+                replacements,
+            } => {
+                footprint.insert((old_a_id.as_str(), old_b_id.as_str()));
+                for pair in replacements {
+                    footprint.insert((pair.a_id.as_str(), pair.b_id.as_str()));
+                }
+            }
+            MatchLogEvent::CrossMapConfirm { a_id, b_id, .. }
+            | MatchLogEvent::CrossMapBreak { a_id, b_id } => {
+                footprint.insert((a_id.as_str(), b_id.as_str()));
+            }
+            _ => {}
+        }
+    }
+    let map = MemoryCrossMap::new();
+    for (a, b) in snapshot {
+        // Unknown snapshot ownership must not be silently discarded merely
+        // because it overlaps a delta. Claims must detect that conflict.
+        if !footprint.contains(&(a.as_str(), b.as_str())) && !map.claim(a, b) {
+            return Err(io::Error::other("invalid snapshot bijection"));
+        }
+    }
+    let mut seen = HashSet::new();
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "WAL assignment ownership invariant failed",
+        )
+    };
+    for event in events {
+        match event {
+            MatchLogEvent::AssignmentDelta(delta) => {
+                for pair in &delta.expected {
+                    if !seen.contains(&(Side::A, pair.a_id.clone()))
+                        && !seen.contains(&(Side::B, pair.b_id.clone()))
+                        && !map.claim(&pair.a_id, &pair.b_id)
+                    {
+                        return Err(invalid());
+                    }
+                }
+                let expected: Vec<_> = delta
+                    .expected
+                    .iter()
+                    .map(|p| (p.a_id.as_str(), p.b_id.as_str()))
+                    .collect();
+                let replacements: Vec<_> = delta
+                    .replacements
+                    .iter()
+                    .map(|p| (p.a_id.as_str(), p.b_id.as_str()))
+                    .collect();
+                let already_applied = replacements.iter().all(|(a, b)| {
+                    map.get_b(a).as_deref() == Some(*b) && map.get_a(b).as_deref() == Some(*a)
+                }) && delta.newly_unmatched.iter().all(|e| match e.side {
+                    Side::A => !map.has_a(&e.id),
+                    Side::B => !map.has_b(&e.id),
+                });
+                if !already_applied
+                    && !map
+                        .apply_assignment_delta(&expected, &replacements)
+                        .map_err(io::Error::other)?
+                {
+                    return Err(invalid());
+                }
+                for (a, b) in expected.into_iter().chain(replacements) {
+                    seen.insert((Side::A, a.to_string()));
+                    seen.insert((Side::B, b.to_string()));
+                }
+            }
+            MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } => {
+                let displaced = map.confirm(a_id, b_id).map_err(io::Error::other)?;
+                if let Some(a) = displaced.displaced_a {
+                    seen.insert((Side::A, a));
+                }
+                if let Some(b) = displaced.displaced_b {
+                    seen.insert((Side::B, b));
+                }
+                seen.insert((Side::A, a_id.clone()));
+                seen.insert((Side::B, b_id.clone()));
+            }
+            MatchLogEvent::CrossMapBreak { a_id, b_id } => {
+                map.remove(a_id, b_id);
+                seen.insert((Side::A, a_id.clone()));
+                seen.insert((Side::B, b_id.clone()));
+            }
+            MatchLogEvent::CrossMapReassign {
+                old_a_id,
+                old_b_id,
+                replacements,
+            } => {
+                let pairs = replacements
+                    .each_ref()
+                    .map(|p| (p.a_id.as_str(), p.b_id.as_str()));
+                let applied = pairs.iter().all(|(a, b)| {
+                    map.get_b(a).as_deref() == Some(*b) && map.get_a(b).as_deref() == Some(*a)
+                });
+                if !applied
+                    && !map
+                        .replace_pairs(&[(old_a_id, old_b_id)], &pairs)
+                        .map_err(io::Error::other)?
+                {
+                    return Err(invalid());
+                }
+                seen.insert((Side::A, old_a_id.clone()));
+                seen.insert((Side::B, old_b_id.clone()));
+                for (a, b) in pairs {
+                    seen.insert((Side::A, a.to_string()));
+                    seen.insert((Side::B, b.to_string()));
+                }
+            }
+            MatchLogEvent::RemoveRecord { side, id } => {
+                match side {
+                    Side::A => {
+                        if let Some(b) = map.get_b(id) {
+                            map.remove(id, &b);
+                            seen.insert((Side::B, b));
+                        }
+                    }
+                    Side::B => {
+                        if let Some(a) = map.get_a(id) {
+                            map.remove(&a, id);
+                            seen.insert((Side::A, a));
+                        }
+                    }
+                }
+                seen.insert((*side, id.clone()));
+            }
+            _ => {}
+        }
+    }
+    Ok(map.pairs())
+}
+
+// Accept only incomplete JSON with a recognized canonical header. For a torn
+// UTF-8 code point, parse the valid prefix; other invalid UTF-8 is corruption.
+fn is_torn_final_frame(line: &[u8]) -> bool {
+    if line.ends_with(b"\n") {
+        return false;
+    }
+    let text = match std::str::from_utf8(line) {
+        Ok(text) => text,
+        Err(e) if e.error_len().is_none() => {
+            // valid_up_to is guaranteed to be a UTF-8 boundary.
+            std::str::from_utf8(&line[..e.valid_up_to()]).expect("valid UTF-8 prefix")
+        }
+        Err(_) => return false,
+    };
+    let header = text
+        .strip_prefix(r#"{"ts":""#)
+        .and_then(|rest| rest.split_once(r#"","#))
+        .map(|(_, event)| event)
+        .or_else(|| text.strip_prefix('{'));
+    let known_header = header.is_some_and(|header| {
+        [
+            r#""type":"upsert_record","#,
+            r#""type":"crossmap_confirm","#,
+            r#""type":"crossmap_reassign","#,
+            r#""type":"assignment_delta","version":1,"#,
+            r#""type":"review_match","#,
+            r#""type":"no_match_below","#,
+            r#""type":"crossmap_break","#,
+            r#""type":"remove_record","#,
+            r#""type":"exclude","#,
+            r#""type":"unexclude","#,
+        ]
+        .iter()
+        .any(|prefix| header.starts_with(prefix))
+    });
+    known_header && serde_json::from_str::<MatchLogEvent>(text).is_err_and(|error| error.is_eof())
+}
+
 /// Write-ahead log for crash recovery.
 ///
 /// Events are JSON-serialized, one per line. The log is append-only.
@@ -140,9 +445,6 @@ pub enum MatchLogEvent {
 pub struct MatchLog {
     /// The timestamped path for the current run's WAL file.
     path: PathBuf,
-    /// The configured base path (without timestamp) for glob matching.
-    #[allow(dead_code)]
-    base_path: PathBuf,
     writer: Mutex<BufWriter<File>>,
 }
 
@@ -151,24 +453,53 @@ impl MatchLog {
     ///
     /// The `base_path` is the configured path (e.g. `bench/live_upserts.ndjson`).
     /// The actual file created will be timestamped (e.g.
-    /// `bench/live_upserts_20260311T184207Z.ndjson`).
+    /// `bench/live_upserts_20260311T184207Z_000001.ndjson`).
     pub fn open(base_path: &Path) -> io::Result<Self> {
-        let path = timestamped_wal_path(base_path);
+        Self::open_timestamped(base_path, &filename_timestamp())
+    }
+
+    fn open_timestamped(base_path: &Path, timestamp: &str) -> io::Result<Self> {
+        let path = timestamped_wal_path(base_path, timestamp, 1);
         if let Some(parent) = path.parent()
             && !parent.exists()
         {
             fs::create_dir_all(parent)?;
         }
 
-        info!(path = %path.display(), "WAL opened for writing");
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let writer = Mutex::new(BufWriter::new(file));
-
-        Ok(Self {
-            path,
-            base_path: base_path.to_path_buf(),
-            writer,
-        })
+        let prefix = format!(
+            "{}_{}_",
+            base_path.file_stem().unwrap_or_default().to_string_lossy(),
+            timestamp,
+        );
+        let mut sequence = Self::find_wal_files(base_path)
+            .iter()
+            .filter_map(|path| {
+                path.file_stem()?
+                    .to_str()?
+                    .strip_prefix(&prefix)?
+                    .parse::<u32>()
+                    .ok()
+            })
+            .max()
+            .unwrap_or(0);
+        loop {
+            sequence = sequence
+                .checked_add(1)
+                .filter(|n| *n <= 999_999)
+                .ok_or_else(|| io::Error::other("WAL segment sequence exhausted"))?;
+            let path = timestamped_wal_path(base_path, timestamp, sequence);
+            match OpenOptions::new().create_new(true).append(true).open(&path) {
+                Ok(file) => {
+                    info!(path = %path.display(), "WAL opened for writing");
+                    return Ok(Self {
+                        path,
+                        writer: Mutex::new(BufWriter::new(file)),
+                    });
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// Append an event to the WAL, with an ISO-8601 UTC timestamp.
@@ -190,6 +521,9 @@ impl MatchLog {
             ts: String,
             #[serde(flatten)]
             event: &'a MatchLogEvent,
+        }
+        if let MatchLogEvent::AssignmentDelta(delta) = event {
+            delta.validate()?;
         }
         let wrapped = Timestamped {
             ts: iso8601_now(),
@@ -305,24 +639,6 @@ impl MatchLog {
         paths
     }
 
-    /// Remove old WAL files that aren't the current one.
-    ///
-    /// After compaction, all events are in the current WAL file. Old
-    /// timestamped files from previous server runs are no longer needed
-    /// and would grow unbounded across restarts.
-    pub fn cleanup_old_files(&self) {
-        let all_files = Self::find_wal_files(&self.base_path);
-        for file in &all_files {
-            if *file != self.path {
-                if let Err(e) = fs::remove_file(file) {
-                    warn!(path = %file.display(), error = %e, "failed to remove old WAL file");
-                } else {
-                    info!(path = %file.display(), "removed old WAL file");
-                }
-            }
-        }
-    }
-
     /// Replay all events from a single WAL file.
     ///
     /// Tolerates a truncated last line (logs a warning, skips it).
@@ -331,29 +647,44 @@ impl MatchLog {
     /// tagged enum).
     fn replay_file(path: &Path) -> io::Result<Vec<MatchLogEvent>> {
         let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
         let mut events = Vec::new();
         let mut line_num = 0;
         let mut truncated = 0;
 
-        for line_result in reader.lines() {
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if reader.read_until(b'\n', &mut line)? == 0 {
+                break;
+            }
             line_num += 1;
-            let line = match line_result {
-                Ok(l) => l,
-                Err(_) => {
-                    truncated += 1;
-                    continue;
-                }
-            };
 
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
 
-            match serde_json::from_str::<MatchLogEvent>(trimmed) {
-                Ok(event) => events.push(event),
+            match serde_json::from_slice::<MatchLogEvent>(&line) {
+                Ok(event) => {
+                    if let MatchLogEvent::AssignmentDelta(delta) = &event {
+                        delta.validate().map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("{}:{}: {}", path.display(), line_num, e),
+                            )
+                        })?;
+                    }
+                    events.push(event);
+                }
                 Err(e) => {
+                    // Recover a torn final frame written by this logger, but
+                    // never skip a corrupt complete line or an unknown schema.
+                    if !is_torn_final_frame(&line) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("{}:{}: {}", path.display(), line_num, e),
+                        ));
+                    }
                     truncated += 1;
                     warn!(
                         line = line_num,
@@ -413,7 +744,8 @@ impl MatchLog {
     /// Compact the WAL: deduplicate UpsertRecord events (last-write-wins
     /// per side+id), keep all CrossMap events in order.
     ///
-    /// Rewrites the file atomically (temp + rename).
+    /// Rewrites only the current segment (synced temp + rename). Prior segments
+    /// must be retained: this is not a checkpoint of recovered history.
     ///
     /// Holds the writer lock for the entire operation so that concurrent
     /// `append()` calls block until compaction is complete and the writer
@@ -470,6 +802,19 @@ impl MatchLog {
             }
         }
 
+        // A removal can break membership installed in an older segment, even
+        // when this segment contains no assignment delta. Likewise, an upsert
+        // clears its query's reviews. Without checkpoint offsets, retain the
+        // complete ordering whenever either interaction is possible. Do this
+        // for legacy segments too: a later run may introduce assignment history.
+        let preserve_history = events.iter().any(|event| {
+            matches!(
+                event,
+                MatchLogEvent::AssignmentDelta(_)
+                    | MatchLogEvent::RemoveRecord { .. }
+                    | MatchLogEvent::ReviewMatch { .. }
+            )
+        });
         // Build compacted event list
         let mut compacted: Vec<&MatchLogEvent> = Vec::new();
         for (idx, event) in events.iter().enumerate() {
@@ -486,7 +831,7 @@ impl MatchLog {
                     };
                     // Only keep if this is the latest for this (side, id)
                     // and not superseded by a later RemoveRecord
-                    if record_latest.get(&(side_str, id)) == Some(&idx) {
+                    if preserve_history || record_latest.get(&(side_str, id)) == Some(&idx) {
                         compacted.push(event);
                     }
                 }
@@ -496,12 +841,14 @@ impl MatchLog {
                         Side::B => "b".to_string(),
                     };
                     // Keep remove events for IDs that are currently removed
-                    if removed_ids.contains(&(side_str, id.clone())) {
+                    if preserve_history || removed_ids.contains(&(side_str, id.clone())) {
                         compacted.push(event);
                     }
                 }
                 MatchLogEvent::CrossMapConfirm { .. }
                 | MatchLogEvent::CrossMapBreak { .. }
+                | MatchLogEvent::CrossMapReassign { .. }
+                | MatchLogEvent::AssignmentDelta(_)
                 | MatchLogEvent::ReviewMatch { .. }
                 | MatchLogEvent::NoMatchBelow { .. }
                 | MatchLogEvent::Exclude { .. }
@@ -523,6 +870,7 @@ impl MatchLog {
                 tmp_writer.write_all(b"\n")?;
             }
             tmp_writer.flush()?;
+            tmp_writer.get_ref().sync_all()?;
         }
 
         // Atomic rename (cross-platform: see rename_replacing)
@@ -568,6 +916,507 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    fn make_reassignment() -> MatchLogEvent {
+        serde_json::from_str(
+            r#"{"type":"crossmap_reassign","old_a_id":"A1","old_b_id":"B1","replacements":[{"a_id":"A1","b_id":"B2","score":0.91,"rank":2},{"a_id":"A2","b_id":"B1","score":0.87,"reason":"exact"}]}"#,
+        )
+        .expect("valid reassignment fixture")
+    }
+
+    fn make_assignment_delta(old: Option<&str>, new: &str, step: usize) -> MatchLogEvent {
+        MatchLogEvent::AssignmentDelta(AssignmentDelta {
+            version: 1,
+            attempt_id: 42,
+            step_index: step,
+            proposer: AssignmentEndpoint {
+                side: Side::B,
+                id: new.into(),
+            },
+            expected: old
+                .map(|b| AssignmentPair {
+                    a_id: "A".into(),
+                    b_id: b.into(),
+                })
+                .into_iter()
+                .collect(),
+            replacements: vec![AssignmentMatch {
+                a_id: "A".into(),
+                b_id: new.into(),
+                score_b_to_a: 0.91,
+                score_a_to_b: 0.95,
+                rank: None,
+                reason: None,
+            }],
+            newly_unmatched: old
+                .map(|b| AssignmentEndpoint {
+                    side: Side::B,
+                    id: b.into(),
+                })
+                .into_iter()
+                .collect(),
+            previous_receiver_score: old.map(|_| 0.9),
+        })
+    }
+
+    #[test]
+    fn quiet_compaction_retains_prior_crash_segments_without_duplication() {
+        let dir = tempdir().expect("tempdir");
+        let base = dir.path().join("crash.ndjson");
+        let timestamp = "20260311T184207Z";
+        let legacy = dir.path().join(format!("crash_{timestamp}.ndjson"));
+        let upsert = MatchLogEvent::UpsertRecord {
+            side: Side::B,
+            record: make_record(&[("id", "old"), ("name", "recovered record")]),
+        };
+        fs::write(
+            &legacy,
+            MatchLog::serialize_event(&upsert).expect("serialize"),
+        )
+        .expect("legacy segment");
+        let first = MatchLog::open_timestamped(&base, timestamp).expect("first run");
+        first
+            .append(&make_assignment_delta(Some("old"), "middle", 0))
+            .expect("first displacement");
+        first.flush().expect("persist before crash");
+        let first_path = first.path().to_path_buf();
+        drop(first); // No compaction: simulate a crashed run's persisted prefix.
+        let second = MatchLog::open_timestamped(&base, timestamp).expect("second run");
+        assert!(second.path() > first_path.as_path(), "same-second ordering");
+        second
+            .append(&make_assignment_delta(Some("middle"), "last", 1))
+            .expect("second displacement");
+        second.flush().expect("persist before second crash");
+        let second_path = second.path().to_path_buf();
+        drop(second);
+        OpenOptions::new()
+            .append(true)
+            .open(&second_path)
+            .expect("crashed segment")
+            .write_all(b"{\"type\":\"crossmap_confirm\",\"a_id\":\"torn")
+            .expect("torn append");
+        let old_bytes = fs::read(&second_path).expect("read crash segment");
+        let before = MatchLog::replay(&base).expect("recover crashes");
+        assert_eq!(before.len(), 3, "recover record and both audit steps once");
+        let expected = serde_json::to_value(&before).expect("expected history");
+        // Quiet restart -> shutdown -> restart, repeated, must retain all history.
+        for _ in 0..3 {
+            let quiet = MatchLog::open_timestamped(&base, timestamp).expect("quiet restart");
+            assert!(
+                quiet.path() > second_path.as_path(),
+                "fresh chronological segment"
+            );
+            quiet.compact("id", "id").expect("quiet shutdown");
+            drop(quiet);
+            let events = MatchLog::replay(&base).expect("restart after quiet shutdown");
+            assert_eq!(
+                serde_json::to_value(&events).expect("actual history"),
+                expected,
+                "prior records, touched pairs and audit survive without duplication"
+            );
+            assert_eq!(
+                reconstruct_assignment_history(&events, &[("A".into(), "last".into())])
+                    .expect("recover with latest snapshot"),
+                vec![("A".into(), "last".into())],
+                "complete footprint reconstructs membership from a newer snapshot"
+            );
+            assert_eq!(
+                fs::read(&second_path).expect("retained crash segment"),
+                old_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn segment_sequences_sort_after_legacy_and_never_fill_old_gaps() {
+        for name in ["segments.ndjson", "segments"] {
+            let dir = tempdir().expect("tempdir");
+            let base = dir.path().join(name);
+            let timestamp = "20260311T184207Z";
+            let legacy = timestamped_wal_path(&base, timestamp, 1);
+            let legacy = legacy.with_file_name(
+                legacy
+                    .file_name()
+                    .expect("filename")
+                    .to_string_lossy()
+                    .replace("_000001", ""),
+            );
+            fs::write(&legacy, b"").expect("legacy segment");
+            let high = timestamped_wal_path(&base, timestamp, 9);
+            fs::write(&high, b"").expect("existing segment with gaps");
+            let log = MatchLog::open_timestamped(&base, timestamp).expect("new segment");
+            assert_eq!(log.path(), timestamped_wal_path(&base, timestamp, 10));
+            assert_eq!(
+                MatchLog::find_wal_files(&base),
+                vec![legacy, high, log.path().to_path_buf()],
+                "extensionless and legacy names retain chronological order"
+            );
+        }
+    }
+
+    #[test]
+    fn torn_payloads_of_every_known_event_recover_including_unicode_bytes() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("torn.ndjson");
+        let ordinary = [
+            r#"{"type":"upsert_record","side":"a","record":{"id":"é東京"}}"#,
+            r#"{"type":"crossmap_confirm","a_id":"é東京","b_id":"B"}"#,
+            r#"{"type":"review_match","id":"é東京","side":"b","candidate_id":"A","score":0.7}"#,
+            r#"{"type":"no_match_below","query_id":"é東京","query_side":"b"}"#,
+            r#"{"type":"crossmap_break","a_id":"é東京","b_id":"B"}"#,
+            r#"{"type":"remove_record","side":"a","id":"é東京"}"#,
+            r#"{"type":"exclude","a_id":"é東京","b_id":"B"}"#,
+            r#"{"type":"unexclude","a_id":"é東京","b_id":"B"}"#,
+        ];
+        let mut events: Vec<MatchLogEvent> = ordinary
+            .iter()
+            .map(|json| serde_json::from_str(json).expect("ordinary fixture"))
+            .collect();
+        events.push(make_reassignment());
+        events.push(make_assignment_delta(Some("old"), "é東京", 0));
+        let prior = MatchLog::serialize_event(&events[0]).expect("prior complete event");
+        for event in events {
+            // Test both timestamped logger output and timestamp-free compacted output.
+            for bytes in [MatchLog::serialize_event(&event).expect("serialize"), {
+                let mut bytes = serde_json::to_vec(&event).expect("compact serialization");
+                bytes.push(b'\n');
+                bytes
+            }] {
+                let text = std::str::from_utf8(&bytes).expect("serialized UTF-8");
+                let header_end = if matches!(event, MatchLogEvent::AssignmentDelta(_)) {
+                    text.find("\"version\":1,").expect("version header") + "\"version\":1,".len()
+                } else {
+                    let start = text.find("\"type\":").expect("type header");
+                    start + text[start..].find(',').expect("end of type header") + 1
+                };
+                for cut in header_end..bytes.len() - 1 {
+                    let mut crash = prior.clone();
+                    crash.extend_from_slice(&bytes[..cut]);
+                    fs::write(&path, &crash).expect("crash fixture");
+                    assert_eq!(
+                        MatchLog::replay(&path)
+                            .expect("recover torn known frame")
+                            .len(),
+                        1,
+                        "only prior complete frame survives cut {cut}: {text}"
+                    );
+                    crash.push(b'\n');
+                    fs::write(&path, &crash).expect("malformed complete fixture");
+                    assert!(
+                        MatchLog::replay(&path).is_err(),
+                        "newline frame must fail at cut {cut}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn corrupt_tails_and_unknown_headers_fail_closed() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("bad.ndjson");
+        for bytes in [
+            br#"{"type":"future_event","id":"torn"#.as_slice(),
+            br#"{"type":"assignment_delta","version":2,"attempt_id":"#.as_slice(),
+            br#"{"type":"assignment_delta","version":10,"attempt_id":"#.as_slice(),
+            br#"{"type":"assignment_delta","version":1"#.as_slice(),
+            br#"{"type":"crossmap_break","a_id":!"#.as_slice(),
+            b"{\"type\":\"remove_record\",\"side\":\"a\",\"id\":\"\xff".as_slice(),
+            b"{\"type\":\"remove_record\",\"side\":\"a\",\"id\":\"\xe6\xff".as_slice(),
+            b"{\"type\":\"remove_record\",\"side\":\"a\",\"id\":\"\xe6\n".as_slice(),
+        ] {
+            fs::write(&path, bytes).expect("corrupt tail");
+            assert!(
+                MatchLog::replay(&path).is_err(),
+                "reject corrupt tail: {bytes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn assignment_history_recovers_preloaded_pairs_and_newer_snapshot() {
+        let first = make_assignment_delta(Some("old"), "middle", 0);
+        let last = make_assignment_delta(Some("middle"), "last", 1);
+        for snapshot_b in ["old", "middle", "last"] {
+            let snapshot = vec![
+                ("A".into(), snapshot_b.into()),
+                ("protected".into(), "P".into()),
+            ];
+            let mut recovered = reconstruct_assignment_history(
+                &[first.clone(), last.clone(), last.clone()],
+                &snapshot,
+            )
+            .expect("recover history");
+            recovered.sort();
+            assert_eq!(
+                recovered,
+                vec![
+                    ("A".into(), "last".into()),
+                    ("protected".into(), "P".into())
+                ],
+                "snapshot age must not affect result"
+            );
+        }
+        let mut invalid = match last.clone() {
+            MatchLogEvent::AssignmentDelta(d) => d,
+            _ => unreachable!(),
+        };
+        invalid.expected[0].b_id = "old".into();
+        invalid.newly_unmatched[0].id = "old".into();
+        assert!(
+            reconstruct_assignment_history(
+                &[first.clone(), MatchLogEvent::AssignmentDelta(invalid)],
+                &[]
+            )
+            .is_err(),
+            "stale expectations are not inferred after first use"
+        );
+        let mixed = vec![
+            ("A".into(), "last".into()),
+            ("other".into(), "middle".into()),
+        ];
+        assert!(
+            reconstruct_assignment_history(&[first, last], &mixed).is_err(),
+            "mixed snapshot must not silently discard unrelated ownership"
+        );
+    }
+
+    #[test]
+    fn assignment_history_claim_remove_and_side_namespaces() {
+        let claim = make_assignment_delta(None, "B", 0);
+        let remove = MatchLogEvent::RemoveRecord {
+            side: Side::A,
+            id: "A".into(),
+        };
+        let snapshot = vec![("B".into(), "A".into())];
+        let pairs =
+            reconstruct_assignment_history(&[claim, remove], &snapshot).expect("remove history");
+        assert_eq!(
+            pairs, snapshot,
+            "removal must use actual side-qualified ownership"
+        );
+        let conflict = vec![("A".into(), "unrelated".into())];
+        assert!(
+            reconstruct_assignment_history(&[make_assignment_delta(None, "B", 0)], &conflict)
+                .is_err(),
+            "free claim must not evict unknown snapshot owner"
+        );
+    }
+
+    #[test]
+    fn separate_segment_compaction_retains_remove_before_recreate() {
+        for assignment_first in [false, true] {
+            let dir = tempdir().expect("tempdir");
+            let path = dir.path().join("segments.wal");
+            {
+                let log = MatchLog::open(&path).expect("first segment");
+                let claim = if assignment_first {
+                    make_assignment_delta(None, "B", 0)
+                } else {
+                    MatchLogEvent::CrossMapConfirm {
+                        a_id: "A".into(),
+                        b_id: "B".into(),
+                        score: Some(1.0),
+                        rank: None,
+                        reason: None,
+                    }
+                };
+                log.append(&claim).expect("claim");
+                log.compact("id", "id").expect("first compact");
+            }
+            {
+                let log = MatchLog::open(&path).expect("second segment");
+                log.append(&MatchLogEvent::RemoveRecord {
+                    side: Side::B,
+                    id: "B".into(),
+                })
+                .expect("remove");
+                log.append(&MatchLogEvent::UpsertRecord {
+                    side: Side::B,
+                    record: [("id".into(), "B".into())].into_iter().collect(),
+                })
+                .expect("recreate");
+                log.compact("id", "id").expect("second compact");
+            }
+            {
+                let log = MatchLog::open(&path).expect("third segment");
+                // Introducing a delta after legacy removals must also be safe.
+                log.append(&make_assignment_delta(None, "other", 1))
+                    .expect("new claim");
+                log.compact("id", "id").expect("third compact");
+            }
+            let events = MatchLog::replay(&path).expect("all segments");
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, MatchLogEvent::RemoveRecord { .. })),
+                "older ownership invalidation must survive compaction"
+            );
+            assert_eq!(
+                reconstruct_assignment_history(&events, &[]).expect("reconstruct"),
+                vec![("A".into(), "other".into())],
+                "neither legacy nor assignment ownership may resurrect"
+            );
+        }
+    }
+
+    #[test]
+    fn assignment_compaction_retains_remove_recreate_membership_history() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("remove.wal");
+        let log = MatchLog::open(&path).expect("open");
+        for event in [
+            make_assignment_delta(Some("old"), "new", 0),
+            MatchLogEvent::RemoveRecord {
+                side: Side::B,
+                id: "new".into(),
+            },
+            MatchLogEvent::UpsertRecord {
+                side: Side::B,
+                record: [("id".into(), "new".into())].into_iter().collect(),
+            },
+            make_assignment_delta(None, "last", 1),
+        ] {
+            log.append(&event).expect("append history");
+        }
+        log.compact("id", "id").expect("compact");
+        let events = MatchLog::replay(&path).expect("replay compacted");
+        assert_eq!(
+            events.len(),
+            4,
+            "a recreated ID's remove still changed membership"
+        );
+        assert_eq!(
+            reconstruct_assignment_history(&events, &[]).expect("history"),
+            vec![("A".into(), "last".into())],
+            "compaction preserves final acceptance"
+        );
+    }
+
+    #[test]
+    fn assignment_roundtrip_compaction_and_fail_closed() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("assignment.wal");
+        let log = MatchLog::open(&path).expect("open log");
+        let event = make_assignment_delta(Some("old"), "new", 0);
+        log.append(&event).expect("append");
+        log.compact("id", "id").expect("compact");
+        let events = MatchLog::replay(&path).expect("replay");
+        assert!(
+            matches!(&events[..], [MatchLogEvent::AssignmentDelta(d)] if d.version == 1 && d.replacements[0].rank.is_none()),
+            "retain complete typed delta"
+        );
+        for line in [
+            r#"{"type":"assignment_delta","version":2}"#,
+            r#"{"type":"assignment_delta","version":1"#,
+            r#"{"type":"future_assignment"}"#,
+        ] {
+            let bad = dir.path().join("bad.ndjson");
+            std::fs::write(&bad, line).expect("write malformed event");
+            assert!(
+                MatchLog::replay(&bad).is_err(),
+                "unsupported or malformed transition must fail closed: {line}"
+            );
+        }
+        let mut delta = match event {
+            MatchLogEvent::AssignmentDelta(d) => d,
+            _ => unreachable!(),
+        };
+        delta.version = 2;
+        let unsupported = dir.path().join("unsupported.ndjson");
+        std::fs::write(
+            &unsupported,
+            serde_json::to_vec(&MatchLogEvent::AssignmentDelta(delta.clone()))
+                .expect("raw future event"),
+        )
+        .expect("future event file");
+        let error = MatchLog::replay(&unsupported).expect_err("unsupported schema");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported assignment_delta version 2"),
+            "report schema version clearly: {error}"
+        );
+        delta.version = 1;
+        delta.newly_unmatched.clear();
+        assert!(
+            MatchLog::serialize_event(&MatchLogEvent::AssignmentDelta(delta)).is_err(),
+            "validate complete event before mutation"
+        );
+    }
+
+    #[test]
+    fn reassignment_roundtrip_and_compaction_order() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("reassign.wal");
+        let log = MatchLog::open(&path).expect("open log");
+        let confirm = MatchLogEvent::CrossMapConfirm {
+            a_id: "A1".into(),
+            b_id: "B1".into(),
+            score: Some(0.8),
+            rank: Some(1),
+            reason: None,
+        };
+        let event = make_reassignment();
+        let bytes = MatchLog::serialize_event(&event).expect("serialize");
+        assert_eq!(
+            bytes.iter().filter(|&&b| b == b'\n').count(),
+            1,
+            "one WAL frame"
+        );
+        let roundtrip: MatchLogEvent = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(
+            serde_json::to_value(&roundtrip).expect("value"),
+            serde_json::to_value(&event).expect("value"),
+            "metadata roundtrip"
+        );
+        log.append(&confirm).expect("append confirm");
+        log.append(&event).expect("append reassignment");
+        log.append(&MatchLogEvent::CrossMapBreak {
+            a_id: "A1".into(),
+            b_id: "B2".into(),
+        })
+        .expect("append break");
+        log.compact("id", "id").expect("compact");
+        let events = MatchLog::replay(&path).expect("replay");
+        assert_eq!(events.len(), 3, "whole crossmap history retained");
+        assert!(
+            matches!(events[0], MatchLogEvent::CrossMapConfirm { .. }),
+            "confirm first"
+        );
+        assert_eq!(
+            serde_json::to_value(&events[1]).expect("value"),
+            serde_json::to_value(&event).expect("value"),
+            "whole event retained in order"
+        );
+        assert!(
+            matches!(events[2], MatchLogEvent::CrossMapBreak { .. }),
+            "break last"
+        );
+    }
+
+    #[test]
+    fn truncated_reassignment_preserves_old_pair_event() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("truncated-reassign.wal");
+        let old = MatchLogEvent::CrossMapConfirm {
+            a_id: "A1".into(),
+            b_id: "B1".into(),
+            score: Some(0.8),
+            rank: None,
+            reason: None,
+        };
+        let mut bytes = MatchLog::serialize_event(&old).expect("serialize old");
+        let new = MatchLog::serialize_event(&make_reassignment()).expect("serialize replacement");
+        bytes.extend_from_slice(&new[..new.len() - 10]);
+        fs::write(&path, bytes).expect("write crash fixture");
+        let events = MatchLog::replay(&path).expect("replay");
+        assert_eq!(events.len(), 1, "no half replacement survives");
+        assert!(
+            matches!(&events[0], MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } if a_id == "A1" && b_id == "B1"),
+            "old pair remains"
+        );
     }
 
     #[test]

@@ -207,24 +207,24 @@ impl CrossMapOps for MemoryCrossMap {
         }
     }
 
-    fn take_a(&self, a_id: &str) -> Option<String> {
+    fn take_a(&self, a_id: &str) -> Result<Option<String>, CrossMapError> {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(b_id) = g.a_to_b.remove(a_id) {
+        Ok(if let Some(b_id) = g.a_to_b.remove(a_id) {
             g.b_to_a.remove(&b_id);
             Some(b_id)
         } else {
             None
-        }
+        })
     }
 
-    fn take_b(&self, b_id: &str) -> Option<String> {
+    fn take_b(&self, b_id: &str) -> Result<Option<String>, CrossMapError> {
         let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(a_id) = g.b_to_a.remove(b_id) {
+        Ok(if let Some(a_id) = g.b_to_a.remove(b_id) {
             g.a_to_b.remove(&a_id);
             Some(a_id)
         } else {
             None
-        }
+        })
     }
 
     fn claim(&self, a_id: &str, b_id: &str) -> bool {
@@ -266,6 +266,53 @@ impl CrossMapOps for MemoryCrossMap {
             displaced_b,
             displaced_a,
         })
+    }
+
+    fn replace_pairs(
+        &self,
+        expected: &[(&str, &str)],
+        replacements: &[(&str, &str)],
+    ) -> Result<bool, CrossMapError> {
+        if !(1..=2).contains(&expected.len()) || !(1..=2).contains(&replacements.len()) {
+            return Ok(false);
+        }
+        self.apply_assignment_delta(expected, replacements)
+    }
+
+    fn apply_assignment_delta(
+        &self,
+        expected: &[(&str, &str)],
+        replacements: &[(&str, &str)],
+    ) -> Result<bool, CrossMapError> {
+        let Some((expected_a, expected_b)) =
+            super::traits::validate_assignment_delta(expected, replacements)
+        else {
+            return Ok(false);
+        };
+        let mut g = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        for &(a, b) in expected {
+            if g.a_to_b.get(a).map(String::as_str) != Some(b)
+                || g.b_to_a.get(b).map(String::as_str) != Some(a)
+            {
+                return Ok(false);
+            }
+        }
+        for &(a, b) in replacements {
+            if g.a_to_b.contains_key(a) && !expected_a.contains(a)
+                || g.b_to_a.contains_key(b) && !expected_b.contains(b)
+            {
+                return Ok(false);
+            }
+        }
+        for &(a, b) in expected {
+            g.a_to_b.remove(a);
+            g.b_to_a.remove(b);
+        }
+        for &(a, b) in replacements {
+            g.a_to_b.insert(a.to_string(), b.to_string());
+            g.b_to_a.insert(b.to_string(), a.to_string());
+        }
+        Ok(true)
     }
 
     fn get_b(&self, a_id: &str) -> Option<String> {
@@ -313,6 +360,51 @@ impl CrossMapOps for MemoryCrossMap {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn assignment_delta_contract() {
+        super::super::traits::tests::check_assignment_delta(&MemoryCrossMap::new());
+    }
+
+    #[test]
+    fn assignment_delta_races() {
+        super::super::traits::tests::check_assignment_delta_races(|| {
+            std::sync::Arc::new(MemoryCrossMap::new())
+        });
+    }
+
+    #[test]
+    fn assignment_delta_rejects_inconsistent_expected_direction() {
+        let cm = MemoryCrossMap::new();
+        assert!(cm.claim("a1", "b1"), "seed pair");
+        cm.inner
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .b_to_a
+            .remove("b1");
+        assert_eq!(
+            cm.apply_assignment_delta(&[("a1", "b1")], &[]).ok(),
+            Some(false),
+            "missing reverse expectation must fail"
+        );
+        assert_eq!(
+            cm.get_b("a1").as_deref(),
+            Some("b1"),
+            "rejection must not mutate forward state"
+        );
+    }
+
+    #[test]
+    fn replace_pairs_contract() {
+        super::super::traits::tests::check_replace_pairs(&MemoryCrossMap::new());
+    }
+
+    #[test]
+    fn replace_pairs_conflicts_with_claim_and_confirm() {
+        super::super::traits::tests::check_replace_pairs_conflicts(|| {
+            std::sync::Arc::new(MemoryCrossMap::new())
+        });
+    }
 
     #[test]
     fn add_and_lookup() {
@@ -366,7 +458,7 @@ mod tests {
     fn take_a_removes_both_directions() {
         let cm = MemoryCrossMap::new();
         cm.add("A-1", "B-1").unwrap();
-        assert_eq!(cm.take_a("A-1"), Some("B-1".to_string()));
+        assert_eq!(cm.take_a("A-1").expect("take A"), Some("B-1".to_string()));
         assert!(cm.get_b("A-1").is_none());
         assert!(cm.get_a("B-1").is_none());
         assert_eq!(cm.len(), 0);
@@ -376,7 +468,7 @@ mod tests {
     fn take_b_removes_both_directions() {
         let cm = MemoryCrossMap::new();
         cm.add("A-1", "B-1").unwrap();
-        assert_eq!(cm.take_b("B-1"), Some("A-1".to_string()));
+        assert_eq!(cm.take_b("B-1").expect("take B"), Some("A-1".to_string()));
         assert!(cm.get_b("A-1").is_none());
         assert!(cm.get_a("B-1").is_none());
         assert_eq!(cm.len(), 0);
@@ -385,7 +477,7 @@ mod tests {
     #[test]
     fn take_a_missing_returns_none() {
         let cm = MemoryCrossMap::new();
-        assert_eq!(cm.take_a("A-99"), None);
+        assert_eq!(cm.take_a("A-99").expect("missing pair"), None);
     }
 
     #[test]

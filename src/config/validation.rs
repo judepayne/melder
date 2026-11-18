@@ -2,7 +2,7 @@
 
 use crate::error::ConfigError;
 
-use super::schema::{Config, DatasetConfig, MatchMethod};
+use super::schema::{Config, DatasetConfig, LiveAssignmentStrategy, MatchMethod};
 
 /// Valid cross-map backends.
 const VALID_BACKENDS: &[&str] = &["local"];
@@ -122,6 +122,13 @@ pub(crate) fn validate(cfg: &Config) -> Result<(), ConfigError> {
 
 /// Validate an enroll-mode config.
 pub(crate) fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
+    if cfg.live.assignment.strategy != LiveAssignmentStrategy::Greedy {
+        return Err(ConfigError::InvalidValue {
+            field: "live.assignment.strategy".into(),
+            message: "enroll mode only supports greedy assignment".into(),
+        });
+    }
+
     // Enroll: dataset A is optional (empty pool is valid)
     if !cfg.datasets.a.path.is_empty() {
         validate_dataset(&cfg.datasets.a, "dataset")?;
@@ -593,6 +600,7 @@ mod tests {
     fn base_yaml_with_match_fields(match_fields_yaml: &str) -> String {
         format!(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -624,6 +632,50 @@ output: {{ csv_dir_path: /tmp/test/output }}
         validate_enroll(&cfg)
     }
 
+    #[test]
+    fn enroll_assignment_remains_greedy() {
+        let base = r#"
+job: { name: test }
+vector_backend: flat
+embeddings: { model: m, cache_dir: i }
+match_fields:
+  - { field: name, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+"#;
+        let enroll: crate::config::enroll_schema::EnrollConfig =
+            serde_yaml::from_str(base).expect("valid enroll config");
+        let cfg = enroll.into_config().expect("valid enroll conversion");
+        assert_eq!(
+            cfg.live.assignment.strategy,
+            LiveAssignmentStrategy::Greedy,
+            "enroll live defaults to greedy"
+        );
+        assert_eq!(
+            cfg.batch.assignment.strategy,
+            crate::config::schema::BatchAssignmentStrategy::Greedy,
+            "enroll batch defaults to greedy"
+        );
+        assert_eq!(
+            cfg.live.assignment.max_displacements, 32,
+            "enroll preserves the default budget"
+        );
+        for assignment in [
+            "",
+            "live: { assignment: { strategy: greedy, max_displacements: 0 } }",
+        ] {
+            assert!(
+                parse_and_validate_enroll(&format!("{base}\n{assignment}")).is_ok(),
+                "greedy enroll config remains valid: {assignment}"
+            );
+        }
+        let yaml = format!("{base}\nlive: {{ assignment: {{ strategy: deferred_acceptance }} }}");
+        let err = parse_and_validate_enroll(&yaml).expect_err("enroll must reject reassignment");
+        assert!(
+            err.to_string().contains("live.assignment.strategy"),
+            "assignment error identifies its field: {err}"
+        );
+    }
+
     // --- Format inference ---
 
     #[test]
@@ -644,6 +696,7 @@ output: {{ csv_dir_path: /tmp/test/output }}
     #[test]
     fn validation_missing_job_name() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: ""
 datasets:
@@ -663,6 +716,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn validation_invalid_method() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -689,6 +743,7 @@ output: { csv_dir_path: /tmp/test/output }
     fn validation_invalid_backend() {
         let err = parse_and_validate(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -714,6 +769,7 @@ output: { csv_dir_path: /tmp/test/output }
     fn validation_weight_sum() {
         let err = parse_and_validate(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -736,6 +792,7 @@ output: { csv_dir_path: /tmp/test/output }
     fn validation_auto_match_lt_review_floor() {
         let err = parse_and_validate(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -757,6 +814,7 @@ output: { csv_dir_path: /tmp/test/output }
     fn validation_blocking_invalid_operator() {
         let err = parse_and_validate(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -809,14 +867,25 @@ output: { csv_dir_path: /tmp/test/output }
     fn validation_vector_backend_defaults_to_usearch() {
         let yaml = base_yaml_with_match_fields(
             "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }",
-        );
+        )
+        .replace("vector_backend: flat\n", "");
         let mut cfg: Config = serde_yaml::from_str(&yaml).unwrap();
         normalise_blocking(&mut cfg);
         apply_defaults(&mut cfg);
-        validate(&cfg).unwrap();
-        assert_eq!(cfg.vector_backend, "usearch");
+        assert_eq!(
+            cfg.vector_backend, "usearch",
+            "default backend is unchanged"
+        );
+        #[cfg(feature = "usearch")]
+        validate(&cfg).expect("default backend is available with usearch");
+        #[cfg(not(feature = "usearch"))]
+        {
+            let err = validate(&cfg).expect_err("default backend requires usearch");
+            assert!(err.to_string().contains("--features usearch"), "got: {err}");
+        }
     }
 
+    #[cfg(not(feature = "usearch"))]
     #[test]
     fn validation_vector_backend_usearch_without_feature() {
         let yaml = r#"
@@ -836,22 +905,20 @@ output: { csv_dir_path: /tmp/test/output }
         let mut cfg: Config = serde_yaml::from_str(yaml).unwrap();
         normalise_blocking(&mut cfg);
         apply_defaults(&mut cfg);
-        if cfg!(feature = "usearch") {
-            validate(&cfg).unwrap();
-        } else {
-            let err = validate(&cfg).unwrap_err();
-            assert!(
-                err.to_string().contains("--features usearch"),
-                "got: {}",
-                err
-            );
-        }
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("--features usearch"),
+            "got: {}",
+            err
+        );
     }
 
+    #[cfg(feature = "usearch")]
     #[test]
     fn vector_quantization_f16_accepted() {
         parse_and_validate(
             r#"
+vector_backend: usearch
 job:
   name: test
 datasets:
@@ -870,10 +937,12 @@ output: { csv_dir_path: /tmp/test/output }
         .unwrap();
     }
 
+    #[cfg(feature = "usearch")]
     #[test]
     fn vector_quantization_bf16_accepted() {
         parse_and_validate(
             r#"
+vector_backend: usearch
 job:
   name: test
 datasets:
@@ -896,6 +965,7 @@ output: { csv_dir_path: /tmp/test/output }
     fn vector_quantization_invalid_rejected() {
         let err = parse_and_validate(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -943,6 +1013,7 @@ output: { csv_dir_path: /tmp/test/output }
         assert_eq!(cfg.performance.vector_index_mode, None);
     }
 
+    #[cfg(feature = "usearch")]
     #[test]
     fn vector_index_mode_load_accepted() {
         let yaml = format!(
@@ -950,10 +1021,12 @@ output: { csv_dir_path: /tmp/test/output }
             base_yaml_with_match_fields(
                 "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
             )
+            .replace("vector_backend: flat", "vector_backend: usearch")
         );
         parse_and_validate(&yaml).unwrap();
     }
 
+    #[cfg(feature = "usearch")]
     #[test]
     fn vector_index_mode_mmap_accepted() {
         let yaml = format!(
@@ -961,6 +1034,7 @@ output: { csv_dir_path: /tmp/test/output }
             base_yaml_with_match_fields(
                 "  - { field_a: f, field_b: f, method: exact, weight: 1.0 }"
             )
+            .replace("vector_backend: flat", "vector_backend: usearch")
         );
         parse_and_validate(&yaml).unwrap();
     }
@@ -1021,6 +1095,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn bm25_candidates_lt_top_n_rejected() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1051,6 +1126,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn bm25_inline_fields_parsed() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1085,6 +1161,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn bm25_inline_and_toplevel_errors() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1110,6 +1187,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn bm25_toplevel_still_works() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1134,6 +1212,7 @@ output: { csv_dir_path: /tmp/test/output }
     fn min_score_gap_accepted() {
         parse_and_validate(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1154,6 +1233,7 @@ output: { csv_dir_path: /tmp/test/output }
     fn min_score_gap_zero_accepted() {
         parse_and_validate(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1174,6 +1254,7 @@ output: { csv_dir_path: /tmp/test/output }
     fn min_score_gap_negative_rejected() {
         let err = parse_and_validate(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1195,6 +1276,7 @@ output: { csv_dir_path: /tmp/test/output }
     fn min_score_gap_one_rejected() {
         let err = parse_and_validate(
             r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1266,6 +1348,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn remote_encoder_xor_neither_set_rejected() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1289,6 +1372,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn remote_encoder_xor_both_set_rejected() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1316,6 +1400,7 @@ performance:
         // Defaults do NOT fill in a pool size when remote_encoder_cmd is
         // set, so the normal loader path surfaces the error.
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1337,6 +1422,7 @@ output: { csv_dir_path: /tmp/test/output }
     #[test]
     fn remote_encoder_valid_config_accepted() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1360,6 +1446,7 @@ performance:
     #[test]
     fn remote_encoder_zero_timeout_rejected() {
         let yaml = r#"
+vector_backend: flat
 job:
   name: test
 datasets:
@@ -1488,6 +1575,7 @@ performance:
             r#"
 job:
   name: enroll_test
+vector_backend: flat
 embeddings:
   model: all-MiniLM-L6-v2
   cache_dir: cache/emb
@@ -1509,6 +1597,7 @@ thresholds:
             r#"
 job:
   name: enroll_with_data
+vector_backend: flat
 dataset:
   path: reference.csv
   id_field: entity_id
@@ -1531,6 +1620,7 @@ thresholds:
             r#"
 job:
   name: enroll_blocking
+vector_backend: flat
 embeddings:
   model: m
   cache_dir: c
@@ -1555,6 +1645,7 @@ thresholds:
             r#"
 job:
   name: bad_weights
+vector_backend: flat
 embeddings:
   model: m
   cache_dir: c
@@ -1575,6 +1666,7 @@ thresholds:
             r#"
 job:
   name: empty_pool
+vector_backend: flat
 embeddings:
   model: m
   cache_dir: c
@@ -1594,6 +1686,7 @@ thresholds:
             r#"
 job:
   name: enroll_bm25
+vector_backend: flat
 embeddings:
   model: m
   cache_dir: c

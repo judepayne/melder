@@ -32,6 +32,15 @@ Use `--dry-run` to validate the config and print what would be processed
 without actually running. Use `--limit N` to process only the first N
 B records (useful for quick sanity checks on large datasets).
 
+## Greedy assignment
+
+Batch matching uses parallel greedy claims: each B query tries its scored
+candidates in ranked order, atomically claiming a free A candidate at or above
+the auto-match threshold. Occupied candidates are skipped, not displaced. There
+is no post-pass reassignment or assignment solver in this path. Parallel
+claim order and approximate candidate generation can still produce different
+whole-run assignments between runs.
+
 ## Output files
 
 Batch mode is event-sourced: during scoring, events are written to a

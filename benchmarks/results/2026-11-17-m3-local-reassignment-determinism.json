@@ -1,0 +1,1612 @@
+{
+  "artifacts": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7",
+  "runs": [
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 1,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run1/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run1",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 2,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run2/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run2",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 3,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run3/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run3",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 4,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run4/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run4",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 5,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run5/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run5",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 6,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run6/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run6",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 7,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run7/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run7",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 8,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run8/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run8",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 9,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run9/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run9",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 10,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run10/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run10",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 11,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run11/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run11",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 12,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run12/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run12",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 13,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run13/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run13",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 14,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run14/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run14",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 15,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run15/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run15",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 16,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run16/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run16",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 17,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run17/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run17",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 18,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run18/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run18",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 19,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run19/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run19",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repeat": 20,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run20/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads2-run20",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 1,
+      "repeat": 1,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run1/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run1",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 1,
+      "repeat": 2,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run2/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run2",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 1,
+      "repeat": 3,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run3/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run3",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 1,
+      "repeat": 4,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run4/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run4",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "baseline",
+      "threads": 1,
+      "repeat": 5,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-baseline",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run5/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/baseline-threads1-run5",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 1,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run1/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run1",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 2,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run2/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run2",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 3,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run3/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run3",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 4,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run4/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run4",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 5,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run5/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run5",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 6,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run6/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run6",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 7,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run7/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run7",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 8,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run8/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run8",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 9,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run9/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run9",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 10,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run10/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run10",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 11,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run11/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run11",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 12,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run12/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run12",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 13,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run13/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run13",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 14,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run14/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run14",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 15,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run15/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run15",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 16,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run16/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run16",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 17,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run17/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run17",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 18,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run18/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run18",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 19,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run19/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run19",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repeat": 20,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run20/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads2-run20",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 1,
+      "repeat": 1,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run1/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run1",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 1,
+      "repeat": 2,
+      "pairs": [
+        [
+          "T1",
+          "S1"
+        ],
+        [
+          "T2",
+          "S2"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run2/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run2",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 1,
+      "repeat": 3,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run3/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run3",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 1,
+      "repeat": 4,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run4/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run4",
+      "returncode": 0,
+      "complete_bijection": true
+    },
+    {
+      "binary": "candidate",
+      "threads": 1,
+      "repeat": 5,
+      "pairs": [
+        [
+          "T1",
+          "S2"
+        ],
+        [
+          "T2",
+          "S1"
+        ]
+      ],
+      "scores": [
+        1.0,
+        1.0
+      ],
+      "local_moves": 0,
+      "command": [
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/meld-candidate",
+        "run",
+        "--config",
+        "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run5/config.yaml"
+      ],
+      "directory": "/private/tmp/melder-local-determinism.EM6RiH/runs-uw1ltmc7/candidate-threads1-run5",
+      "returncode": 0,
+      "complete_bijection": true
+    }
+  ],
+  "summary": [
+    {
+      "binary": "baseline",
+      "threads": 2,
+      "repetitions": 20,
+      "distinct_pairings": 2,
+      "observed_repeatability": false,
+      "pairings": [
+        {
+          "pairs": [
+            [
+              "T1",
+              "S1"
+            ],
+            [
+              "T2",
+              "S2"
+            ]
+          ],
+          "runs": 8
+        },
+        {
+          "pairs": [
+            [
+              "T1",
+              "S2"
+            ],
+            [
+              "T2",
+              "S1"
+            ]
+          ],
+          "runs": 12
+        }
+      ]
+    },
+    {
+      "binary": "baseline",
+      "threads": 1,
+      "repetitions": 5,
+      "distinct_pairings": 2,
+      "observed_repeatability": false,
+      "pairings": [
+        {
+          "pairs": [
+            [
+              "T1",
+              "S1"
+            ],
+            [
+              "T2",
+              "S2"
+            ]
+          ],
+          "runs": 3
+        },
+        {
+          "pairs": [
+            [
+              "T1",
+              "S2"
+            ],
+            [
+              "T2",
+              "S1"
+            ]
+          ],
+          "runs": 2
+        }
+      ]
+    },
+    {
+      "binary": "candidate",
+      "threads": 2,
+      "repetitions": 20,
+      "distinct_pairings": 2,
+      "observed_repeatability": false,
+      "pairings": [
+        {
+          "pairs": [
+            [
+              "T1",
+              "S1"
+            ],
+            [
+              "T2",
+              "S2"
+            ]
+          ],
+          "runs": 11
+        },
+        {
+          "pairs": [
+            [
+              "T1",
+              "S2"
+            ],
+            [
+              "T2",
+              "S1"
+            ]
+          ],
+          "runs": 9
+        }
+      ]
+    },
+    {
+      "binary": "candidate",
+      "threads": 1,
+      "repetitions": 5,
+      "distinct_pairings": 2,
+      "observed_repeatability": false,
+      "pairings": [
+        {
+          "pairs": [
+            [
+              "T1",
+              "S1"
+            ],
+            [
+              "T2",
+              "S2"
+            ]
+          ],
+          "runs": 1
+        },
+        {
+          "pairs": [
+            [
+              "T1",
+              "S2"
+            ],
+            [
+              "T2",
+              "S1"
+            ]
+          ],
+          "runs": 4
+        }
+      ]
+    }
+  ],
+  "binaries": {
+    "baseline": {
+      "source": "/private/tmp/melder_pre_baseline_5kezwp_6/meld",
+      "sha256": "5aaac6df9ae2095be1f13093863b61987bcef511687cb61ea86b6f74d2abae81"
+    },
+    "candidate": {
+      "source": "/Users/jude/Library/CloudStorage/Dropbox/Projects/work/melder/target/release/meld",
+      "sha256": "c5707da8dd0049e190b2d2ce05d5700295c58454dc13d02ad5f316e07d89ef06"
+    }
+  },
+  "case": "Two identical A-side records S1/S2 and B-side records T1/T2; no blocking or shortcuts; BM25 name .8 + exact DOB .2; auto .8/review .5; top_n2.",
+  "datasets_sha256": {
+    "a": "670836576f3a4f089e2dab162653f07b6f2d2bee6c59ab7640dbaf21ed1a101e",
+    "b": "41a768f3ac3a96f0c04fe2925955c130abba1427028710025804f56e954edf19"
+  }
+}

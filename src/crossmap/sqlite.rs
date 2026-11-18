@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{ConfirmOutcome, CrossMapOps};
 use crate::error::CrossMapError;
@@ -102,24 +102,26 @@ impl CrossMapOps for SqliteCrossMap {
         }
     }
 
-    fn take_a(&self, a_id: &str) -> Option<String> {
+    fn take_a(&self, a_id: &str) -> Result<Option<String>, CrossMapError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        conn.query_row(
-            "DELETE FROM crossmap WHERE a_id = ?1 RETURNING b_id",
-            params![a_id],
-            |row| row.get(0),
-        )
-        .ok()
+        Ok(conn
+            .query_row(
+                "DELETE FROM crossmap WHERE a_id = ?1 RETURNING b_id",
+                params![a_id],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
-    fn take_b(&self, b_id: &str) -> Option<String> {
+    fn take_b(&self, b_id: &str) -> Result<Option<String>, CrossMapError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        conn.query_row(
-            "DELETE FROM crossmap WHERE b_id = ?1 RETURNING a_id",
-            params![b_id],
-            |row| row.get(0),
-        )
-        .ok()
+        Ok(conn
+            .query_row(
+                "DELETE FROM crossmap WHERE b_id = ?1 RETURNING a_id",
+                params![b_id],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     fn claim(&self, a_id: &str, b_id: &str) -> bool {
@@ -232,6 +234,85 @@ impl CrossMapOps for SqliteCrossMap {
         })
     }
 
+    fn replace_pairs(
+        &self,
+        expected: &[(&str, &str)],
+        replacements: &[(&str, &str)],
+    ) -> Result<bool, CrossMapError> {
+        if !(1..=2).contains(&expected.len()) || !(1..=2).contains(&replacements.len()) {
+            return Ok(false);
+        }
+        self.apply_assignment_delta(expected, replacements)
+    }
+
+    fn apply_assignment_delta(
+        &self,
+        expected: &[(&str, &str)],
+        replacements: &[(&str, &str)],
+    ) -> Result<bool, CrossMapError> {
+        let Some((expected_a, expected_b)) =
+            super::traits::validate_assignment_delta(expected, replacements)
+        else {
+            return Ok(false);
+        };
+        let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for &(a, b) in expected {
+            let existing_b: Option<String> = tx
+                .query_row(
+                    "SELECT b_id FROM crossmap WHERE a_id = ?1",
+                    params![a],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let existing_a: Option<String> = tx
+                .query_row(
+                    "SELECT a_id FROM crossmap WHERE b_id = ?1",
+                    params![b],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing_b.as_deref() != Some(b) || existing_a.as_deref() != Some(a) {
+                return Ok(false);
+            }
+        }
+        for &(a, b) in replacements {
+            let existing_b: Option<String> = tx
+                .query_row(
+                    "SELECT b_id FROM crossmap WHERE a_id = ?1",
+                    params![a],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let existing_a: Option<String> = tx
+                .query_row(
+                    "SELECT a_id FROM crossmap WHERE b_id = ?1",
+                    params![b],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing_b.is_some() && !expected_a.contains(a)
+                || existing_a.is_some() && !expected_b.contains(b)
+            {
+                return Ok(false);
+            }
+        }
+        for &(a, b) in expected {
+            tx.execute(
+                "DELETE FROM crossmap WHERE a_id = ?1 AND b_id = ?2",
+                params![a, b],
+            )?;
+        }
+        for &(a, b) in replacements {
+            tx.execute(
+                "INSERT INTO crossmap (a_id, b_id) VALUES (?1, ?2)",
+                params![a, b],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
     fn get_b(&self, a_id: &str) -> Option<String> {
         let conn = self.reader_pool.acquire();
         conn.query_row(
@@ -335,6 +416,181 @@ mod tests {
     }
 
     #[test]
+    fn take_propagates_sqlite_refusals_without_removing_pair() -> Result<(), CrossMapError> {
+        let cm = make_crossmap();
+        cm.add("a1", "b1")?;
+        cm.writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute_batch(
+                "CREATE TRIGGER reject_take BEFORE DELETE ON crossmap
+                 BEGIN SELECT RAISE(ABORT, 'injected delete refusal'); END;",
+            )?;
+        for result in [cm.take_a("a1"), cm.take_b("b1")] {
+            assert!(
+                matches!(result, Err(CrossMapError::Sqlite(_))),
+                "SQL refusal must not look like an absent pair: {result:?}",
+            );
+            assert_eq!(cm.get_b("a1").as_deref(), Some("b1"), "pair retained");
+            assert_eq!(cm.get_a("b1").as_deref(), Some("a1"), "reverse retained");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn assignment_delta_contract() {
+        super::super::traits::tests::check_assignment_delta(&make_crossmap());
+    }
+
+    #[test]
+    fn assignment_delta_races() {
+        super::super::traits::tests::check_assignment_delta_races(|| Arc::new(make_crossmap()));
+    }
+
+    #[test]
+    fn assignment_delta_rolls_back_sql_failure() -> Result<(), Box<dyn std::error::Error>> {
+        for free_claim in [false, true] {
+            let cm = make_crossmap();
+            let expected = if free_claim {
+                vec![]
+            } else {
+                vec![("a1", "b1")]
+            };
+            if !free_claim {
+                cm.add("a1", "b1")?;
+            }
+            cm.writer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .execute_batch(
+                    "CREATE TRIGGER fail_delta BEFORE INSERT ON crossmap
+                 WHEN NEW.a_id = 'a2' BEGIN
+                     SELECT RAISE(ABORT, 'injected delta failure');
+                 END;",
+                )?;
+            let before = cm.pairs();
+            assert!(
+                matches!(
+                    cm.apply_assignment_delta(&expected, &[("a1", "b2"), ("a2", "b1")]),
+                    Err(CrossMapError::Sqlite(_))
+                ),
+                "insertion error must propagate"
+            );
+            assert_eq!(
+                cm.pairs(),
+                before,
+                "delete and partial insertion must roll back"
+            );
+            assert_eq!(
+                cm.get_a("b2"),
+                None,
+                "partial reverse insertion must roll back"
+            );
+        }
+        let cm = make_crossmap();
+        cm.add("a1", "b1")?;
+        cm.add("a2", "b2")?;
+        cm.writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute_batch(
+                "CREATE TRIGGER fail_delta_delete BEFORE DELETE ON crossmap
+             WHEN OLD.a_id = 'a2' BEGIN
+                 SELECT RAISE(ABORT, 'injected deletion failure');
+             END;",
+            )?;
+        let mut before = cm.pairs();
+        before.sort();
+        assert!(
+            matches!(
+                cm.apply_assignment_delta(&[("a1", "b1"), ("a2", "b2")], &[]),
+                Err(CrossMapError::Sqlite(_))
+            ),
+            "deletion error must propagate"
+        );
+        let mut after = cm.pairs();
+        after.sort();
+        assert_eq!(after, before, "partial all-removal must roll back");
+        Ok(())
+    }
+
+    #[test]
+    fn assignment_delta_propagates_lookup_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let cm = make_crossmap();
+        cm.writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute("DROP TABLE crossmap", [])?;
+        for expected in [vec![], vec![("a1", "b1")]] {
+            assert!(
+                matches!(
+                    cm.apply_assignment_delta(&expected, &[("a1", "b2")]),
+                    Err(CrossMapError::Sqlite(_))
+                ),
+                "lookup failure must not look like a free or stale endpoint"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn replace_pairs_contract() {
+        super::super::traits::tests::check_replace_pairs(&make_crossmap());
+    }
+
+    #[test]
+    fn replace_pairs_conflicts_with_claim_and_confirm() {
+        super::super::traits::tests::check_replace_pairs_conflicts(|| Arc::new(make_crossmap()));
+    }
+
+    #[test]
+    fn replace_pairs_rolls_back_sql_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let cm = make_crossmap();
+        cm.add("a1", "b1")?;
+        {
+            let conn = cm.writer.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute_batch(
+                "CREATE TRIGGER fail_replace BEFORE INSERT ON crossmap
+                 WHEN NEW.a_id = 'a2' BEGIN
+                     SELECT RAISE(ABORT, 'injected replacement failure');
+                 END;",
+            )?;
+        }
+        let result = cm.replace_pairs(&[("a1", "b1")], &[("a1", "b2"), ("a2", "b1")]);
+        assert!(
+            matches!(result, Err(CrossMapError::Sqlite(_))),
+            "SQL error must propagate"
+        );
+        assert_eq!(
+            cm.pairs(),
+            vec![("a1".to_string(), "b1".to_string())],
+            "delete and first insert must both roll back"
+        );
+        assert_eq!(
+            cm.get_a("b1").as_deref(),
+            Some("a1"),
+            "reverse pair must survive rollback"
+        );
+        assert_eq!(cm.get_a("b2"), None, "first insertion must not survive");
+        Ok(())
+    }
+
+    #[test]
+    fn replace_pairs_propagates_lookup_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let cm = make_crossmap();
+        {
+            let conn = cm.writer.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute("DROP TABLE crossmap", [])?;
+        }
+        let result = cm.replace_pairs(&[("a1", "b1")], &[("a1", "b2")]);
+        assert!(
+            matches!(result, Err(CrossMapError::Sqlite(_))),
+            "lookup errors must not become stale or free endpoints"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn add_and_lookup() {
         let cm = make_crossmap();
         cm.add("A-1", "B-1").unwrap();
@@ -385,7 +641,7 @@ mod tests {
     fn take_a_removes_both_directions() {
         let cm = make_crossmap();
         cm.add("A-1", "B-1").unwrap();
-        assert_eq!(cm.take_a("A-1"), Some("B-1".to_string()));
+        assert_eq!(cm.take_a("A-1").expect("take A"), Some("B-1".to_string()));
         assert!(cm.get_b("A-1").is_none());
         assert!(cm.get_a("B-1").is_none());
         assert_eq!(cm.len(), 0);
@@ -395,7 +651,7 @@ mod tests {
     fn take_b_removes_both_directions() {
         let cm = make_crossmap();
         cm.add("A-1", "B-1").unwrap();
-        assert_eq!(cm.take_b("B-1"), Some("A-1".to_string()));
+        assert_eq!(cm.take_b("B-1").expect("take B"), Some("A-1".to_string()));
         assert!(cm.get_b("A-1").is_none());
         assert!(cm.get_a("B-1").is_none());
         assert_eq!(cm.len(), 0);
@@ -404,7 +660,7 @@ mod tests {
     #[test]
     fn take_a_missing_returns_none() {
         let cm = make_crossmap();
-        assert_eq!(cm.take_a("A-99"), None);
+        assert_eq!(cm.take_a("A-99").expect("missing pair"), None);
     }
 
     #[test]

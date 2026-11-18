@@ -63,18 +63,17 @@ What happens at launch depends on the storage backend:
 6. All WAL files are replayed in chronological order:
    - Records are inserted/removed from the in-memory store
    - Blocking indices are updated for each replayed record
-   - Crossmap confirms/breaks are applied
+   - Crossmap confirms, breaks, and assignment changes are applied
    - Exclusions are applied/removed
-   - Embedding vectors already in the cached index are skipped
-     (no ONNX re-encoding)
+   - Cached vectors are checked against the final replayed record text; missing
+     or stale vectors are rebuilt
 7. Unmatched sets and common-ID indices are rebuilt from the final state
 8. Review queue is populated from unresolved `ReviewMatch` WAL events
 9. A new timestamped WAL file is opened for the current run
 10. **Initial matching pass** — all unmatched B records are scored against
     the A pool using the full scoring pipeline (blocking, BM25, ANN,
-    synonym). Auto-matches are claimed in the crossmap and persisted via
-    WAL. Review-band matches are added to the review queue. This ensures
-    pre-loaded datasets are fully matched before the API starts listening.
+    synonym). Eligible matches are recorded in the crossmap and WAL;
+    uncertain results can go to review, and some records may remain unmatched.
     Set `live.skip_initial_match: true` to skip this step and start the
     API immediately.
 
@@ -97,6 +96,82 @@ What happens at launch depends on the storage backend:
 4. A new WAL file is opened
 
 No CSV loading. No WAL replay. Restarts are fast.
+
+<a id="live-assignment-policy"></a>
+
+## Deferred acceptance
+
+By default, live mode uses `greedy` matching: ordinary scoring can claim a free
+match but won't move an existing match to make room. Deferred acceptance lets a better
+candidate take the place of a weaker match, then tries to find a new partner
+for the record that lost its match. It works the same way on either side.
+Enable it in [YAML](configuration.md#live):
+
+```yaml
+live:
+  assignment:
+    strategy: deferred_acceptance
+    max_displacements: 4
+```
+
+1. **Try the best candidate first.** The incoming record tries its scored
+   shortlist (`top_n`) in order. Both records must meet the automatic-match
+   rules when scored against each other. That includes blocking, exclusions,
+   and score-gap checks.
+2. **Keep the better match.** If the candidate is free, the pair can match.
+   If it's already matched, the candidate compares the incoming record with its
+   current partner using its own scores for both. It switches only if the incoming
+   record scores strictly higher. A tie keeps the current match. Manual,
+   canonical, preloaded, and restored matches are protected; only ordinary
+   automatic matches made in the current session can be displaced.
+3. **Try to rematch the displaced record.** It tries its own shortlist in
+   order. That can displace another record, starting another round.
+4. **Stop the chain at the configured limit.** Here, `max_displacements: 4`
+   allows four successful displacements per attempt. Candidate checks and free
+   matches don't count. At the limit, the last displaced record can still try a
+   free qualifying candidate on its shortlist. If none is available, it stays
+   unmatched or goes to review. The default is `32`; `0` allows free matches
+   that qualify in both directions but no displacements.
+
+The request waits for the attempt to finish. There's no background rematching
+or resume after a restart. An update can also trigger rematching for the old
+partner, and removing a matched record gives its surviving partner a chance to
+rematch. A bulk upsert uses a separate cap per item. Manual breaks and exclusions
+don't start chains. Startup matching keeps restored links in place. Batch and
+enroll don't use this strategy. Results can still depend on arrival order and
+are not guaranteed to be the best overall set of matches.
+
+Deferred acceptance comes with a **substantial performance penalty** in the
+[measured live workloads](performance.md#deferred-acceptance-performance): it
+roughly halved throughput with ten concurrent clients. It is off by default.
+
+Mutation responses can include an optional `assignment` summary (omitted in
+`greedy`). `matches` still lists scored candidates; use the crossmap for accepted
+links. See the [API Reference](api-reference.md#live-assignment-summary),
+[Scoring](scoring.md#live-deferred-acceptance), and [Hooks](hooks.md).
+
+### Assignment persistence and failures
+
+Each free acceptance or displacement atomically updates the bijection under a
+memory lock or SQLite transaction and records one version-1 `assignment_delta`
+WAL event. The event includes old/replacement pairs and both directional scores;
+canonical stored match metadata uses B→A scores. An entire request or bulk is
+**not** one all-or-nothing transaction: successful earlier steps remain if a
+later step fails. WAL append failure triggers inverse-delta rollback; ambiguous
+append, rollback or postcommit metadata failures fail assignment health and
+reject further optimizing mutations until recovery/restart.
+
+Memory recovers from WAL plus snapshots; SQLite membership in the database is
+authoritative and is not blindly replayed from WAL. Restart reconciles matched
+flags/reviews and protects restored links, but can retain a committed prefix and
+an orphan. WAL appends are buffered until normal flush: append is not per-step
+fsync, and CrossMap, metadata and WAL are not a multi-system ACID transaction.
+Hooks are best-effort notifications, not the audit record.
+
+Keep backups before upgrading persisted state. Legacy `crossmap_reassign` logs
+remain readable, but older binaries cannot safely replay/export new
+`assignment_delta` events. Switching back to `greedy` does not make those logs
+compatible with an older binary.
 
 ## Logging
 
@@ -127,20 +202,18 @@ scoring throughput.
 
 ## Match log (WAL)
 
-The match log (configured via `live.match_log_path`, formerly
-`upsert_log`) is the canonical input for all output generation. Every
-record addition, cross-map change, and scoring outcome is appended to
-this newline-delimited JSON file. It serves two purposes:
+The match log (configured via `live.match_log_path`, formerly `upsert_log`)
+records live changes as newline-delimited JSON. It serves two purposes:
 
 1. **Crash recovery** — in in-memory mode, the next startup replays
    these events to restore state. In SQLite mode, the match log is
    still written as a redundant safety net but is not needed for
    recovery.
-2. **Output generation** — `meld export` and the admin endpoints
-   (`POST /admin/flush`, `POST /admin/shutdown`) read the match log
-   through the build pipeline to produce CSVs, Parquet files, and/or
-   the SQLite output database, the same way batch mode does at
-   end-of-run.
+2. **Output generation** — `meld export` and the admin endpoints can use the
+   match log when building outputs. With deferred acceptance enabled, the
+   admin build uses the current store and crossmap for records and confirmed
+   pairs. When exporting a persisted live SQLite database, the database is
+   authoritative.
 
 On clean shutdown the match log is compacted (duplicate entries
 collapsed) and can be inspected with:
@@ -153,33 +226,50 @@ tail -20 wal.ndjson
 jq -r .type wal.ndjson | sort | uniq -c
 ```
 
-Each server run creates a new timestamped match log file (e.g.
-`wal_20260312T143207Z.ndjson`). On startup, all files matching the
-configured base path are discovered and replayed in lexicographic
-(chronological) order. Each run's file is compacted at shutdown. Old
-files accumulate across runs; delete them manually if disk space is a
-concern (only the most recent compacted file is needed for full
-recovery).
+Each server run exclusively creates a new timestamped match log segment (e.g.
+`wal_20260312T143207Z_000001.ndjson`). Same-second restarts increment the
+fixed-width sequence, never appending after a previous run's torn tail. Legacy
+unsuffixed filenames remain readable and sort before sequenced files for the
+same timestamp. On startup, all segments matching the configured base path are
+replayed in lexicographic (chronological) order.
+
+Shutdown compacts **only the current run's segment**, syncing its replacement
+before rename. Prior segments are retained, including after a quiet restart:
+compaction is not a checkpoint of recovered records or assignment audit history.
+This deliberately trades disk space and longer replay for crash-safe retention,
+without a cross-file checkpoint/cleanup protocol. **Do not delete older segments**
+to reclaim space: the latest compacted file alone cannot provide full memory
+recovery or complete export/audit history. Back up the complete WAL set together
+with persisted state.
+
+Replay tolerates an unterminated final JSON frame with a recognized event header
+(and version 1 for `assignment_delta`), including EOF within a UTF-8 character.
+Malformed newline-terminated frames, other invalid UTF-8, and unknown event types
+or versions fail recovery closed. Incomplete headers that do not yet establish a
+known type/version also fail closed.
+
+If startup reports an unreadable header, stop the service. Before attempting
+recovery, copy the **entire** segment set, crossmap snapshot, configuration and
+base datasets (and the database with its SQLite sidecar files, if used). Keep
+the originals untouched. Restore a known-good complete backup to an isolated
+directory and verify membership and export there. If no such backup exists,
+preserve the failing segment and seek recovery assistance; do not guess the
+event type, delete a segment, or truncate the only copy to make startup succeed.
 
 ## Admin endpoints
 
 Two admin endpoints are available on the live-mode server for on-demand
 output generation:
 
-**`POST /admin/flush`** — triggers a build (any combination of CSVs,
-Parquet files, and SQLite DB, based on which `output.*_path` fields
-are set) without shutting down the server. Returns `202 Accepted` immediately
-with a build ID. The build runs in a background task; status is
-queryable via `GET /admin/flush/{build_id}`. Multiple concurrent flush
-calls are serialised (one build at a time). Use this for periodic
-snapshots of a running server.
+**`POST /admin/flush`** — builds the configured CSV, Parquet, or SQLite
+outputs without shutting down. The request waits for the build and returns
+`200 OK` with a summary on success. There is no build ID or polling endpoint.
+With deferred acceptance enabled, mutations wait while the output build runs.
 
-**`POST /admin/shutdown`** — graceful shutdown with a final build.
-Returns `202 Accepted`, then the server drains in-flight requests,
-flushes the match log and scoring log, runs the build pipeline, and
-exits. On build failure, exits with non-zero code; the match log
-remains on disk and can be rebuilt with `meld export`. SIGTERM triggers
-the same sequence.
+**`POST /admin/shutdown`** — attempts the configured output build first, then
+returns `202 Accepted` and triggers graceful shutdown. Build failures are
+logged and do not prevent shutdown. The output reflects the build's snapshot,
+not necessarily every request accepted before the server finishes draining.
 
 See [API Reference](api-reference.md) for full details.
 
@@ -189,8 +279,8 @@ How confirmed matches are persisted depends on the storage backend:
 
 - *In-memory:* The crossmap is held in RAM and flushed to the crossmap
   CSV periodically (every `crossmap_flush_secs`, default 5 seconds) and
-  on shutdown. The CSV is the durable record of which pairs have been
-  matched.
+  on shutdown. Recovery uses the CSV snapshot together with the WAL; a
+  buffered append alone is not a per-request fsync guarantee.
 - *SQLite:* Every confirm/break is written to the database immediately.
   The crossmap CSV is never updated. Use the `/crossmap/pairs` API
   endpoint or query the `crossmap` table in the SQLite DB directly to
@@ -198,18 +288,18 @@ How confirmed matches are persisted depends on the storage backend:
 
 ## Shutdown
 
-Send Ctrl-C, SIGTERM, or `POST /admin/shutdown`. The melder will stop
-accepting new connections, drain in-flight requests, flush and compact
-the match log, run the build pipeline (if any of
-`output.csv_dir_path`, `output.parquet_dir_path`, or `output.db_path`
-is configured), save the cross-map (in-memory mode)
-or no-op (SQLite mode), and persist index caches. No data is lost.
+Send Ctrl-C, SIGTERM, or `POST /admin/shutdown`. The server stops accepting new
+connections, drains in-flight requests, and attempts to flush and compact the
+current log segment, save the in-memory crossmap and exclusions, and persist
+index caches. Cleanup failures are logged. Ctrl-C and SIGTERM trigger cleanup
+but do not run the admin output build; use `/admin/shutdown` to request that build.
 
 ## Persistence and restart
 
-Live mode is designed to survive restarts. The full state — records
-added via the API, confirmed crossmap pairs, and embedding vectors — is
-persisted to disk and restored on the next startup.
+Live mode restores persisted records and confirmed pairs at startup. Memory
+mode recovers from the complete WAL set and the saved crossmap; SQLite recovers
+from the database. Embedding caches are separate from the record store. In memory
+mode, writes that haven't been flushed can be lost in a crash.
 
 ### In-memory mode (default)
 
@@ -217,14 +307,14 @@ persisted to disk and restored on the next startup.
 
 | Component | Mechanism | When |
 |-----------|-----------|------|
-| Record mutations (add, remove) | Write-ahead log (WAL) | Every API call |
-| Crossmap confirmations/breaks | WAL + crossmap CSV | API call + periodic flush |
+| Record mutations (add, remove) | Write-ahead log (WAL) | Appended on mutation, durable after flush |
+| Crossmap confirmations, breaks, and displacements | WAL + crossmap CSV | WAL append + periodic snapshot |
 | Embedding vectors | Index cache (`.usearchdb` or `.index`) | Shutdown |
-| Review queue | WAL (`ReviewMatch` events) | Every API call |
+| Review queue | WAL (`ReviewMatch` events) | Appended when a review is queued |
 
 #### Shutdown sequence
 
-1. WAL is flushed and compacted (deduplicates per record ID, last-write-wins)
+1. WAL is flushed and the current segment is compacted; assignment history is retained
 2. Crossmap CSV is flushed to disk
 3. Combined embedding index caches are saved (includes all API-added vectors)
 
@@ -237,20 +327,19 @@ persisted to disk and restored on the next startup.
 5. All WAL files are replayed in chronological order:
    - Records are inserted/removed from the in-memory store
    - Blocking indices are updated for each replayed record
-   - Crossmap confirms/breaks are applied
-   - Embedding vectors already in the cached index are skipped
-     (no ONNX re-encoding)
+   - Crossmap confirms, breaks, and assignment changes are applied
+   - Missing or stale vectors are rebuilt from the final replayed records
 6. Unmatched sets and common-ID indices are rebuilt from the final state
 7. Review queue is populated from unresolved `ReviewMatch` WAL events
 8. A new timestamped WAL file is opened for the current run
 
 #### What this means in practice
 
-- Records added via `/a/add` or `/b/add` survive restarts. They are
-  replayed from the WAL and their embedding vectors are loaded from the
-  index cache — no re-encoding required.
-- Confirmed crossmap pairs survive via both the crossmap CSV and WAL
-  replay (belt and suspenders).
+- Persisted records added or updated via `/a/add` or `/b/add` are replayed from
+  the WAL. If a cached vector is missing or its input text has changed, recovery
+  re-encodes the final text before serving requests. It does not re-encode
+  intermediate versions from the log.
+- Confirmed crossmap pairs are restored from the saved snapshot and WAL history.
 - Blocking works correctly for WAL-replayed records. A new record added
   after restart will find WAL-replayed records on the opposite side as
   match candidates.
@@ -260,13 +349,11 @@ persisted to disk and restored on the next startup.
 
 #### WAL files
 
-Each server run creates a new timestamped WAL file (e.g.
-`wal_20260312T143207Z.ndjson`). On startup, all WAL files matching the
-configured base path are discovered and replayed in lexicographic
-(chronological) order. Each run's WAL is compacted at shutdown. Old WAL
-files accumulate across runs; delete them manually if disk space is a
-concern (only the most recent compacted file is needed for full
-recovery).
+Each run creates a distinct timestamped and sequenced WAL segment. Startup
+replays all segments in chronological order; shutdown compacts only the current
+segment and retains all older ones. Keep the complete WAL set: the latest segment
+is not a recovery checkpoint. See [Match log (WAL)](#match-log-wal) for retention,
+legacy filename compatibility and torn-frame recovery rules.
 
 ### SQLite mode (`live.db_path` set)
 

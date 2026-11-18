@@ -266,3 +266,59 @@ its rounded output representation.
 For the same scored candidate set, ties therefore have repeatable ranks and
 cutoff membership. Approximate candidate generation and concurrent CrossMap
 claims can still vary independently of this ranking rule.
+
+## Live deferred acceptance
+
+Live assignment defaults to `greedy`, with no displacement work. YAML opt-in
+`live.assignment.strategy: deferred_acceptance` enables synchronous proposals
+from either side; enroll is unchanged. All scoring uses the shared pipeline,
+not a second scoring implementation.
+
+Each new automatic edge must have finite, above-`auto_match` scores and automatic
+eligibility in **both directions**. A→B and B→A need not agree: BM25 statistics
+and normalization depend on the opposite-side corpus. Displacement compares the
+receiver's current score for the proposer with its current score for the
+incumbent. Only strict improvement displaces; equal scores retain the incumbent.
+It does not maximize replacement-score sums or cardinality.
+
+Proposals use the configured retrieval and `top_n` shortlist. Occupied candidates
+still consume slots. Receiver verification can add at most the known proposer
+and incumbent to the shared scoring union, within legitimate blocking/exclusion
+and current-vector constraints. Verification is untruncated so these known
+comparisons remain available; it does not generate new proposal alternatives.
+The ordinary retrieval limits remain unchanged.
+
+`min_score_gap` is evaluated on the complete retrieved-plus-verification union,
+including occupied candidates. If rank 1 is gap-demoted, the **whole direction**
+is rejected for new automatic acceptance, even if a lower result still says
+`auto`. Both directions must pass this safeguard. Missing/nonfinite incumbent
+scores prevent displacement; historical scores or an invented zero are not
+substitutes. Missing/stale records or vectors cannot establish an automatic pair.
+
+Only ordinary automatic pairs established during the current session are
+eligible for displacement. Manual/canonical pairs, preloaded crossmaps and
+restored pairs remain protected. A displaced endpoint immediately proposes from
+its own shortlist. `live.assignment.max_displacements` defaults to 32 and counts
+successful displacements only; zero still allows reciprocal free matches. At
+the cap, remaining free shortlisted choices may be tried without expanding
+retrieval. The cap is an initial work budget, not an optimality setting.
+
+Mutations wait synchronously for a consistent assignment window. There is no
+background reconciliation. Fixed candidate scores have deterministic ranking,
+but final links are **not order-independent**, globally optimal or guaranteed
+more accurate: arrival/seed order, candidate limits and the cap still matter.
+Live comparisons use raw directional scores, with no new rounding epsilon.
+Canonical persisted metadata uses B→A; audit events retain both directions.
+
+Each step atomically preserves the CrossMap bijection and logs an
+`assignment_delta`. A request may retain a successful prefix on later failure;
+WAL append is buffered, not per-step fsync. Memory recovery uses WAL/snapshots;
+SQLite remains authoritative without WAL replay. See
+[Live Mode](live-mode.md#assignment-persistence-and-failures) for rollback,
+restart and downgrade restrictions.
+
+Batch remains greedy in Phase 1. A maximum-weight solver is not yet integrated;
+`batch.assignment.strategy: maximum_weight` is rejected. The planned nine-decimal
+batch objective is not an active live scoring or assignment rule. Earlier
+bounded one-to-two repair is no longer an active policy; its evidence is retained
+in [the standalone historical report](local-reassignment-productionization.md).

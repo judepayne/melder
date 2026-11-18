@@ -757,6 +757,23 @@ impl RecordStore for SqliteStore {
         Ok(())
     }
 
+    fn common_id_remove_owned(
+        &self,
+        side: Side,
+        common_id: &str,
+        record_id: &str,
+    ) -> Result<(), StoreError> {
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            &format!(
+                "DELETE FROM {}_common_ids WHERE common_id = ?1 AND record_id = ?2",
+                side_prefix(side)
+            ),
+            params![common_id, record_id],
+        )?;
+        Ok(())
+    }
+
     // --- Exact prefilter ---
 
     fn build_exact_index(&self, side: Side, field_names: &[String]) -> Result<(), StoreError> {
@@ -852,11 +869,24 @@ impl RecordStore for SqliteStore {
         Ok(())
     }
 
-    fn remove_reviews_for_id(&self, id: &str) -> Result<(), StoreError> {
+    fn remove_query_reviews(&self, side: Side, id: &str) -> Result<(), StoreError> {
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let side_str = match side {
+            Side::A => "a",
+            Side::B => "b",
+        };
+        conn.execute(
+            "DELETE FROM reviews WHERE side = ?1 AND id = ?2",
+            params![side_str, id],
+        )?;
+        Ok(())
+    }
+
+    fn remove_reviews_for_id(&self, side: Side, id: &str) -> Result<(), StoreError> {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "DELETE FROM reviews WHERE id = ?1 OR candidate_id = ?1",
-            params![id],
+            "DELETE FROM reviews WHERE (side = ?1 AND id = ?2) OR (side != ?1 AND candidate_id = ?2)",
+            params![side_prefix(side), id],
         )?;
         Ok(())
     }
@@ -1219,6 +1249,77 @@ mod tests {
         );
         store.common_id_remove(Side::A, "CID-1").unwrap();
         assert!(store.common_id_lookup(Side::A, "CID-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn remove_query_reviews_retains_unrelated_query_pointing_to_candidate() -> Result<(), StoreError>
+    {
+        let store = make_store();
+        store.persist_review("resolved", "A2", Side::A, "B2", 0.8)?;
+        store.persist_review("pending", "B3", Side::B, "A2", 0.7)?;
+
+        store.remove_query_reviews(Side::A, "A2")?;
+
+        assert_eq!(
+            store.load_reviews()?,
+            vec![("pending".into(), "B3".into(), Side::B, "A2".into(), 0.7)],
+            "removing A2's query reviews must preserve B3's review with candidate A2",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn remove_query_reviews_retains_other_side_query_with_same_id() -> Result<(), StoreError> {
+        for side in [Side::A, Side::B] {
+            let store = make_store();
+            let other_side = match side {
+                Side::A => Side::B,
+                Side::B => Side::A,
+            };
+            store.persist_review("resolved", "shared", side, "candidate", 0.8)?;
+            store.persist_review("pending", "shared", other_side, "candidate", 0.7)?;
+
+            store.remove_query_reviews(side, "shared")?;
+
+            assert_eq!(
+                store.load_reviews()?,
+                vec![(
+                    "pending".into(),
+                    "shared".into(),
+                    other_side,
+                    "candidate".into(),
+                    0.7,
+                )],
+                "query IDs on opposite sides must remain independent",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn remove_query_reviews_removes_only_specified_query_reviews() -> Result<(), StoreError> {
+        for side in [Side::A, Side::B] {
+            let store = make_store();
+            store.persist_review("resolved-1", "query", side, "candidate-1", 0.8)?;
+            store.persist_review("resolved-2", "query", side, "candidate-2", 0.7)?;
+            store.persist_review("pending", "other", side, "candidate-1", 0.6)?;
+
+            store.remove_query_reviews(side, "query")?;
+            store.remove_query_reviews(side, "query")?;
+
+            assert_eq!(
+                store.load_reviews()?,
+                vec![(
+                    "pending".into(),
+                    "other".into(),
+                    side,
+                    "candidate-1".into(),
+                    0.6
+                )],
+                "all specified query reviews, and no unrelated query reviews, must be removed",
+            );
+        }
+        Ok(())
     }
 
     #[test]

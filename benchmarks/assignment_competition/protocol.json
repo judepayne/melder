@@ -1,0 +1,56 @@
+{
+  "status": "declared_before_measured_runs",
+  "purpose": "Separate ordinary shortlist coverage from one-incumbent repair using calibrated five-candidate competition",
+  "dataset": {
+    "background_a": 10000,
+    "background_b": 10000,
+    "custom_a": 500,
+    "custom_b": 500,
+    "groups": 100,
+    "groups_per_family": 20,
+    "families": ["rank2", "rank3", "rank5", "ambiguous", "unrepairable"],
+    "known_positive_pairs": 7380,
+    "custom_known_positive_pairs": 380,
+    "custom_ambiguous_b": 100,
+    "custom_known_unmatched_b": 20,
+    "replication": "Twenty exact matching-text clones per family, not 100 independent linguistic cases",
+    "noise": "Flexible queries concatenate company aliases; identifier strings deliberately collide. These are assignment diagnostics, not clean unique-identifier entity data.",
+    "isolation": "AND(country, competition_group); original rows share background tag, custom groups have private tags. Original matching fields unchanged. Each custom block has exactly five A candidates.",
+    "oracle": "Repair families have one complete feasible bijection forced by four constrained queries. Ambiguous groups allow every bijection. Unrepairable flexible queries are known negatives; no arbitrary unique oracle for ambiguous records."
+  },
+  "scoring": {
+    "model": "all-MiniLM-L6-v2",
+    "name_embedding_weight": 0.55,
+    "short_name_partial_ratio_weight": 0.20,
+    "country_exact_weight": 0.20,
+    "lei_exact_weight": 0.05,
+    "auto_match": 0.85,
+    "review_floor": 0.60,
+    "common_id_fast_path": false,
+    "exact_prefilter": false,
+    "ann_candidates": 100,
+    "top_n_values": [1, 2, 3, 5]
+  },
+  "calibration_gate": "Real baseline/ONNX score_pool logs must verify every custom edge, exclusive constrained queries and escape ranks. Check custom-only probe and full combined dataset before starting any measured run. No synthetic vectors or surrogate scoring.",
+  "measurement": {
+    "b_permutations": 20,
+    "shuffle_seeds": "20261117 through 20261136",
+    "binaries": ["pinned main b9a83a4", "pinned uncommitted full-top_n experiment"],
+    "total_measured_subprocesses": 160,
+    "rayon_threads": 8,
+    "controls": "Same B bytes/path for all eight combinations within each permutation; same prepared combined-data vector/index cache bytes; fresh crossmaps/outputs; sequential processes only",
+    "ordering": "Rotate top_n setting order and alternate/balance binary order; preserve exact sequence in run metadata",
+    "timing": "Application subprocess wall/RSS only; exclude calibration, preparation, copies and analysis. Disable scoring logs for measured runs.",
+    "stopping": "Complete all planned combinations. No result-based exclusions, no dataset tuning after freeze. Stop and report integrity failures without silently discarding/repeating measured runs."
+  },
+  "expected_diagnostics": {
+    "repair_families": "With escape rank r, experimental full correct matching is expected only when top_n>=r; below r the free alternative is unavailable. Ordinary main matching can succeed depending on claim order; do not require it to fail every run.",
+    "ambiguous": "All assignments within group are acceptable; wider lists can improve coverage in both binaries. At full width five, ordinary matching completes without needing repair; identity repeatability is not guaranteed.",
+    "unrepairable": "Full threshold graph maximum is four; no legal one-to-two repair. Known-negative acceptance can still vary with ordinary greedy order; no claim that larger lists improve this cohort's accuracy.",
+    "background": "Report separately; do not dilute custom-group effects into whole-dataset numbers. Frozen background source fields, but ANN100 and narrower top_n differ from earlier studies so do not pool their results.",
+    "late_width": "Use actual reassignment WAL ranks to establish whether fifth-ranked alternatives were used, not just improved counts."
+  },
+  "analysis": "Per family and background: automatic counts, known/allowed identity quality, known-negative acceptance, stable assignments and mean pairwise changed B including no-auto states, local moves/replacement ranks, full-run timing/RSS. First-pass descriptive analysis; do not treat cloned groups or pairwise comparisons as independent inferential samples.",
+  "integrity": "All subprocess exits, no skipped B, active outcomes reconcile, bijective crossmaps, independent WAL fold, in-group candidates, source/input/binary/cache hashes and warm-cache evidence",
+  "production_changes": "None; no commits or merges"
+}

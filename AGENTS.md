@@ -2,8 +2,6 @@
 
 Purpose: compact operating instructions for LLM coding agents working in `melder`. Read this before editing code.
 
-**The developer is Jude.** Refer to them by name, not as "the user".
-
 ## 0. Bootstrap
 
 Before code changes, read this file completely and use the feature pointers below for targeted context. Check `.pi/todos/` before starting medium/large work so you do not duplicate active tasks.
@@ -64,7 +62,7 @@ Rules:
 - `src/lib.rs`: module declarations only
 - `src/config/`: YAML schema + validation (`schema.rs`, `loader.rs`, `enroll_schema.rs`)
 - `src/data/`: CSV / JSONL / Parquet dataset loaders and streaming loaders
-- `src/matching/`: pipeline, blocking, candidates, exclusions
+- `src/matching/`: shared pipeline, blocking, candidates, exclusions; verification uses that same pipeline, not a second scoring path
 - `src/scoring/`: exact / embedding / numeric / synonym / composite scoring
 - `src/fuzzy/`: ratio, partial_ratio, token_sort, wratio
 - `src/synonym/`: acronym generation, synonym dictionary, bidirectional synonym index
@@ -73,7 +71,7 @@ Rules:
 - `src/store/`: `RecordStore` trait; memory + sqlite implementations
 - `src/crossmap/`: `CrossMapOps`; memory + sqlite bijection implementations
 - `src/bm25/`: `SimpleBm25` scorer, WAND path for large blocks
-- `src/session/`: operational core for live/enroll flows
+- `src/session/`: operational core for live/enroll flows; `assignment.rs` implements opt-in synchronous reciprocal live proposals
 - `src/state/`: startup loading, WAL, backend construction
 - `src/batch/`: batch engine; event-sourced match log production
 - `src/output/`: build CSV / Parquet / SQLite outputs from match log + scoring log
@@ -95,6 +93,7 @@ When a task mentions these features, start with the listed docs/code:
 - Synonym/acronym matching: `docs/scoring.md#synonym`, `src/synonym/`.
 - Common ID fast path: `docs/configuration.md#datasets`, `src/config/derivation.rs`, `src/matching/pipeline.rs`.
 - Live admin flush/shutdown and WAL lifecycle: `docs/live-mode.md`, `docs/api-reference.md`, `src/state/match_log.rs`.
+- Live assignment: `docs/live-mode.md#live-assignment-policy`, `docs/scoring.md#live-deferred-acceptance`, `src/session/assignment.rs`, `src/config/schema.rs`. Historical bounded-repair evidence remains in `docs/local-reassignment-productionization.md` and benchmark reports; it is not the active policy.
 - Batch SQLite mode: `docs/batch-mode.md#sqlite-batch-mode-large-datasets`, `src/batch/`, `src/store/sqlite.rs`.
 - Enroll-specific config/endpoints: `docs/enroll-mode.md`, `src/config/enroll_schema.rs`, `src/api/handlers.rs`.
 
@@ -134,12 +133,21 @@ When a task mentions these features, start with the listed docs/code:
 - Exact prefilter runs before blocking and can recover cross-block matches.
 - Exclusions filter after candidate union and before scoring; if excluded pair is currently matched, break match first.
 - In match mode, candidate acceptance must respect crossmap bijection.
+- Live assignment defaults to `greedy` with no displacement work. YAML-only `live.assignment.strategy: deferred_acceptance` enables synchronous, symmetric proposals under an exclusive mutation gate; no background reconciliation. Enroll is unchanged.
+- New automatic live pairs must qualify in both scoring directions, including whole-list score-gap safeguards. Displace only session-created ordinary automatic incumbents for a strictly higher current receiver-perspective score; ties retain incumbents. Manual/canonical/preloaded/restored pairs are protected.
+- `max_displacements` defaults to 32 successful displacements per attempt (an initial work budget, not a proven optimum). Zero permits reciprocal free matches; at the cap, remaining shortlisted free candidates can still be tried. Existing retrieval/`top_n` bound proposals; verification of proposer/incumbent is not new proposal generation. No order-independence, accuracy or global-optimality guarantee.
+- Enabled assignment uses `CrossMapOps::apply_assignment_delta()` atomically per step and version-1 `assignment_delta` WAL events. Keep legacy `CrossMapReassign` readable, but do not revive bounded one-to-two repair as active policy. Canonical metadata is B→A; audit both directional scores.
+- Optional mutation-response `assignment` summaries are omitted for greedy. Candidate `matches` are not accepted links; bulk responses must reflect final CrossMap membership. Emit best-effort Break/Confirm hooks only for completed steps, with confirm source `deferred_acceptance`.
+- Batch remains greedy in Phase 1: `maximum_weight` is rejected and the batch solver is not yet integrated. Planned nine-decimal batch quantization is not a live scoring rule.
 - In enroll mode, avoid self-matches when query side equals pool side.
 
 ## 9. Storage / Persistence Rules
 
 - Memory backend: in-RAM + WAL for live durability.
 - SQLite backend: durable source of truth; no fake in-memory shadow invariants.
+- Assignment chains commit per-step prefixes, not request-wide transactions. WAL append is buffered, not per-step fsync; memory recovery uses WAL/snapshots, while SQLite retains authoritative membership without blind WAL replay. Restart reconciles metadata and protects restored links; it does not resume interrupted queues.
+- Assignment append failure attempts inverse-delta rollback. Ambiguous append, rollback or postcommit metadata failure must fail assignment health and reject further optimizing mutations until recovery/restart. CrossMap remains authoritative; hooks are not an audit log.
+- Older binaries cannot safely replay/export `assignment_delta` logs; disabling the strategy does not remove downgrade restrictions. Preserve legacy log readers and historical reports.
 - Review persistence, exclusions persistence, and crossmap flushing belong in backend abstractions, not session-level backend checks.
 - Do not reintroduce runtime `uses_sqlite` branching into core logic.
 

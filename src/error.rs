@@ -185,6 +185,12 @@ pub enum SessionError {
 
     #[error("WAL write failed: {0}")]
     Wal(#[from] std::io::Error),
+
+    #[error("assignment failed: {0}")]
+    Assignment(String),
+
+    #[error("assignment state needs recovery before further mutations")]
+    AssignmentUnhealthy,
 }
 
 impl SessionError {
@@ -197,7 +203,9 @@ impl SessionError {
             SessionError::Encoder(_)
             | SessionError::Store(_)
             | SessionError::CrossMap(_)
-            | SessionError::Wal(_) => 500,
+            | SessionError::Wal(_)
+            | SessionError::Assignment(_) => 500,
+            SessionError::AssignmentUnhealthy => 503,
         }
     }
 }

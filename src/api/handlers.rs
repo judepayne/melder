@@ -666,17 +666,13 @@ pub async fn admin_flush(State(session): State<AppState>) -> axum::response::Res
             .into_response();
     }
 
-    // Flush the WAL before building.
-    if let Err(e) = session.state.wal.flush() {
-        warn!(error = %e, "WAL flush failed before admin/flush build");
-    }
-
     let manifest = crate::output::OutputManifest::from_config(&session.state.config);
 
     let sl_path = scoring_log_path_from_config(&session.state.config);
 
     match tokio::task::spawn_blocking(move || {
-        crate::output::build_outputs(
+        build_admin_outputs(
+            &session,
             std::path::Path::new(&ml_path),
             sl_path.as_deref(),
             csv_dir.as_deref().map(std::path::Path::new),
@@ -720,13 +716,54 @@ pub async fn admin_flush(State(session): State<AppState>) -> axum::response::Res
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_admin_outputs(
+    session: &Session,
+    wal: &std::path::Path,
+    scoring: Option<&std::path::Path>,
+    csv: Option<&std::path::Path>,
+    parquet: Option<&std::path::Path>,
+    db: Option<&std::path::Path>,
+    manifest: &crate::output::OutputManifest,
+) -> Result<crate::output::BuildReport, Box<dyn std::error::Error>> {
+    let guard = session.assignment_guard()?;
+    let input = if guard.is_some() {
+        session.flush_assignment_log()?;
+        let records = |side| -> Result<_, SessionError> {
+            let store = &session.state.store;
+            let mut records = std::collections::HashMap::new();
+            for id in store.ids(side)? {
+                if let Some(record) = store.get(side, &id)? {
+                    records.insert(id, record);
+                }
+            }
+            Ok(records)
+        };
+        crate::output::build::BuildInput {
+            a_records: records(Side::A)?,
+            b_records: records(Side::B)?,
+            snapshot_pairs: session.state.crossmap.pairs(),
+            current_reviews: Some(
+                session
+                    .state
+                    .review_queue
+                    .iter()
+                    .map(|r| r.value().clone())
+                    .collect(),
+            ),
+        }
+    } else {
+        if let Err(e) = session.flush_assignment_log() {
+            warn!(error = %e, "WAL flush failed before admin output build");
+        }
+        crate::output::build::BuildInput::default()
+    };
+    crate::output::build::build_outputs_with_input(wal, scoring, csv, parquet, db, manifest, input)
+}
+
 /// POST /admin/shutdown — graceful shutdown with final build.
 pub async fn admin_shutdown(State(session): State<AppState>) -> axum::response::Response {
     info!("admin/shutdown requested");
-
-    if let Err(e) = session.state.wal.flush() {
-        warn!(error = %e, "WAL flush failed during admin/shutdown");
-    }
 
     let csv_dir = session.state.config.output.csv_dir_path.clone();
     let parquet_dir = session.state.config.output.parquet_dir_path.clone();
@@ -742,8 +779,10 @@ pub async fn admin_shutdown(State(session): State<AppState>) -> axum::response::
             .unwrap_or_else(|| "bench/upsert.wal".to_string());
         let sl_path = scoring_log_path_from_config(&session.state.config);
         let manifest = crate::output::OutputManifest::from_config(&session.state.config);
-        if let Ok(Ok(report)) = tokio::task::spawn_blocking(move || {
-            crate::output::build_outputs(
+        let output_session = session.clone();
+        let built = tokio::task::spawn_blocking(move || {
+            build_admin_outputs(
+                &output_session,
                 std::path::Path::new(&ml_path),
                 sl_path.as_deref(),
                 csv_dir.as_deref().map(std::path::Path::new),
@@ -753,13 +792,15 @@ pub async fn admin_shutdown(State(session): State<AppState>) -> axum::response::
             )
             .map_err(|e| e.to_string())
         })
-        .await
-        {
-            info!(
+        .await;
+        match built {
+            Ok(Ok(report)) => info!(
                 matches = report.match_count,
                 review = report.review_count,
                 "admin/shutdown build complete"
-            );
+            ),
+            Ok(Err(e)) => warn!(error = %e, "admin/shutdown output build failed"),
+            Err(e) => warn!(error = %e, "admin/shutdown output worker failed"),
         }
     }
 
