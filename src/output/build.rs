@@ -207,6 +207,45 @@ pub fn build_batch_graph_outputs(
     builder.write(csv_dir, parquet_dir, db_path, manifest, start)
 }
 
+// A simple batch log writes records first, then outcomes for separate B IDs.
+// Identical confirmations can repeat (e.g. a pre-match followed by a crossmap
+// skip); replay still applies each event to preserve its metadata precedence.
+fn batch_events_need_no_relationship_scans(events: &[MatchLogEvent]) -> bool {
+    let mut outcomes = HashMap::<&str, Option<&str>>::new();
+    let mut matched_a = std::collections::HashSet::new();
+    for event in events {
+        match event {
+            MatchLogEvent::UpsertRecord { .. } if outcomes.is_empty() => {}
+            MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } => {
+                if let Some(previous) = outcomes.get(b_id.as_str()) {
+                    if *previous != Some(a_id.as_str()) {
+                        return false;
+                    }
+                } else {
+                    if !matched_a.insert(a_id.as_str()) {
+                        return false;
+                    }
+                    outcomes.insert(b_id, Some(a_id));
+                }
+            }
+            MatchLogEvent::ReviewMatch {
+                side: Side::B, id, ..
+            }
+            | MatchLogEvent::NoMatchBelow {
+                query_side: Side::B,
+                query_id: id,
+                ..
+            } => {
+                if outcomes.insert(id, None).is_some() {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Build full outputs from original records, a crossmap snapshot, and WAL history.
 ///
 /// Snapshot pairs may be newer than the WAL's initial state. Assignment history
@@ -276,6 +315,10 @@ pub(crate) fn build_outputs_with_input(
             events.last(),
             Some(MatchLogEvent::BatchAssignmentCompleted { .. })
         );
+    let skip_relationship_scans = graph_snapshot
+        || (relationships.is_empty()
+            && input.current_reviews.is_none()
+            && batch_events_need_no_relationship_scans(&events));
     let mut graph_owned_a = std::collections::HashSet::new();
     let mut graph_terminal_b = std::collections::HashSet::new();
     for event in &events {
@@ -323,7 +366,7 @@ pub(crate) fn build_outputs_with_input(
                     );
                     continue;
                 }
-                if !graph_snapshot {
+                if !skip_relationship_scans {
                     relationships.retain(|key, rel| {
                         rel.relationship_type != "review"
                             || match review_queries.get(key) {
@@ -361,7 +404,7 @@ pub(crate) fn build_outputs_with_input(
                     (a_id.clone(), b_id.clone()),
                     (*score, *rank, reason.clone()),
                 );
-                if !graph_snapshot {
+                if !skip_relationship_scans {
                     relationships.retain(|key, rel| {
                         rel.relationship_type != "review"
                             || match review_queries.get(key) {
@@ -516,7 +559,7 @@ pub(crate) fn build_outputs_with_input(
                 best_candidate_id,
                 best_score,
             } => {
-                if !graph_snapshot {
+                if !skip_relationship_scans {
                     relationships.retain(|key, rel| {
                         rel.relationship_type != "review"
                             || match review_queries.get(key) {
@@ -994,6 +1037,91 @@ fn read_scoring_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_fast_replay_preserves_legacy_output_and_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manifest = make_graph_manifest();
+        let events: Vec<MatchLogEvent> = [
+            r#"{"type":"upsert_record","side":"a","record":{"aid":"1","name":"first"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"bid":"1","name":"match"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"bid":"2","name":"review"}}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"bid":"3","name":"below"}}"#,
+            r#"{"type":"crossmap_confirm","a_id":"1","b_id":"1","score":1.0,"reason":"exact"}"#,
+            r#"{"type":"review_match","side":"b","id":"2","candidate_id":"1","score":0.7,"rank":2}"#,
+            r#"{"type":"crossmap_confirm","a_id":"1","b_id":"1","reason":"crossmap"}"#,
+            r#"{"type":"no_match_below","query_side":"b","query_id":"3","best_candidate_id":"1","best_score":0.2}"#,
+        ].iter().map(|line| serde_json::from_str(line)).collect::<Result<_, _>>()?;
+        assert!(batch_events_need_no_relationship_scans(&events));
+        let noop = MatchLogEvent::Exclude {
+            a_id: "irrelevant".into(),
+            b_id: "irrelevant".into(),
+        };
+        for (name, fallback) in [("fast", false), ("legacy", true)] {
+            let log = MatchLog::open(&dir.path().join(format!("{name}.ndjson")))?;
+            for event in &events {
+                log.append(event)?;
+            }
+            if fallback {
+                log.append(&noop)?;
+            }
+            log.flush()?;
+            let report = build_outputs(
+                log.path(),
+                None,
+                Some(&dir.path().join(name)),
+                None,
+                None,
+                &manifest,
+            )?;
+            assert_eq!(
+                (
+                    report.match_count,
+                    report.review_count,
+                    report.no_match_count,
+                    report.broken_count
+                ),
+                (1, 1, 1, 0)
+            );
+        }
+        for file in ["relationships.csv", "unmatched.csv"] {
+            assert_eq!(
+                std::fs::read(dir.path().join("fast").join(file))?,
+                std::fs::read(dir.path().join("legacy").join(file))?,
+                "{file}"
+            );
+        }
+        let csv = std::fs::read_to_string(dir.path().join("fast/relationships.csv"))?;
+        assert!(
+            csv.contains("crossmap") && !csv.contains(",exact,"),
+            "the second confirmation still wins"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fast_replay_rejects_stateful_or_conflicting_sequences()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let first = r#"{"type":"crossmap_confirm","a_id":"a","b_id":"b","score":0.9}"#;
+        for next in [
+            r#"{"type":"crossmap_confirm","a_id":"a","b_id":"other"}"#,
+            r#"{"type":"crossmap_confirm","a_id":"other","b_id":"b"}"#,
+            r#"{"type":"review_match","side":"a","id":"other","candidate_id":"b","score":0.7}"#,
+            r#"{"type":"review_match","side":"b","id":"b","candidate_id":"other","score":0.7}"#,
+            r#"{"type":"no_match_below","query_side":"b","query_id":"b"}"#,
+            r#"{"type":"crossmap_break","a_id":"a","b_id":"b"}"#,
+            r#"{"type":"upsert_record","side":"b","record":{"bid":"b"}}"#,
+            r#"{"type":"remove_record","side":"b","id":"b"}"#,
+        ] {
+            let events = [serde_json::from_str(first)?, serde_json::from_str(next)?];
+            assert!(
+                !batch_events_need_no_relationship_scans(&events),
+                "must replay statefully: {next}"
+            );
+        }
+        Ok(())
+    }
 
     fn make_graph_result() -> BatchResult {
         let candidate = |a: &str, b: &str, score, classification| crate::models::MatchResult {

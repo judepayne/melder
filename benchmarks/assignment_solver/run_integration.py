@@ -17,7 +17,7 @@ from run import save, sha256
 REPO = Path(__file__).resolve().parents[2]
 
 
-def run_suite(binary, capture, out, repeats):
+def run_suite(binary, capture, out, repeats, modes=('greedy', 'approximate', 'exact')):
     out.mkdir(parents=True, exist_ok=False)
     pinned = out / 'meld'
     shutil.copy2(binary, pinned)
@@ -30,8 +30,8 @@ def run_suite(binary, capture, out, repeats):
         fingerprint = lambda: {p.name: sha256(p) for p in cache.iterdir() if p.is_file()}
         before = fingerprint()
         for rep in range(repeats):
-            order = ['greedy', 'approximate', 'exact']
-            for mode in order[rep % 3:]+order[:rep % 3]:
+            offset = rep % len(modes)
+            for mode in modes[offset:] + modes[:offset]:
                 directory = out / f'{size}-{mode}-{rep}'
                 directory.mkdir()
                 config = directory / 'config.yaml'
@@ -63,7 +63,7 @@ def run_suite(binary, capture, out, repeats):
                 save(out/'report.json', report)
                 print(size, mode, rep, f'{elapsed:.3f}s', len(rows), *summary, flush=True)
     for size in ('10k', '100k'):
-        for mode in ('greedy', 'approximate', 'exact'):
+        for mode in modes:
             values = [r['seconds'] for r in report['runs'] if r['size']==size and r['mode']==mode]
             print(size, mode, f'median {statistics.median(values):.3f} s')
 
@@ -74,5 +74,8 @@ if __name__ == '__main__':
     p.add_argument('--capture', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--repeats', type=int, choices=range(1, 10), default=3)
+    p.add_argument('--modes', nargs='+', choices=('greedy', 'approximate', 'exact'), default=('greedy', 'approximate', 'exact'))
     args = p.parse_args()
-    run_suite(args.binary.resolve(), args.capture.resolve(), args.out.resolve(), args.repeats)
+    if len(set(args.modes)) != len(args.modes):
+        p.error('--modes must not repeat a mode')
+    run_suite(args.binary.resolve(), args.capture.resolve(), args.out.resolve(), args.repeats, args.modes)
