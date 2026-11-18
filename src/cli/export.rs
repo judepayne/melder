@@ -41,15 +41,6 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         process::exit(1);
     }
 
-    if let Err(e) = std::fs::create_dir_all(out_dir) {
-        eprintln!(
-            "Failed to create output directory {}: {}",
-            out_dir.display(),
-            e
-        );
-        process::exit(1);
-    }
-
     // SQLite is authoritative: never substitute a possibly incomplete WAL.
     if let Some(db_path) = cfg
         .live
@@ -58,6 +49,7 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         .map(Path::new)
         .filter(|p| p.exists())
     {
+        create_export_dir(out_dir);
         export_sqlite(&cfg, db_path, out_dir);
         return;
     }
@@ -68,6 +60,10 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         let ml = std::path::Path::new(ml_path);
         let events = MatchLog::replay(ml).unwrap_or_else(|e| {
             eprintln!("WAL replay failed: {}", e);
+            process::exit(1);
+        });
+        crate::state::match_log::validate_batch_assignment_framing(&events).unwrap_or_else(|e| {
+            eprintln!("Export failed: {e}");
             process::exit(1);
         });
         let has_assignment = events
@@ -134,6 +130,8 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         }
     }
 
+    create_export_dir(out_dir);
+
     // Legacy path: SQLite if DB exists, otherwise WAL replay.
     let sqlite_db = cfg
         .live
@@ -146,6 +144,16 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         export_sqlite(&cfg, db_path, out_dir);
     } else {
         export_memory(&cfg, out_dir);
+    }
+}
+
+fn create_export_dir(out_dir: &Path) {
+    if let Err(e) = std::fs::create_dir_all(out_dir) {
+        eprintln!(
+            "Failed to create output directory {}: {e}",
+            out_dir.display()
+        );
+        process::exit(1);
     }
 }
 
@@ -418,6 +426,10 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
             }
         };
 
+        crate::state::match_log::validate_batch_assignment_framing(&events).unwrap_or_else(|e| {
+            eprintln!("Export failed: {e}");
+            process::exit(1);
+        });
         let final_pairs = if events
             .iter()
             .any(|event| matches!(event, MatchLogEvent::AssignmentDelta(_)))
@@ -561,6 +573,8 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
                         },
                     );
                 }
+                MatchLogEvent::BatchAssignmentStarted { .. }
+                | MatchLogEvent::BatchAssignmentCompleted { .. } => {}
                 MatchLogEvent::NoMatchBelow { .. } => {
                     // No-match events don't affect export state.
                 }

@@ -14,6 +14,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::config::BatchAssignmentMode;
 use crate::util::rename_replacing;
 
 use crate::models::{Record, Side};
@@ -202,6 +203,23 @@ pub enum MatchLogEvent {
     },
     #[serde(rename = "assignment_delta")]
     AssignmentDelta(AssignmentDelta),
+    #[serde(rename = "batch_assignment_started")]
+    BatchAssignmentStarted { mode: BatchAssignmentMode },
+    #[serde(rename = "batch_assignment_completed")]
+    BatchAssignmentCompleted {
+        retained_edges: usize,
+        fixed_pairs: usize,
+        scale: i64,
+        exact_groups: usize,
+        approximate_groups: usize,
+        largest_group: usize,
+        /// Decimal strings on the wire: internally tagged serde enums buffer
+        /// numbers in a representation that cannot deserialize arbitrary i128.
+        #[serde(with = "decimal_i128")]
+        objective_units: i128,
+        #[serde(with = "decimal_i128")]
+        upper_units: i128,
+    },
     #[serde(rename = "review_match")]
     ReviewMatch {
         /// The ID of the record that was upserted.
@@ -236,6 +254,74 @@ pub enum MatchLogEvent {
     Exclude { a_id: String, b_id: String },
     #[serde(rename = "unexclude")]
     Unexclude { a_id: String, b_id: String },
+}
+
+// Keep the Rust API checked/integer-valued without lossy JSON number conversion.
+mod decimal_i128 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &i128, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i128, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Require every batch optimization start to have exactly one completion.
+///
+/// Replay itself remains usable for recovery of unfinished WAL prefixes. Output
+/// consumers must call this before creating files, even with an authoritative
+/// in-process snapshot. Legacy logs and live assignment deltas need no markers.
+pub fn validate_batch_assignment_framing(events: &[MatchLogEvent]) -> io::Result<()> {
+    let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
+    let mut active = None;
+    for (position, event) in events.iter().enumerate() {
+        match event {
+            MatchLogEvent::BatchAssignmentStarted { mode } => {
+                if position != 0 || active.replace(*mode).is_some() {
+                    return Err(invalid(
+                        "batch assignment export requires a single run log segment",
+                    ));
+                }
+            }
+            MatchLogEvent::BatchAssignmentCompleted {
+                scale,
+                approximate_groups,
+                objective_units,
+                upper_units,
+                ..
+            } => {
+                let mode = active
+                    .take()
+                    .ok_or_else(|| invalid("batch_assignment_completed without start"))?;
+                if position + 1 != events.len() {
+                    return Err(invalid(
+                        "batch assignment export requires a single run log segment",
+                    ));
+                }
+                if *scale != crate::matching::assignment::SCALE
+                    || *objective_units < 0
+                    || upper_units < objective_units
+                {
+                    return Err(invalid("invalid batch assignment objective bounds"));
+                }
+                if mode == BatchAssignmentMode::Exact
+                    && (*approximate_groups != 0 || upper_units != objective_units)
+                {
+                    return Err(invalid("exact batch assignment completion is not exact"));
+                }
+            }
+            _ => {}
+        }
+    }
+    if active.is_some() {
+        return Err(invalid("batch assignment log lacks completion"));
+    }
+    Ok(())
 }
 
 /// Reconstruct membership independently of a possibly newer CSV snapshot.
@@ -594,6 +680,53 @@ impl MatchLog {
         w.get_ref().sync_all()
     }
 
+    /// Seal a graph log only after its events have been synced. On failure,
+    /// remove any partially written completion bytes so export fails closed.
+    pub(crate) fn complete_batch_assignment(&self, event: &MatchLogEvent) -> io::Result<()> {
+        self.seal_batch_assignment(event, |mut file, bytes| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+    }
+
+    pub(crate) fn seal_batch_assignment(
+        &self,
+        event: &MatchLogEvent,
+        seal: impl FnOnce(&File, &[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if !matches!(event, MatchLogEvent::BatchAssignmentCompleted { .. }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a batch completion event",
+            ));
+        }
+        let bytes = Self::serialize_event(event)?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        writer.flush()?;
+        let file = writer.get_ref();
+        file.sync_all()?;
+        let prefix_len = file.metadata()?.len();
+        if let Err(e) = seal(file, &bytes) {
+            if file
+                .set_len(prefix_len)
+                .and_then(|()| file.sync_all())
+                .is_err()
+            {
+                // Prefer making this segment unavailable to leaving a false success.
+                std::fs::remove_file(&self.path).map_err(|unlink| {
+                    io::Error::other(format!(
+                        "batch completion failed ({e}); could not invalidate log ({unlink})"
+                    ))
+                })?;
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
     /// Find all WAL files matching the base path pattern.
     ///
     /// Given base path `dir/name.ext`, finds all files matching
@@ -849,6 +982,8 @@ impl MatchLog {
                 | MatchLogEvent::CrossMapBreak { .. }
                 | MatchLogEvent::CrossMapReassign { .. }
                 | MatchLogEvent::AssignmentDelta(_)
+                | MatchLogEvent::BatchAssignmentStarted { .. }
+                | MatchLogEvent::BatchAssignmentCompleted { .. }
                 | MatchLogEvent::ReviewMatch { .. }
                 | MatchLogEvent::NoMatchBelow { .. }
                 | MatchLogEvent::Exclude { .. }
@@ -916,6 +1051,137 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    fn make_batch_completion() -> MatchLogEvent {
+        MatchLogEvent::BatchAssignmentCompleted {
+            retained_edges: 3,
+            fixed_pairs: 0,
+            scale: crate::matching::assignment::SCALE,
+            exact_groups: 1,
+            approximate_groups: 0,
+            largest_group: 4,
+            objective_units: i128::MAX,
+            upper_units: i128::MAX,
+        }
+    }
+
+    #[test]
+    fn batch_assignment_framing_rejects_incomplete_and_misordered_logs() {
+        let start = MatchLogEvent::BatchAssignmentStarted {
+            mode: BatchAssignmentMode::Exact,
+        };
+        let complete = make_batch_completion();
+        for (name, events, valid) in [
+            ("legacy", vec![make_reassignment()], true),
+            ("live", vec![make_assignment_delta(None, "B", 0)], true),
+            ("complete", vec![start.clone(), complete.clone()], true),
+            ("unfinished", vec![start.clone()], false),
+            ("orphan", vec![complete.clone()], false),
+            ("reversed", vec![complete.clone(), start.clone()], false),
+            (
+                "nested",
+                vec![start.clone(), start.clone(), complete.clone()],
+                false,
+            ),
+            (
+                "duplicate completion",
+                vec![start.clone(), complete.clone(), complete.clone()],
+                false,
+            ),
+            (
+                "unfinished second run",
+                vec![start.clone(), complete, start],
+                false,
+            ),
+        ] {
+            assert_eq!(
+                validate_batch_assignment_framing(&events).is_ok(),
+                valid,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_assignment_totals_roundtrip_and_compaction_preserve_framing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("batch.wal");
+        let log = MatchLog::open(&path).expect("log");
+        log.append(&MatchLogEvent::BatchAssignmentStarted {
+            mode: BatchAssignmentMode::Exact,
+        })
+        .expect("start");
+        let completion = make_batch_completion();
+        let bytes = MatchLog::serialize_event(&completion).expect("serialize i128");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+        assert_eq!(
+            json["objective_units"],
+            i128::MAX.to_string(),
+            "totals are decimal strings"
+        );
+        log.append_bytes(&bytes).expect("complete");
+        log.flush().expect("flush");
+        log.compact("id", "id").expect("compact");
+        let events = MatchLog::replay(&path).expect("replay");
+        validate_batch_assignment_framing(&events).expect("complete framing survives compaction");
+        assert!(
+            matches!(
+                events.last(),
+                Some(MatchLogEvent::BatchAssignmentCompleted {
+                    objective_units: i128::MAX,
+                    upper_units: i128::MAX,
+                    ..
+                })
+            ),
+            "large totals survive tagged enum roundtrip"
+        );
+    }
+
+    #[test]
+    fn batch_assignment_totals_reject_lossy_or_overflowing_json() {
+        for value in [
+            "1.5",
+            "170141183460469231731687303715884105727",
+            "\"170141183460469231731687303715884105728\"",
+            "\"1.5\"",
+        ] {
+            let json = format!(
+                r#"{{"type":"batch_assignment_completed","retained_edges":0,"exact_groups":0,"approximate_groups":0,"largest_group":0,"objective_units":{value},"upper_units":"0"}}"#,
+            );
+            assert!(
+                serde_json::from_str::<MatchLogEvent>(&json).is_err(),
+                "reject non-string, fractional or overflowing total: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_assignment_completion_rejects_inconsistent_bounds() {
+        for (mode, approximate_groups, objective_units, upper_units) in [
+            (BatchAssignmentMode::Approximate, 1, -1, 0),
+            (BatchAssignmentMode::Approximate, 1, 2, 1),
+            (BatchAssignmentMode::Exact, 0, 1, 2),
+            (BatchAssignmentMode::Exact, 1, 1, 1),
+        ] {
+            let events = [
+                MatchLogEvent::BatchAssignmentStarted { mode },
+                MatchLogEvent::BatchAssignmentCompleted {
+                    retained_edges: 1,
+                    fixed_pairs: 0,
+                    scale: crate::matching::assignment::SCALE,
+                    exact_groups: 0,
+                    approximate_groups,
+                    largest_group: 2,
+                    objective_units,
+                    upper_units,
+                },
+            ];
+            assert!(
+                validate_batch_assignment_framing(&events).is_err(),
+                "reject invalid {mode:?} completion"
+            );
+        }
     }
 
     fn make_reassignment() -> MatchLogEvent {

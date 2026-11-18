@@ -396,13 +396,15 @@ These views require the scoring log to be populated:
 
 Settings for `meld run`. Controls assignment policy and in-memory vs SQLite storage for large datasets.
 
-`assignment.strategy` defaults to `greedy`, currently the only supported batch
-value. `maximum_weight` is reserved for a later implementation and is rejected
-at parse time, not silently treated as greedy.
+`assignment.strategy` defaults to `greedy`, preserving parallel greedy claims
+without collecting an optimizer graph. Opt in to `graph` to choose pairs jointly
+from the existing eligible shortlists. This is YAML-only; there is no CLI
+override. Live and enroll assignment policies are unchanged.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `assignment.strategy` | no | `greedy` | Typed batch assignment policy. Only `greedy` is currently available. |
+| `assignment.strategy` | no | `greedy` | `greedy` or opt-in `graph`. |
+| `assignment.mode` | no | `approximate` for `graph` only | `approximate` or `exact`. Supplying a mode requires explicit `strategy: graph`. |
 | `db_path` | no | `None` | When set, stores records in SQLite instead of RAM. File is created fresh and deleted after the run. |
 | `sqlite_read_pool_size` | no | num_cpus | Read connection pool size. |
 | `sqlite_pool_worker_cache_mb` | no | `128` | Page cache per read connection in MB. |
@@ -411,7 +413,32 @@ at parse time, not silently treated as greedy.
 ```yaml
 batch:
   db_path: batch.db
+  assignment:
+    strategy: graph
+    mode: approximate   # optional with graph; use exact for no heuristic fallback
 ```
+
+| YAML choice | Effective behavior |
+|-------------|--------------------|
+| Assignment omitted, or `strategy: greedy` with no mode | Existing greedy behavior; no optimizer graph. |
+| `strategy: graph`, mode omitted or `approximate` | Exact through 512 participating records per group (A+B); deterministic fast matching above 512. |
+| `strategy: graph` with `mode: exact` | Exact for every group; failure is an error, never a heuristic fallback. |
+| Explicit mode with omitted strategy or `strategy: greedy` | Validation error: `batch.assignment.mode requires strategy: graph`. |
+
+For example, this is **invalid**, even though the mode itself is recognized:
+
+```yaml
+batch:
+  assignment:
+    mode: exact         # missing strategy: graph
+```
+
+Unknown strategy/mode values and unknown assignment fields are rejected;
+`maximum_weight` is not a supported strategy. The 512-record cutoff is fixed,
+not a configuration knob. There is no assignment worker-count setting or
+promised score-loss tolerance. See
+[Choosing pairs with the graph optimizer](batch-mode.md#choosing-pairs-with-the-graph-optimizer)
+for guarantees, scoring precision, and completion summaries.
 
 ---
 

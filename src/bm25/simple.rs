@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use dashmap::DashMap;
 
 use crate::config::schema::Bm25FieldPair;
+use crate::error::StoreError;
 use crate::models::{Record, Side};
 use crate::store::RecordStore;
 
@@ -306,13 +307,28 @@ impl SimpleBm25 {
         }
     }
 
-    /// Bulk-build from a `RecordStore`.
+    /// Bulk-build from a `RecordStore`, retaining partial results on scan failure.
+    ///
+    /// Use [`Self::try_build`] when an incomplete index must not be accepted.
     pub fn build(store: &dyn RecordStore, side: Side, fields: &[Bm25FieldPair]) -> Self {
         let idx = Self::new(fields, side);
         let _ = store.for_each_record(side, &mut |id, record| {
             idx.upsert(id, record);
         });
         idx
+    }
+
+    /// Bulk-build from a `RecordStore`, returning any scan error instead of a partial index.
+    pub fn try_build(
+        store: &dyn RecordStore,
+        side: Side,
+        fields: &[Bm25FieldPair],
+    ) -> Result<Self, StoreError> {
+        let idx = Self::new(fields, side);
+        store.for_each_record(side, &mut |id, record| {
+            idx.upsert(id, record);
+        })?;
+        Ok(idx)
     }
 
     // ---------------------------------------------------------------
@@ -1005,6 +1021,67 @@ mod tests {
                 field_b: "desc_b".to_string(),
             },
         ]
+    }
+
+    #[test]
+    fn try_build_matches_legacy_on_both_sides() -> Result<(), StoreError> {
+        for side in [Side::A, Side::B] {
+            let field = if side == Side::A { "name_a" } else { "name_b" };
+            let store = make_store(vec![("1", make_record(&[(field, "Apple Inc")]))], side);
+            let fields = test_fields();
+            let legacy = SimpleBm25::build(&store, side, &fields);
+            let checked = SimpleBm25::try_build(&store, side, &fields)?;
+            assert_eq!(checked.num_docs(), legacy.num_docs(), "same document count");
+            assert_eq!(
+                checked.score_all("apple", 3),
+                legacy.score_all("apple", 3),
+                "checked build must preserve scores on {side:?}",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn try_build_rejects_partial_scan_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, _, writer) = crate::store::sqlite::open_sqlite(
+            &dir.path().join("records.db"),
+            &BlockingConfig::default(),
+            None,
+            &["name_a".to_string()],
+            &[],
+        )?;
+        // SQLite permits a BLOB ID in a TEXT column. Reading that ID as a String
+        // fails after the preceding valid row has already reached the callback.
+        writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute_batch(
+                "INSERT INTO a_records (id, name_a) VALUES ('1', 'Apple Inc');
+             INSERT INTO a_records (id, name_a) VALUES (X'FF', 'Microsoft');",
+            )?;
+        let mut visited = Vec::new();
+        let scan = store.for_each_record(Side::A, &mut |id, _| visited.push(id.to_string()));
+        assert!(scan.is_err(), "fixture must fail during the scan");
+        assert_eq!(visited, ["1"], "scan must have indexed a valid prefix");
+
+        let fields = test_fields();
+        let checked = SimpleBm25::try_build(&store, Side::A, &fields);
+        assert!(
+            matches!(checked, Err(StoreError::Sqlite(_))),
+            "checked build must return the scan error, not a partial index",
+        );
+        let legacy = SimpleBm25::build(&store, Side::A, &fields);
+        assert_eq!(legacy.num_docs(), 1, "legacy must retain the valid prefix");
+        assert_eq!(
+            legacy
+                .score_all("apple", 3)
+                .first()
+                .map(|(id, _)| id.as_str()),
+            Some("1"),
+            "legacy prefix must remain queryable",
+        );
+        Ok(())
     }
 
     #[test]

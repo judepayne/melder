@@ -501,20 +501,43 @@ fn default_max_displacements() -> usize {
     32
 }
 
-/// Batch assignment policy. Maximum-weight assignment is not yet available.
+/// Batch assignment policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BatchAssignmentStrategy {
     #[default]
     Greedy,
+    Graph,
 }
 
-/// Batch assignment settings, reserved for future optimization strategies.
+/// Solver mode for graph-based batch assignment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchAssignmentMode {
+    #[default]
+    Approximate,
+    Exact,
+}
+
+/// Batch assignment settings. Graph mode defaults effectively to approximate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchAssignmentConfig {
     #[serde(default)]
     pub strategy: BatchAssignmentStrategy,
+    /// Only valid with the graph strategy; omission selects approximate mode.
+    #[serde(default)]
+    pub mode: Option<BatchAssignmentMode>,
+}
+
+impl BatchAssignmentConfig {
+    /// Return the effective graph solver mode, or `None` for greedy assignment.
+    pub fn graph_mode(&self) -> Option<BatchAssignmentMode> {
+        match self.strategy {
+            BatchAssignmentStrategy::Greedy => None,
+            BatchAssignmentStrategy::Graph => Some(self.mode.unwrap_or_default()),
+        }
+    }
 }
 
 /// Batch-mode assignment and SQLite configuration.
@@ -738,6 +761,43 @@ pub fn default_operator() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_graph_assignment_modes() {
+        for (yaml, effective_mode) in [
+            ("{}", None),
+            ("strategy: greedy", None),
+            ("strategy: graph", Some(BatchAssignmentMode::Approximate)),
+            (
+                "strategy: graph\nmode: approximate",
+                Some(BatchAssignmentMode::Approximate),
+            ),
+            (
+                "strategy: graph\nmode: exact",
+                Some(BatchAssignmentMode::Exact),
+            ),
+        ] {
+            let cfg: BatchAssignmentConfig =
+                serde_yaml::from_str(yaml).expect("valid batch assignment");
+            assert_eq!(
+                cfg.graph_mode(),
+                effective_mode,
+                "effective mode for {yaml}"
+            );
+            assert_eq!(
+                cfg.mode.is_some(),
+                yaml.contains("mode:"),
+                "preserve explicit mode presence for {yaml}"
+            );
+        }
+        for mode in ["unknown", "Exact", "APPROXIMATE", "greedy"] {
+            let yaml = format!("strategy: graph\nmode: {mode}");
+            assert!(
+                serde_yaml::from_str::<BatchAssignmentConfig>(&yaml).is_err(),
+                "reject unknown batch mode {mode}"
+            );
+        }
+    }
 
     #[test]
     fn assignment_defaults() {

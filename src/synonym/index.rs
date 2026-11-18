@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::SynonymFieldConfig;
+use crate::error::StoreError;
 use crate::models::{Record, Side};
 use crate::store::RecordStore;
 use crate::synonym::dictionary::SynonymDictionary;
@@ -95,6 +96,7 @@ impl SynonymIndex {
     /// For each record, generates acronyms from the configured fields and
     /// indexes both the acronyms and the raw field value as lookup keys.
     /// If a dictionary is provided, also indexes under dictionary-expanded terms.
+    /// Retains partial results on scan failure; use [`Self::try_build`] to reject them.
     pub fn build(
         store: &dyn RecordStore,
         side: Side,
@@ -106,6 +108,20 @@ impl SynonymIndex {
             idx.index_record(id, record, side, synonym_fields);
         });
         idx
+    }
+
+    /// Build from a record store, returning any scan error instead of a partial index.
+    pub fn try_build(
+        store: &dyn RecordStore,
+        side: Side,
+        synonym_fields: &[SynonymFieldConfig],
+        dictionary: Option<Arc<SynonymDictionary>>,
+    ) -> Result<Self, StoreError> {
+        let mut idx = Self::new(dictionary);
+        store.for_each_record(side, &mut |id, record| {
+            idx.index_record(id, record, side, synonym_fields);
+        })?;
+        Ok(idx)
     }
 
     /// Index a single record's synonym entries.
@@ -299,6 +315,71 @@ mod tests {
 
     fn make_store() -> MemoryStore {
         MemoryStore::new(&crate::config::BlockingConfig::default())
+    }
+
+    #[test]
+    fn try_build_matches_legacy_on_both_sides() -> Result<(), StoreError> {
+        for side in [Side::A, Side::B] {
+            let field = if side == Side::A {
+                "legal_name"
+            } else {
+                "counterparty_name"
+            };
+            let store = make_store();
+            store.insert(
+                side,
+                "1",
+                &make_record(&[(field, "Harris, Watkins and Goodwin BV")]),
+            )?;
+            let fields = make_config();
+            let legacy = SynonymIndex::build(&store, side, &fields, None);
+            let checked = SynonymIndex::try_build(&store, side, &fields, None)?;
+            assert_eq!(
+                checked.lookup("HWAG", "legal_name", "counterparty_name", 3),
+                legacy.lookup("HWAG", "legal_name", "counterparty_name", 3),
+                "checked build must preserve candidates on {side:?}",
+            );
+            assert!(!checked.is_empty(), "checked build must index records");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn try_build_rejects_partial_scan_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let (store, _, writer) = crate::store::sqlite::open_sqlite(
+            &dir.path().join("records.db"),
+            &crate::config::BlockingConfig::default(),
+            None,
+            &["legal_name".to_string()],
+            &[],
+        )?;
+        // A BLOB ID causes a row conversion failure after a valid row was visited.
+        writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute_batch(
+            "INSERT INTO a_records (id, legal_name) VALUES ('1', 'Harris, Watkins and Goodwin BV');
+             INSERT INTO a_records (id, legal_name) VALUES (X'FF', 'Other Company');",
+        )?;
+        let mut visited = Vec::new();
+        let scan = store.for_each_record(Side::A, &mut |id, _| visited.push(id.to_string()));
+        assert!(scan.is_err(), "fixture must fail during the scan");
+        assert_eq!(visited, ["1"], "scan must have indexed a valid prefix");
+
+        let fields = make_config();
+        let checked = SynonymIndex::try_build(&store, Side::A, &fields, None);
+        assert!(
+            matches!(checked, Err(StoreError::Sqlite(_))),
+            "checked build must return the scan error, not a partial index",
+        );
+        let legacy = SynonymIndex::build(&store, Side::A, &fields, None);
+        assert_eq!(
+            legacy.lookup("HWAG", "legal_name", "counterparty_name", 3),
+            ["1"],
+            "legacy prefix must remain queryable",
+        );
+        Ok(())
     }
 
     #[test]

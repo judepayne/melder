@@ -796,6 +796,8 @@ impl LiveMatchState {
                         }
                     }
                 }
+                MatchLogEvent::BatchAssignmentStarted { .. }
+                | MatchLogEvent::BatchAssignmentCompleted { .. } => {}
                 MatchLogEvent::NoMatchBelow { .. } => {
                     // Informational — no state change on replay.
                 }

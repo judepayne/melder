@@ -82,6 +82,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn load_batch_assignment_modes() {
+        use crate::config::schema::BatchAssignmentMode;
+
+        let base = r#"
+vector_backend: flat
+job: { name: test }
+datasets:
+  a: { path: a.csv, id_field: id }
+  b: { path: b.csv, id_field: id }
+cross_map: { backend: local, path: cm.csv, a_id_field: a, b_id_field: b }
+embeddings: { model: m, a_cache_dir: i }
+match_fields:
+  - { field_a: name, field_b: name, method: exact, weight: 1.0 }
+thresholds: { auto_match: 0.85, review_floor: 0.6 }
+output: { csv_dir_path: output }
+"#;
+        let dir = tempfile::tempdir().expect("temporary config directory");
+        let path = dir.path().join("config.yaml");
+        for (assignment, mode) in [
+            ("{}", None),
+            ("{ strategy: greedy }", None),
+            (
+                "{ strategy: graph }",
+                Some(BatchAssignmentMode::Approximate),
+            ),
+            (
+                "{ strategy: graph, mode: approximate }",
+                Some(BatchAssignmentMode::Approximate),
+            ),
+            (
+                "{ strategy: graph, mode: exact }",
+                Some(BatchAssignmentMode::Exact),
+            ),
+        ] {
+            std::fs::write(
+                &path,
+                format!("{base}\nbatch: {{ assignment: {assignment} }}"),
+            )
+            .expect("write config");
+            let cfg = load_config(&path).expect("load valid batch assignment");
+            assert_eq!(cfg.batch.assignment.graph_mode(), mode, "{assignment}");
+            assert_eq!(
+                cfg.live.assignment,
+                Default::default(),
+                "batch assignment must not change live defaults"
+            );
+        }
+        for assignment in [
+            "{ mode: approximate }",
+            "{ mode: exact }",
+            "{ strategy: greedy, mode: approximate }",
+            "{ strategy: greedy, mode: exact }",
+            "{ strategy: graph, mode: invalid }",
+            "{ strategy: maximum_weight }",
+        ] {
+            std::fs::write(
+                &path,
+                format!("{base}\nbatch: {{ assignment: {assignment} }}"),
+            )
+            .expect("write invalid config");
+            assert!(load_config(&path).is_err(), "reject {assignment}");
+        }
+    }
+
+    #[test]
     fn load_bench_live() {
         let cfg = load_config(Path::new(
             "benchmarks/live/10kx10k_inject3k_flat/warm/config.yaml",

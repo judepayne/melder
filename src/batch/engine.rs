@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
+use super::assignment::{self, AssignmentSummary, BatchAssignmentError, ScoredQuery};
 use crate::bm25::scorer::normalise_bm25;
 use crate::config::{Config, MatchMethod};
 use crate::crossmap::CrossMapOps;
@@ -25,6 +26,8 @@ use crate::vectordb::VectorDB;
 
 /// Result of a batch matching run.
 pub struct BatchResult {
+    /// Processed B IDs for graph-mode direct output (includes protected/skipped B).
+    pub processed_graph_b: Option<Vec<String>>,
     pub matched: Vec<MatchResult>,
     pub review: Vec<MatchResult>,
     /// Unmatched B records with their best candidate score (None if no candidates found).
@@ -34,6 +37,7 @@ pub struct BatchResult {
 
 /// Statistics from a batch run.
 pub struct BatchStats {
+    pub assignment: Option<AssignmentSummary>,
     pub total_b: usize,
     pub auto_matched: usize,
     pub review_count: usize,
@@ -46,7 +50,8 @@ pub struct BatchStats {
 }
 
 /// Outcome for a single B record after scoring.
-enum RecordOutcome {
+pub(super) enum RecordOutcome {
+    Scored(ScoredQuery),
     Auto(MatchResult),
     Review(MatchResult),
     /// B record that scored below review_floor. Best candidate score is preserved
@@ -76,7 +81,22 @@ pub fn run_batch(
     let start = Instant::now();
 
     // Get B IDs from the store (already loaded by caller).
-    let b_ids = store.ids(Side::B)?;
+    let mut b_ids = store.ids(Side::B)?;
+    // Tune measures scoring behavior, not the configured assignment policy.
+    let graph_mode = (!skip_prematch)
+        .then(|| config.batch.assignment.graph_mode())
+        .flatten();
+    let graph = graph_mode.is_some();
+    if let Some(mode) = graph_mode {
+        b_ids.sort_unstable();
+        assignment::emit(
+            match_log.as_deref(),
+            &MatchLogEvent::BatchAssignmentStarted { mode },
+        )?;
+        if let Some(log) = &match_log {
+            log.flush().map_err(BatchAssignmentError::from)?;
+        }
+    }
 
     let total_b = if let Some(lim) = limit {
         lim.min(b_ids.len())
@@ -103,8 +123,58 @@ pub fn run_batch(
         }
     };
 
+    // Graph logs record the protected constraints separately from scored links.
+    if graph {
+        let mut fixed = crossmap.pairs();
+        fixed.sort_unstable();
+        for (a, b) in &fixed {
+            if exclusions.contains(a, b) {
+                return Err(BatchAssignmentError::ExcludedProtected {
+                    a: a.clone(),
+                    b: b.clone(),
+                }
+                .into());
+            }
+        }
+        if let Some(log) = &match_log {
+            let mut a_ids = store.ids(Side::A)?;
+            a_ids.sort_unstable();
+            for (side, ids) in [(Side::A, a_ids.as_slice()), (Side::B, &b_ids[..total_b])] {
+                for id in ids {
+                    assignment::emit(
+                        Some(log),
+                        &MatchLogEvent::UpsertRecord {
+                            side,
+                            record: assignment::record(store, side, id)?,
+                        },
+                    )?;
+                }
+            }
+            for (a_id, b_id) in fixed {
+                assignment::emit(
+                    Some(log),
+                    &MatchLogEvent::CrossMapConfirm {
+                        a_id,
+                        b_id,
+                        score: None,
+                        rank: None,
+                        reason: Some("crossmap".into()),
+                    },
+                )?;
+            }
+        }
+        matched = assignment::prematch(
+            config,
+            store,
+            crossmap,
+            exclusions,
+            &b_ids[..total_b],
+            match_log.as_deref(),
+        )?;
+    }
+
     // Emit UpsertRecord events for all A and B records.
-    if let Some(ref ml) = match_log {
+    if !graph && let Some(ref ml) = match_log {
         let a_id_field = &config.datasets.a.id_field;
         for a_id in store.ids(Side::A)? {
             if let Ok(Some(rec)) = store.get(Side::A, &a_id) {
@@ -137,7 +207,7 @@ pub fn run_batch(
     // Common ID pre-match phase: if common_id_field is configured, match
     // records with identical common IDs before any scoring.
     // Skipped in tune mode so ground-truth pairs get real scores.
-    let common_id_matched = if skip_prematch {
+    let common_id_matched = if graph || skip_prematch {
         0
     } else if let (Some(a_cid_field), Some(b_cid_field)) = (
         &config.datasets.a.common_id_field,
@@ -224,7 +294,10 @@ pub fn run_batch(
     // at score 1.0 — no scoring required. Runs before blocking so cross-block
     // exact matches (e.g. wrong country but matching LEI) are still found.
     // Skipped in tune mode so all records go through full scoring.
-    if !skip_prematch && config.exact_prefilter.enabled && !config.exact_prefilter.fields.is_empty()
+    if !graph
+        && !skip_prematch
+        && config.exact_prefilter.enabled
+        && !config.exact_prefilter.fields.is_empty()
     {
         let ep_start = Instant::now();
 
@@ -315,6 +388,10 @@ pub fn run_batch(
     let mut work_ids: Vec<&str> = Vec::with_capacity(total_b);
     for b_id in b_ids_slice {
         if crossmap.has_b(b_id) {
+            if graph {
+                skipped += 1;
+                continue;
+            }
             // Emit pre-loaded crossmap pairs to the match log.
             if let Some(ref ml) = match_log
                 && let Some(a_id) = crossmap.get_a(b_id)
@@ -332,7 +409,7 @@ pub fn run_batch(
                 );
             }
             skipped += 1;
-        } else if store.contains(Side::B, b_id).unwrap_or(false) {
+        } else if graph || store.contains(Side::B, b_id).unwrap_or(false) {
             work_ids.push(b_id.as_str());
         }
     }
@@ -350,7 +427,12 @@ pub fn run_batch(
             .any(|mf| mf.method == MatchMethod::Bm25);
         if has_bm25 && !config.bm25_fields.is_empty() {
             let bm25_start = Instant::now();
-            let idx = crate::bm25::simple::SimpleBm25::build(store, Side::A, &config.bm25_fields);
+            use crate::bm25::simple::SimpleBm25;
+            let idx = if graph {
+                SimpleBm25::try_build(store, Side::A, &config.bm25_fields)?
+            } else {
+                SimpleBm25::build(store, Side::A, &config.bm25_fields)
+            };
             tracing::info!(
                 a_records = store.len(Side::A).unwrap_or(0),
                 elapsed_ms = format!("{:.1}", bm25_start.elapsed().as_secs_f64() * 1000.0),
@@ -381,24 +463,26 @@ pub fn run_batch(
         };
 
     // Build A-side synonym index if method: synonym is configured.
-    let synonym_index_a: Option<crate::synonym::index::SynonymIndex> =
-        if !config.synonym_fields.is_empty() {
-            let syn_start = Instant::now();
-            let idx = crate::synonym::index::SynonymIndex::build(
-                store,
-                Side::A,
-                &config.synonym_fields,
-                synonym_dict.clone(),
-            );
-            tracing::info!(
-                keys = idx.len(),
-                elapsed_ms = format!("{:.1}", syn_start.elapsed().as_secs_f64() * 1000.0),
-                "synonym index build complete"
-            );
-            Some(idx)
+    let synonym_index_a: Option<crate::synonym::index::SynonymIndex> = if !config
+        .synonym_fields
+        .is_empty()
+    {
+        let syn_start = Instant::now();
+        use crate::synonym::index::SynonymIndex;
+        let idx = if graph {
+            SynonymIndex::try_build(store, Side::A, &config.synonym_fields, synonym_dict.clone())?
         } else {
-            None
+            SynonymIndex::build(store, Side::A, &config.synonym_fields, synonym_dict.clone())
         };
+        tracing::info!(
+            keys = idx.len(),
+            elapsed_ms = format!("{:.1}", syn_start.elapsed().as_secs_f64() * 1000.0),
+            "synonym index build complete"
+        );
+        Some(idx)
+    } else {
+        None
+    };
 
     // Score all B records in a single parallel pass.
     let scoring_start = Instant::now();
@@ -412,10 +496,16 @@ pub fn run_batch(
     let progress = AtomicUsize::new(0);
     let work_total = work_ids.len();
 
-    let outcomes: Vec<RecordOutcome> = work_ids
+    let outcomes: Vec<Option<RecordOutcome>> = work_ids
         .par_iter()
-        .filter_map(|b_id| {
-            let b_record = store.get(Side::B, b_id).ok()??;
+        .map(|b_id| -> Result<_, MelderError> {
+            let b_record = if graph {
+                assignment::record(store, Side::B, b_id)?
+            } else if let Ok(Some(record)) = store.get(Side::B, b_id) {
+                record
+            } else {
+                return Ok(None);
+            };
 
             // Progress reporting (atomic, lock-free)
             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
@@ -437,25 +527,37 @@ pub fn run_batch(
             }
 
             // Check if this B record was already claimed by another thread.
-            if crossmap.has_b(b_id) {
-                return None;
+            if !graph && crossmap.has_b(b_id) {
+                return Ok(None);
             }
 
             // Pre-query the blocking index via the store.
             let query_blocked_ids;
             let blocked_ids: &[String] = if config.blocking.enabled {
-                query_blocked_ids = store
-                    .blocking_query(&b_record, Side::B, Side::A)
-                    .unwrap_or_default();
+                let blocked = store.blocking_query(&b_record, Side::B, Side::A);
+                query_blocked_ids = if graph {
+                    blocked?
+                } else {
+                    blocked.unwrap_or_default()
+                };
                 &query_blocked_ids
             } else {
                 &all_a_ids
             };
 
             // Fetch the query combined vec from the B-side index.
-            let query_combined_vec: Vec<f32> = combined_index_b
-                .and_then(|idx| idx.get(b_id).ok().flatten())
-                .unwrap_or_default();
+            let query_combined_vec: Vec<f32> = if let Some(idx) = combined_index_b {
+                let vector = idx.get(b_id);
+                if graph {
+                    vector
+                        .map_err(BatchAssignmentError::from)?
+                        .unwrap_or_default()
+                } else {
+                    vector.ok().flatten().unwrap_or_default()
+                }
+            } else {
+                Vec::new()
+            };
 
             // Shared pipeline: candidate selection → full scoring
             let ann_candidates = config.ann_candidates.unwrap_or(50);
@@ -517,12 +619,27 @@ pub fn run_batch(
                 synonym_dictionary: synonym_dict.as_deref(),
                 exclusions,
             };
-            let results =
-                pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
+            let results = if graph {
+                pipeline::score_pool_strict(
+                    &scoring_query,
+                    &scoring_pool,
+                    config,
+                    ann_candidates,
+                    top_n,
+                )?
+            } else {
+                pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n)
+            };
 
             // Send to scoring log if enabled.
             if let Some(sl) = scoring_log {
                 sl.send(b_id, Side::B, &results);
+            }
+
+            if graph {
+                return Ok(Some(RecordOutcome::Scored(assignment::retain(
+                    config, crossmap, results,
+                )?)));
             }
 
             // Claim loop: try each auto-match candidate in ranked order.
@@ -610,12 +727,38 @@ pub fn run_batch(
                     &ml_errors,
                 );
             }
-            final_outcome
+            Ok(final_outcome)
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
+    let scoring_elapsed = scoring_start.elapsed().as_secs_f64();
+    let (outcomes, assignment) = if let Some(mode) = graph_mode {
+        let scored = outcomes
+            .into_iter()
+            .map(|outcome| match outcome {
+                Some(RecordOutcome::Scored(query)) => Ok(query),
+                _ => Err(BatchAssignmentError::Invariant(
+                    "missing graph query result",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (outcomes, summary) = assignment::finish(
+            mode,
+            store,
+            crossmap,
+            &work_ids,
+            scored,
+            match_log.as_deref(),
+        )?;
+        // The partition includes prematches among occupied B IDs. They are counted
+        // under Auto, not Skip. Retain existing greedy counting independently.
+        skipped -= matched.len();
+        (outcomes, Some(summary))
+    } else {
+        (outcomes.into_iter().flatten().collect(), None)
+    };
 
-    // Flush match log and report errors.
-    if let Some(ref ml) = match_log {
+    // Flush match log and report errors on the legacy greedy path.
+    if !graph && let Some(ref ml) = match_log {
         if let Err(e) = ml.flush() {
             tracing::warn!(error = %e, "match log flush failed");
         } else {
@@ -628,6 +771,9 @@ pub fn run_batch(
 
     for outcome in outcomes {
         match outcome {
+            RecordOutcome::Scored(_) => {
+                return Err(BatchAssignmentError::Invariant("unresolved scoring outcome").into());
+            }
             RecordOutcome::Auto(mr) => matched.push(mr),
             RecordOutcome::Review(mr) => review.push(mr),
             RecordOutcome::NoMatch(id, rec, score) => unmatched.push((id, rec, score)),
@@ -635,8 +781,8 @@ pub fn run_batch(
     }
 
     let elapsed = start.elapsed().as_secs_f64();
-    let scoring_elapsed = scoring_start.elapsed().as_secs_f64();
     let stats = BatchStats {
+        assignment,
         total_b,
         auto_matched: matched.len(),
         review_count: review.len(),
@@ -646,7 +792,9 @@ pub fn run_batch(
         scoring_elapsed_secs: scoring_elapsed,
     };
 
+    b_ids.truncate(total_b);
     Ok(BatchResult {
+        processed_graph_b: graph.then_some(b_ids),
         matched,
         review,
         unmatched,

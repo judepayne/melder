@@ -1,0 +1,17 @@
+{
+  "binary_build_provenance": "Release binary pinned by hash; source snapshots are contextual, not a reproducible-build attestation. See capture/README.md for this campaign build command.",
+  "binary_sha256": "99d0ff21b25154c680f3c77a30a942a70e9b19e08f4181f73a3e6921da72601d",
+  "capture_sha256": "bd6f665866f922daa164595b6294514ac5818ec76d3f86b6caaa2cc626459fb2",
+  "git_head": "08d0ae57a7f9d9573e3ff5f63966dff956e6e974",
+  "git_status": "?? .memory/\n?? benchmarks/assignment_solver/\n?? scripts/count_files_by_folder.py\n?? \"target 2/\"\n",
+  "scope": "Original warm crossmaps protected; full top_n pre-claim logs, not accepted-link CSVs. No solver timings.",
+  "source_sha256": {
+    "src/batch/engine.rs": "33deaa18fbd63032d893d0ed9e3c81a1328a15b61ab7bb711f66a48db8a2141c",
+    "src/config/schema.rs": "5a146cd2283d5b48d7077dd43246445298a1caf441715d3db37a5359aa6b4e63",
+    "src/matching/candidates.rs": "cc1df07c2f90d0fdb3ae5169635e2bff7b8e546fcbb32519c166f3a62ae862c0",
+    "src/matching/pipeline.rs": "900bdb35436a12045ddcc3c07ed47368db8406a5226f947c977824ab1a3e2f41",
+    "src/models.rs": "b45a853fbc9e034e2315a48c1659b01ca4e60445407abed1e4be169a1c70c5b4",
+    "src/output/scoring_log.rs": "19b1ae9fa9b02218ba60abb801928e936357a8b1c5dad774434524c9e41edb8c"
+  },
+  "started_utc": "2026-11-18T11:46:45.735509+00:00"
+}

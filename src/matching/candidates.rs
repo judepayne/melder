@@ -86,6 +86,7 @@ pub fn select_candidates(
         query_side,
         backend,
         false,
+        false,
     )
     .unwrap_or_default()
 }
@@ -102,6 +103,7 @@ pub(super) fn select_candidates_checked(
     query_side: Side,
     backend: &str,
     strict: bool,
+    strict_vectors: bool,
 ) -> Result<Vec<Candidate>, StoreError> {
     let has_embeddings = !query_combined_vec.is_empty();
     let load_record = |id: &str| match pool_store.get(pool_side, id) {
@@ -116,7 +118,12 @@ pub(super) fn select_candidates_checked(
         && let Some(idx) = pool_combined_index
     {
         let k = if top_n > 0 { top_n } else { usize::MAX };
-        if let Ok(results) = idx.search(query_combined_vec, k, query_record, query_side) {
+        let searched = idx.search(query_combined_vec, k, query_record, query_side);
+        let results = match searched {
+            Err(error) if strict_vectors => return Err(error.into()),
+            result => result,
+        };
+        if let Ok(results) = results {
             let mut hits = Vec::with_capacity(results.len());
             for r in results {
                 if let Some(record) = load_record(&r.id)? {
@@ -148,7 +155,11 @@ pub(super) fn select_candidates_checked(
                 Ok(None) => return None,
                 Err(error) => return Some(Err(error)),
             };
-            let pool_vec = idx.get(id).ok().flatten().unwrap_or_default();
+            let pool_vec = match idx.get(id) {
+                Ok(vector) => vector.unwrap_or_default(),
+                Err(error) if strict_vectors => return Some(Err(error.into())),
+                Err(_) => Vec::new(),
+            };
             let dot: f32 = if pool_vec.len() == query_combined_vec.len() {
                 dot_product_f32(query_combined_vec, &pool_vec)
             } else {

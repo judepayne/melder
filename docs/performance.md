@@ -39,6 +39,62 @@ crossmappings.
 - The `usearch` backend is an in-process HNSW vector database with
   O(log N) search. Enabled by default — use for any real-world workload.
 
+## Batch graph optimizer
+
+[`batch.assignment.strategy: graph`](batch-mode.md#choosing-pairs-with-the-graph-optimizer)
+adds graph collection, solving and publication after scoring. Greedy remains
+the default and does not collect this graph. Graph defaults to `approximate`:
+exact for groups of at most **512 participating records (A+B)**, deterministic
+fast matching at **513 and above**. Explicit `mode: exact` solves every group
+exactly, with no time-based or heuristic fallback.
+
+**Connected group size, not batch size, drives solver difficulty.** A large
+batch with small independent groups can be solved entirely exactly. One dense,
+connected group may cost much more than many small groups with the same total
+record count. Graph collection also retains eligible edges in memory; SQLite
+record storage does not remove this optimizer memory cost.
+
+The standalone prototype comparisons below are **solver-only**, not integrated
+`meld run` timings. They exclude retrieval, scoring, output generation and
+validation. Measured on Apple M3, medians of three fresh release processes with
+four workers:
+
+| Retained graph | Exact solver | Prototype hybrid solver | Interpretation |
+|----------------|-------------:|------------------------:|----------------|
+| Captured fresh 100k-per-side batch | 23.88 ms | 21.83 ms | All 51,695 groups exact; largest 76 records. Difference is not evidence of an algorithmic speedup. |
+| Synthetic connected 10k-per-side, degree 5 | 11.404 s | 9.73 ms | Hybrid achieved 92.28% of exact total score on broad synthetic weights. |
+| Synthetic connected 100k-per-side, degree 5 | Timed out at 25 s (process limit) | 129.66 ms | Exact optimum unknown; hybrid certified at least 83.27% of optimum. |
+
+The prototype hybrid used a historical **256**-record cutoff; the shipped
+contract uses **512**, so those timings are evidence about these graphs, not
+measurements of the integrated 512/513 boundary. The captured graph came from
+the existing benchmark datasets with warm caches and an empty private starting
+CrossMap, not a live production workload. Its groups fit either cutoff. The
+synthetic giants deliberately stress connected graphs and use broad weights,
+not the captured 0.85 automatic-match threshold. A timed-out exact run is not
+a measured exact latency or a partial optimum.
+
+A separate single-group cutoff study (one worker) found median exact/fast
+solver times of **7.225/0.346 ms at 512 records** and **28.539/0.715 ms at
+1,024 records**, across degree-5/20 graphs with competing 0.85–1.00 scores.
+Observed median score losses were 1.26% and 1.10%, respectively, not guaranteed
+loss limits. A large speedup ratio can hide a small absolute saving; saving a
+few milliseconds need not justify changing pairs. Graph shape, score profile,
+hardware and number of groups all affect the trade-off. No claim is made that
+exact met a 100k-connected-group latency target.
+
+For end-to-end comparisons, use identical inputs, cache bytes, retained-candidate
+settings and fresh starting CrossMaps; measure wall time and peak memory as
+well as solver time. Check accepted pair sets, not just counts or summed
+scores. The completion summary describes the effective exact/approximate work
+and a conservative objective bound, **not identity accuracy**. Different ANN
+retrieval can change that work even though solving a fixed graph is deterministic.
+
+Evidence and reproduction details:
+[matched prototype comparisons](../benchmarks/assignment_solver/approx-results.md),
+[cutoff study](../benchmarks/assignment_solver/cutoff-results.md), and
+[exact scaling](../benchmarks/assignment_solver/results.md).
+
 ## GPU-accelerated batch encoding
 
 Embedding encoding is the dominant cost in cold batch runs — at 1M x 1M

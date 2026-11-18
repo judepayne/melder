@@ -123,9 +123,14 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         }
     };
 
-    // Insert B records into the store
+    // Insert B records into the store.
     for (id, rec) in &b_records_map {
-        let _ = state.store.insert(Side::B, id, rec);
+        if let Err(e) = state.store.insert(Side::B, id, rec)
+            && state.config.batch.assignment.graph_mode().is_some()
+        {
+            eprintln!("Failed to store B record {id}: {e}");
+            process::exit(1);
+        }
     }
     drop(b_records_map); // free memory
 
@@ -137,9 +142,18 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         .as_deref()
         .map(std::path::Path::new)
         .unwrap_or(std::path::Path::new("."));
-    let ml_base = output_dir.join(format!("{}.match_log.ndjson", state.config.job.name));
+    let log_kind = if state.config.batch.assignment.graph_mode().is_some() {
+        "graph.match_log"
+    } else {
+        "match_log"
+    };
+    let ml_base = output_dir.join(format!("{}.{log_kind}.ndjson", state.config.job.name));
     let match_log = match crate::state::match_log::MatchLog::open(&ml_base) {
         Ok(ml) => Some(std::sync::Arc::new(ml)),
+        Err(e) if state.config.batch.assignment.graph_mode().is_some() => {
+            eprintln!("Failed to open graph assignment log: {e}");
+            process::exit(1);
+        }
         Err(e) => {
             eprintln!(
                 "Warning: failed to open match log: {} — continuing without",
@@ -168,6 +182,14 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         (None, None)
     };
 
+    // Use this run's log, not all previous segments with the same job name.
+    let graph_log_path = match_log
+        .as_ref()
+        .filter(|_| state.config.batch.assignment.graph_mode().is_some())
+        .map(|log| log.path().to_path_buf());
+    if let Some(path) = &graph_log_path {
+        eprintln!("Batch graph log: {}", path.display());
+    }
     // Run batch engine
     let result = match crate::batch::run_batch(
         &state.config,
@@ -215,7 +237,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     // Build outputs from the match log (+ scoring log if present).
     let manifest = crate::output::OutputManifest::from_config(&state.config);
     let report = match crate::output::build_outputs(
-        &ml_base,
+        graph_log_path.as_deref().unwrap_or(&ml_base),
         sl_path.as_deref(),
         csv_dir.as_deref(),
         parquet_dir,
@@ -391,39 +413,47 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     let parquet_dir_sqlite = cfg.output.parquet_dir_path.as_deref().map(Path::new);
     let out_db_path = cfg.output.db_path.as_deref().map(Path::new);
 
-    if let Err(e) = std::fs::create_dir_all(&csv_dir) {
-        eprintln!("Failed to create output dir {}: {}", csv_dir.display(), e);
-        process::exit(1);
-    }
-    // Write matched + review into a single relationships.csv (unified format).
-    let mut all_results = result.matched.clone();
-    all_results.extend(result.review.iter().cloned());
-    if let Err(e) =
-        crate::batch::write_results_csv(&csv_dir.join("relationships.csv"), &all_results, &cfg)
-    {
-        eprintln!("Failed to write relationships: {}", e);
-        process::exit(1);
-    }
-    if let Err(e) = crate::batch::write_unmatched_csv(
-        &csv_dir.join("unmatched.csv"),
-        &result.unmatched,
-        &cfg.datasets.b.id_field,
-    ) {
-        eprintln!("Failed to write unmatched: {}", e);
-        process::exit(1);
-    }
+    let direct_report = if result.stats.assignment.is_some() {
+        let manifest = crate::output::OutputManifest::from_config(&cfg);
+        match crate::output::build::build_batch_graph_outputs(
+            store.as_ref(),
+            &sqlite_crossmap,
+            &result,
+            Some(&csv_dir),
+            parquet_dir_sqlite,
+            out_db_path,
+            &manifest,
+        ) {
+            Ok(report) => report,
+            Err(e) => {
+                eprintln!("Failed to build graph outputs: {e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        if let Err(e) = std::fs::create_dir_all(&csv_dir) {
+            eprintln!("Failed to create output dir {}: {}", csv_dir.display(), e);
+            process::exit(1);
+        }
+        // Write matched + review into a single relationships.csv (unified format).
+        let mut all_results = result.matched.clone();
+        all_results.extend(result.review.iter().cloned());
+        if let Err(e) =
+            crate::batch::write_results_csv(&csv_dir.join("relationships.csv"), &all_results, &cfg)
+        {
+            eprintln!("Failed to write relationships: {}", e);
+            process::exit(1);
+        }
+        if let Err(e) = crate::batch::write_unmatched_csv(
+            &csv_dir.join("unmatched.csv"),
+            &result.unmatched,
+            &cfg.datasets.b.id_field,
+        ) {
+            eprintln!("Failed to write unmatched: {}", e);
+            process::exit(1);
+        }
 
-    // Export SQLite crossmap back to CSV
-    let pairs = sqlite_crossmap.pairs();
-    let save_cm = crate::crossmap::MemoryCrossMap::new();
-    for (a_id, b_id) in &pairs {
-        save_cm.add(a_id, b_id).unwrap();
-    }
-    save_crossmap(&save_cm, crossmap_path, &cfg);
-    print_summary(
-        &cfg,
-        &result.stats,
-        &crate::output::BuildReport {
+        crate::output::BuildReport {
             a_record_count: 0,
             b_record_count: 0,
             match_count: result.matched.len(),
@@ -432,7 +462,20 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
             broken_count: 0,
             warnings: vec![],
             elapsed_secs: result.stats.elapsed_secs,
-        },
+        }
+    };
+    let save_cm = crate::crossmap::MemoryCrossMap::new();
+    for (a_id, b_id) in sqlite_crossmap.pairs() {
+        if let Err(e) = save_cm.add(&a_id, &b_id) {
+            eprintln!("Failed to collect SQLite crossmap: {e}");
+            process::exit(1);
+        }
+    }
+    save_crossmap(&save_cm, crossmap_path, &cfg);
+    print_summary(
+        &cfg,
+        &result.stats,
+        &direct_report,
         &sqlite_crossmap,
         crossmap_path,
         Some(&csv_dir),
@@ -462,6 +505,10 @@ fn load_crossmap(path: &str, config: &crate::config::Config) -> crate::crossmap:
             cm
         }
         Err(e) => {
+            if config.batch.assignment.graph_mode().is_some() {
+                eprintln!("Failed to load protected crossmap: {e}");
+                process::exit(1);
+            }
             eprintln!("Warning: failed to load crossmap ({}), starting fresh", e);
             crate::crossmap::MemoryCrossMap::new()
         }
@@ -486,6 +533,10 @@ fn load_exclusions(config: &crate::config::Config) -> crate::matching::exclusion
                 return ex;
             }
             Err(e) => {
+                if config.batch.assignment.graph_mode().is_some() {
+                    eprintln!("Failed to load exclusions: {e}");
+                    process::exit(1);
+                }
                 eprintln!("Warning: failed to load exclusions ({}), starting fresh", e);
             }
         }
@@ -531,6 +582,10 @@ fn save_crossmap(
         &config.cross_map.a_id_field,
         &config.cross_map.b_id_field,
     ) {
+        if config.batch.assignment.graph_mode().is_some() {
+            eprintln!("Failed to save crossmap: {e}");
+            process::exit(1);
+        }
         eprintln!("Warning: failed to save crossmap: {}", e);
     }
 }
@@ -554,9 +609,41 @@ fn print_summary(
     println!("  Auto-matched: {}", stats.auto_matched);
     println!("  Review:       {}", stats.review_count);
     println!("  No match:     {}", stats.no_match);
+    if let Some(assignment) = &stats.assignment {
+        use crate::config::BatchAssignmentMode;
+        let mode = match assignment.mode {
+            BatchAssignmentMode::Approximate => "approximate",
+            BatchAssignmentMode::Exact => "exact",
+        };
+        println!("  Batch assignment: graph ({mode})");
+        println!(
+            "  Groups: {} exact · {} approximate · largest: {} records",
+            assignment.exact_groups, assignment.approximate_groups, assignment.largest_group
+        );
+        println!(
+            "  Retained edges: {} · fixed pairs: {}",
+            assignment.retained_edges, assignment.fixed_pairs
+        );
+        println!("  Graph solver time: {:.6}s", assignment.solve_secs);
+        if assignment.upper_units == 0 {
+            println!("  Result: no positive eligible score.");
+        } else if assignment.objective_units == assignment.upper_units {
+            println!("  Result: optimal over all retained eligible pairs.");
+        } else if let Some(tenths) = assignment.guaranteed_tenths() {
+            println!(
+                "  Total score: at least {}.{}% of the best possible over retained eligible pairs.",
+                tenths / 10,
+                tenths % 10
+            );
+        }
+    }
     let index_build_secs = stats.elapsed_secs - stats.scoring_elapsed_secs;
     if index_build_secs > 0.5 {
-        println!("  Index build:  {:.1}s", index_build_secs);
+        if stats.assignment.is_some() {
+            println!("  Setup and assignment: {:.1}s", index_build_secs);
+        } else {
+            println!("  Index build:  {:.1}s", index_build_secs);
+        }
     }
     println!("  Scoring time: {:.1}s", stats.scoring_elapsed_secs);
     println!("  Total elapsed:{:.1}s", stats.elapsed_secs);

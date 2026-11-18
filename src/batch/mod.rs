@@ -1,5 +1,6 @@
 //! Batch matching engine: process all B records against A pool.
 
+pub mod assignment;
 pub mod engine;
 pub mod writer;
 

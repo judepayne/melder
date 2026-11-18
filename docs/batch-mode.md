@@ -34,20 +34,132 @@ B records (useful for quick sanity checks on large datasets).
 
 ## Greedy assignment
 
-Batch matching uses parallel greedy claims: each B query tries its scored
+By default (`batch.assignment.strategy: greedy`), batch matching uses parallel
+greedy claims: each B query tries its scored
 candidates in ranked order, atomically claiming a free A candidate at or above
 the auto-match threshold. Occupied candidates are skipped, not displaced. There
 is no post-pass reassignment or assignment solver in this path. Parallel
 claim order and approximate candidate generation can still produce different
 whole-run assignments between runs.
 
+## Choosing pairs with the graph optimizer
+
+The optimizer changes **which pairs are accepted**, not how Melder scores them.
+For example, suppose B1 scores 0.99 with A1 and 0.98 with A2; B2 scores 0.97
+with A1 and 0.85 with A2. Taking the strongest pair first gives 1.84 in total.
+Choosing B1–A2 and B2–A1 gives 1.95. Each record still has at most one partner,
+and records may remain unmatched. The objective is total similarity score,
+not maximum pair count or verified real-world identity accuracy.
+
+Enable it in YAML; this is not a new CLI subcommand:
+
+```yaml
+batch:
+  assignment:
+    strategy: graph
+    mode: approximate   # optional; default for graph
+```
+
+Protected/preloaded links and common-ID/exact prematches stay fixed. Melder
+considers only automatically eligible candidates on the existing shortlists,
+using the shared scoring pipeline. It does not widen `top_n`, refill slots
+occupied by protected endpoints, reconsider excluded pairs, or turn a list
+demoted for ambiguity into an automatic match. Threshold and whole-list
+score-gap eligibility checks happen **before** scores are rounded to nine
+decimal places for the assignment objective. Selected output scores retain
+the original scoring metadata.
+
+### Approximate or exact?
+
+**Start with approximate.** Melder divides candidates into independent groups
+(connected components): records belong to the same group if you can follow a
+chain of candidate pairs between them. No pair crosses a group boundary. Group
+size counts **distinct participating records on both sides together**, not
+edges or records in the whole batch.
+
+- Through **512 records inclusive**, solve exactly.
+- At **513 and above**, try two deterministic answers: take the highest-scoring
+  available pairs first, and separately find a matching with the most pairs.
+  Choose the answer with the higher total represented score for that group;
+  on a tie keep score-first.
+
+A million-record batch can therefore finish entirely exact. The cutoff is
+fixed, not a tuning setting, and no score-loss tolerance is promised.
+
+**Choose `mode: exact` if the highest possible total similarity score matters
+more than runtime.** Every group is solved exactly, with no heuristic fallback.
+The guarantee is over the eligible retained pairs and their nine-decimal
+represented scores. It does not mean the shortlist contains every possible
+match or that the selected pairs are the correct real-world identities.
+Failure to finish is an error, not permission to publish a partial result as
+optimal. Large connected groups can be expensive; see
+[Performance](performance.md#batch-graph-optimizer).
+
+**Repeatability:** the same Melder version, mode, retained pairs and represented
+weights produce the same assignments regardless of worker scheduling or edge
+order. Different retrieval results can change the graph; this is not a promise
+of repeatable ANN retrieval. Hardware speed and elapsed time never determine
+which method runs. With `--limit`, graph mode sorts B IDs before applying the
+limit; greedy retains its existing input ordering.
+
+Unlike [live deferred acceptance](live-mode.md#live-assignment-policy), this
+is a batch-wide choice after scoring, not a sequence of reciprocal proposals
+or incumbent displacements. Live and enroll behavior is unchanged.
+
+### Reading the assignment summary
+
+The successful completion summary reports the **effective** strategy/mode,
+exact and approximate group counts, largest group size, and objective guarantee.
+These illustrative numbers are not new measurements:
+
+```text
+Batch assignment: graph (approximate)
+Groups: 51,695 exact · 0 approximate · largest: 76 records
+Result: optimal over all retained eligible pairs.
+```
+
+```text
+Batch assignment: graph (approximate)
+Groups: 38 exact · 2 approximate · largest: 1,420 records
+Total score: at least 98.7% of the best possible over retained eligible pairs.
+```
+
+Approximate mode can still be entirely exact, as the first example shows.
+For a mixed run, the bound combines the exact objective of each exact group
+with an upper bound for each fast group: the smaller of the sum of each A's
+best score and the sum of each B's best score. Achieved total divided by the
+combined upper bound certifies a lower bound on the fraction of optimal score.
+Displayed lower bounds are rounded **down**, never up. A loose bound is not
+measured score loss or identity accuracy. If the upper bound is zero, Melder
+reports no positive eligible score instead of dividing by zero. The completion
+summary is emitted only after successful publication.
+
+A query that loses an eligible candidate to assignment competition may remain
+in review with reason `assignment_conflict`, even above `auto_match`. That
+review is not an accepted link. Scoring-log candidates are evidence of what was
+scored, not final assignments; graph-selected matches use source
+`graph_assignment` in the match log.
+
 ## Output files
 
 Batch mode is event-sourced: during scoring, events are written to a
 match log on disk. At the end of the run, the build pipeline reads the
 match log (and the optional scoring log) to produce outputs. This means
-a crashed run leaves a recoverable match log, and outputs can be rebuilt
-with `meld export` without re-scoring.
+a crashed greedy run leaves a recoverable match log, and outputs can be rebuilt
+with `meld export` without re-scoring. The SQLite record-storage batch path
+(`batch.db_path`) does not produce a match log or scoring log; its results are
+built directly, so this log-based recovery does not apply to that path.
+
+For graph runs that write a match log, `batch_assignment_started` and
+`batch_assignment_completed` frame the assignment publication. **No partial
+export:** if a started graph run lacks its completion marker, output building
+and `meld export` reject it rather than treating a prefix as final or optimal.
+To rebuild a completed graph run, set `live.match_log_path` in a copy of the job config to the **single timestamped graph log** printed by `meld run`, then run `meld export --config <copy> --out-dir <directory>`. Do not pass the untimestamped base if there are multiple runs, and do not use this log for live startup. Do not delete the start marker to force export. A solver/publication/logging
+failure is an error: Melder does not save final CrossMap/CSV outputs or print a
+successful assignment summary for that failed run. Protected links are not
+removed to roll back new automatic selections. Hooks, if configured, remain
+best-effort notifications, not a substitute for completed logs and final
+CrossMap membership.
 
 Output is written to any combination of three independent sinks:
 `output.csv_dir_path` (directory for CSV files),
@@ -142,7 +254,10 @@ serialization) for fast scoring. Data is loaded via streaming — only one
 
 The memory footprint is approximately: `sqlite_cache_mb + pool_size ×
 pool_worker_cache_mb + BM25 index + blocking index` (typically 10-12 GB
-for a 55M-record dataset).
+for a 55M-record dataset). This estimate describes the existing greedy path.
+Opting into graph assignment retains the candidate graph and materializes records
+for the shared CSV, Parquet and SQLite output builder. Do not assume the same
+bounded memory footprint for graph assignment.
 
 ### Configuration
 

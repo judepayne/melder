@@ -1,0 +1,80 @@
+{
+  "binary_sha256": "69801d4241c7ccd02ec9fe1837f6ce6ebda4d01fd68deab2068fe40e4dc1d041",
+  "repeats": 1,
+  "runs": [
+    {
+      "mode": "greedy",
+      "pairs": 5170,
+      "pairs_sha256": "c89acd8bb529834a4fa80796a01680670a87eaa55a10e3aba15382c6f5a752f3",
+      "rep": 0,
+      "seconds": 2.5051932090427727,
+      "size": "10k",
+      "summary": []
+    },
+    {
+      "mode": "approximate",
+      "pairs": 5178,
+      "pairs_sha256": "5fc857316f5dac26274ffcb7923539558e351ddb2a7084c91a00b4da68d82598",
+      "rep": 0,
+      "seconds": 1.5367033750517294,
+      "size": "10k",
+      "summary": [
+        "Groups: 5087 exact \u00b7 0 approximate \u00b7 largest: 8 records",
+        "Retained edges: 5808 \u00b7 fixed pairs: 0",
+        "Graph solver time: 0.001897s",
+        "Result: optimal over all retained eligible pairs."
+      ]
+    },
+    {
+      "mode": "exact",
+      "pairs": 5178,
+      "pairs_sha256": "5fc857316f5dac26274ffcb7923539558e351ddb2a7084c91a00b4da68d82598",
+      "rep": 0,
+      "seconds": 1.9255647920072079,
+      "size": "10k",
+      "summary": [
+        "Groups: 5087 exact \u00b7 0 approximate \u00b7 largest: 8 records",
+        "Retained edges: 5808 \u00b7 fixed pairs: 0",
+        "Graph solver time: 0.002084s",
+        "Result: optimal over all retained eligible pairs."
+      ]
+    },
+    {
+      "mode": "greedy",
+      "pairs": 57957,
+      "pairs_sha256": "0c8a21a66a500ae7e4821ab8660eb12f1a406d8288919099090a501a920ce691",
+      "rep": 0,
+      "seconds": 106.01855683303438,
+      "size": "100k",
+      "summary": []
+    },
+    {
+      "mode": "approximate",
+      "pairs": 58286,
+      "pairs_sha256": "4ba0ea6adb6652745dc56382bba7f91e3e04ed78863e8688681e947693b31271",
+      "rep": 0,
+      "seconds": 30.308314666966908,
+      "size": "100k",
+      "summary": [
+        "Groups: 51695 exact \u00b7 0 approximate \u00b7 largest: 76 records",
+        "Retained edges: 86476 \u00b7 fixed pairs: 0",
+        "Graph solver time: 0.027008s",
+        "Result: optimal over all retained eligible pairs."
+      ]
+    },
+    {
+      "mode": "exact",
+      "pairs": 58286,
+      "pairs_sha256": "4ba0ea6adb6652745dc56382bba7f91e3e04ed78863e8688681e947693b31271",
+      "rep": 0,
+      "seconds": 26.95236787502654,
+      "size": "100k",
+      "summary": [
+        "Groups: 51695 exact \u00b7 0 approximate \u00b7 largest: 76 records",
+        "Retained edges: 86476 \u00b7 fixed pairs: 0",
+        "Graph solver time: 0.031414s",
+        "Result: optimal over all retained eligible pairs."
+      ]
+    }
+  ]
+}

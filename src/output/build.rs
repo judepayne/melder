@@ -8,8 +8,11 @@ use std::time::Instant;
 
 use tracing::{info, warn};
 
+use crate::batch::BatchResult;
+use crate::crossmap::CrossMapOps;
 use crate::models::{Record, Side};
 use crate::state::match_log::{MatchLog, MatchLogEvent};
+use crate::store::RecordStore;
 
 use super::manifest::{BuildReport, OutputManifest};
 
@@ -83,6 +86,127 @@ pub fn build_outputs(
     )
 }
 
+/// Build graph batch outputs directly from the store and final CrossMap membership.
+///
+/// No persistent match/scoring log is required. This materializes all A records,
+/// processed B records, and output rows in memory to reuse the same serializers
+/// and schema as log-based builds; it is not a streaming SQLite export.
+/// Protected CrossMap pairs are retained even when absent from `result.matched`.
+pub fn build_batch_graph_outputs(
+    store: &dyn RecordStore,
+    crossmap: &dyn CrossMapOps,
+    result: &BatchResult,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    let start = Instant::now();
+    let processed = result
+        .processed_graph_b
+        .as_ref()
+        .ok_or("direct graph output requires processed_graph_b from a completed graph batch")?;
+    let processed: std::collections::HashSet<_> = processed.iter().map(String::as_str).collect();
+    let mut builder = OutputBuilder::default();
+    store.for_each_record(Side::A, &mut |id, record| {
+        builder.a_records.insert(id.to_owned(), record.clone());
+    })?;
+    store.for_each_record(Side::B, &mut |id, record| {
+        if processed.contains(id) {
+            builder.b_records.insert(id.to_owned(), record.clone());
+        }
+    })?;
+
+    // CrossMap, not the result vectors, is authoritative for accepted pairs.
+    let mut relationships: HashMap<_, _> = crossmap
+        .pairs()
+        .into_iter()
+        .map(|(a_id, b_id)| {
+            (
+                (a_id.clone(), b_id.clone()),
+                Relationship {
+                    a_id,
+                    b_id,
+                    score: None,
+                    rank: None,
+                    relationship_type: "match".into(),
+                    reason: None,
+                },
+            )
+        })
+        .collect();
+    let matched_b: std::collections::HashSet<_> =
+        relationships.values().map(|rel| rel.b_id.clone()).collect();
+    let mut review_b = std::collections::HashSet::new();
+    for (matches, is_review) in [(&result.matched, false), (&result.review, true)] {
+        for candidate in matches {
+            if !processed.contains(candidate.query_id.as_str()) {
+                continue;
+            }
+            let key = (candidate.matched_id.clone(), candidate.query_id.clone());
+            if is_review {
+                if matched_b.contains(&candidate.query_id) {
+                    continue;
+                }
+                review_b.insert(candidate.query_id.clone());
+                relationships.insert(
+                    key.clone(),
+                    Relationship {
+                        a_id: key.0.clone(),
+                        b_id: key.1.clone(),
+                        score: None,
+                        rank: None,
+                        relationship_type: "review".into(),
+                        reason: None,
+                    },
+                );
+            }
+            let Some(rel) = relationships.get_mut(&key) else {
+                continue;
+            };
+            rel.score = Some(candidate.score);
+            rel.rank = candidate.rank;
+            rel.reason = candidate.reason.clone();
+            builder
+                .field_scores
+                .extend(candidate.field_scores.iter().map(|field| FieldScoreRow {
+                    a_id: key.0.clone(),
+                    b_id: key.1.clone(),
+                    field_a: field.field_a.clone(),
+                    field_b: field.field_b.clone(),
+                    method: field.method.clone(),
+                    score: field.score,
+                    weight: field.weight,
+                }));
+        }
+    }
+    let no_match_scores: HashMap<_, _> = result
+        .unmatched
+        .iter()
+        .map(|(id, _, score)| (id.as_str(), *score))
+        .collect();
+    builder.unmatched = builder
+        .b_records
+        .iter()
+        .filter(|(id, _)| !matched_b.contains(*id) && !review_b.contains(*id))
+        .map(|(id, record)| {
+            (
+                id.clone(),
+                record.clone(),
+                no_match_scores.get(id.as_str()).copied().flatten(),
+                // BatchResult preserves the best score, but not the best candidate ID.
+                None,
+            )
+        })
+        .collect();
+    builder.unmatched.sort_by(|a, b| a.0.cmp(&b.0));
+    builder.rel_vec = relationships.into_values().collect();
+    builder
+        .rel_vec
+        .sort_by(|a, b| a.b_id.cmp(&b.b_id).then(a.a_id.cmp(&b.a_id)));
+    builder.write(csv_dir, parquet_dir, db_path, manifest, start)
+}
+
 /// Build full outputs from original records, a crossmap snapshot, and WAL history.
 ///
 /// Snapshot pairs may be newer than the WAL's initial state. Assignment history
@@ -100,6 +224,7 @@ pub(crate) fn build_outputs_with_input(
 
     // Replay match log events.
     let events = MatchLog::replay(match_log_path)?;
+    crate::state::match_log::validate_batch_assignment_framing(&events)?;
 
     // Validate assignment ownership before creating any output files.
     let final_pairs = if input.current_reviews.is_some() {
@@ -140,8 +265,51 @@ pub(crate) fn build_outputs_with_input(
         );
     }
 
+    // A graph run is a snapshot, not a sequence of live mutations. Avoid a
+    // full relationship scan per terminal event on this validated path.
+    let graph_snapshot = input.current_reviews.is_none()
+        && relationships.is_empty()
+        && matches!(
+            events.first(),
+            Some(MatchLogEvent::BatchAssignmentStarted { .. })
+        )
+        && matches!(
+            events.last(),
+            Some(MatchLogEvent::BatchAssignmentCompleted { .. })
+        );
+    let mut graph_owned_a = std::collections::HashSet::new();
+    let mut graph_terminal_b = std::collections::HashSet::new();
     for event in &events {
+        if graph_snapshot {
+            let terminal_b = match event {
+                MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } => {
+                    if !graph_owned_a.insert(a_id.as_str()) {
+                        return Err("graph assignment log has conflicting A owners".into());
+                    }
+                    Some(b_id)
+                }
+                MatchLogEvent::ReviewMatch {
+                    side: Side::B, id, ..
+                } => Some(id),
+                MatchLogEvent::NoMatchBelow {
+                    query_side: Side::B,
+                    query_id,
+                    ..
+                } => Some(query_id),
+                MatchLogEvent::UpsertRecord { .. }
+                | MatchLogEvent::BatchAssignmentStarted { .. }
+                | MatchLogEvent::BatchAssignmentCompleted { .. } => None,
+                _ => return Err("unexpected event in graph assignment log".into()),
+            };
+            if let Some(id) = terminal_b
+                && !graph_terminal_b.insert(id.as_str())
+            {
+                return Err("graph assignment log has multiple outcomes for a B record".into());
+            }
+        }
         match event {
+            MatchLogEvent::BatchAssignmentStarted { .. }
+            | MatchLogEvent::BatchAssignmentCompleted { .. } => {}
             MatchLogEvent::UpsertRecord { side, record } => {
                 let id_field = match side {
                     Side::A => &manifest.a_id_field,
@@ -156,16 +324,18 @@ pub(crate) fn build_outputs_with_input(
                     );
                     continue;
                 }
-                relationships.retain(|key, rel| {
-                    rel.relationship_type != "review"
-                        || match review_queries.get(key) {
-                            Some(owner) if owner == side => match side {
-                                Side::A => rel.a_id != id,
-                                Side::B => rel.b_id != id,
-                            },
-                            _ => true,
-                        }
-                });
+                if !graph_snapshot {
+                    relationships.retain(|key, rel| {
+                        rel.relationship_type != "review"
+                            || match review_queries.get(key) {
+                                Some(owner) if owner == side => match side {
+                                    Side::A => rel.a_id != id,
+                                    Side::B => rel.b_id != id,
+                                },
+                                _ => true,
+                            }
+                    });
+                }
                 if *side == Side::B {
                     no_match_map.remove(&id);
                 }
@@ -192,17 +362,20 @@ pub(crate) fn build_outputs_with_input(
                     (a_id.clone(), b_id.clone()),
                     (*score, *rank, reason.clone()),
                 );
-                relationships.retain(|key, rel| {
-                    rel.relationship_type != "review"
-                        || match review_queries.get(key) {
-                            Some(Side::A) => rel.a_id != *a_id,
-                            _ => rel.b_id != *b_id,
+                if !graph_snapshot {
+                    relationships.retain(|key, rel| {
+                        rel.relationship_type != "review"
+                            || match review_queries.get(key) {
+                                Some(Side::A) => rel.a_id != *a_id,
+                                _ => rel.b_id != *b_id,
+                            }
+                    });
+                    for rel in relationships.values_mut() {
+                        if rel.relationship_type == "match"
+                            && (rel.a_id == *a_id || rel.b_id == *b_id)
+                        {
+                            rel.relationship_type = "broken".to_string();
                         }
-                });
-                for rel in relationships.values_mut() {
-                    if rel.relationship_type == "match" && (rel.a_id == *a_id || rel.b_id == *b_id)
-                    {
-                        rel.relationship_type = "broken".to_string();
                     }
                 }
                 // Remove any prior "broken" entry for this pair.
@@ -344,16 +517,18 @@ pub(crate) fn build_outputs_with_input(
                 best_candidate_id,
                 best_score,
             } => {
-                relationships.retain(|key, rel| {
-                    rel.relationship_type != "review"
-                        || match review_queries.get(key) {
-                            Some(owner) if owner == query_side => match query_side {
-                                Side::A => rel.a_id != *query_id,
-                                Side::B => rel.b_id != *query_id,
-                            },
-                            _ => true,
-                        }
-                });
+                if !graph_snapshot {
+                    relationships.retain(|key, rel| {
+                        rel.relationship_type != "review"
+                            || match review_queries.get(key) {
+                                Some(owner) if owner == query_side => match query_side {
+                                    Side::A => rel.a_id != *query_id,
+                                    Side::B => rel.b_id != *query_id,
+                                },
+                                _ => true,
+                            }
+                    });
+                }
                 if *query_side != Side::B {
                     continue;
                 }
@@ -387,6 +562,14 @@ pub(crate) fn build_outputs_with_input(
                 // Exclusions don't affect output.
             }
         }
+    }
+
+    if graph_snapshot
+        && b_records
+            .keys()
+            .any(|id| !graph_terminal_b.contains(id.as_str()))
+    {
+        return Err("graph assignment log is missing an outcome for a B record".into());
     }
 
     if let Some(reviews) = input.current_reviews {
@@ -489,20 +672,6 @@ pub(crate) fn build_outputs_with_input(
         .collect();
     unmatched.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Count stats.
-    let match_count = rel_vec
-        .iter()
-        .filter(|r| r.relationship_type == "match")
-        .count();
-    let review_count = rel_vec
-        .iter()
-        .filter(|r| r.relationship_type == "review")
-        .count();
-    let broken_count = rel_vec
-        .iter()
-        .filter(|r| r.relationship_type == "broken")
-        .count();
-
     // Read scoring log if present — enriches output with field_scores and candidates.
     let (field_scores, candidate_rows) =
         if let Some(sl_path) = scoring_log_path.filter(|p| p.exists()) {
@@ -526,135 +695,191 @@ pub(crate) fn build_outputs_with_input(
         }
     }
 
-    // Write CSV outputs.
-    if let Some(dir) = csv_dir {
-        std::fs::create_dir_all(dir)?;
-
-        super::csv::write_relationships_csv(
-            &dir.join("relationships.csv"),
-            &rel_vec,
-            &a_records,
-            &manifest.a_fields,
-            &manifest.a_id_field,
-            &manifest.b_id_field,
-        )
-        .map_err(|e| format!("relationships.csv: {}", e))?;
-
-        super::csv::write_unmatched_csv(
-            &dir.join("unmatched.csv"),
-            &unmatched,
-            &manifest.b_fields,
-            &manifest.b_id_field,
-        )
-        .map_err(|e| format!("unmatched.csv: {}", e))?;
-
-        // Write candidates.csv if scoring log provided data.
-        if !candidate_rows.is_empty() {
-            super::csv::write_candidates_csv(
-                &dir.join("candidates.csv"),
-                &candidate_rows,
-                &manifest.b_id_field,
-                &manifest.a_id_field,
-            )
-            .map_err(|e| format!("candidates.csv: {}", e))?;
-        }
-
-        info!(
-            relationships = match_count + review_count,
-            unmatched = unmatched.len(),
-            field_scores = field_scores.len(),
-            dir = %dir.display(),
-            "CSV output written"
-        );
-    }
-
-    // Write Parquet outputs.
-    #[cfg(feature = "parquet-format")]
-    if let Some(dir) = parquet_dir {
-        std::fs::create_dir_all(dir)?;
-
-        super::parquet::write_relationships_parquet(
-            &dir.join("relationships.parquet"),
-            &rel_vec,
-            &a_records,
-            &manifest.a_fields,
-            &manifest.a_id_field,
-            &manifest.b_id_field,
-        )
-        .map_err(|e| format!("relationships.parquet: {}", e))?;
-
-        super::parquet::write_unmatched_parquet(
-            &dir.join("unmatched.parquet"),
-            &unmatched,
-            &manifest.b_fields,
-            &manifest.b_id_field,
-        )
-        .map_err(|e| format!("unmatched.parquet: {}", e))?;
-
-        if !candidate_rows.is_empty() {
-            super::parquet::write_candidates_parquet(
-                &dir.join("candidates.parquet"),
-                &candidate_rows,
-                &manifest.b_id_field,
-                &manifest.a_id_field,
-            )
-            .map_err(|e| format!("candidates.parquet: {}", e))?;
-        }
-
-        info!(
-            relationships = match_count + review_count,
-            unmatched = unmatched.len(),
-            field_scores = field_scores.len(),
-            dir = %dir.display(),
-            "Parquet output written"
-        );
-    }
-
-    #[cfg(not(feature = "parquet-format"))]
-    if parquet_dir.is_some() {
-        return Err("parquet output requires the 'parquet-format' feature: cargo build --features parquet-format".into());
-    }
-
-    // Write SQLite DB.
-    if let Some(db) = db_path {
-        if let Some(parent) = db.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        super::db::build_db(
-            db,
-            &a_records,
-            &b_records,
-            &rel_vec,
-            &field_scores,
-            manifest,
-        )?;
-
-        info!(
-            path = %db.display(),
-            a_records = a_records.len(),
-            b_records = b_records.len(),
-            relationships = rel_vec.len(),
-            "SQLite DB written"
-        );
-    }
-
-    let elapsed = start.elapsed().as_secs_f64();
-    if !warnings.is_empty() {
-        for w in &warnings {
-            tracing::warn!(warning = %w, "build warning");
-        }
-    }
-
-    Ok(BuildReport {
-        a_record_count: a_records.len(),
-        b_record_count: b_records.len(),
-        match_count,
-        review_count,
-        no_match_count: unmatched.len(),
-        broken_count,
+    OutputBuilder {
+        a_records,
+        b_records,
+        rel_vec,
+        unmatched,
+        field_scores,
+        candidate_rows,
         warnings,
-        elapsed_secs: elapsed,
-    })
+    }
+    .write(csv_dir, parquet_dir, db_path, manifest, start)
+}
+
+/// Prepared output state shared by log replay and direct batch graph builds.
+#[derive(Default)]
+struct OutputBuilder {
+    a_records: HashMap<String, Record>,
+    b_records: HashMap<String, Record>,
+    rel_vec: Vec<Relationship>,
+    unmatched: Vec<(String, Record, Option<f64>, Option<String>)>,
+    field_scores: Vec<FieldScoreRow>,
+    candidate_rows: Vec<CandidateRow>,
+    warnings: Vec<String>,
+}
+
+impl OutputBuilder {
+    fn write(
+        self,
+        csv_dir: Option<&Path>,
+        parquet_dir: Option<&Path>,
+        db_path: Option<&Path>,
+        manifest: &OutputManifest,
+        start: Instant,
+    ) -> Result<BuildReport, Box<dyn std::error::Error>> {
+        let Self {
+            a_records,
+            b_records,
+            rel_vec,
+            unmatched,
+            field_scores,
+            candidate_rows,
+            warnings,
+        } = self;
+        let match_count = rel_vec
+            .iter()
+            .filter(|r| r.relationship_type == "match")
+            .count();
+        let review_count = rel_vec
+            .iter()
+            .filter(|r| r.relationship_type == "review")
+            .count();
+        let broken_count = rel_vec
+            .iter()
+            .filter(|r| r.relationship_type == "broken")
+            .count();
+
+        // Write CSV outputs.
+        if let Some(dir) = csv_dir {
+            std::fs::create_dir_all(dir)?;
+
+            super::csv::write_relationships_csv(
+                &dir.join("relationships.csv"),
+                &rel_vec,
+                &a_records,
+                &manifest.a_fields,
+                &manifest.a_id_field,
+                &manifest.b_id_field,
+            )
+            .map_err(|e| format!("relationships.csv: {}", e))?;
+
+            super::csv::write_unmatched_csv(
+                &dir.join("unmatched.csv"),
+                &unmatched,
+                &manifest.b_fields,
+                &manifest.b_id_field,
+            )
+            .map_err(|e| format!("unmatched.csv: {}", e))?;
+
+            // Write candidates.csv if scoring log provided data.
+            if !candidate_rows.is_empty() {
+                super::csv::write_candidates_csv(
+                    &dir.join("candidates.csv"),
+                    &candidate_rows,
+                    &manifest.b_id_field,
+                    &manifest.a_id_field,
+                )
+                .map_err(|e| format!("candidates.csv: {}", e))?;
+            }
+
+            info!(
+                relationships = match_count + review_count,
+                unmatched = unmatched.len(),
+                field_scores = field_scores.len(),
+                dir = %dir.display(),
+                "CSV output written"
+            );
+        }
+
+        // Write Parquet outputs.
+        #[cfg(feature = "parquet-format")]
+        if let Some(dir) = parquet_dir {
+            std::fs::create_dir_all(dir)?;
+
+            super::parquet::write_relationships_parquet(
+                &dir.join("relationships.parquet"),
+                &rel_vec,
+                &a_records,
+                &manifest.a_fields,
+                &manifest.a_id_field,
+                &manifest.b_id_field,
+            )
+            .map_err(|e| format!("relationships.parquet: {}", e))?;
+
+            super::parquet::write_unmatched_parquet(
+                &dir.join("unmatched.parquet"),
+                &unmatched,
+                &manifest.b_fields,
+                &manifest.b_id_field,
+            )
+            .map_err(|e| format!("unmatched.parquet: {}", e))?;
+
+            if !candidate_rows.is_empty() {
+                super::parquet::write_candidates_parquet(
+                    &dir.join("candidates.parquet"),
+                    &candidate_rows,
+                    &manifest.b_id_field,
+                    &manifest.a_id_field,
+                )
+                .map_err(|e| format!("candidates.parquet: {}", e))?;
+            }
+
+            info!(
+                relationships = match_count + review_count,
+                unmatched = unmatched.len(),
+                field_scores = field_scores.len(),
+                dir = %dir.display(),
+                "Parquet output written"
+            );
+        }
+
+        #[cfg(not(feature = "parquet-format"))]
+        if parquet_dir.is_some() {
+            return Err("parquet output requires the 'parquet-format' feature: cargo build --features parquet-format".into());
+        }
+
+        // Write SQLite DB.
+        if let Some(db) = db_path {
+            if let Some(parent) = db.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            super::db::build_db(
+                db,
+                &a_records,
+                &b_records,
+                &rel_vec,
+                &field_scores,
+                manifest,
+            )?;
+
+            info!(
+                path = %db.display(),
+                a_records = a_records.len(),
+                b_records = b_records.len(),
+                relationships = rel_vec.len(),
+                "SQLite DB written"
+            );
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        if !warnings.is_empty() {
+            for w in &warnings {
+                tracing::warn!(warning = %w, "build warning");
+            }
+        }
+
+        Ok(BuildReport {
+            a_record_count: a_records.len(),
+            b_record_count: b_records.len(),
+            match_count,
+            review_count,
+            no_match_count: unmatched.len(),
+            broken_count,
+            warnings,
+            elapsed_secs: elapsed,
+        })
+    }
 }
 
 /// Read the scoring log and extract field_scores + candidate rows.
@@ -770,6 +995,454 @@ fn read_scoring_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_graph_result() -> BatchResult {
+        let candidate = |a: &str, b: &str, score, classification| crate::models::MatchResult {
+            query_id: b.into(),
+            matched_id: a.into(),
+            query_side: Side::B,
+            score,
+            field_scores: vec![crate::models::FieldScore {
+                field_a: "name".into(),
+                field_b: "name".into(),
+                method: "exact".into(),
+                score,
+                weight: 1.0,
+            }],
+            classification,
+            matched_record: None,
+            from_crossmap: false,
+            rank: Some(2),
+            reason: Some("graph_assignment".into()),
+        };
+        BatchResult {
+            processed_graph_b: Some(
+                ["selected", "protected", "review", "below", "empty"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            ),
+            matched: vec![
+                candidate("A1", "selected", 0.91, crate::models::Classification::Auto),
+                // A stale/non-member result must never become an accepted link.
+                candidate("A2", "empty", 0.92, crate::models::Classification::Auto),
+            ],
+            review: vec![
+                candidate("A2", "review", 0.7, crate::models::Classification::Review),
+                // Authoritative protected membership suppresses stale reviews.
+                candidate(
+                    "A2",
+                    "protected",
+                    0.71,
+                    crate::models::Classification::Review,
+                ),
+                candidate(
+                    "A2",
+                    "unprocessed",
+                    0.72,
+                    crate::models::Classification::Review,
+                ),
+            ],
+            unmatched: vec![("below".into(), Record::new(), Some(0.3))],
+            stats: crate::batch::BatchStats {
+                assignment: None,
+                total_b: 5,
+                auto_matched: 1,
+                review_count: 1,
+                no_match: 2,
+                skipped: 1,
+                elapsed_secs: 0.0,
+                scoring_elapsed_secs: 0.0,
+            },
+        }
+    }
+
+    fn make_graph_manifest() -> OutputManifest {
+        OutputManifest {
+            mode: crate::config::Mode::Match,
+            job_name: "direct graph".into(),
+            a_id_field: "aid".into(),
+            b_id_field: "bid".into(),
+            a_fields: vec!["name".into()],
+            b_fields: vec!["name".into()],
+            auto_match: 0.85,
+            review_floor: 0.6,
+            min_score_gap: None,
+            top_n: 5,
+            model: String::new(),
+        }
+    }
+
+    #[test]
+    fn direct_graph_outputs_share_schema_and_authoritative_pairs_for_both_stores() {
+        for sqlite in [false, true] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let blocking = crate::config::BlockingConfig::default();
+            let (store, crossmap): (Box<dyn RecordStore>, Box<dyn CrossMapOps>) = if sqlite {
+                let (store, crossmap, _) = crate::store::sqlite::open_sqlite(
+                    &dir.path().join("state.sqlite"),
+                    &blocking,
+                    None,
+                    &["aid".into(), "name".into()],
+                    &["bid".into(), "name".into()],
+                )
+                .expect("SQLite input");
+                (Box::new(store), Box::new(crossmap))
+            } else {
+                (
+                    Box::new(crate::store::memory::MemoryStore::new(&blocking)),
+                    Box::new(crate::crossmap::MemoryCrossMap::new()),
+                )
+            };
+            for (side, id_field, ids) in [
+                (Side::A, "aid", vec!["A1", "A2", "A3", "A4"]),
+                (
+                    Side::B,
+                    "bid",
+                    vec![
+                        "selected",
+                        "protected",
+                        "review",
+                        "below",
+                        "empty",
+                        "unprocessed",
+                        "outside-protected",
+                    ],
+                ),
+            ] {
+                for id in ids {
+                    store
+                        .insert(
+                            side,
+                            id,
+                            &Record::from([
+                                (id_field.into(), id.into()),
+                                ("name".into(), format!("record {id}")),
+                            ]),
+                        )
+                        .expect("insert record");
+                }
+            }
+            for (a, b) in [
+                ("A1", "selected"),
+                ("A3", "protected"),
+                ("A4", "outside-protected"),
+            ] {
+                assert!(crossmap.claim(a, b), "install accepted pair");
+            }
+            let csv_dir = dir.path().join("csv");
+            let db = dir.path().join("output.sqlite");
+            let parquet_dir = cfg!(feature = "parquet-format").then(|| dir.path().join("parquet"));
+            let report = build_batch_graph_outputs(
+                store.as_ref(),
+                crossmap.as_ref(),
+                &make_graph_result(),
+                Some(&csv_dir),
+                parquet_dir.as_deref(),
+                Some(&db),
+                &make_graph_manifest(),
+            )
+            .expect("direct output without logs");
+            assert_eq!(
+                (report.a_record_count, report.b_record_count),
+                (4, 5),
+                "only processed B records are materialized"
+            );
+            assert_eq!(
+                (
+                    report.match_count,
+                    report.review_count,
+                    report.no_match_count,
+                    report.broken_count
+                ),
+                (3, 1, 2, 0),
+                "membership and final outcomes"
+            );
+            let conn = rusqlite::Connection::open(&db).expect("output DB");
+            let accepted: Vec<(String, String)> = conn.prepare(
+                "SELECT a_id, b_id FROM relationships WHERE relationship_type = 'match' ORDER BY a_id"
+            ).expect("prepare").query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("query").collect::<Result<_, _>>().expect("rows");
+            let mut expected = crossmap.pairs();
+            expected.sort();
+            assert_eq!(
+                accepted, expected,
+                "all accepted and protected pairs match CrossMap"
+            );
+            let selected: (f64, u8, String) = conn
+                .query_row(
+                    "SELECT score, rank, reason FROM relationships WHERE b_id = 'selected'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("selected metadata");
+            assert_eq!(
+                selected,
+                (0.91, 2, "graph_assignment".into()),
+                "selected score/rank/reason preserved"
+            );
+            let fields: Vec<(String, String, String, String, String, f64, f64)> = conn.prepare(
+                "SELECT a_id, b_id, field_a, field_b, method, score, weight FROM field_scores ORDER BY b_id"
+            ).expect("prepare").query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))
+                .expect("query").collect::<Result<_, _>>().expect("rows");
+            assert_eq!(
+                fields,
+                vec![
+                    (
+                        "A2".into(),
+                        "review".into(),
+                        "name".into(),
+                        "name".into(),
+                        "exact".into(),
+                        0.7,
+                        1.0
+                    ),
+                    (
+                        "A1".into(),
+                        "selected".into(),
+                        "name".into(),
+                        "name".into(),
+                        "exact".into(),
+                        0.91,
+                        1.0
+                    ),
+                ],
+                "available scores for final selected and review pairs only"
+            );
+            let b_ids: Vec<String> = conn
+                .prepare("SELECT id FROM b_records ORDER BY id")
+                .expect("prepare")
+                .query_map([], |r| r.get(0))
+                .expect("query")
+                .collect::<Result<_, _>>()
+                .expect("rows");
+            assert_eq!(
+                b_ids,
+                ["below", "empty", "protected", "review", "selected"],
+                "limit never leaks extra B records"
+            );
+            let below_name: String = conn
+                .query_row("SELECT name FROM b_records WHERE id = 'below'", [], |r| {
+                    r.get(0)
+                })
+                .expect("B record");
+            assert_eq!(
+                below_name, "record below",
+                "records come from authoritative store"
+            );
+            let mut reader =
+                csv::Reader::from_path(csv_dir.join("relationships.csv")).expect("CSV");
+            assert_eq!(
+                reader.headers().expect("headers"),
+                &csv::StringRecord::from(vec![
+                    "bid",
+                    "aid",
+                    "score",
+                    "relationship_type",
+                    "reason",
+                    "rank",
+                    "name"
+                ]),
+                "shared CSV schema"
+            );
+            let rows = reader
+                .records()
+                .collect::<Result<Vec<_>, _>>()
+                .expect("CSV rows");
+            let mut accepted_csv: Vec<_> = rows
+                .iter()
+                .filter(|r| &r[3] == "match")
+                .map(|r| (r[1].to_string(), r[0].to_string()))
+                .collect();
+            accepted_csv.sort();
+            assert_eq!(accepted_csv, expected, "CSV accepted pairs match CrossMap");
+            let unmatched = csv::Reader::from_path(csv_dir.join("unmatched.csv"))
+                .expect("CSV")
+                .records()
+                .collect::<Result<Vec<_>, _>>()
+                .expect("unmatched rows");
+            assert_eq!(
+                unmatched,
+                vec![
+                    csv::StringRecord::from(vec!["below", "record below", "0.3000", ""]),
+                    csv::StringRecord::from(vec!["empty", "record empty", "", ""]),
+                ],
+                "no-match scores and empty candidate outcomes survive without logs"
+            );
+            #[cfg(feature = "parquet-format")]
+            {
+                use arrow::array::StringArray;
+                use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+                let file = std::fs::File::open(
+                    parquet_dir
+                        .as_ref()
+                        .expect("Parquet dir")
+                        .join("relationships.parquet"),
+                )
+                .expect("Parquet");
+                let batches = ParquetRecordBatchReaderBuilder::try_new(file)
+                    .expect("reader")
+                    .build()
+                    .expect("build reader");
+                let mut accepted_parquet = Vec::new();
+                for batch in batches {
+                    let batch = batch.expect("batch");
+                    let strings = |index| {
+                        batch
+                            .column(index)
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .expect("string column")
+                    };
+                    for row in 0..batch.num_rows() {
+                        if strings(3).value(row) == "match" {
+                            accepted_parquet.push((
+                                strings(1).value(row).to_owned(),
+                                strings(0).value(row).to_owned(),
+                            ));
+                        }
+                    }
+                }
+                accepted_parquet.sort();
+                assert_eq!(
+                    accepted_parquet, expected,
+                    "Parquet accepted pairs match CrossMap"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn direct_graph_outputs_require_explicit_processed_b_scope() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store =
+            crate::store::memory::MemoryStore::new(&crate::config::BlockingConfig::default());
+        let crossmap = crate::crossmap::MemoryCrossMap::new();
+        let mut result = make_graph_result();
+        result.processed_graph_b = None;
+        let output = dir.path().join("outputs");
+        assert!(
+            build_batch_graph_outputs(
+                &store,
+                &crossmap,
+                &result,
+                Some(&output),
+                None,
+                None,
+                &make_graph_manifest()
+            )
+            .is_err(),
+            "missing graph scope must fail rather than export unprocessed B"
+        );
+        assert!(!output.exists(), "invalid graph scope creates no output");
+        result.processed_graph_b = Some(Vec::new());
+        let report = build_batch_graph_outputs(
+            &store,
+            &crossmap,
+            &result,
+            Some(&output),
+            None,
+            None,
+            &make_graph_manifest(),
+        )
+        .expect("empty graph batch");
+        assert_eq!(
+            (
+                report.b_record_count,
+                report.match_count,
+                report.no_match_count
+            ),
+            (0, 0, 0),
+            "empty graph scope remains empty"
+        );
+    }
+
+    #[test]
+    fn batch_assignment_build_requires_completion_before_any_output() {
+        let manifest = OutputManifest {
+            mode: crate::config::Mode::Match,
+            job_name: "test".into(),
+            a_id_field: "id".into(),
+            b_id_field: "id".into(),
+            a_fields: vec![],
+            b_fields: vec![],
+            auto_match: 0.85,
+            review_floor: 0.6,
+            min_score_gap: None,
+            top_n: 5,
+            model: String::new(),
+        };
+        for snapshot in [false, true] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("matches.ndjson");
+            let log = MatchLog::open(&path).expect("log");
+            for line in [
+                r#"{"type":"batch_assignment_started","mode":"approximate"}"#,
+                r#"{"type":"upsert_record","side":"b","record":{"id":"B1"}}"#,
+                r#"{"type":"upsert_record","side":"b","record":{"id":"B2"}}"#,
+                r#"{"type":"crossmap_confirm","a_id":"A1","b_id":"B1","score":0.91,"rank":2}"#,
+                r#"{"type":"no_match_below","query_side":"b","query_id":"B2","best_score":0.2}"#,
+            ] {
+                log.append(&serde_json::from_str(line).expect("event"))
+                    .expect("append");
+            }
+            log.flush().expect("flush prefix");
+            let csv_dir = dir.path().join("csv");
+            let parquet_dir = dir.path().join("parquet");
+            let db = dir.path().join("db/output.sqlite");
+            let input = BuildInput {
+                current_reviews: snapshot.then(Vec::new),
+                snapshot_pairs: vec![("A1".into(), "B1".into())],
+                ..BuildInput::default()
+            };
+            assert!(
+                build_outputs_with_input(
+                    &path,
+                    None,
+                    Some(&csv_dir),
+                    Some(&parquet_dir),
+                    Some(&db),
+                    &manifest,
+                    input,
+                )
+                .is_err(),
+                "incomplete batch must fail even with current snapshot={snapshot}"
+            );
+            assert!(
+                !csv_dir.exists() && !parquet_dir.exists() && !db.exists(),
+                "no output target is created before framing validation"
+            );
+            log.append(&MatchLogEvent::BatchAssignmentCompleted {
+                retained_edges: 1,
+                fixed_pairs: 0,
+                scale: crate::matching::assignment::SCALE,
+                exact_groups: 1,
+                approximate_groups: 0,
+                largest_group: 2,
+                objective_units: 910_000_000,
+                upper_units: 910_000_000,
+            })
+            .expect("completion");
+            log.flush().expect("flush completion");
+            let report = build_outputs(&path, None, Some(&csv_dir), None, Some(&db), &manifest)
+                .expect("complete build");
+            assert_eq!(
+                (report.match_count, report.no_match_count),
+                (1, 1),
+                "batch markers preserve confirm and no-match replay"
+            );
+            let conn = rusqlite::Connection::open(&db).expect("DB");
+            let accepted: (String, String, f64, u8) = conn.query_row(
+                "SELECT a_id, b_id, score, rank FROM relationships WHERE relationship_type = 'match'",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).expect("accepted pair");
+            assert_eq!(
+                accepted,
+                ("A1".into(), "B1".into(), 0.91, 2),
+                "selected pair and score metadata survive framing"
+            );
+        }
+    }
 
     #[test]
     fn snapshot_build_retains_untouched_pairs_and_original_records() {

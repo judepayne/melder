@@ -2,7 +2,9 @@
 
 use crate::error::ConfigError;
 
-use super::schema::{Config, DatasetConfig, LiveAssignmentStrategy, MatchMethod};
+use super::schema::{
+    BatchAssignmentStrategy, Config, DatasetConfig, LiveAssignmentStrategy, MatchMethod,
+};
 
 /// Valid cross-map backends.
 const VALID_BACKENDS: &[&str] = &["local"];
@@ -167,6 +169,15 @@ pub(crate) fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
 // ---------------------------------------------------------------------------
 
 fn validate_common(cfg: &Config) -> Result<(), ConfigError> {
+    if cfg.batch.assignment.mode.is_some()
+        && cfg.batch.assignment.strategy != BatchAssignmentStrategy::Graph
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "batch.assignment.mode".into(),
+            message: "requires batch.assignment.strategy: graph".into(),
+        });
+    }
+
     // job.name
     require_non_empty(&cfg.job.name, "job.name")?;
 
@@ -630,6 +641,37 @@ output: {{ csv_dir_path: /tmp/test/output }}
         let mut cfg = enroll.into_config()?;
         apply_defaults(&mut cfg);
         validate_enroll(&cfg)
+    }
+
+    #[test]
+    fn batch_assignment_mode_requires_graph_strategy() {
+        let base = base_yaml_with_match_fields(
+            "  - { field_a: name, field_b: name, method: exact, weight: 1.0 }",
+        );
+        for strategy in ["", "strategy: greedy,"] {
+            for mode in ["approximate", "exact"] {
+                let yaml =
+                    format!("{base}\nbatch: {{ assignment: {{ {strategy} mode: {mode} }} }}");
+                let err = parse_and_validate(&yaml).expect_err("mode requires graph strategy");
+                assert!(
+                    matches!(err, ConfigError::InvalidValue { ref field, .. } if field == "batch.assignment.mode"),
+                    "reject mode without graph: {yaml}: {err}"
+                );
+            }
+        }
+        for assignment in [
+            "{}",
+            "{ strategy: greedy }",
+            "{ strategy: graph }",
+            "{ strategy: graph, mode: approximate }",
+            "{ strategy: graph, mode: exact }",
+        ] {
+            assert!(
+                parse_and_validate(&format!("{base}\nbatch: {{ assignment: {assignment} }}"))
+                    .is_ok(),
+                "accept batch assignment {assignment}"
+            );
+        }
     }
 
     #[test]

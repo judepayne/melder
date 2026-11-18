@@ -1,5 +1,6 @@
 //! Matching: blocking, candidate generation, exclusions, scoring pipeline.
 
+pub mod assignment;
 pub mod blocking;
 pub mod candidates;
 pub mod exclusions;

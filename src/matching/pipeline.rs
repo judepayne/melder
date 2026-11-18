@@ -84,8 +84,31 @@ pub fn score_pool(
     ann_candidates: usize,
     top_n: usize,
 ) -> Vec<MatchResult> {
-    score_pool_internal(query, pool, config, ann_candidates, top_n, &[], false)
-        .expect("lenient scoring does not propagate store errors")
+    score_pool_internal(
+        query,
+        pool,
+        config,
+        ann_candidates,
+        top_n,
+        &[],
+        false,
+        false,
+    )
+    .expect("lenient scoring does not propagate store errors")
+}
+
+/// Score the ordinary candidate union, propagating store and vector input errors.
+///
+/// Intended for batch graph construction: preserves ordinary retrieval budgets,
+/// ranking and missing-vector semantics without adding verification candidates.
+pub fn score_pool_strict(
+    query: &ScoringQuery<'_>,
+    pool: &ScoringPool<'_>,
+    config: &Config,
+    ann_candidates: usize,
+    top_n: usize,
+) -> Result<Vec<MatchResult>, StoreError> {
+    score_pool_internal(query, pool, config, ann_candidates, top_n, &[], true, true)
 }
 
 /// Score the ordinary candidate union plus caller-validated verification IDs.
@@ -113,6 +136,7 @@ pub fn score_pool_verified(
         top_n,
         verification_ids,
         true,
+        false,
     )
 }
 
@@ -125,6 +149,7 @@ fn score_pool_internal(
     top_n: usize,
     verification_ids: &[String],
     strict: bool,
+    strict_vectors: bool,
 ) -> Result<Vec<MatchResult>, StoreError> {
     if pool.blocked_ids.is_empty() {
         return Ok(Vec::new());
@@ -163,6 +188,7 @@ fn score_pool_internal(
             query.side,
             &config.vector_backend,
             strict,
+            strict_vectors,
         )?
     };
 
@@ -258,7 +284,8 @@ fn score_pool_internal(
             &emb_specs,
             has_emb_specs,
             pool.synonym_dictionary,
-        ));
+            strict_vectors,
+        )?);
     }
 
     // Sort by score descending, breaking ties by record ID ascending.
@@ -322,12 +349,16 @@ fn score_candidate(
     emb_specs: &[(String, String, f64)],
     has_emb_specs: bool,
     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
-) -> MatchResult {
+    strict_vectors: bool,
+) -> Result<MatchResult, StoreError> {
     // Decompose combined vecs → per-field cosine similarities.
     let emb_scores: Option<HashMap<(&str, &str), f64>> = if has_emb_specs {
-        pool_combined_index
-            .and_then(|idx| idx.get(&cand.id).ok().flatten())
-            .map(|pool_vec| decompose_emb_scores(query_combined_vec, &pool_vec, emb_specs))
+        let pool_vec = match pool_combined_index.map(|idx| idx.get(&cand.id)) {
+            Some(Err(error)) if strict_vectors => return Err(error.into()),
+            Some(Ok(vector)) => vector,
+            _ => None,
+        };
+        pool_vec.map(|pool_vec| decompose_emb_scores(query_combined_vec, &pool_vec, emb_specs))
     } else {
         None
     };
@@ -344,7 +375,7 @@ fn score_candidate(
         query_side.opposite(),
     );
 
-    scoring::build_match_result(
+    Ok(scoring::build_match_result(
         query_id,
         &cand.id,
         query_side,
@@ -353,7 +384,7 @@ fn score_candidate(
         config.thresholds.review_floor,
         None,
         false,
-    )
+    ))
 }
 
 /// Independent synonym candidate generation stage.
@@ -733,6 +764,216 @@ vector_backend: flat
             }
         }
         v
+    }
+
+    #[derive(Debug)]
+    struct FaultVectorDB {
+        inner: FlatVectorDB,
+        gets: std::sync::atomic::AtomicUsize,
+        fail_get_at: usize,
+        fail_search: bool,
+    }
+
+    impl VectorDB for FaultVectorDB {
+        fn upsert(
+            &self,
+            id: &str,
+            vec: &[f32],
+            record: &Record,
+            side: Side,
+        ) -> Result<(), crate::vectordb::VectorDBError> {
+            self.inner.upsert(id, vec, record, side)
+        }
+        fn remove(&self, id: &str) -> Result<bool, crate::vectordb::VectorDBError> {
+            self.inner.remove(id)
+        }
+        fn search(
+            &self,
+            query: &[f32],
+            k: usize,
+            record: &Record,
+            side: Side,
+        ) -> Result<Vec<crate::vectordb::SearchResult>, crate::vectordb::VectorDBError> {
+            if self.fail_search {
+                return Err(crate::vectordb::VectorDBError::Backend(
+                    "injected ANN search failure".into(),
+                ));
+            }
+            self.inner.search(query, k, record, side)
+        }
+        fn search_filtered(
+            &self,
+            query: &[f32],
+            k: usize,
+            allowed: &std::collections::HashSet<String>,
+            record: &Record,
+            side: Side,
+        ) -> Result<Vec<crate::vectordb::SearchResult>, crate::vectordb::VectorDBError> {
+            self.inner.search_filtered(query, k, allowed, record, side)
+        }
+        fn get(&self, id: &str) -> Result<Option<Vec<f32>>, crate::vectordb::VectorDBError> {
+            let call = self.gets.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if call >= self.fail_get_at {
+                return Err(crate::vectordb::VectorDBError::Backend(
+                    "injected A vector fetch failure".into(),
+                ));
+            }
+            self.inner.get(id)
+        }
+        fn contains(&self, id: &str) -> bool {
+            self.inner.contains(id)
+        }
+        fn len(&self) -> usize {
+            self.inner.len()
+        }
+        fn dim(&self) -> usize {
+            self.inner.dim()
+        }
+        fn save(&self, path: &std::path::Path) -> Result<(), crate::vectordb::VectorDBError> {
+            self.inner.save(path)
+        }
+        fn is_stale(
+            path: &std::path::Path,
+            expected_count: usize,
+        ) -> Result<bool, crate::vectordb::VectorDBError> {
+            FlatVectorDB::is_stale(path, expected_count)
+        }
+        fn stored_text_hashes(&self) -> HashMap<String, u64> {
+            self.inner.stored_text_hashes()
+        }
+        fn text_hash_for(&self, id: &str) -> Option<u64> {
+            self.inner.text_hash_for(id)
+        }
+    }
+
+    #[test]
+    fn strict_propagates_a_vector_errors_without_changing_lenient_scoring() {
+        let store = make_store();
+        let record = make_record(&[("name", "Foo")]);
+        store
+            .insert(Side::A, "a1", &record)
+            .expect("insert A record");
+        let ids = vec!["a1".into()];
+        let scores = HashMap::new();
+        let exclusions = crate::matching::exclusions::Exclusions::new();
+        let mut config = make_config_exact("name", "name");
+        config.match_fields[0].method = MatchMethod::Embedding;
+        let query = ScoringQuery {
+            id: "b1",
+            record: &record,
+            side: Side::B,
+            combined_vec: &[1.0, 0.0],
+        };
+        // First fetch: flat retrieval. Second fetch: full-scoring decomposition.
+        // A synonym candidate also exercises decomposition outside ANN retrieval.
+        for (backend, fail_get_at, fail_search, via_synonym) in [
+            ("flat", 1, false, false),
+            ("flat", 2, false, false),
+            ("flat", 1, false, true),
+            #[cfg(feature = "usearch")]
+            ("usearch", 1, false, false),
+            #[cfg(feature = "usearch")]
+            ("usearch", usize::MAX, true, false),
+        ] {
+            config.vector_backend = backend.into();
+            let index = FaultVectorDB {
+                inner: FlatVectorDB::new(2),
+                gets: std::sync::atomic::AtomicUsize::new(0),
+                fail_get_at,
+                fail_search,
+            };
+            index
+                .upsert("a1", query.combined_vec, &record, Side::A)
+                .expect("insert A vector");
+            // A nonexistent blocked ID avoids ANN fetches, isolating the
+            // synonym candidate's full-scoring vector fetch.
+            let blocked = if via_synonym {
+                vec!["absent".into()]
+            } else {
+                ids.clone()
+            };
+            let pool = ScoringPool {
+                store: &store,
+                side: Side::A,
+                combined_index: Some(&index),
+                blocked_ids: &blocked,
+                bm25_candidate_ids: &[],
+                bm25_scores_map: &scores,
+                synonym_candidate_ids: if via_synonym { &ids } else { &[] },
+                synonym_dictionary: None,
+                exclusions: &exclusions,
+            };
+            assert!(
+                matches!(
+                    score_pool_strict(&query, &pool, &config, 1, 0),
+                    Err(StoreError::Vector(_))
+                ),
+                "strict must reject {backend}, fetch={fail_get_at}, search={fail_search}, synonym={via_synonym}"
+            );
+            index.gets.store(0, std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                !score_pool(&query, &pool, &config, 1, 0).is_empty(),
+                "ordinary scoring remains lenient"
+            );
+            index.gets.store(0, std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                score_pool_verified(&query, &pool, &config, 1, 0, &[]).is_ok(),
+                "live verification keeps vector error semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_preserves_missing_vector_semantics_and_retrieval_budget() {
+        let store = make_store();
+        let record = make_record(&[("name", "Foo")]);
+        for id in ["a1", "a2", "missing"] {
+            store.insert(Side::A, id, &record).expect("insert A record");
+        }
+        let ids = vec!["a1".into(), "a2".into(), "missing".into()];
+        let index = FlatVectorDB::new(2);
+        index
+            .upsert("a1", &[1.0, 0.0], &record, Side::A)
+            .expect("insert A vector");
+        index
+            .upsert("a2", &[0.8, 0.6], &record, Side::A)
+            .expect("insert A vector");
+        let mut config = make_config_exact("name", "name");
+        config.match_fields[0].method = MatchMethod::Embedding;
+        let scores = HashMap::new();
+        let exclusions = crate::matching::exclusions::Exclusions::new();
+        let query = ScoringQuery {
+            id: "b1",
+            record: &record,
+            side: Side::B,
+            combined_vec: &[1.0, 0.0],
+        };
+        let pool = ScoringPool {
+            store: &store,
+            side: Side::A,
+            combined_index: Some(&index),
+            blocked_ids: &ids,
+            bm25_candidate_ids: &[],
+            bm25_scores_map: &scores,
+            synonym_candidate_ids: &[],
+            synonym_dictionary: None,
+            exclusions: &exclusions,
+        };
+        for (ann_budget, top_n, expected) in [(1, 0, 1), (0, 0, 3), (0, 1, 1)] {
+            let strict = score_pool_strict(&query, &pool, &config, ann_budget, top_n)
+                .expect("missing vector is not an input error");
+            let ordinary = score_pool(&query, &pool, &config, ann_budget, top_n);
+            assert_eq!(
+                strict.len(),
+                expected,
+                "retrieval and output budgets are preserved"
+            );
+            assert_eq!(
+                format!("{strict:?}"),
+                format!("{ordinary:?}"),
+                "strict must preserve normal scoring including absent vectors"
+            );
+        }
     }
 
     #[test]
@@ -1204,6 +1445,12 @@ vector_backend: flat
                     exclusions: &exclusions,
                 };
                 let verification = if source == 2 { ids.as_slice() } else { &[] };
+                if source != 2 {
+                    assert!(
+                        score_pool_strict(&query, &pool, &config, 1, 0).is_err(),
+                        "graph strict propagates store errors: source={source}"
+                    );
+                }
                 assert!(
                     score_pool_verified(&query, &pool, &config, 1, 0, verification).is_err(),
                     "strict extra fetch failure must propagate: source={source}",

@@ -94,6 +94,7 @@ When a task mentions these features, start with the listed docs/code:
 - Common ID fast path: `docs/configuration.md#datasets`, `src/config/derivation.rs`, `src/matching/pipeline.rs`.
 - Live admin flush/shutdown and WAL lifecycle: `docs/live-mode.md`, `docs/api-reference.md`, `src/state/match_log.rs`.
 - Live assignment: `docs/live-mode.md#live-assignment-policy`, `docs/scoring.md#live-deferred-acceptance`, `src/session/assignment.rs`, `src/config/schema.rs`. Historical bounded-repair evidence remains in `docs/local-reassignment-productionization.md` and benchmark reports; it is not the active policy.
+- Batch graph assignment: `docs/configuration.md#batch`, `docs/batch-mode.md#choosing-pairs-with-the-graph-optimizer`, `docs/performance.md#batch-graph-optimizer`, `src/matching/assignment/`, `src/batch/`. Keep one promoted solver implementation; benchmark adapters must reuse it. The agreed integration contract and evidence are in `benchmarks/assignment_solver/phase-2b-config-and-docs.md`.
 - Batch SQLite mode: `docs/batch-mode.md#sqlite-batch-mode-large-datasets`, `src/batch/`, `src/store/sqlite.rs`.
 - Enroll-specific config/endpoints: `docs/enroll-mode.md`, `src/config/enroll_schema.rs`, `src/api/handlers.rs`.
 
@@ -138,7 +139,8 @@ When a task mentions these features, start with the listed docs/code:
 - `max_displacements` defaults to 32 successful displacements per attempt (an initial work budget, not a proven optimum). Zero permits reciprocal free matches; at the cap, remaining shortlisted free candidates can still be tried. Existing retrieval/`top_n` bound proposals; verification of proposer/incumbent is not new proposal generation. No order-independence, accuracy or global-optimality guarantee.
 - Enabled assignment uses `CrossMapOps::apply_assignment_delta()` atomically per step and version-1 `assignment_delta` WAL events. Keep legacy `CrossMapReassign` readable, but do not revive bounded one-to-two repair as active policy. Canonical metadata is B→A; audit both directional scores.
 - Optional mutation-response `assignment` summaries are omitted for greedy. Candidate `matches` are not accepted links; bulk responses must reflect final CrossMap membership. Emit best-effort Break/Confirm hooks only for completed steps, with confirm source `deferred_acceptance`.
-- Batch remains greedy in Phase 1: `maximum_weight` is rejected and the batch solver is not yet integrated. Planned nine-decimal batch quantization is not a live scoring rule.
+- Batch defaults to greedy with no optimizer graph. YAML-only `batch.assignment.strategy: graph` defaults to `mode: approximate`: exact through 512 distinct participating A+B endpoints per connected group, deterministic best of score-first/count-first above 512 (score-first wins ties). Explicit `mode: exact` never falls back. Reject mode without explicit graph strategy and unknown values, including `maximum_weight`; no CLI/cutoff/worker-count/tolerance knobs.
+- Graph assignment uses only retained automatically eligible shared-pipeline candidates; preserve protected links, exclusions and whole-list ambiguity gates. Check eligibility before rounding assignment weights to nine decimal places; this is not a live scoring rule. Optimize total represented similarity, not pair count or identity accuracy. Fixed-graph results must not depend on edge order, worker scheduling or elapsed time.
 - In enroll mode, avoid self-matches when query side equals pool side.
 
 ## 9. Storage / Persistence Rules
@@ -149,6 +151,7 @@ When a task mentions these features, start with the listed docs/code:
 - Assignment append failure attempts inverse-delta rollback. Ambiguous append, rollback or postcommit metadata failure must fail assignment health and reject further optimizing mutations until recovery/restart. CrossMap remains authoritative; hooks are not an audit log.
 - Older binaries cannot safely replay/export `assignment_delta` logs; disabling the strategy does not remove downgrade restrictions. Preserve legacy log readers and historical reports.
 - Review persistence, exclusions persistence, and crossmap flushing belong in backend abstractions, not session-level backend checks.
+- Graph batch publication is atomic for new automatic links; preserve protected pairs on rollback. Logs use `batch_assignment_started` / `batch_assignment_completed`; reject final output building/export from an incomplete graph run, never publish a partial optimum. Use `graph_assignment` as the selected-match source. Emit effective strategy/mode, group counts, largest group and exactness/certified-bound summary only after successful publication; round displayed lower bounds down.
 - Do not reintroduce runtime `uses_sqlite` branching into core logic.
 
 ## 10. Encoder / GPU Notes
@@ -167,6 +170,7 @@ When a task mentions these features, start with the listed docs/code:
 - Add assertion messages.
 - Use `tempfile::tempdir()` for filesystem tests.
 - If changing scoring, blocking, crossmap, WAL, sqlite, encoder, or feature-gated behavior, add/adjust tests in the touched module.
+- Batch graph gates: default/explicit greedy compatibility, invalid mode-without-graph YAML, 512/513 dispatch and effective summaries, fixed-graph determinism, independent exact oracle/objective bounds, eligibility-before-rounding, protected/conflicting pairs, atomic publication/rollback and incomplete-log export rejection. Verify CSV/Parquet/SQLite accepted pairs against final CrossMap; run default, all-features and pure-Rust checks per the build matrix.
 
 ## 12. Docs / Session Hygiene
 

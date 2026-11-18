@@ -25,6 +25,9 @@ pub enum MelderError {
     #[error("crossmap error: {0}")]
     CrossMap(#[from] CrossMapError),
 
+    #[error("batch assignment error: {0}")]
+    BatchAssignment(#[from] crate::batch::assignment::BatchAssignmentError),
+
     #[error("session error: {0}")]
     Session(#[from] SessionError),
 
@@ -146,6 +149,9 @@ pub enum CrossMapError {
 pub enum StoreError {
     #[error("sqlite error: {0}")]
     Sqlite(String),
+
+    #[error("vector input error: {0}")]
+    Vector(#[from] crate::vectordb::VectorDBError),
 }
 
 impl From<rusqlite::Error> for CrossMapError {
