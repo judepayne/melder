@@ -387,6 +387,151 @@ fn protected_links_and_whole_list_gap_survive_graph_assignment() -> TestResult {
 }
 
 #[test]
+fn graph_export_rejects_absent_empty_torn_and_ambiguous_inputs_without_writes() -> TestResult {
+    let mut f = Fixture::new(false, json!({"strategy":"graph"}))?;
+    f.run(1)?;
+    let segment = f.log_path()?;
+    let complete = fs::read(&segment)?;
+    let base = f.path("out/graph_cli.graph.match_log.ndjson");
+    let output_dir = f.path("previous");
+    fs::create_dir(&output_dir)?;
+    fs::write(
+        output_dir.join("relationships.csv"),
+        b"existing relationships",
+    )?;
+    let original_db = fs::read(f.path("output.db"))?;
+    for case in [
+        "missing",
+        "empty",
+        "torn start",
+        "no markers",
+        "two segments",
+    ] {
+        let selected = match case {
+            "missing" => {
+                fs::remove_file(&segment)?;
+                &segment
+            }
+            "empty" => {
+                fs::write(&segment, [])?;
+                &segment
+            }
+            "torn start" => {
+                fs::write(&segment, b"{\"ts\":\"")?;
+                &segment
+            }
+            "no markers" => {
+                fs::write(
+                    &segment,
+                    b"{\"type\":\"upsert_record\",\"side\":\"b\",\"record\":{\"bid\":\"b1\"}}\n",
+                )?;
+                &segment
+            }
+            _ => {
+                fs::write(&segment, &complete)?;
+                fs::write(
+                    f.path("out/graph_cli.graph.match_log_20991231T235959Z_000001.ndjson"),
+                    [],
+                )?;
+                &base
+            }
+        };
+        f.config["live"] = json!({"match_log_path": selected});
+        let out = f
+            .command("export", 1)?
+            .arg("--out-dir")
+            .arg(&output_dir)
+            .output()?;
+        assert!(!out.status.success(), "accepted {case}");
+        assert_eq!(
+            fs::read(output_dir.join("relationships.csv"))?,
+            b"existing relationships",
+            "{case}"
+        );
+        assert_eq!(
+            fs::read(f.path("output.db"))?,
+            original_db,
+            "{case} modified DB"
+        );
+        assert!(
+            !output_dir.join("unmatched.csv").exists(),
+            "{case} wrote output"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn graph_refuses_malformed_constraints_before_overwriting_any_snapshot() -> TestResult {
+    for sqlite in [false, true] {
+        for (input, csv) in [
+            ("crossmap.csv", "wrong,bid\na1,b1\n"),
+            ("exclusions.csv", "aid,typo\na1,b1\n"),
+            ("crossmap.csv", "aid,bid\na1,\n"),
+            ("exclusions.csv", "aid,bid\n,b1\n"),
+            ("crossmap.csv", "aid,bid\na1,b1\na1,b2\n"),
+            ("crossmap.csv", "aid,bid\na1,b2\na1,b1\n"),
+            ("crossmap.csv", "aid,bid\na1,b1\na2,b1\n"),
+            ("crossmap.csv", "aid,bid\na2,b1\na1,b1\n"),
+        ] {
+            let mut f = Fixture::new(sqlite, json!({"strategy":"graph"}))?;
+            fs::write(f.path("crossmap.csv"), "aid,bid\na2,b2\n")?;
+            fs::write(f.path(input), csv)?;
+            if input == "exclusions.csv" {
+                f.config["exclusions"] =
+                    json!({"path":f.path(input),"a_id_field":"aid","b_id_field":"bid"});
+            }
+            let previous = fs::read(f.path("crossmap.csv"))?;
+            let output = f.command("run", 2)?.output()?;
+            assert!(
+                !output.status.success(),
+                "accepted sqlite={sqlite}, {input}: {csv}"
+            );
+            assert_eq!(fs::read(f.path("crossmap.csv"))?, previous);
+            assert!(!f.path("out/relationships.csv").exists());
+            assert!(!f.path("output.db").exists());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn historical_export_uses_its_own_scoring_evidence() -> TestResult {
+    let mut f = Fixture::new(false, json!({"strategy":"graph"}))?;
+    f.run(1)?;
+    let old = f.log_path()?;
+    let expected_candidates = fs::read(f.path("out/candidates.csv"))?;
+    fs::remove_file(f.path("crossmap.csv"))?;
+    fs::write(f.path("b.csv"), "bid,name,text\nnew-b,aaaa,shared\n")?;
+    f.config["scoring_log"]["compression"] = json!("zstd");
+    f.run(1)?;
+    let new_candidates = fs::read(f.path("out/candidates.csv"))?;
+    assert_ne!(new_candidates, expected_candidates);
+    f.config["live"] = json!({"match_log_path":old});
+    let out = f
+        .command("export", 1)?
+        .arg("--out-dir")
+        .arg(f.path("historical"))
+        .output()?;
+    assert_success(&out);
+    assert_eq!(
+        fs::read(f.path("historical/candidates.csv"))?,
+        expected_candidates
+    );
+    let db = rusqlite::Connection::open(f.path("output.db"))?;
+    let (old_rows, later_rows): (usize, usize) = db.query_row(
+        "SELECT count(*), count(CASE WHEN b_id='new-b' THEN 1 END) FROM field_scores",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert!(
+        old_rows > 0 && later_rows == 0,
+        "field scores belong to the original run"
+    );
+    Ok(())
+}
+
+#[test]
 fn completed_batch_exports_agree_and_incomplete_logs_fail_closed() -> TestResult {
     let mut fixture = Fixture::new(false, json!({"strategy": "graph", "mode": "exact"}))?;
     fixture.run(2)?;
@@ -416,7 +561,7 @@ fn completed_batch_exports_agree_and_incomplete_logs_fail_closed() -> TestResult
         "failed export must not publish seemingly complete relationships"
     );
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("lacks completion"),
+        String::from_utf8_lossy(&output.stderr).contains("completion"),
         "failure must explain incomplete graph run: {}",
         String::from_utf8_lossy(&output.stderr)
     );

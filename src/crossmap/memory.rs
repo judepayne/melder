@@ -137,6 +137,25 @@ impl MemoryCrossMap {
         Ok(cm)
     }
 
+    /// Load graph-mode protections, rejecting malformed CSV and conflicting ownership.
+    /// A missing file is a fresh map; identical duplicate pairs are idempotent.
+    pub fn load_strict(path: &Path, a_field: &str, b_field: &str) -> Result<Self, CrossMapError> {
+        let pairs = super::constraints::load_pairs(path, a_field, b_field, true)?;
+        let cm = Self::new();
+        for (a_id, b_id) in pairs {
+            if cm.get_b(&a_id).as_deref() == Some(b_id.as_str()) {
+                continue;
+            }
+            if !cm.claim(&a_id, &b_id) {
+                return Err(CrossMapError::InvalidConstraint(format!(
+                    "{}: conflicting ownership for pair ({a_id:?}, {b_id:?})",
+                    path.display(),
+                )));
+            }
+        }
+        Ok(cm)
+    }
+
     /// Save the MemoryCrossMap to a CSV file (atomic write via temp + rename).
     pub fn save(&self, path: &Path, a_field: &str, b_field: &str) -> Result<(), CrossMapError> {
         if let Some(parent) = path.parent()
@@ -360,6 +379,48 @@ impl CrossMapOps for MemoryCrossMap {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn strict_load_rejects_conflicting_ownership_in_both_directions() {
+        let dir = tempdir().expect("temp directory");
+        let path = dir.path().join("crossmap.csv");
+        for contents in [
+            "a,b\na1,b1\na1,b2\n",
+            "a,b\na1,b1\na2,b1\n",
+            "a,b\na1,b1\na1,b2\na2,b1\n",
+        ] {
+            std::fs::write(&path, contents).expect("write CSV");
+            assert!(
+                matches!(
+                    MemoryCrossMap::load_strict(&path, "a", "b"),
+                    Err(CrossMapError::InvalidConstraint(_)),
+                ),
+                "must reject conflicting protection ownership: {contents:?}",
+            );
+            assert!(
+                MemoryCrossMap::load(&path, "a", "b").is_ok(),
+                "legacy loading remains permissive",
+            );
+        }
+    }
+
+    #[test]
+    fn strict_load_fresh_and_idempotent() {
+        let dir = tempdir().expect("temp directory");
+        let path = dir.path().join("crossmap.csv");
+        assert!(
+            MemoryCrossMap::load_strict(&path, "a", "b")
+                .expect("absent crossmap starts fresh")
+                .is_empty(),
+            "absent crossmap is supported",
+        );
+        std::fs::write(&path, "a,b\n a1 , b1 \na1,b1\na2,b2\n").expect("write CSV");
+        let cm = MemoryCrossMap::load_strict(&path, "a", "b").expect("valid protections");
+        assert_eq!(cm.len(), 2, "identical duplicates are idempotent");
+        assert_eq!(cm.get_b("a1").as_deref(), Some("b1"), "forward ownership");
+        assert_eq!(cm.get_a("b1").as_deref(), Some("a1"), "reverse ownership");
+        assert_eq!(cm.get_a("b2").as_deref(), Some("a2"), "second ownership");
+    }
 
     #[test]
     fn assignment_delta_contract() {

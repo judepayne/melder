@@ -223,8 +223,7 @@ pub(crate) fn build_outputs_with_input(
     let start = Instant::now();
 
     // Replay match log events.
-    let events = MatchLog::replay(match_log_path)?;
-    crate::state::match_log::validate_batch_assignment_framing(&events)?;
+    let (events, _) = MatchLog::replay_for_output(match_log_path, false)?;
 
     // Validate assignment ownership before creating any output files.
     let final_pairs = if input.current_reviews.is_some() {
@@ -1355,6 +1354,41 @@ mod tests {
             (0, 0, 0),
             "empty graph scope remains empty"
         );
+    }
+
+    #[test]
+    fn invalid_graph_input_never_creates_output_targets() {
+        for contents in [
+            None,
+            Some(""),
+            Some("{\"type\":\"batch_assignment_sta"),
+            Some("{\"type\":\"no_match_below\",\"query_side\":\"b\",\"query_id\":\"B\"}\n"),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("job.graph.match_log.ndjson");
+            if let Some(contents) = contents {
+                std::fs::write(&path, contents).expect("input");
+            }
+            let csv = dir.path().join("csv");
+            let parquet = dir.path().join("parquet");
+            let db = dir.path().join("db/output.sqlite");
+            assert!(
+                build_outputs(
+                    &path,
+                    None,
+                    Some(&csv),
+                    Some(&parquet),
+                    Some(&db),
+                    &make_graph_manifest()
+                )
+                .is_err(),
+                "invalid graph input: {contents:?}"
+            );
+            assert!(
+                !csv.exists() && !parquet.exists() && !db.exists(),
+                "validation precedes all output creation"
+            );
+        }
     }
 
     #[test]

@@ -97,6 +97,20 @@ impl Exclusions {
         Ok(ex)
     }
 
+    /// Load graph-mode exclusions, requiring valid headers and nonempty IDs.
+    /// A configured missing file is an error; duplicate pairs remain idempotent.
+    pub fn load_strict(path: &Path, a_field: &str, b_field: &str) -> Result<Self, CrossMapError> {
+        let pairs = crate::crossmap::constraints::load_pairs(path, a_field, b_field, false)?;
+        let ex = Self::new();
+        for (a_id, b_id) in pairs {
+            ex.add(&a_id, &b_id);
+        }
+        if !ex.is_empty() {
+            info!(pairs = ex.len(), "loaded exclusions");
+        }
+        Ok(ex)
+    }
+
     /// Configure the CSV flush path and field names.
     ///
     /// Must be called before `flush()` will write anything.
@@ -198,6 +212,50 @@ impl Default for Exclusions {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn strict_load_requires_valid_configured_file() {
+        let dir = tempdir().expect("temp directory");
+        let path = dir.path().join("exclusions.csv");
+        assert!(
+            Exclusions::load_strict(&path, "a", "b").is_err(),
+            "configured missing exclusions must fail",
+        );
+        assert!(
+            Exclusions::load(&path, "a", "b")
+                .expect("legacy absent file")
+                .is_empty(),
+            "legacy missing-file behavior is unchanged",
+        );
+        for contents in ["wrong,columns\n", "a,b\na1,\n"] {
+            std::fs::write(&path, contents).expect("write CSV");
+            assert!(
+                Exclusions::load_strict(&path, "a", "b").is_err(),
+                "reject malformed exclusions: {contents:?}",
+            );
+            assert!(
+                Exclusions::load(&path, "a", "b")
+                    .expect("legacy permissive CSV")
+                    .is_empty(),
+                "legacy permissive loading is unchanged",
+            );
+        }
+        std::fs::write(&path, "a,b\na1,b1\na1,b1\na1,b2\na2,b1\n").expect("write CSV");
+        let ex = Exclusions::load_strict(&path, "a", "b").expect("valid exclusions");
+        assert_eq!(
+            ex.len(),
+            3,
+            "exclusions need not be bijective; duplicates are harmless"
+        );
+        assert!(ex.contains("b2", "a1"), "reverse lookup remains supported");
+        std::fs::write(&path, "a,b\n").expect("write CSV");
+        assert!(
+            Exclusions::load_strict(&path, "a", "b")
+                .expect("valid header")
+                .is_empty(),
+            "header-only exclusions are valid"
+        );
+    }
 
     #[test]
     fn add_and_contains() {

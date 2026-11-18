@@ -132,6 +132,7 @@ impl ScoringLogSender {
                 }
             }
             Err(e) => {
+                self.failed.store(true, Ordering::Relaxed);
                 warn!(error = %e, "scoring log serialization failed");
             }
         }
@@ -147,6 +148,8 @@ impl ScoringLogSender {
 pub struct ScoringLogWriter {
     handle: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
+    failed: Arc<AtomicBool>,
+    publication: Option<PathBuf>,
 }
 
 impl ScoringLogWriter {
@@ -156,12 +159,29 @@ impl ScoringLogWriter {
     }
 
     /// Shut down the writer, waiting for it to finish.
-    pub fn shutdown(mut self) {
-        // Dropping the sender (done by caller) closes the channel.
-        // The writer thread drains remaining items and exits.
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+    pub fn shutdown(self) {
+        if let Err(e) = self.shutdown_checked() {
+            warn!(error = %e, "scoring log shutdown failed");
         }
+    }
+
+    /// Flush the log and publish graph evidence only after successful completion.
+    /// All senders must be dropped before calling this method.
+    pub fn shutdown_checked(mut self) -> std::io::Result<()> {
+        if let Some(handle) = self.handle.take()
+            && handle.join().is_err()
+        {
+            self.failed.store(true, Ordering::Relaxed);
+        }
+        if self.failed.load(Ordering::Relaxed) {
+            return Err(std::io::Error::other("scoring log evidence writer failed"));
+        }
+        if let Some(pending) = self.publication.take() {
+            // Hard-link publication is atomic and refuses to overwrite evidence.
+            std::fs::hard_link(&pending, &self.path)?;
+            std::fs::remove_file(pending)?;
+        }
+        Ok(())
     }
 }
 
@@ -196,11 +216,93 @@ pub fn open_scoring_log(
         std::fs::create_dir_all(parent)?;
     }
 
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&actual_path)?;
+    open_writer(actual_path, use_zstd, header, None)
+}
+
+fn graph_scoring_base(match_log_path: &Path) -> PathBuf {
+    // Never share the WAL prefix: legacy segment discovery matches by prefix.
+    let stem = match_log_path.file_stem().unwrap_or_default();
+    let mut name = std::ffi::OsString::from("scores.");
+    name.push(stem);
+    name.push(".scoring_log");
+    match_log_path.with_file_name(name)
+}
+
+fn scoring_path(base: &Path, use_zstd: bool) -> PathBuf {
+    let mut name = base.as_os_str().to_os_string();
+    name.push(if use_zstd { ".ndjson.zst" } else { ".ndjson" });
+    PathBuf::from(name)
+}
+
+/// Discover only the scoring evidence belonging to this exact graph run.
+/// Compression is inferred from the companion, never from current config.
+/// Missing evidence means membership-only output; two companions are ambiguous.
+pub fn graph_scoring_path(match_log_path: &Path) -> std::io::Result<Option<PathBuf>> {
+    let base = graph_scoring_base(match_log_path);
+    let mut found = None;
+    for compressed in [false, true] {
+        let path = scoring_path(&base, compressed);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_file() {
+                    return Err(std::io::Error::other(format!(
+                        "graph scoring companion is not a regular file: {}",
+                        path.display()
+                    )));
+                }
+                if found.is_some() {
+                    return Err(std::io::Error::other("ambiguous graph scoring companions"));
+                }
+                found = Some(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(found)
+}
+
+/// Open exclusive, run-associated graph evidence. Incomplete writes remain
+/// unpublished and cannot enrich historical output after a crash or failure.
+pub fn open_graph_scoring_log(
+    match_log_path: &Path,
+    use_zstd: bool,
+    header: &crate::output::manifest::OutputManifest,
+) -> std::io::Result<(ScoringLogSender, ScoringLogWriter)> {
+    if graph_scoring_path(match_log_path)?.is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "graph scoring companion already exists",
+        ));
+    }
+    let base = graph_scoring_base(match_log_path);
+    let pending = base.with_extension("scoring_log.pending");
+    open_writer(
+        scoring_path(&base, use_zstd),
+        use_zstd,
+        header,
+        Some(pending),
+    )
+}
+
+fn open_writer(
+    actual_path: PathBuf,
+    use_zstd: bool,
+    header: &crate::output::manifest::OutputManifest,
+    publication: Option<PathBuf>,
+) -> std::io::Result<(ScoringLogSender, ScoringLogWriter)> {
+    let file = if let Some(pending) = &publication {
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(pending)?
+    } else {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&actual_path)?
+    };
 
     // Serialize header
     let hdr = Header {
@@ -247,11 +349,13 @@ pub fn open_scoring_log(
 
     info!(path = %actual_path.display(), zstd = use_zstd, "scoring log opened");
 
-    let sender = ScoringLogSender { tx, failed };
     let writer = ScoringLogWriter {
         handle: Some(handle),
         path: actual_path,
+        failed: failed.clone(),
+        publication,
     };
+    let sender = ScoringLogSender { tx, failed };
 
     Ok((sender, writer))
 }
@@ -287,4 +391,155 @@ fn run_writer_zstd(
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     encoder.finish()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_manifest() -> crate::output::manifest::OutputManifest {
+        crate::output::manifest::OutputManifest {
+            mode: crate::config::Mode::Match,
+            job_name: "job".into(),
+            a_id_field: "aid".into(),
+            b_id_field: "bid".into(),
+            a_fields: vec![],
+            b_fields: vec![],
+            auto_match: 0.9,
+            review_floor: 0.5,
+            min_score_gap: None,
+            top_n: 5,
+            model: "none".into(),
+        }
+    }
+
+    #[test]
+    fn graph_companions_are_run_specific_and_compression_independent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = dir
+            .path()
+            .join("job.graph.match_log_20260401T120000Z_000001.ndjson");
+        let second = dir
+            .path()
+            .join("job.graph.match_log_20260401T120000Z_000002.ndjson");
+        std::fs::write(dir.path().join("job.scoring_log.ndjson"), "stale").expect("stale log");
+        assert!(
+            graph_scoring_path(&first).expect("discovery").is_none(),
+            "ignore job-wide evidence"
+        );
+        for (run, compressed) in [(&first, false), (&second, true)] {
+            let (sender, writer) =
+                open_graph_scoring_log(run, compressed, &make_manifest()).expect("open run");
+            let expected = writer.path().to_path_buf();
+            assert!(
+                graph_scoring_path(run)
+                    .expect("pending discovery")
+                    .is_none(),
+                "do not expose incomplete evidence"
+            );
+            drop(sender);
+            writer.shutdown_checked().expect("flush and publish");
+            assert_eq!(
+                graph_scoring_path(run).expect("discovery"),
+                Some(expected.clone()),
+                "discover exact run regardless of compression"
+            );
+            let bytes = std::fs::read(expected).expect("evidence");
+            let decoded = if compressed {
+                zstd::decode_all(bytes.as_slice()).expect("zstd")
+            } else {
+                bytes
+            };
+            assert!(
+                decoded.starts_with(b"{\"type\":\"header\""),
+                "complete readable header"
+            );
+            assert!(
+                open_graph_scoring_log(run, !compressed, &make_manifest()).is_err(),
+                "refuse replacement with other compression"
+            );
+        }
+        assert_ne!(
+            graph_scoring_path(&first).expect("first"),
+            graph_scoring_path(&second).expect("second"),
+            "same-second sequence stays in companion identity"
+        );
+    }
+
+    #[test]
+    fn graph_discovery_rejects_ambiguous_or_nonregular_companions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = dir
+            .path()
+            .join("job.graph.match_log_20260401T120000Z.ndjson");
+        let base = graph_scoring_base(&run);
+        let plain = scoring_path(&base, false);
+        let compressed = scoring_path(&base, true);
+        std::fs::write(&plain, "plain").expect("plain");
+        std::fs::write(&compressed, "compressed").expect("compressed");
+        assert!(
+            graph_scoring_path(&run).is_err(),
+            "ambiguous evidence must not be selected"
+        );
+        std::fs::remove_file(&compressed).expect("remove compressed");
+        std::fs::remove_file(&plain).expect("remove plain");
+        std::fs::create_dir(&plain).expect("directory");
+        assert!(
+            graph_scoring_path(&run).is_err(),
+            "directory is not evidence"
+        );
+    }
+
+    #[test]
+    fn graph_failed_or_abandoned_evidence_is_never_published() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = dir
+            .path()
+            .join("job.graph.match_log_20260401T120000Z_000001.ndjson");
+        let (sender, writer) = open_graph_scoring_log(&run, false, &make_manifest()).expect("open");
+        sender.failed.store(true, Ordering::Relaxed);
+        drop(sender);
+        assert!(
+            writer.shutdown_checked().is_err(),
+            "writer failure must propagate"
+        );
+        assert!(
+            graph_scoring_path(&run).expect("discovery").is_none(),
+            "failed evidence remains unavailable"
+        );
+        assert!(
+            open_graph_scoring_log(&run, true, &make_manifest()).is_err(),
+            "pending reservation prevents compression collision"
+        );
+
+        let abandoned = dir
+            .path()
+            .join("job.graph.match_log_20260401T120000Z_000002.ndjson");
+        let (sender, writer) =
+            open_graph_scoring_log(&abandoned, false, &make_manifest()).expect("open abandoned");
+        drop(sender);
+        drop(writer);
+        assert!(
+            graph_scoring_path(&abandoned).expect("discovery").is_none(),
+            "drop is not successful graph publication"
+        );
+    }
+
+    #[test]
+    fn greedy_scoring_log_keeps_job_wide_truncation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().join("job.scoring_log");
+        let path = scoring_path(&base, false);
+        std::fs::write(&path, "stale evidence").expect("old log");
+        let (sender, writer) =
+            open_scoring_log(&base, false, &make_manifest()).expect("greedy open");
+        drop(sender);
+        writer.shutdown();
+        assert!(
+            std::fs::read_to_string(path)
+                .expect("new log")
+                .starts_with("{\"type\":\"header\""),
+            "greedy still replaces job-wide evidence"
+        );
+    }
 }

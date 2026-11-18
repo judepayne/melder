@@ -163,13 +163,40 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         }
     };
 
+    // Graph evidence is bound to the actual timestamped run, not the job name.
+    let graph_log_path = match_log
+        .as_ref()
+        .filter(|_| state.config.batch.assignment.graph_mode().is_some())
+        .map(|log| log.path().to_path_buf());
+    if let Some(path) = &graph_log_path {
+        match crate::output::scoring_log::graph_scoring_path(path) {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                eprintln!("Graph scoring evidence already exists for this run");
+                process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Failed to inspect graph scoring evidence: {e}");
+                process::exit(1);
+            }
+        }
+    }
     // Open scoring log if enabled.
     let (sl_sender, sl_writer) = if state.config.scoring_log.enabled {
         let sl_base = output_dir.join(format!("{}.scoring_log", state.config.job.name));
         let manifest = crate::output::OutputManifest::from_config(&state.config);
         let use_zstd = state.config.scoring_log.compression != "none";
-        match crate::output::scoring_log::open_scoring_log(&sl_base, use_zstd, &manifest) {
+        let opened = if let Some(path) = &graph_log_path {
+            crate::output::scoring_log::open_graph_scoring_log(path, use_zstd, &manifest)
+        } else {
+            crate::output::scoring_log::open_scoring_log(&sl_base, use_zstd, &manifest)
+        };
+        match opened {
             Ok((sender, writer)) => (Some(sender), Some(writer)),
+            Err(e) if graph_log_path.is_some() => {
+                eprintln!("Failed to open graph scoring evidence: {e}");
+                process::exit(1);
+            }
             Err(e) => {
                 eprintln!(
                     "Warning: failed to open scoring log: {} — continuing without",
@@ -183,10 +210,6 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     };
 
     // Use this run's log, not all previous segments with the same job name.
-    let graph_log_path = match_log
-        .as_ref()
-        .filter(|_| state.config.batch.assignment.graph_mode().is_some())
-        .map(|log| log.path().to_path_buf());
     if let Some(path) = &graph_log_path {
         eprintln!("Batch graph log: {}", path.display());
     }
@@ -216,7 +239,14 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     // Shut down scoring log writer (flush remaining entries).
     drop(sl_sender);
     if let Some(w) = sl_writer {
-        w.shutdown();
+        if graph_log_path.is_some() {
+            if let Err(e) = w.shutdown_checked() {
+                eprintln!("Failed to publish graph scoring evidence: {e}");
+                process::exit(1);
+            }
+        } else {
+            w.shutdown();
+        }
     }
 
     // Determine output paths.
@@ -493,7 +523,12 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
 fn load_crossmap(path: &str, config: &crate::config::Config) -> crate::crossmap::MemoryCrossMap {
-    match crate::crossmap::MemoryCrossMap::load(
+    let load = if config.batch.assignment.graph_mode().is_some() {
+        crate::crossmap::MemoryCrossMap::load_strict
+    } else {
+        crate::crossmap::MemoryCrossMap::load
+    };
+    match load(
         Path::new(path),
         &config.cross_map.a_id_field,
         &config.cross_map.b_id_field,
@@ -521,7 +556,12 @@ fn load_exclusions(config: &crate::config::Config) -> crate::matching::exclusion
     if let Some(ref p) = config.exclusions.path
         && !p.is_empty()
     {
-        match Exclusions::load(
+        let load = if config.batch.assignment.graph_mode().is_some() {
+            Exclusions::load_strict
+        } else {
+            Exclusions::load
+        };
+        match load(
             Path::new(p),
             &config.exclusions.a_id_field,
             &config.exclusions.b_id_field,

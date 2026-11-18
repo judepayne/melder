@@ -4,6 +4,7 @@
 //! is the in-memory (RwLock + HashMap) implementation with CSV persistence.
 //! `SqliteCrossMap` is the SQLite-backed implementation for durable live mode.
 
+pub(crate) mod constraints;
 pub mod memory;
 pub mod sqlite;
 pub mod traits;

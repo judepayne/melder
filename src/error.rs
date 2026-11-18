@@ -135,6 +135,9 @@ pub enum IndexError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CrossMapError {
+    #[error("invalid constraint CSV: {0}")]
+    InvalidConstraint(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

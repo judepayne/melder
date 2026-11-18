@@ -44,6 +44,8 @@ whole-run assignments between runs.
 
 ## Choosing pairs with the graph optimizer
 
+For graph assignment, an existing protection or exclusion CSV must contain the configured ID columns and nonempty IDs. Protected pairs must be one-to-one: if an A or B has two different partners, `meld run` rejects the input rather than picking one. These checks apply to both memory and SQLite batch storage.
+
 The optimizer changes **which pairs are accepted**, not how Melder scores them.
 For example, suppose B1 scores 0.99 with A1 and 0.98 with A2; B2 scores 0.97
 with A1 and 0.85 with A2. Taking the strongest pair first gives 1.84 in total.
@@ -154,7 +156,7 @@ For graph runs that write a match log, `batch_assignment_started` and
 `batch_assignment_completed` frame the assignment publication. **No partial
 export:** if a started graph run lacks its completion marker, output building
 and `meld export` reject it rather than treating a prefix as final or optimal.
-To rebuild a completed graph run, set `live.match_log_path` in a copy of the job config to the **single timestamped graph log** printed by `meld run`, then run `meld export --config <copy> --out-dir <directory>`. Do not pass the untimestamped base if there are multiple runs, and do not use this log for live startup. Do not delete the start marker to force export. A solver/publication/logging
+To rebuild a completed graph run, set `live.match_log_path` in a copy of the job config to the **single timestamped graph log** printed by `meld run`, then run `meld export --config <copy> --out-dir <directory>`. A missing, empty, damaged, or ambiguous graph log is an error, not an empty batch. Keep the scoring log from the same run beside the match log if you need candidate and field-score evidence. Without that companion, export can rebuild accepted links but will not borrow another run’s scores. Use a fresh export directory for historical results. Do not pass the untimestamped base if there are multiple runs, and do not use this log for live startup. Do not delete the start marker to force export. A solver/publication/logging
 failure is an error: Melder does not save final CrossMap/CSV outputs or print a
 successful assignment summary for that failed run. Protected links are not
 removed to roll back new automatic selections. Hooks, if configured, remain

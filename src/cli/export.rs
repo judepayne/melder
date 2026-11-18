@@ -41,13 +41,19 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         process::exit(1);
     }
 
-    // SQLite is authoritative: never substitute a possibly incomplete WAL.
+    // An explicitly selected graph log is batch history, not live SQLite state.
+    // Otherwise SQLite remains authoritative even with batch graph config enabled.
+    let graph_path_selected = cfg
+        .live
+        .match_log_path
+        .as_deref()
+        .is_some_and(|path| crate::state::match_log::is_graph_match_log_path(Path::new(path)));
     if let Some(db_path) = cfg
         .live
         .db_path
         .as_deref()
         .map(Path::new)
-        .filter(|p| p.exists())
+        .filter(|p| p.exists() && !graph_path_selected)
     {
         create_export_dir(out_dir);
         export_sqlite(&cfg, db_path, out_dir);
@@ -58,14 +64,12 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
     // Also produce a SQLite DB if output.db_path is set.
     if let Some(ref ml_path) = cfg.live.match_log_path {
         let ml = std::path::Path::new(ml_path);
-        let events = MatchLog::replay(ml).unwrap_or_else(|e| {
-            eprintln!("WAL replay failed: {}", e);
-            process::exit(1);
-        });
-        crate::state::match_log::validate_batch_assignment_framing(&events).unwrap_or_else(|e| {
-            eprintln!("Export failed: {e}");
-            process::exit(1);
-        });
+        let (events, graph_segment) =
+            MatchLog::replay_for_output(ml, cfg.batch.assignment.graph_mode().is_some())
+                .unwrap_or_else(|e| {
+                    eprintln!("Export failed: {e}");
+                    process::exit(1);
+                });
         let has_assignment = events
             .iter()
             .any(|event| matches!(event, MatchLogEvent::AssignmentDelta(_)));
@@ -83,7 +87,12 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         let manifest = crate::output::OutputManifest::from_config(&cfg);
         let parquet_dir = cfg.output.parquet_dir_path.as_deref().map(Path::new);
         let db_path = cfg.output.db_path.as_deref().map(Path::new);
-        let sl_path = if cfg.scoring_log.enabled {
+        let sl_path = if let Some(segment) = graph_segment.as_deref() {
+            crate::output::scoring_log::graph_scoring_path(segment).unwrap_or_else(|e| {
+                eprintln!("Failed to select graph scoring log: {e}");
+                process::exit(1);
+            })
+        } else if cfg.scoring_log.enabled {
             let sl_dir = cfg.output.csv_dir_path.as_deref().unwrap_or(".");
             let sl_base = Path::new(sl_dir).join(format!("{}.scoring_log", cfg.job.name));
             let use_zstd = cfg.scoring_log.compression != "none";
@@ -97,7 +106,7 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
             None
         };
         match crate::output::build::build_outputs_with_input(
-            ml,
+            graph_segment.as_deref().unwrap_or(ml),
             sl_path.as_deref(),
             Some(out_dir),
             parquet_dir,
@@ -128,6 +137,13 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
                 process::exit(1);
             }
         }
+    }
+
+    if cfg.batch.assignment.graph_mode().is_some() {
+        eprintln!(
+            "Export failed: graph export requires a single existing complete run log segment"
+        );
+        process::exit(1);
     }
 
     create_export_dir(out_dir);
