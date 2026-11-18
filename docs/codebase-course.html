@@ -289,7 +289,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
           <tr><td>Barclays Bank PLC</td><td>Barclays Bk</td></tr>
         </tbody>
       </table>
-      <p style="margin-top:var(--space-4)">Melder takes both datasets, compares every record using multiple scoring methods, and classifies each pair as <strong>auto-matched</strong> (high confidence), <strong>review</strong> (borderline), or <strong>unmatched</strong>. Results are written to a unified <code>relationships.csv</code>, optional Parquet files, and/or an optional SQLite database.</p>
+      <p style="margin-top:var(--space-4)">Melder finds likely candidates across the two datasets and scores them using the fields you choose. Each record can match at most one record on the other side. A promising pair can also be flagged for review, and a record can remain unmatched.</p>
     </section>
 
     <section class="screen animate-in">
@@ -350,17 +350,22 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
     </section>
 
     <section class="screen animate-in">
-      <h2 class="screen-heading">Two Modes of Operation</h2>
+      <h2 class="screen-heading">Three Modes of Operation</h2>
       <div class="pattern-cards">
         <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
           <div class="pattern-icon" style="background: var(--color-actor-1)">📦</div>
           <h4 class="pattern-title">Batch Mode</h4>
-          <p class="pattern-desc"><code>meld run</code> — load both CSVs, match everything in parallel via <span class="term" data-definition="Rayon is a Rust library for data-parallel computation. It splits work across CPU cores automatically.">Rayon</span>, write a match log during scoring, then build relationships.csv + unmatched.csv (and optionally a SQLite DB) from the log. The architecture is event-sourced: the match log is the canonical record of the scoring run. Use for initial loads and periodic reconciliation.</p>
+          <p class="pattern-desc"><code>meld run</code> scores candidate pairs from two datasets in parallel. It then chooses one-to-one matches, aiming for the highest total score across the two datasets. Results can be written to CSV, Parquet, or SQLite. Use batch mode for initial loads and periodic reconciliation.</p>
         </div>
         <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
           <div class="pattern-icon" style="background: var(--color-actor-2)">🔄</div>
           <h4 class="pattern-title">Live Mode</h4>
-          <p class="pattern-desc"><code>meld serve</code> — start an HTTP server with both datasets preloaded. New records via API are matched instantly and results returned in the response. Use for real-time integration.</p>
+          <p class="pattern-desc"><code>meld serve</code> starts an HTTP server for two datasets. Submit a record on either side to find a match on the other side and receive the result in the response. Use live mode when records arrive or change one at a time.</p>
+        </div>
+        <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+          <div class="pattern-icon" style="background: var(--color-actor-3)">🔎</div>
+          <h4 class="pattern-title">Enroll Mode</h4>
+          <p class="pattern-desc"><code>meld enroll</code> works with one pool instead of two datasets. Submit a record to find similar records already in the pool, then add it for future searches. A record can have several qualifying neighbors; these are not one-to-one matches.</p>
         </div>
       </div>
     </section>
@@ -575,7 +580,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-4)"><div class="pattern-icon" style="background:var(--color-actor-4)">📝</div><h4 class="pattern-title">BM25</h4><p class="pattern-desc"><span class="term" data-definition="SimpleBm25 is a custom lock-free BM25 scorer backed by DashMap with Block-Max WAND for efficient large-scale queries.">SimpleBm25</span> IDF-weighted text scoring with WAND early termination. Suppresses common tokens like &quot;Holdings&quot;.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-3)"><div class="pattern-icon" style="background:var(--color-actor-3)">🔤</div><h4 class="pattern-title">Fuzzy</h4><p class="pattern-desc">Edit-distance scorers. wratio, partial_ratio, token_sort. Catches typos and abbreviations.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-actor-5)"><div class="pattern-icon" style="background:var(--color-actor-5)">🔁</div><h4 class="pattern-title">Synonym</h4><p class="pattern-desc">Generates acronyms (Goldman Sachs → GS). Additive bonus weight.</p></div>
-        <div class="pattern-card" style="border-top:3px solid var(--color-actor-1)"><div class="pattern-icon" style="background:var(--color-actor-1)">📋</div><h4 class="pattern-title">Match Log</h4><p class="pattern-desc">Append-only NDJSON log recording every matching event. Serves dual purpose: crash recovery for live mode and canonical input for output generation in all modes.</p></div>
+        <div class="pattern-card" style="border-top:3px solid var(--color-actor-1)"><div class="pattern-icon" style="background:var(--color-actor-1)">📋</div><h4 class="pattern-title">Match Log</h4><p class="pattern-desc">Records outcomes, not every candidate score. In-memory batch runs use it to rebuild outputs; SQLite-backed batch runs do not write one.</p></div>
         <div class="pattern-card" style="border-top:3px solid var(--color-info)"><div class="pattern-icon" style="background:var(--color-info)">🪝</div><h4 class="pattern-title">Hooks</h4><p class="pattern-desc">Non-blocking event dispatch to external subprocess via stdin.</p></div>
       </div>
     </section>
@@ -664,7 +669,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
 
     <section class="screen animate-in">
       <h2 class="screen-heading">The Full Data Flow</h2>
-      <p>Click "Next Step" to trace a B-side upsert through the system:</p>
+      <p>Click "Next Step" to trace a B-side upsert using the default live matching strategy:</p>
 
       <div class="flow-animation" id="flow-upsert">
         <div class="flow-actors">
@@ -855,9 +860,9 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
         <div class="translation-english">
           <span class="translation-label">PLAIN ENGLISH</span>
           <div class="translation-lines">
-            <p class="tl">The match log is append-only NDJSON recording every matching event: upserts, confirms, reviews, breaks, and no-matches.</p>
+            <p class="tl">The match log stores one event per line. In live mode, an event might say that a record changed, a pair was confirmed, or a previous match was broken.</p>
             <p class="tl">Serialization happens outside the mutex; the lock is held only for the write (~100ns). This makes it safe inside Rayon parallel loops.</p>
-            <p class="tl">The match log serves two purposes: crash recovery for live mode, and the canonical input for output generation in all modes. A single <code>build_outputs()</code> function reads the log and produces CSVs and/or a SQLite database.</p>
+            <p class="tl">In-memory live mode can replay these events after a restart. In-memory batch runs write the chosen matches to a log, so you can rebuild outputs without scoring again. SQLite-backed batch runs write their outputs without a match log.</p>
           </div>
         </div>
       </div>
@@ -893,7 +898,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
         </div>
       </div>
       <div class="step-cards" style="margin-top:var(--space-4)">
-        <div class="step-card"><div class="step-num">1</div><div class="step-body"><strong>Match log</strong> (always on)<p>Lightweight ~200 bytes/event. Records <em>what happened</em>: confirms, reviews, breaks. Drives output generation.</p></div></div>
+        <div class="step-card"><div class="step-num">1</div><div class="step-body"><strong>Match log</strong><p>Lightweight ~200 bytes/event. Records <em>what happened</em>: for example, a match was confirmed or broken. SQLite-backed batch runs write neither log.</p></div></div>
         <div class="step-card"><div class="step-num">2</div><div class="step-body"><strong>Scoring log</strong> (opt-in)<p>Rich ~2.5 KB/event. Records <em>why it happened</em>: all candidates, all field scores. Drives explainability.</p></div></div>
       </div>
     </section>
@@ -1266,7 +1271,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
       { highlight: 'flow-encode', label: '2. Encoder pool acquires a free ONNX slot (try_lock round-robin) and converts text to a 384-dim vector.' },
       { highlight: 'flow-store', label: '3. Record is inserted into the DashMap store. Blocking index and BM25 index are updated.' },
       { highlight: 'flow-pipeline', label: '4. score_pool() runs: blocking narrows candidates, ANN + BM25 find top matches, full scoring computes weighted composite.' },
-      { highlight: 'flow-crossmap', label: '5. Claim loop: try candidates in rank order. CrossMap.claim() atomically checks both directions before confirming.' },
+      { highlight: 'flow-crossmap', label: '5. Default live matching: try candidates in rank order. CrossMap.claim() atomically checks both directions before confirming.' },
       { highlight: 'flow-http', label: '6. Response returned: { status: "updated", classification: "auto", matches: [...], score: 0.91 }' },
     ]
   };
