@@ -22,7 +22,7 @@ pub struct Relationship {
     pub b_id: String,
     pub score: Option<f64>,
     pub rank: Option<u8>,
-    pub relationship_type: String, // "match" | "review" | "broken"
+    pub relationship_type: String, // "match" | "review" | "broken" | "candidate" | "enroll_edge"
     pub reason: Option<String>,
 }
 
@@ -60,6 +60,35 @@ pub(crate) struct BuildInput {
     /// Present for an in-process snapshot taken under the live mutation gate.
     /// In that case membership, records and reviews are authoritative.
     pub current_reviews: Option<Vec<crate::state::live::ReviewEntry>>,
+}
+
+/// Prevent a live export from replacing its authoritative SQLite database.
+pub(crate) fn validate_live_output_path(cfg: &crate::config::Config) -> std::io::Result<()> {
+    if let (Some(live), Some(output)) = (&cfg.live.db_path, &cfg.output.db_path) {
+        let live = Path::new(live);
+        let output = Path::new(output);
+        if live == output
+            || (live.exists()
+                && output.exists()
+                && std::fs::canonicalize(live)? == std::fs::canonicalize(output)?)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "output.db_path must not replace live.db_path",
+            ));
+        }
+        #[cfg(unix)]
+        if let (Ok(a), Ok(b)) = (std::fs::metadata(live), std::fs::metadata(output)) {
+            use std::os::unix::fs::MetadataExt;
+            if a.dev() == b.dev() && a.ino() == b.ino() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "output.db_path must not replace live.db_path",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build output files from a match log.
@@ -101,11 +130,49 @@ pub fn build_batch_graph_outputs(
     db_path: Option<&Path>,
     manifest: &OutputManifest,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    if result.processed_graph_b.is_none() {
+        return Err(
+            "direct graph output requires processed_graph_b from a completed graph batch".into(),
+        );
+    }
+    build_batch_outputs(
+        store,
+        crossmap,
+        result,
+        csv_dir,
+        parquet_dir,
+        db_path,
+        manifest,
+    )
+}
+
+/// Build batch outputs using final CrossMap membership, for either assignment strategy.
+///
+/// Greedy CSV callers may retain the legacy CSV writer while using this for other sinks.
+pub fn build_batch_outputs(
+    store: &dyn RecordStore,
+    crossmap: &dyn CrossMapOps,
+    result: &BatchResult,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
     let start = Instant::now();
-    let processed = result
-        .processed_graph_b
-        .as_ref()
-        .ok_or("direct graph output requires processed_graph_b from a completed graph batch")?;
+    let greedy_processed;
+    let processed = if let Some(processed) = &result.processed_graph_b {
+        processed
+    } else {
+        greedy_processed = result
+            .matched
+            .iter()
+            .chain(&result.review)
+            .map(|candidate| candidate.query_id.clone())
+            .chain(result.unmatched.iter().map(|(id, _, _)| id.clone()))
+            .chain(crossmap.pairs().into_iter().map(|(_, b_id)| b_id))
+            .collect::<Vec<_>>();
+        &greedy_processed
+    };
     let processed: std::collections::HashSet<_> = processed.iter().map(String::as_str).collect();
     let mut builder = OutputBuilder::default();
     store.for_each_record(Side::A, &mut |id, record| {
@@ -259,10 +326,52 @@ pub(crate) fn build_outputs_with_input(
     manifest: &OutputManifest,
     input: BuildInput,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    let (events, _) = MatchLog::replay_for_output(match_log_path)?;
+    build_outputs_from_events(
+        &events,
+        scoring_log_path,
+        csv_dir,
+        parquet_dir,
+        db_path,
+        manifest,
+        input,
+    )
+}
+
+/// Build outputs from an authoritative live snapshot without requiring WAL history.
+pub(crate) fn build_live_snapshot_outputs(
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+    input: BuildInput,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    build_outputs_from_events(&[], None, csv_dir, parquet_dir, db_path, manifest, input)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_outputs_from_events(
+    events: &[MatchLogEvent],
+    scoring_log_path: Option<&Path>,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+    input: BuildInput,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
     let start = Instant::now();
 
-    // Replay match log events.
-    let (events, _) = MatchLog::replay_for_output(match_log_path)?;
+    if manifest.mode == crate::config::Mode::Enroll {
+        return build_enroll_outputs(
+            events,
+            input,
+            csv_dir,
+            parquet_dir,
+            db_path,
+            manifest,
+            start,
+        );
+    }
 
     // Validate assignment ownership before creating any output files.
     let final_pairs = if input.current_reviews.is_some() {
@@ -272,7 +381,7 @@ pub(crate) fn build_outputs_with_input(
         .any(|event| matches!(event, MatchLogEvent::AssignmentDelta(_)))
     {
         Some(crate::state::match_log::reconstruct_assignment_history(
-            &events,
+            events,
             &input.snapshot_pairs,
         )?)
     } else {
@@ -318,10 +427,10 @@ pub(crate) fn build_outputs_with_input(
     let skip_relationship_scans = graph_snapshot
         || (relationships.is_empty()
             && input.current_reviews.is_none()
-            && batch_events_need_no_relationship_scans(&events));
+            && batch_events_need_no_relationship_scans(events));
     let mut graph_owned_a = std::collections::HashSet::new();
     let mut graph_terminal_b = std::collections::HashSet::new();
-    for event in &events {
+    for event in events {
         if graph_snapshot {
             let terminal_b = match event {
                 MatchLogEvent::CrossMapConfirm { a_id, b_id, .. } => {
@@ -351,7 +460,8 @@ pub(crate) fn build_outputs_with_input(
         }
         match event {
             MatchLogEvent::BatchAssignmentStarted { .. }
-            | MatchLogEvent::BatchAssignmentCompleted { .. } => {}
+            | MatchLogEvent::BatchAssignmentCompleted { .. }
+            | MatchLogEvent::EnrollOutcome { .. } => {}
             MatchLogEvent::UpsertRecord { side, record } => {
                 let id_field = match side {
                     Side::A => &manifest.a_id_field,
@@ -749,6 +859,125 @@ pub(crate) fn build_outputs_with_input(
     .write(csv_dir, parquet_dir, db_path, manifest, start)
 }
 
+// Enrollment has one ID namespace and directed historical evidence, not a
+// bijection. Replay it separately so live confirmation/review rules cannot
+// accidentally turn qualifying edges into accepted CrossMap membership.
+fn build_enroll_outputs(
+    events: &[MatchLogEvent],
+    input: BuildInput,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+    start: Instant,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    let mut records = input.a_records;
+    let mut outcomes = HashMap::new();
+    let mut last_change = HashMap::new();
+    let mut last_excluded = HashMap::new();
+    let authoritative_records = input.current_reviews.is_some();
+    for (sequence, event) in events.iter().enumerate() {
+        match event {
+            MatchLogEvent::UpsertRecord {
+                side: Side::A,
+                record,
+            } => {
+                if let Some(id) = record.get(&manifest.a_id_field) {
+                    // Check endpoint generations once per retained edge, not once
+                    // per previous query for each new record.
+                    last_change.insert(id, sequence);
+                    outcomes.remove(id);
+                    if !authoritative_records {
+                        records.insert(id.clone(), record.clone());
+                    }
+                }
+            }
+            MatchLogEvent::EnrollOutcome { query_id, edges } => {
+                outcomes.insert(query_id.clone(), (sequence, edges));
+            }
+            MatchLogEvent::RemoveRecord { side: Side::A, id } => {
+                last_change.insert(id, sequence);
+                outcomes.remove(id);
+                if !authoritative_records {
+                    records.remove(id);
+                }
+            }
+            MatchLogEvent::Exclude { a_id, b_id } => {
+                last_excluded.insert((a_id.as_str(), b_id.as_str()), sequence);
+                last_excluded.insert((b_id.as_str(), a_id.as_str()), sequence);
+            }
+            _ => {}
+        }
+    }
+    let mut builder = OutputBuilder {
+        // Both output table namespaces refer to the same single pool.
+        a_records: records.clone(),
+        b_records: records,
+        ..OutputBuilder::default()
+    };
+    let mut connected = std::collections::HashSet::new();
+    for (query_id, (sequence, edges)) in outcomes {
+        if !builder.a_records.contains_key(&query_id) {
+            continue;
+        }
+        for (index, edge) in edges.iter().enumerate() {
+            if edge.id == query_id
+                || !builder.a_records.contains_key(&edge.id)
+                || last_change
+                    .get(&edge.id)
+                    .is_some_and(|last| *last > sequence)
+                || last_excluded
+                    .get(&(query_id.as_str(), edge.id.as_str()))
+                    .is_some_and(|last| *last > sequence)
+            {
+                continue;
+            }
+            let rank = (index + 1).min(255) as u8;
+            connected.insert(query_id.clone());
+            connected.insert(edge.id.clone());
+            builder.rel_vec.push(Relationship {
+                a_id: edge.id.clone(),
+                b_id: query_id.clone(),
+                score: Some(edge.score),
+                rank: Some(rank),
+                relationship_type: "enroll_edge".into(),
+                reason: None,
+            });
+            builder.candidate_rows.push(CandidateRow {
+                a_id: edge.id.clone(),
+                b_id: query_id.clone(),
+                rank,
+                score: edge.score,
+            });
+            builder
+                .field_scores
+                .extend(edge.field_scores.iter().map(|field| FieldScoreRow {
+                    a_id: edge.id.clone(),
+                    b_id: query_id.clone(),
+                    field_a: field.field.clone(),
+                    field_b: field.field.clone(),
+                    method: field.method.clone(),
+                    score: field.score,
+                    weight: field.weight,
+                }));
+        }
+    }
+    builder.unmatched = builder
+        .b_records
+        .iter()
+        .filter(|(id, _)| !connected.contains(*id))
+        .map(|(id, record)| (id.clone(), record.clone(), None, None))
+        .collect();
+    builder.unmatched.sort_by(|a, b| a.0.cmp(&b.0));
+    builder
+        .rel_vec
+        .sort_by(|a, b| a.b_id.cmp(&b.b_id).then(a.rank.cmp(&b.rank)));
+    builder
+        .candidate_rows
+        .sort_by(|a, b| a.b_id.cmp(&b.b_id).then(a.rank.cmp(&b.rank)));
+    builder.write(csv_dir, parquet_dir, db_path, manifest, start)
+}
+
 /// Prepared output state shared by log replay and direct batch graph builds.
 #[derive(Default)]
 struct OutputBuilder {
@@ -815,7 +1044,7 @@ impl OutputBuilder {
             .map_err(|e| format!("unmatched.csv: {}", e))?;
 
             // Write candidates.csv if scoring log provided data.
-            if !candidate_rows.is_empty() {
+            if !candidate_rows.is_empty() || manifest.mode == crate::config::Mode::Enroll {
                 super::csv::write_candidates_csv(
                     &dir.join("candidates.csv"),
                     &candidate_rows,
@@ -857,7 +1086,7 @@ impl OutputBuilder {
             )
             .map_err(|e| format!("unmatched.parquet: {}", e))?;
 
-            if !candidate_rows.is_empty() {
+            if !candidate_rows.is_empty() || manifest.mode == crate::config::Mode::Enroll {
                 super::parquet::write_candidates_parquet(
                     &dir.join("candidates.parquet"),
                     &candidate_rows,
@@ -915,6 +1144,10 @@ impl OutputBuilder {
             a_record_count: a_records.len(),
             b_record_count: b_records.len(),
             match_count,
+            enroll_edge_count: rel_vec
+                .iter()
+                .filter(|r| r.relationship_type == "enroll_edge")
+                .count(),
             review_count,
             no_match_count: unmatched.len(),
             broken_count,
@@ -1037,6 +1270,166 @@ fn read_scoring_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enroll_outputs_preserve_all_edges_and_isolated_records_through_compaction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::state::match_log::{EnrollEvidence, EnrollEvidenceField};
+        let dir = tempfile::tempdir()?;
+        let mut manifest = make_graph_manifest();
+        manifest.mode = crate::config::Mode::Enroll;
+        manifest.b_id_field = manifest.a_id_field.clone();
+        manifest.b_fields = manifest.a_fields.clone();
+        for detail in [false, true] {
+            let log = MatchLog::open(&dir.path().join(format!("enroll-{detail}.ndjson")))?;
+            let records: HashMap<_, _> = ["seed", "other", "new", "isolated"]
+                .into_iter()
+                .map(|id| {
+                    (
+                        id.to_owned(),
+                        Record::from([("aid".into(), id.into()), ("name".into(), id.into())]),
+                    )
+                })
+                .collect();
+            // Seed records are supplied by the caller, not manufactured by scoring.
+            for id in ["new", "isolated"] {
+                log.append_upsert(Side::A, &records[id])?;
+                let edges = if id == "new" {
+                    ["seed", "other"]
+                        .into_iter()
+                        .map(|id| EnrollEvidence {
+                            id: id.into(),
+                            score: 0.8,
+                            field_scores: if detail {
+                                vec![EnrollEvidenceField {
+                                    field: "name".into(),
+                                    method: "exact".into(),
+                                    score: 0.8,
+                                    weight: 1.0,
+                                }]
+                            } else {
+                                Vec::new()
+                            },
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                log.append(&MatchLogEvent::EnrollOutcome {
+                    query_id: id.into(),
+                    edges,
+                })?;
+            }
+            log.flush()?;
+            for compact in [false, true] {
+                if compact {
+                    log.compact("aid", "aid")?;
+                }
+                let csv_dir = dir.path().join(format!("csv-{detail}-{compact}"));
+                let db = dir.path().join(format!("out-{detail}-{compact}.db"));
+                let parquet_dir = dir.path().join(format!("parquet-{detail}-{compact}"));
+                let report = build_outputs_with_input(
+                    log.path(),
+                    None,
+                    Some(&csv_dir),
+                    cfg!(feature = "parquet-format").then_some(parquet_dir.as_path()),
+                    Some(&db),
+                    &manifest,
+                    BuildInput {
+                        a_records: records.clone(),
+                        ..BuildInput::default()
+                    },
+                )?;
+                assert_eq!(
+                    (
+                        report.a_record_count,
+                        report.b_record_count,
+                        report.match_count,
+                        report.no_match_count
+                    ),
+                    (4, 4, 0, 1),
+                    "single pool records, no bijective matches, only isolated unmatched"
+                );
+                #[cfg(feature = "parquet-format")]
+                {
+                    use parquet::file::reader::{FileReader, SerializedFileReader};
+                    for (file, expected) in
+                        [("relationships", 2), ("candidates", 2), ("unmatched", 1)]
+                    {
+                        let reader = SerializedFileReader::new(std::fs::File::open(
+                            parquet_dir.join(format!("{file}.parquet")),
+                        )?)?;
+                        assert_eq!(
+                            reader.metadata().file_metadata().num_rows(),
+                            expected,
+                            "{file} Parquet agrees with single-pool evidence"
+                        );
+                    }
+                }
+                let relationships = std::fs::read_to_string(csv_dir.join("relationships.csv"))?;
+                assert_eq!(
+                    relationships.lines().count(),
+                    3,
+                    "both qualifying edges including rank 1 survive"
+                );
+                assert_eq!(
+                    relationships.matches("enroll_edge").count(),
+                    2,
+                    "all relationships are non-bijective enrollment evidence"
+                );
+                let candidates = std::fs::read_to_string(csv_dir.join("candidates.csv"))?;
+                assert_eq!(
+                    candidates.lines().count(),
+                    3,
+                    "candidates includes rank 1 even without scoring log"
+                );
+                let unmatched = std::fs::read_to_string(csv_dir.join("unmatched.csv"))?;
+                assert!(
+                    unmatched.contains("isolated") && !unmatched.contains("seed"),
+                    "incoming edges connect seeds too"
+                );
+                let conn = rusqlite::Connection::open(&db)?;
+                let fields: i64 =
+                    conn.query_row("SELECT COUNT(*) FROM field_scores", [], |row| row.get(0))?;
+                assert_eq!(
+                    fields,
+                    if detail { 2 } else { 0 },
+                    "field evidence reflects scoring logging setting"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn enroll_updates_invalidate_evidence_and_never_emit_self_edges()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let mut manifest = make_graph_manifest();
+        manifest.mode = crate::config::Mode::Enroll;
+        manifest.b_id_field = "aid".into();
+        let log = MatchLog::open(&dir.path().join("enroll.ndjson"))?;
+        for id in ["one", "two"] {
+            log.append_upsert(Side::A, &Record::from([("aid".into(), id.into())]))?;
+        }
+        log.append(&serde_json::from_str::<MatchLogEvent>(r#"{"type":"enroll_outcome","query_id":"two","edges":[{"id":"one","score":1.0,"field_scores":[]},{"id":"two","score":1.0,"field_scores":[]}]}"#)?)?;
+        log.append_upsert(Side::A, &Record::from([("aid".into(), "one".into())]))?;
+        log.flush()?;
+        let csv_dir = dir.path().join("csv");
+        let report = build_outputs(log.path(), None, Some(&csv_dir), None, None, &manifest)?;
+        assert_eq!(
+            report.no_match_count, 2,
+            "changing either endpoint invalidates stale evidence; self edges never connect"
+        );
+        assert_eq!(
+            std::fs::read_to_string(csv_dir.join("relationships.csv"))?
+                .lines()
+                .count(),
+            1,
+            "no stale or self relationship rows"
+        );
+        Ok(())
+    }
 
     #[test]
     fn batch_fast_replay_preserves_legacy_output_and_metadata()
@@ -1604,6 +1997,84 @@ mod tests {
                 "selected pair and score metadata survive framing"
             );
         }
+    }
+
+    #[test]
+    fn greedy_admin_snapshot_is_authoritative_over_stale_wal() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let path = dir.path().join("wal.ndjson");
+        let log = MatchLog::open(&path).expect("WAL");
+        for event in [
+            MatchLogEvent::UpsertRecord {
+                side: Side::B,
+                record: Record::from([("bid".into(), "deleted".into())]),
+            },
+            MatchLogEvent::CrossMapConfirm {
+                a_id: "A".into(),
+                b_id: "deleted".into(),
+                score: Some(0.99),
+                rank: None,
+                reason: None,
+            },
+            MatchLogEvent::RemoveRecord {
+                side: Side::B,
+                id: "current".into(),
+            },
+        ] {
+            log.append(&event).expect("append");
+        }
+        log.flush().expect("flush");
+        let input = BuildInput {
+            a_records: HashMap::from([("A".into(), Record::from([("aid".into(), "A".into())]))]),
+            b_records: HashMap::from([(
+                "current".into(),
+                Record::from([
+                    ("bid".into(), "current".into()),
+                    ("name".into(), "Latest".into()),
+                ]),
+            )]),
+            snapshot_pairs: vec![("A".into(), "current".into())],
+            current_reviews: Some(vec![]),
+        };
+        let db = dir.path().join("output.db");
+        let report = build_outputs_with_input(
+            &path,
+            None,
+            Some(dir.path()),
+            None,
+            Some(&db),
+            &make_graph_manifest(),
+            input,
+        )
+        .expect("admin snapshot build");
+        assert_eq!(
+            (
+                report.a_record_count,
+                report.b_record_count,
+                report.match_count
+            ),
+            (1, 1, 1),
+            "current snapshot records and pair are authoritative"
+        );
+        let conn = rusqlite::Connection::open(db).expect("output DB");
+        let pair: String = conn
+            .query_row(
+                "SELECT b_id FROM relationships WHERE relationship_type='match'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("accepted pair");
+        assert_eq!(
+            pair, "current",
+            "historical confirmation cannot restore deleted membership"
+        );
+        let name: String = conn
+            .query_row("SELECT name FROM b_records", [], |row| row.get(0))
+            .expect("current record");
+        assert_eq!(
+            name, "Latest",
+            "historical removal cannot erase current records"
+        );
     }
 
     #[test]

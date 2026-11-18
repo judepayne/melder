@@ -22,9 +22,10 @@ pub fn write_relationships_parquet(
     b_id_field: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Build schema: b_id, a_id, score, relationship_type, reason, rank, then A-side fields.
+    let names = super::columns::relationships(a_fields, a_id_field, b_id_field);
     let mut fields = vec![
-        Field::new(b_id_field, DataType::Utf8, false),
-        Field::new(a_id_field, DataType::Utf8, false),
+        Field::new(&names[0], DataType::Utf8, false),
+        Field::new(&names[1], DataType::Utf8, false),
         Field::new("score", DataType::Float64, true),
         Field::new("relationship_type", DataType::Utf8, false),
         Field::new("reason", DataType::Utf8, true),
@@ -34,15 +35,20 @@ pub fn write_relationships_parquet(
         .iter()
         .filter(|f| f.as_str() != a_id_field)
         .collect();
-    for f in &extra_a_fields {
-        fields.push(Field::new(f.as_str(), DataType::Utf8, true));
+    for name in &names[6..] {
+        fields.push(Field::new(name, DataType::Utf8, true));
     }
     let schema = Arc::new(Schema::new(fields));
 
     // Build column arrays.
     let filtered: Vec<&Relationship> = relationships
         .iter()
-        .filter(|r| r.relationship_type == "match" || r.relationship_type == "review")
+        .filter(|r| {
+            matches!(
+                r.relationship_type.as_str(),
+                "match" | "review" | "enroll_edge"
+            )
+        })
         .collect();
 
     let mut b_ids = StringBuilder::new();
@@ -111,13 +117,14 @@ pub fn write_unmatched_parquet(
     b_fields: &[String],
     b_id_field: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut fields = vec![Field::new(b_id_field, DataType::Utf8, false)];
+    let names = super::columns::unmatched(b_fields, b_id_field);
+    let mut fields = vec![Field::new(&names[0], DataType::Utf8, false)];
     let extra_b_fields: Vec<&String> = b_fields
         .iter()
         .filter(|f| f.as_str() != b_id_field)
         .collect();
-    for f in &extra_b_fields {
-        fields.push(Field::new(f.as_str(), DataType::Utf8, true));
+    for name in &names[1..names.len() - 2] {
+        fields.push(Field::new(name, DataType::Utf8, true));
     }
     fields.push(Field::new("best_score", DataType::Float64, true));
     fields.push(Field::new("best_a_id", DataType::Utf8, true));
@@ -174,10 +181,11 @@ pub fn write_candidates_parquet(
     b_id_field: &str,
     a_id_field: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let names = super::columns::candidates(b_id_field, a_id_field);
     let schema = Arc::new(Schema::new(vec![
-        Field::new(b_id_field, DataType::Utf8, false),
+        Field::new(&names[0], DataType::Utf8, false),
         Field::new("rank", DataType::UInt8, false),
-        Field::new(a_id_field, DataType::Utf8, false),
+        Field::new(&names[2], DataType::Utf8, false),
         Field::new("score", DataType::Float64, false),
     ]));
 
@@ -210,4 +218,139 @@ pub fn write_candidates_parquet(
     writer.close()?;
     crate::util::rename_replacing(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    use super::*;
+
+    #[test]
+    fn collision_free_outputs_roundtrip() {
+        let dir = tempfile::tempdir().expect("temporary output directory");
+        let fields = ["id", "score", "target_score", "best_score", "best_a_id"].map(String::from);
+        let record: Record = fields
+            .iter()
+            .map(|f| (f.clone(), format!("payload:{f}")))
+            .collect();
+        let records = [("A".into(), record.clone())].into_iter().collect();
+        let rels = [Relationship {
+            a_id: "A".into(),
+            b_id: "B".into(),
+            score: Some(0.75),
+            rank: Some(1),
+            relationship_type: "match".into(),
+            reason: None,
+        }];
+        let unmatched = [("B".into(), record, Some(0.5), Some("A".into()))];
+        let candidates = [CandidateRow {
+            b_id: "B".into(),
+            rank: 2,
+            a_id: "A".into(),
+            score: 0.5,
+        }];
+        for id in ["id", "entity_id", "score"] {
+            write_relationships_parquet(
+                &dir.path().join("relationships.parquet"),
+                &rels,
+                &records,
+                &fields,
+                id,
+                id,
+            )
+            .expect("write relationships");
+            super::super::csv::write_relationships_csv(
+                &dir.path().join("relationships.csv"),
+                &rels,
+                &records,
+                &fields,
+                id,
+                id,
+            )
+            .expect("write CSV relationships");
+            write_unmatched_parquet(
+                &dir.path().join("unmatched.parquet"),
+                &unmatched,
+                &fields,
+                id,
+            )
+            .expect("write unmatched");
+            super::super::csv::write_unmatched_csv(
+                &dir.path().join("unmatched.csv"),
+                &unmatched,
+                &fields,
+                id,
+            )
+            .expect("write CSV unmatched");
+            write_candidates_parquet(&dir.path().join("candidates.parquet"), &candidates, id, id)
+                .expect("write candidates");
+            super::super::csv::write_candidates_csv(
+                &dir.path().join("candidates.csv"),
+                &candidates,
+                id,
+                id,
+            )
+            .expect("write CSV candidates");
+            for name in ["relationships", "unmatched", "candidates"] {
+                let file = std::fs::File::open(dir.path().join(format!("{name}.parquet")))
+                    .expect("open parquet");
+                let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+                    .expect("parquet reader")
+                    .build()
+                    .expect("build reader");
+                let batch = reader.next().expect("one batch").expect("read batch");
+                let schema = batch.schema();
+                let names: Vec<_> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+                assert_eq!(
+                    names.iter().collect::<std::collections::HashSet<_>>().len(),
+                    names.len(),
+                    "unique {name} names"
+                );
+                let mut csv = csv::Reader::from_path(dir.path().join(format!("{name}.csv")))
+                    .expect("CSV reader");
+                assert_eq!(
+                    csv.headers()
+                        .expect("CSV headers")
+                        .iter()
+                        .collect::<Vec<_>>(),
+                    names,
+                    "format naming parity"
+                );
+                assert_eq!(batch.num_rows(), 1, "one {name} row");
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .expect("string IDs");
+                assert_eq!(ids.value(0), "B", "source ID preserved");
+                if name != "candidates" {
+                    let start = if name == "relationships" { 6 } else { 1 };
+                    for (index, field) in fields.iter().filter(|f| f.as_str() != id).enumerate() {
+                        let values = batch
+                            .column(start + index)
+                            .as_any()
+                            .downcast_ref::<arrow::array::StringArray>()
+                            .expect("string payload");
+                        assert_eq!(
+                            values.value(0),
+                            format!("payload:{field}"),
+                            "original field lookup survives aliasing"
+                        );
+                    }
+                }
+            }
+            // Opt-in interoperability check, requiring Python with pyarrow installed.
+            if std::env::var_os("MELDER_TEST_PYARROW").is_some() {
+                let result = std::process::Command::new("python3").arg("-c").arg(
+                    "import sys, pyarrow.parquet as pq; from pathlib import Path\nfor p in Path(sys.argv[1]).glob('*.parquet'):\n t = pq.read_table(p)\n assert len(t.column_names) == len(set(t.column_names))\n assert t.column(0).to_pylist() == ['B']"
+                ).arg(dir.path()).output().expect("run pyarrow");
+                assert!(
+                    result.status.success(),
+                    "ordinary pyarrow.read_table failed: {}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+        }
+    }
 }

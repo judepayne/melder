@@ -253,13 +253,14 @@ fn sqlite_scratch_guard_rejects_missing_output_aliases_and_sidecar_collisions() 
         !output.status.success(),
         "protect output against scratch sidecar"
     );
-    // No csv_dir_path means legacy SQLite CSV output goes to cwd.
+    // Without a CSV sink, cwd CSV names are no longer reserved.
     fixture.config["output"] = json!({"db_path":fixture.path("output.db")});
     fixture.config["batch"]["db_path"] = json!("relationships.csv.tmp");
     let output = fixture.command("validate", 1)?.output()?;
     assert!(
-        !output.status.success(),
-        "protect default cwd CSV temp output"
+        output.status.success(),
+        "unconfigured CSV paths are not output targets: {:?}",
+        output
     );
     Ok(())
 }
@@ -500,6 +501,106 @@ fn assert_outputs(fixture: &Fixture, pairs: &Pairs) -> TestResult {
 }
 
 #[test]
+fn batch_configured_db_sink_without_implicit_csv_for_both_strategies_and_backends() -> TestResult {
+    for sqlite in [false, true] {
+        for strategy in ["graph", "greedy"] {
+            let mut fixture = Fixture::new(sqlite, json!({"strategy": strategy}))?;
+            fixture.config["output"] = json!({"db_path": fixture.path("output.db")});
+            fs::write(fixture.path("b.csv"), "bid,name,text\nb1,aaaa,shared\n")?;
+            fixture.run(1)?;
+            assert_eq!(
+                db_pairs(&fixture.path("output.db"))?,
+                fixture.pairs()?,
+                "DB membership for {sqlite}/{strategy}"
+            );
+            for file in [
+                "relationships.csv",
+                "unmatched.csv",
+                "candidates.csv",
+                "out/relationships.csv",
+            ] {
+                assert!(
+                    !fixture.path(file).exists(),
+                    "no unconfigured CSV: {file} ({sqlite}/{strategy})"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "parquet-format")]
+#[test]
+fn batch_parquet_only_for_both_strategies_and_backends() -> TestResult {
+    for sqlite in [false, true] {
+        for strategy in ["graph", "greedy"] {
+            let mut fixture = Fixture::new(sqlite, json!({"strategy": strategy}))?;
+            fixture.config["output"] = json!({"parquet_dir_path": fixture.path("parquet")});
+            fs::write(fixture.path("b.csv"), "bid,name,text\nb1,aaaa,shared\n")?;
+            fixture.run(1)?;
+            assert_eq!(
+                parquet_pairs(&fixture.path("parquet/relationships.parquet"))?,
+                fixture.pairs()?,
+                "Parquet membership for {sqlite}/{strategy}"
+            );
+            assert!(
+                fixture.path("parquet/unmatched.parquet").exists(),
+                "requested unmatched Parquet"
+            );
+            assert!(!fixture.path("output.db").exists(), "no unconfigured DB");
+            for file in [
+                "relationships.csv",
+                "unmatched.csv",
+                "candidates.csv",
+                "out/relationships.csv",
+            ] {
+                assert!(
+                    !fixture.path(file).exists(),
+                    "no extra CSV: {file} ({sqlite}/{strategy})"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn batch_source_id_named_id_for_both_strategies_and_backends() -> TestResult {
+    for sqlite in [false, true] {
+        for strategy in ["graph", "greedy"] {
+            let mut fixture = Fixture::new(sqlite, json!({"strategy": strategy}))?;
+            fixture.config["datasets"]["a"]["id_field"] = json!("id");
+            fixture.config["datasets"]["b"]["id_field"] = json!("id");
+            fs::write(fixture.path("a.csv"), "id,name,text\na1,aaaa,shared\n")?;
+            fs::write(fixture.path("b.csv"), "id,name,text\nb1,aaaa,shared\n")?;
+            fixture.run(1)?;
+            let pairs = expected(&[("a1", "b1")]);
+            assert_eq!(fixture.pairs()?, pairs, "common source ID name must work");
+            assert_eq!(
+                db_pairs(&fixture.path("output.db"))?,
+                pairs,
+                "SQLite output uses final pairs"
+            );
+            let mut csv = csv::Reader::from_path(fixture.path("out/relationships.csv"))?;
+            let rows = csv.records().collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(rows.len(), 1, "one accepted pair in CSV");
+            assert!(
+                rows[0].iter().any(|value| value == "a1")
+                    && rows[0].iter().any(|value| value == "b1"),
+                "both IDs survive CSV serialization"
+            );
+            #[cfg(feature = "parquet-format")]
+            assert_eq!(
+                parquet_pairs(&fixture.path("parquet/relationships.parquet"))?,
+                pairs,
+                "Parquet output uses final pairs"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn graph_coordinates_optimum_and_is_repeatable_across_input_order_and_workers() -> TestResult {
     // Fuzzy ratio plus a constant BM25 self-score gives:
     //             a1      a2
@@ -609,6 +710,19 @@ fn explicit_greedy_preserves_claims_and_graph_objective_dominates_greedy() -> Te
             expected(&[("a1", "b1")]),
             "single-query greedy must preserve score/ID tie-break"
         );
+        assert_outputs(&greedy, &expected(&[("a1", "b1")]))?;
+        if sqlite {
+            let mut csv = csv::Reader::from_path(greedy.path("out/relationships.csv"))?;
+            let headers = csv.headers()?;
+            assert!(
+                headers.iter().any(|h| h == "classification"),
+                "preserve legacy greedy CSV classification"
+            );
+            assert!(
+                !headers.iter().any(|h| h == "relationship_type"),
+                "do not replace legacy greedy CSV schema"
+            );
+        }
         if !sqlite {
             assert!(
                 !greedy

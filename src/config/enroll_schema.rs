@@ -175,6 +175,12 @@ impl EnrollConfig {
     /// `dataset` to `datasets.a`, and fills B-side/crossmap/output
     /// with inert defaults.
     pub fn into_config(self) -> Result<Config, ConfigError> {
+        if self.live.db_path.is_some() {
+            return Err(ConfigError::InvalidValue {
+                field: "live.db_path".into(),
+                message: "SQLite live storage is not supported in enroll mode; use live match_log for persistence".into(),
+            });
+        }
         // Dataset: map to A-side, B-side is a dummy copy
         let a_dataset = match self.dataset {
             Some(d) => DatasetConfig {
@@ -186,7 +192,7 @@ impl EnrollConfig {
             },
             None => DatasetConfig {
                 path: String::new(),
-                id_field: String::new(),
+                id_field: "id".into(),
                 common_id_field: None,
                 format: None,
                 encoding: None,
@@ -332,5 +338,31 @@ impl EnrollConfig {
             synonym_fields,
             synonym_dictionary: self.synonym_dictionary,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unsupported_sqlite_live_storage() -> Result<(), Box<dyn std::error::Error>> {
+        let config: EnrollConfig = serde_yaml::from_str(
+            r#"
+job: { name: enroll }
+embeddings: { model: ignored, cache_dir: cache }
+match_fields: []
+thresholds: { auto_match: 0.9, review_floor: 0.5 }
+live: { db_path: pool.db }
+"#,
+        )?;
+        let error = config
+            .into_config()
+            .expect_err("enroll must not silently ignore SQLite storage");
+        assert!(
+            error.to_string().contains("live.db_path"),
+            "error must identify unsupported setting: {error}"
+        );
+        Ok(())
     }
 }

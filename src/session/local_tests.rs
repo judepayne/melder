@@ -859,5 +859,41 @@ fn local_trial_does_not_change_enroll_multi_edge_semantics() -> TestResult {
             .is_empty(),
         "enroll must not populate the optimizer hints"
     );
+    session.state.wal.flush()?;
+    let (events, _) =
+        crate::state::match_log::MatchLog::replay_for_output(session.state.wal.path())?;
+    let outcomes: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            crate::state::match_log::MatchLogEvent::EnrollOutcome { query_id, edges } => {
+                Some((query_id, edges))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        outcomes.len(),
+        3,
+        "every enrollment persists an outcome, including isolated records"
+    );
+    assert!(
+        outcomes[0].1.is_empty(),
+        "first enrollment persists empty evidence"
+    );
+    assert_eq!(
+        outcomes[2].1.len(),
+        2,
+        "all returned edges, including rank 1, persist without CrossMap claims"
+    );
+    assert_eq!(
+        outcomes[2].1[0].id, result.edges[0].id,
+        "persisted order agrees with response ranking"
+    );
+    assert!(
+        outcomes
+            .iter()
+            .all(|(id, edges)| edges.iter().all(|edge| edge.id != **id)),
+        "persistent evidence never includes self edges"
+    );
     Ok(())
 }

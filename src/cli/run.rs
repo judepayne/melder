@@ -442,35 +442,50 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         }
     };
 
-    // Write output CSVs for SQLite batch path.
-    let csv_dir = cfg
-        .output
-        .csv_dir_path
-        .as_deref()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // Honor only configured sinks; no implicit CSV output in the working directory.
+    let csv_dir = cfg.output.csv_dir_path.as_deref().map(Path::new);
     let parquet_dir_sqlite = cfg.output.parquet_dir_path.as_deref().map(Path::new);
     let out_db_path = cfg.output.db_path.as_deref().map(Path::new);
 
-    let direct_report = if result.stats.assignment.is_some() {
+    let graph = result.stats.assignment.is_some();
+    let direct_report = if graph || parquet_dir_sqlite.is_some() || out_db_path.is_some() {
         let manifest = crate::output::OutputManifest::from_config(&cfg);
-        match crate::output::build::build_batch_graph_outputs(
+        let build = if graph {
+            crate::output::build::build_batch_graph_outputs
+        } else {
+            crate::output::build::build_batch_outputs
+        };
+        match build(
             store.as_ref(),
             &sqlite_crossmap,
             &result,
-            Some(&csv_dir),
+            if graph { csv_dir } else { None },
             parquet_dir_sqlite,
             out_db_path,
             &manifest,
         ) {
             Ok(report) => report,
             Err(e) => {
-                eprintln!("Failed to build graph outputs: {e}");
+                eprintln!("Failed to build batch outputs: {e}");
                 process::exit(1);
             }
         }
     } else {
-        if let Err(e) = std::fs::create_dir_all(&csv_dir) {
+        crate::output::BuildReport {
+            a_record_count: 0,
+            b_record_count: 0,
+            match_count: result.matched.len(),
+            enroll_edge_count: 0,
+            review_count: result.review.len(),
+            no_match_count: result.unmatched.len(),
+            broken_count: 0,
+            warnings: vec![],
+            elapsed_secs: result.stats.elapsed_secs,
+        }
+    };
+    // Keep the established greedy CSV columns and rows when CSV is requested.
+    if !graph && let Some(csv_dir) = csv_dir {
+        if let Err(e) = std::fs::create_dir_all(csv_dir) {
             eprintln!("Failed to create output dir {}: {}", csv_dir.display(), e);
             process::exit(1);
         }
@@ -491,18 +506,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
             eprintln!("Failed to write unmatched: {}", e);
             process::exit(1);
         }
-
-        crate::output::BuildReport {
-            a_record_count: 0,
-            b_record_count: 0,
-            match_count: result.matched.len(),
-            review_count: result.review.len(),
-            no_match_count: result.unmatched.len(),
-            broken_count: 0,
-            warnings: vec![],
-            elapsed_secs: result.stats.elapsed_secs,
-        }
-    };
+    }
     let save_cm = crate::crossmap::MemoryCrossMap::new();
     for (a_id, b_id) in sqlite_crossmap.pairs() {
         if let Err(e) = save_cm.add(&a_id, &b_id) {
@@ -517,7 +521,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         &direct_report,
         &sqlite_crossmap,
         crossmap_path,
-        Some(&csv_dir),
+        csv_dir,
         parquet_dir_sqlite,
         out_db_path,
         verbose,
@@ -615,6 +619,9 @@ fn print_dry_run(
     println!("  Output:");
     if let Some(ref dir) = config.output.csv_dir_path {
         println!("    csv_dir:   {}", dir);
+    }
+    if let Some(ref dir) = config.output.parquet_dir_path {
+        println!("    parquet_dir: {}", dir);
     }
     if let Some(ref db) = config.output.db_path {
         println!("    db_path:   {}", db);

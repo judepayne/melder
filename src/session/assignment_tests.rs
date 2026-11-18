@@ -23,6 +23,9 @@ use crate::vectordb::flat::FlatVectorDB;
 
 use super::Session;
 
+#[path = "enroll_concurrency_tests.rs"]
+mod enroll_concurrency_tests;
+
 #[path = "assignment_policy_tests.rs"]
 mod policy_tests;
 

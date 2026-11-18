@@ -131,12 +131,37 @@ CREATE TABLE IF NOT EXISTS reviews (
 );
 ";
 
+/// Map a logical payload field to its physical SQLite name.
+///
+/// The complete logical field list resolves reserved-alias collisions deterministically.
+/// Readers must use the same list to reverse the mapping, not guess from the alias.
+pub(crate) fn record_column_name(column: &str, columns: &[String]) -> String {
+    let mut name = column.to_owned();
+    if column.eq_ignore_ascii_case("id") {
+        name = "__melder_source_id".into();
+        while columns.iter().any(|c| c.eq_ignore_ascii_case(&name)) {
+            name.push('_');
+        }
+    }
+    name
+}
+
+/// Quote a SQLite identifier, including embedded double quotes.
+pub(crate) fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Map and quote a logical payload field using the full logical schema.
+pub(crate) fn record_column(column: &str, columns: &[String]) -> String {
+    quote_identifier(&record_column_name(column, columns))
+}
+
 /// Generate CREATE TABLE DDL for a side's record table with columnar fields.
 fn record_table_ddl(side: Side, columns: &[String]) -> String {
     let prefix = side_prefix(side);
     let col_defs: Vec<String> = columns
         .iter()
-        .map(|c| format!("    \"{}\" TEXT NOT NULL DEFAULT ''", c))
+        .map(|c| format!("    {} TEXT NOT NULL DEFAULT ''", record_column(c, columns)))
         .collect();
     let cols = if col_defs.is_empty() {
         String::new()
@@ -302,7 +327,7 @@ impl RecordStore for SqliteStore {
                 "id, {}",
                 columns
                     .iter()
-                    .map(|c| format!("\"{}\"", c))
+                    .map(|c| record_column(c, columns))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -334,7 +359,7 @@ impl RecordStore for SqliteStore {
                 "id, {}",
                 columns
                     .iter()
-                    .map(|c| format!("\"{}\"", c))
+                    .map(|c| record_column(c, columns))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -349,7 +374,7 @@ impl RecordStore for SqliteStore {
 
         // Insert or replace — build column list and values dynamically
         let col_names: Vec<String> = std::iter::once("id".to_string())
-            .chain(columns.iter().map(|c| format!("\"{}\"", c)))
+            .chain(columns.iter().map(|c| record_column(c, columns)))
             .collect();
         let placeholders: Vec<String> =
             (1..=columns.len() + 1).map(|i| format!("?{}", i)).collect();
@@ -386,7 +411,7 @@ impl RecordStore for SqliteStore {
                 "id, {}",
                 columns
                     .iter()
-                    .map(|c| format!("\"{}\"", c))
+                    .map(|c| record_column(c, columns))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -453,7 +478,7 @@ impl RecordStore for SqliteStore {
                 "id, {}",
                 columns
                     .iter()
-                    .map(|c| format!("\"{}\"", c))
+                    .map(|c| record_column(c, columns))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -498,7 +523,7 @@ impl RecordStore for SqliteStore {
         // With columnar storage, just SELECT the requested columns directly.
         let col_list = fields
             .iter()
-            .map(|f| format!("\"{}\"", f))
+            .map(|f| record_column(f, self.columns(side)))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -538,7 +563,7 @@ impl RecordStore for SqliteStore {
                 "id, {}",
                 columns
                     .iter()
-                    .map(|c| format!("\"{}\"", c))
+                    .map(|c| record_column(c, columns))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -784,7 +809,10 @@ impl RecordStore for SqliteStore {
         let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         // Create a composite index on the exact prefilter fields.
         // Column names are quoted to handle any reserved words.
-        let cols: Vec<String> = field_names.iter().map(|f| format!("\"{}\"", f)).collect();
+        let cols: Vec<String> = field_names
+            .iter()
+            .map(|f| record_column(f, self.columns(side)))
+            .collect();
         let idx_name = format!("idx_{}_exact_prefilter", prefix);
         let sql = format!(
             "CREATE INDEX IF NOT EXISTS {} ON {}_records ({})",
@@ -815,7 +843,7 @@ impl RecordStore for SqliteStore {
         let prefix = side_prefix(side);
         let where_clauses: Vec<String> = kvs
             .iter()
-            .map(|(f, _)| format!("lower(\"{}\") = lower(?)", f))
+            .map(|(f, _)| format!("lower({}) = lower(?)", record_column(f, self.columns(side))))
             .collect();
         let sql = format!(
             "SELECT id FROM {}_records WHERE {} LIMIT 1",
@@ -956,7 +984,7 @@ impl SqliteStore {
         // Build columnar INSERT SQL: INSERT INTO {prefix}_records (id, "col1", "col2", ...) VALUES (?1, ?2, ...)
         let columns = self.columns(side).to_vec();
         let col_names: Vec<String> = std::iter::once("id".to_string())
-            .chain(columns.iter().map(|c| format!("\"{}\"", c)))
+            .chain(columns.iter().map(|c| record_column(c, &columns)))
             .collect();
         let placeholders: Vec<String> =
             (1..=columns.len() + 1).map(|i| format!("?{}", i)).collect();
@@ -1092,6 +1120,116 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect::<HashMap<String, String>>()
+    }
+
+    #[test]
+    fn payload_column_mapping_is_order_independent_and_reversible() {
+        let fields: Vec<String> = ["id", "__melder_source_id", "__MELDER_SOURCE_ID_", "x\";--"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut reversed = fields.clone();
+        reversed.reverse();
+        let names: Vec<_> = fields
+            .iter()
+            .map(|f| record_column_name(f, &fields))
+            .collect();
+        for (field, name) in fields.iter().zip(&names) {
+            assert_eq!(
+                record_column_name(field, &reversed),
+                *name,
+                "mapping must depend on field membership, not order"
+            );
+            assert_eq!(
+                fields
+                    .iter()
+                    .filter(|f| record_column_name(f, &fields) == *name)
+                    .count(),
+                1,
+                "physical names must unambiguously identify logical fields"
+            );
+        }
+        assert_eq!(names[0], "__melder_source_id__", "skip occupied aliases");
+        assert_eq!(
+            record_column("x\";--", &fields),
+            "\"x\"\";--\"",
+            "escape quotes"
+        );
+    }
+
+    #[test]
+    fn source_id_field_round_trips_separately_from_internal_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let columns = vec![
+            "id".into(),
+            "__melder_source_id".into(),
+            "__MELDER_SOURCE_ID_".into(),
+            "quoted\"field".into(),
+        ];
+        let (store, _, _) = open_sqlite(
+            &dir.path().join("records.db"),
+            &BlockingConfig::default(),
+            Some(SqlitePoolConfig {
+                read_pool_size: 1,
+                ..Default::default()
+            }),
+            &columns,
+            &columns,
+        )?;
+        let record = make_record(&[
+            ("id", "source-id"),
+            ("__melder_source_id", "other"),
+            ("__MELDER_SOURCE_ID_", "reserved-alias"),
+            ("quoted\"field", "quoted"),
+        ]);
+        for side in [Side::A, Side::B] {
+            store.bulk_load(side, |callback| {
+                callback(vec![("internal-key".into(), record.clone())]);
+                Ok(1)
+            })?;
+            assert_eq!(
+                store.get(side, "internal-key")?,
+                Some(record.clone()),
+                "bulk load preserves source id"
+            );
+            assert_eq!(
+                store.get_many(side, &["internal-key".into()])?,
+                vec![("internal-key".into(), record.clone())],
+                "multi-get preserves fields"
+            );
+            assert_eq!(
+                store.get_many_fields(side, &["internal-key".into()], &columns)?,
+                vec![("internal-key".into(), record.clone())],
+                "projected source id must not be internal key"
+            );
+            let mut records = Vec::new();
+            store.for_each_record(side, &mut |id, rec| {
+                records.push((id.to_owned(), rec.clone()))
+            })?;
+            assert_eq!(
+                records,
+                vec![("internal-key".into(), record.clone())],
+                "iteration preserves fields"
+            );
+            store.build_exact_index(side, &["id".into()])?;
+            assert_eq!(
+                store.exact_lookup(side, &[("id".into(), "source-id".into())])?,
+                Some("internal-key".into()),
+                "exact lookup uses source id"
+            );
+            assert_eq!(
+                store.insert(side, "internal-key", &record)?,
+                Some(record.clone()),
+                "insert uses same mapping"
+            );
+            assert_eq!(
+                store.remove(side, "internal-key")?,
+                Some(record.clone()),
+                "remove returns source fields"
+            );
+        }
+        Ok(())
     }
 
     #[test]

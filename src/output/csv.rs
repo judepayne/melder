@@ -23,24 +23,15 @@ pub fn write_relationships_csv(
         let mut wtr = csv::Writer::from_path(&tmp)?;
 
         // Header
-        let mut header = vec![
-            b_id_field.to_string(),
-            a_id_field.to_string(),
-            "score".to_string(),
-            "relationship_type".to_string(),
-            "reason".to_string(),
-            "rank".to_string(),
-        ];
-        for f in a_fields {
-            if f != a_id_field {
-                header.push(f.clone());
-            }
-        }
+        let header = super::columns::relationships(a_fields, a_id_field, b_id_field);
         wtr.write_record(&header)?;
 
         // Rows — only match and review types
         for rel in relationships {
-            if rel.relationship_type != "match" && rel.relationship_type != "review" {
+            if rel.relationship_type != "match"
+                && rel.relationship_type != "review"
+                && rel.relationship_type != "enroll_edge"
+            {
                 continue;
             }
             let mut row = vec![
@@ -87,14 +78,7 @@ pub fn write_unmatched_csv(
     {
         let mut wtr = csv::Writer::from_path(&tmp)?;
 
-        let mut header = vec![b_id_field.to_string()];
-        for f in b_fields {
-            if f != b_id_field {
-                header.push(f.clone());
-            }
-        }
-        header.push("best_score".to_string());
-        header.push("best_a_id".to_string());
+        let header = super::columns::unmatched(b_fields, b_id_field);
         wtr.write_record(&header)?;
 
         for (b_id, rec, best_score, best_a_id) in unmatched {
@@ -125,7 +109,7 @@ pub fn write_candidates_csv(
     let tmp = path.with_extension("csv.tmp");
     {
         let mut wtr = csv::Writer::from_path(&tmp)?;
-        wtr.write_record([b_id_field, "rank", a_id_field, "score"])?;
+        wtr.write_record(super::columns::candidates(b_id_field, a_id_field))?;
         for c in candidates {
             wtr.write_record([
                 c.b_id.as_str(),
@@ -139,4 +123,46 @@ pub fn write_candidates_csv(
     crate::util::rename_replacing(&tmp, path)
         .map_err(|e| csv::Error::from(std::io::Error::other(e.to_string())))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_headers_preserve_values_with_shared_or_reserved_ids() {
+        let dir = tempfile::tempdir().expect("temporary output directory");
+        for (b_id, a_id) in [("id", "id"), ("entity_id", "entity_id"), ("rank", "score")] {
+            let path = dir.path().join("candidates.csv");
+            write_candidates_csv(
+                &path,
+                &[super::super::build::CandidateRow {
+                    b_id: "B".into(),
+                    rank: 2,
+                    a_id: "A".into(),
+                    score: 0.75,
+                }],
+                b_id,
+                a_id,
+            )
+            .expect("write candidates");
+            let mut reader = csv::Reader::from_path(path).expect("read candidates");
+            assert_eq!(
+                reader.headers().expect("header").iter().collect::<Vec<_>>(),
+                super::super::columns::candidates(b_id, a_id),
+                "shared naming policy"
+            );
+            assert_eq!(
+                reader
+                    .records()
+                    .next()
+                    .expect("one row")
+                    .expect("valid row")
+                    .iter()
+                    .collect::<Vec<_>>(),
+                ["B", "2", "A", "0.7500"],
+                "column values retain their positions"
+            );
+        }
+    }
 }

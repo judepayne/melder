@@ -1,6 +1,7 @@
 //! Output pipeline: build CSVs, Parquet, and/or SQLite DB from match log.
 
 pub mod build;
+mod columns;
 pub mod csv;
 pub mod db;
 pub mod manifest;

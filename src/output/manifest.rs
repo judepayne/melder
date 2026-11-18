@@ -40,6 +40,7 @@ pub struct BuildReport {
     pub a_record_count: usize,
     pub b_record_count: usize,
     pub match_count: usize,
+    pub enroll_edge_count: usize,
     pub review_count: usize,
     pub no_match_count: usize,
     pub broken_count: usize,

@@ -61,6 +61,57 @@ fn family(path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Refuse output files that would replace the live database or SQLite sidecars.
+pub(crate) fn validate_live_outputs(
+    cfg: &Config,
+    export_dir: Option<&Path>,
+) -> Result<(), ConfigError> {
+    let Some(live) = cfg.live.db_path.as_deref() else {
+        return Ok(());
+    };
+    let mut outputs = Vec::new();
+    if let Some(path) = &cfg.output.db_path {
+        outputs.extend(family(Path::new(path)));
+    }
+    for (dir, ext) in [
+        (cfg.output.csv_dir_path.as_deref().map(Path::new), "csv"),
+        (export_dir, "csv"),
+        (
+            cfg.output.parquet_dir_path.as_deref().map(Path::new),
+            "parquet",
+        ),
+    ] {
+        if let Some(dir) = dir {
+            for name in [
+                "relationships",
+                "unmatched",
+                "candidates",
+                "results",
+                "review",
+                "unmatched_a",
+                "unmatched_b",
+            ] {
+                let p = dir.join(format!("{name}.{ext}"));
+                outputs.push(p.with_extension(format!("{ext}.tmp")));
+                outputs.push(p);
+            }
+        }
+    }
+    let state = family(Path::new(live))
+        .into_iter()
+        .map(|p| resolve(&p).map(|p| collision_key(&p)))
+        .collect::<Result<Vec<_>, _>>()?;
+    for p in outputs {
+        if state.contains(&collision_key(&resolve(&p)?)) {
+            return Err(ConfigError::InvalidValue {
+                field: "live.db_path".into(),
+                message: format!("live database or sidecar overlaps output {}", p.display()),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Reject destructive scratch reuse and unsupported SQLite batch scoring.
 pub(crate) fn validate_scratch(
     cfg: &Config,
@@ -126,13 +177,9 @@ pub(crate) fn validate_scratch(
     {
         protected.extend(family(Path::new(path)));
     }
-    // SQLite batch emits CSV in cwd when csv_dir_path is absent, even with
-    // only SQLite/Parquet output selected. Include atomic-writer temp names.
+    // Protect configured sinks and their atomic-writer temporary files.
     for (dir, extension) in [
-        (
-            Some(cfg.output.csv_dir_path.as_deref().unwrap_or(".")),
-            "csv",
-        ),
+        (cfg.output.csv_dir_path.as_deref(), "csv"),
         (cfg.output.parquet_dir_path.as_deref(), "parquet"),
     ] {
         if let Some(dir) = dir {

@@ -4,7 +4,7 @@ use crate::error::ConfigError;
 
 mod batch_scratch;
 
-pub(crate) use batch_scratch::validate_scratch;
+pub(crate) use batch_scratch::{validate_live_outputs, validate_scratch};
 
 use super::schema::{
     BatchAssignmentStrategy, Config, DatasetConfig, LiveAssignmentStrategy, MatchMethod,
@@ -123,6 +123,7 @@ pub(crate) fn validate(cfg: &Config) -> Result<(), ConfigError> {
     // Shared checks
     validate_common(cfg)?;
     validate_scratch(cfg, None)?;
+    validate_live_outputs(cfg, None)?;
 
     Ok(())
 }

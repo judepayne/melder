@@ -696,6 +696,7 @@ pub async fn admin_flush(State(session): State<AppState>) -> axum::response::Res
                 Json(serde_json::json!({
                     "status": "complete",
                     "matches": report.match_count,
+                    "enroll_edges": report.enroll_edge_count,
                     "review": report.review_count,
                     "unmatched": report.no_match_count,
                     "elapsed_secs": report.elapsed_secs,
@@ -726,8 +727,9 @@ fn build_admin_outputs(
     db: Option<&std::path::Path>,
     manifest: &crate::output::OutputManifest,
 ) -> Result<crate::output::BuildReport, Box<dyn std::error::Error>> {
-    let guard = session.assignment_guard()?;
-    let input = if guard.is_some() {
+    crate::output::build::validate_live_output_path(&session.state.config)?;
+    let _guard = session.assignment_guard()?;
+    let input = {
         session.flush_assignment_log()?;
         let records = |side| -> Result<_, SessionError> {
             let store = &session.state.store;
@@ -752,11 +754,6 @@ fn build_admin_outputs(
                     .collect(),
             ),
         }
-    } else {
-        if let Err(e) = session.flush_assignment_log() {
-            warn!(error = %e, "WAL flush failed before admin output build");
-        }
-        crate::output::build::BuildInput::default()
     };
     crate::output::build::build_outputs_with_input(wal, scoring, csv, parquet, db, manifest, input)
 }

@@ -4,8 +4,8 @@
 //! All operations are synchronous internally; the HTTP layer wraps them
 //! in `spawn_blocking` as needed.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tracing::{info, info_span, warn};
@@ -296,6 +296,9 @@ pub struct Session {
     /// Scoring log sender. `None` when scoring log is not enabled.
     scoring_log: Option<crate::output::scoring_log::ScoringLogSender>,
     assignment: Option<assignment::LiveAssignmentState>,
+    // Enrollment must keep scoring, pool mutation, and evidence publication atomic
+    // with respect to other mutations and admin output snapshots.
+    enroll_gate: Option<Mutex<()>>,
     /// Cross-platform shutdown trigger. `admin_shutdown` notifies waiters on
     /// this; `start_server`'s graceful-shutdown future selects on it
     /// alongside `ctrl_c` / `SIGTERM`. Using a `Notify` (rather than a
@@ -311,8 +314,10 @@ impl Session {
         scoring_log: Option<crate::output::scoring_log::ScoringLogSender>,
     ) -> Self {
         let emb_specs = crate::vectordb::embedding_field_specs(&state.config);
-        let enabled = state.config.live.assignment.strategy
-            == crate::config::LiveAssignmentStrategy::DeferredAcceptance;
+        let enroll_gate = state.config.is_enroll_mode().then(Mutex::default);
+        let enabled = !state.config.is_enroll_mode()
+            && state.config.live.assignment.strategy
+                == crate::config::LiveAssignmentStrategy::DeferredAcceptance;
         info!(strategy = ?state.config.live.assignment.strategy, max_displacements = state.config.live.assignment.max_displacements, "live assignment policy");
         Self {
             state,
@@ -323,6 +328,7 @@ impl Session {
             hook_tx,
             scoring_log,
             assignment: enabled.then(assignment::LiveAssignmentState::default),
+            enroll_gate,
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -2316,6 +2322,7 @@ impl Session {
     /// 3. Add record to pool (store, blocking, BM25, synonym, vector index)
     /// 4. Return edges above `review_floor`, capped at `top_n`
     pub fn enroll(&self, record: Record) -> Result<EnrollResponse, SessionError> {
+        let _guard = self.assignment_guard()?;
         let config = &self.state.config;
         let store = &self.state.store;
         let side = Side::A; // Enroll always uses A-side as the pool.
@@ -2404,7 +2411,7 @@ impl Session {
         let review_floor = config.thresholds.review_floor;
         let edges: Vec<EnrollEdge> = results
             .iter()
-            .filter(|r| r.score >= review_floor)
+            .filter(|r| r.matched_id != id && r.score >= review_floor)
             .take(top_n)
             .map(|r| EnrollEdge {
                 id: r.matched_id.clone(),
@@ -2422,6 +2429,34 @@ impl Session {
                     .collect(),
             })
             .collect();
+
+        // Essential single-pool evidence belongs in the WAL, not the optional,
+        // asynchronous scoring log. Never express these edges as bijective claims.
+        self.state
+            .wal
+            .append(&crate::state::match_log::MatchLogEvent::EnrollOutcome {
+                query_id: id.clone(),
+                edges: edges
+                    .iter()
+                    .map(|edge| crate::state::match_log::EnrollEvidence {
+                        id: edge.id.clone(),
+                        score: edge.score,
+                        field_scores: if self.scoring_log.is_some() {
+                            edge.field_scores
+                                .iter()
+                                .map(|field| crate::state::match_log::EnrollEvidenceField {
+                                    field: field.field.clone(),
+                                    method: field.method.clone(),
+                                    score: field.score,
+                                    weight: field.weight,
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        },
+                    })
+                    .collect(),
+            })?;
 
         Ok(EnrollResponse {
             id,

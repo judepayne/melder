@@ -171,10 +171,34 @@ impl AssignmentDelta {
     }
 }
 
+/// A qualifying, directed single-pool enrollment edge (not a CrossMap claim).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollEvidence {
+    pub id: String,
+    pub score: f64,
+    /// Optional scoring detail, persisted only when scoring logging is enabled.
+    pub field_scores: Vec<EnrollEvidenceField>,
+}
+
+/// Per-field enrollment scoring evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollEvidenceField {
+    pub field: String,
+    pub method: String,
+    pub score: f64,
+    pub weight: f64,
+}
+
 /// Match log event types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MatchLogEvent {
+    /// Complete returned evidence for an enrollment, including an empty result.
+    #[serde(rename = "enroll_outcome")]
+    EnrollOutcome {
+        query_id: String,
+        edges: Vec<EnrollEvidence>,
+    },
     #[serde(rename = "upsert_record")]
     UpsertRecord { side: Side, record: Record },
     #[serde(rename = "crossmap_confirm")]
@@ -1011,6 +1035,7 @@ impl MatchLog {
                 MatchLogEvent::AssignmentDelta(_)
                     | MatchLogEvent::RemoveRecord { .. }
                     | MatchLogEvent::ReviewMatch { .. }
+                    | MatchLogEvent::EnrollOutcome { .. }
             )
         });
         // Build compacted event list
@@ -1052,7 +1077,8 @@ impl MatchLog {
                 | MatchLogEvent::ReviewMatch { .. }
                 | MatchLogEvent::NoMatchBelow { .. }
                 | MatchLogEvent::Exclude { .. }
-                | MatchLogEvent::Unexclude { .. } => {
+                | MatchLogEvent::Unexclude { .. }
+                | MatchLogEvent::EnrollOutcome { .. } => {
                     compacted.push(event);
                 }
             }

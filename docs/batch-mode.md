@@ -62,19 +62,18 @@ fast matching for large groups. Details and limits are
 
 ### Sinks and scoring evidence
 
-For the in-memory path, enable any combination of `output.csv_dir_path`,
+For either input-storage backend and assignment strategy, enable any combination of `output.csv_dir_path`,
 `output.parquet_dir_path`, and `output.db_path`; at least one sink is required.
 They share the same output build, so additional sinks do not re-score records.
 `scoring_log.enabled: true` adds candidate/field-score evidence; it is not
 required for accepted links.
 
 **SQLite input storage is different from SQLite output.** With `batch.db_path`,
-graph runs use the shared builder for CSV and optional Parquet/SQLite sinks,
-but have no match log or scoring log. The current path also writes CSV to `.`
-if `output.csv_dir_path` is omitted; set an explicit CSV directory. Explicit
-greedy with SQLite input writes only its direct CSV outputs, not the optional
-Parquet/SQLite sinks. Do not rely on printed sink paths as proof those optional
-outputs were produced. See [SQLite batch mode](#sqlite-batch-mode-large-datasets)
+both graph and explicit greedy honor all configured sinks, including Parquet-only
+and SQLite-output-only runs, without writing extra CSV files in the working directory.
+They have no match log or scoring log. Graph uses the shared builder for every
+sink; greedy preserves its legacy CSV writer while using the shared builder for
+Parquet and SQLite outputs. See [SQLite batch mode](#sqlite-batch-mode-large-datasets)
 for memory and scoring restrictions.
 
 ### CSV outputs
@@ -84,11 +83,13 @@ The shared output builder writes:
 | File | Contents |
 |------|----------|
 | `relationships.csv` | Confirmed matches and reviews, including assignment conflicts. Columns: configured B/A ID names, `score`, `relationship_type` (`match` or `review`), `reason`, `rank`, plus configured A-side fields. |
-| `unmatched.csv` | B records with neither an accepted match nor a review outcome. Columns: configured B ID, B-side fields, `best_score`, `best_a_id` (when available). SQLite graph output does not retain the best candidate ID. |
+| `unmatched.csv` | B records with neither an accepted match nor a review outcome. Columns: configured B ID, B-side fields, `best_score`, `best_a_id` (when available). Direct SQLite batch output does not retain the best candidate ID. |
 | `candidates.csv` | Only with a scoring log: ranks 2..N for scored queries, with configured B/A ID names, `rank`, `score`. These are ranking evidence, not final assignments. |
 
-SQLite input with explicit greedy uses its own CSV writer; do not assume the
-shared-builder schema above for that path.
+SQLite input with explicit greedy preserves its legacy CSV schema and result rows
+(`a_id`, `b_id`, `classification` and field-score columns for relationships).
+Its Parquet/SQLite sinks use the shared schema above and final CrossMap membership,
+including protected pairs; they are not a literal conversion of the legacy CSV.
 
 ### Parquet outputs
 
@@ -104,7 +105,7 @@ rejected. See [Building](building.md).
 
 `output.db_path` enables tables `a_records`, `b_records`, `relationships`,
 `field_scores`, and `metadata`. In log-based builds, field-score evidence
-requires the scoring log; direct SQLite graph builds retain selected/review
+requires the scoring log; direct SQLite batch builds retain selected/review
 field scores without a scoring log.
 
 Eleven analytical views are included: `confirmed_matches`, `scored_matches`,

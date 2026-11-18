@@ -335,7 +335,7 @@ thresholds:
 
 ## `output`
 
-Controls where results are written. At least one of `csv_dir_path`, `parquet_dir_path`, or `db_path` must be set. Multiple can be set simultaneously.
+Controls where results are written. At least one of `csv_dir_path`, `parquet_dir_path`, or `db_path` must be set for batch matching. Multiple can be set simultaneously. CSV and Parquet keep your field names where possible. If both ID fields are called `id`, the relationship and candidate tables distinguish the query (`source_id`) from its partner (`target_id`). The same rule applies to a shared `entity_id`. Output paths must not overlap the live state database or its SQLite sidecars.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -357,7 +357,7 @@ output:
 
 Per-field explainability data. When enabled, records every scored query's full top_n candidate set with per-field breakdowns. Produces `candidates.csv` (and `candidates.parquet` when Parquet output is configured) and populates the `field_scores` table in the output SQLite database. Also enables the `near_misses`, `runner_ups`, and `relationship_detail` views in the SQLite output.
 
-Works in all three modes: `meld run` (batch), `meld serve` (live), and `meld enroll`. In enroll mode it is enabled by default, since enrollment has no other persistent relationship output; disable explicitly with `scoring_log.enabled: false` if not needed.
+Works in all three modes: `meld run` (batch), `meld serve` (live), and `meld enroll`. In enroll mode it is enabled by default. See [enroll outputs](enroll-mode.md) for the difference between an edge returned by enrollment and a confirmed one-to-one match.
 
 > [!NOTE]
 > The SQLite batch path (`batch.db_path`) does not produce scoring log output.
@@ -379,7 +379,7 @@ scoring_log:
 | Output | Description |
 |--------|-------------|
 | Raw scoring log | One event per scored query, with its ranked shortlist. In-memory graph batches write `scores.<timestamped-match-log-stem>.scoring_log.ndjson.zst` beside the match log; greedy batches use `{job_name}.scoring_log.ndjson.zst`. With `compression: none`, omit `.zst`. |
-| `candidates.csv` | Candidates ranked second or lower by the scorer. A graph run can select one of these as the final match. For accepted pairs, use rows marked `match` in `relationships.csv`, not the scoring ranks. |
+| `candidates.csv` | In match mode, scored candidates ranked second or lower. A graph run can select one as the final match; use `relationship_type: match` in `relationships.csv` to find accepted pairs. Enroll instead exports its returned edges, including rank one, without declaring them confirmed pairs. |
 | `field_scores` DB table | Per-field score breakdowns for all candidates (SQLite output only) |
 
 ### Explainability views (SQLite output)
@@ -522,9 +522,9 @@ No single setting caps total process memory. Different settings control differen
 | Lever | Affects | Best for | What it does | Typical tradeoff |
 |---|---|---|---|---|
 | `batch.db_path` | record storage | batch | Stores records in SQLite instead of RAM | Lower memory, slower than pure in-memory |
-| `live.db_path` | record storage | live / enroll | Stores records, crossmap, and reviews in SQLite | Lower memory, modest throughput cost |
+| `live.db_path` | record storage | live matching | Stores records, crossmap, and reviews in SQLite | Lower memory, modest throughput cost |
 | `batch.sqlite_cache_mb`, `batch.sqlite_read_pool_size`, `batch.sqlite_pool_worker_cache_mb` | SQLite page cache | batch | Controls SQLite cache budget in batch mode | Lower cache = lower RAM, more disk I/O |
-| `live.sqlite_cache_mb`, `live.sqlite_read_pool_size`, `live.sqlite_pool_worker_cache_mb` | SQLite page cache | live / enroll | Controls SQLite cache budget in live mode | Lower cache = lower RAM, more disk I/O |
+| `live.sqlite_cache_mb`, `live.sqlite_read_pool_size`, `live.sqlite_pool_worker_cache_mb` | SQLite page cache | live matching | Controls SQLite cache budget in live mode | Lower cache = lower RAM, more disk I/O |
 | `performance.vector_quantization: f16` or `bf16` | vector indices | all usearch modes | Stores vectors at lower precision | Much smaller indices, usually negligible quality loss |
 | `performance.vector_index_mode: mmap` | vector indices | warm batch runs only | Memory-maps usearch index instead of copying it into heap | Lower memory, less predictable latency |
 | `performance.encoder_pool_size` | encoder model memory | all embedding modes | Controls number of parallel ONNX sessions | Lower value saves RAM, reduces encode throughput |
@@ -548,7 +548,8 @@ No single setting caps total process memory. Different settings control differen
 - Reduce `encoder_pool_size` if you need to trade throughput for lower memory.
 
 **Enroll mode**
-- Same guidance as live mode: mutable index, so use `load`, not `mmap`.
+- The enrollment pool is in memory with a write-ahead log for persistence. Use `output.db_path` for a SQLite **export**, not `live.db_path` for pool storage.
+- As in live mode: mutable index, so use `load`, not `mmap`.
 - `vector_quantization` and lower `encoder_pool_size` are the main vector/encoder levers.
 
 ### What these settings usually save
@@ -577,7 +578,7 @@ If you use SQLite storage, the page-cache budget is roughly:
 
 - **batch:**  
   `batch.sqlite_cache_mb + batch.sqlite_read_pool_size × batch.sqlite_pool_worker_cache_mb`
-- **live / enroll:**  
+- **live matching:**
   `live.sqlite_cache_mb + live.sqlite_read_pool_size × live.sqlite_pool_worker_cache_mb`
 
 This covers SQLite cache only. It does **not** include vector indices, encoder

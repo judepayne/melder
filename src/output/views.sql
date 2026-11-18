@@ -29,8 +29,8 @@ CREATE VIEW IF NOT EXISTS unmatched_a AS
 SELECT a.* FROM a_records a
 WHERE NOT EXISTS (
     SELECT 1 FROM relationships r
-    WHERE r.a_id = a.id
-    AND r.relationship_type IN ('match', 'review')
+    WHERE (r.a_id = a.id AND r.relationship_type IN ('match', 'review'))
+       OR (r.relationship_type = 'enroll_edge' AND a.id IN (r.a_id, r.b_id))
 );
 
 -- B-side records with no match or review relationship.
@@ -38,8 +38,8 @@ CREATE VIEW IF NOT EXISTS unmatched_b AS
 SELECT b.* FROM b_records b
 WHERE NOT EXISTS (
     SELECT 1 FROM relationships r
-    WHERE r.b_id = b.id
-    AND r.relationship_type IN ('match', 'review')
+    WHERE (r.b_id = b.id AND r.relationship_type IN ('match', 'review'))
+       OR (r.relationship_type = 'enroll_edge' AND b.id IN (r.a_id, r.b_id))
 );
 
 -- Previously confirmed pairs that were explicitly broken.

@@ -210,10 +210,18 @@ records live changes as newline-delimited JSON. It serves two purposes:
    still written as a redundant safety net but is not needed for
    recovery.
 2. **Output generation** — `meld export` and the admin endpoints can use the
-   match log when building outputs. With deferred acceptance enabled, the
-   admin build uses the current store and crossmap for records and confirmed
-   pairs. When exporting a persisted live SQLite database, the database is
-   authoritative.
+   match log when building outputs. For both greedy and deferred acceptance,
+   admin builds use current store records, crossmap membership and pending
+   reviews; WAL history enriches these snapshots without restoring removed
+   records or stale pairs. Offline in-memory exports seed both match-mode
+   datasets and crossmap before replay, retaining untouched records and links.
+   Explicit graph-history exports remain isolated batch snapshots, not live
+   snapshots. When exporting a persisted live SQLite database, records, pairs
+   and reviews come from one authoritative database read transaction, not seed
+   files or WAL replay. Configured Parquet and output SQLite files are built
+   from that same snapshot. `output.db_path` must not refer to `live.db_path`.
+   Match-mode offline exports retain the legacy `results.csv`, `review.csv`,
+   `unmatched_a.csv` and `unmatched_b.csv` alongside the build-pipeline outputs.
 
 On clean shutdown the match log is compacted (duplicate entries
 collapsed) and can be inspected with:

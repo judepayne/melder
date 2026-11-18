@@ -48,7 +48,15 @@ impl Session {
             .inspect_err(|e| self.assignment_failed(e))
     }
 
+    /// Serialize optimizing live mutations or single-pool enrollment and snapshots.
+    /// Call only at operation boundaries; helpers under this guard must not relock.
     pub(crate) fn assignment_guard(&self) -> Result<Option<MutexGuard<'_, ()>>, SessionError> {
+        if let Some(gate) = &self.enroll_gate {
+            return gate
+                .lock()
+                .map(Some)
+                .map_err(|_| SessionError::AssignmentUnhealthy);
+        }
         let Some(state) = &self.assignment else {
             return Ok(None);
         };

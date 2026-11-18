@@ -6,6 +6,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::models::Record;
+use crate::store::sqlite::record_column;
 
 use super::build::Relationship;
 use super::manifest::OutputManifest;
@@ -113,23 +114,33 @@ pub fn build_db(
 fn create_records_table(
     conn: &Connection,
     table: &str,
-    _id_field: &str,
+    id_field: &str,
     fields: &[String],
 ) -> rusqlite::Result<()> {
     // Always use "id" as the PK column so views work universally.
     // All other configured fields become additional columns.
     let mut cols = "id TEXT PRIMARY KEY".to_string();
-    for f in fields {
-        cols.push_str(&format!(", \"{}\" TEXT", f));
+    for f in record_payload_fields(id_field, fields) {
+        cols.push_str(&format!(", {} TEXT", record_column(f, fields)));
     }
     conn.execute_batch(&format!("CREATE TABLE {table} ({cols})"))?;
     Ok(())
 }
 
+// If the input ID is itself called "id", its value is already stored in the PK.
+fn record_payload_fields<'a>(
+    id_field: &'a str,
+    fields: &'a [String],
+) -> impl Iterator<Item = &'a String> {
+    fields
+        .iter()
+        .filter(move |f| !(f.as_str() == id_field && f.eq_ignore_ascii_case("id")))
+}
+
 fn insert_records(
     conn: &Connection,
     table: &str,
-    _id_field: &str,
+    id_field: &str,
     fields: &[String],
     records: &HashMap<String, Record>,
 ) -> rusqlite::Result<()> {
@@ -139,8 +150,8 @@ fn insert_records(
 
     // Build column list: id + all configured fields.
     let mut col_names = vec!["id".to_string()];
-    for f in fields {
-        col_names.push(format!("\"{}\"", f));
+    for f in record_payload_fields(id_field, fields) {
+        col_names.push(record_column(f, fields));
     }
     let placeholders: Vec<&str> = col_names.iter().map(|_| "?").collect();
     let sql = format!(
@@ -155,7 +166,7 @@ fn insert_records(
         let mut stmt = tx.prepare_cached(&sql)?;
         for (id, rec) in records {
             let mut params: Vec<String> = vec![id.clone()];
-            for f in fields {
+            for f in record_payload_fields(id_field, fields) {
                 params.push(rec.get(f).cloned().unwrap_or_default());
             }
             let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
@@ -252,4 +263,107 @@ fn insert_field_scores(
     }
     tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::config::Mode;
+    use crate::store::sqlite::record_column_name;
+
+    #[test]
+    fn output_db_preserves_distinct_payload_id_and_reserved_source_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        for source_id in ["id", "ID"] {
+            let fields: Vec<String> = [
+                "entity\"key",
+                source_id,
+                "__melder_source_id",
+                "__MELDER_SOURCE_ID_",
+                "quoted\"; DROP TABLE relationships; --",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            let record: Record = fields
+                .iter()
+                .enumerate()
+                .map(|(i, name)| (name.clone(), format!("payload-{i}")))
+                .collect();
+            let records = HashMap::from([("internal-key".into(), record.clone())]);
+            let manifest = OutputManifest {
+                mode: Mode::Match,
+                job_name: "mapping".into(),
+                a_id_field: fields[0].clone(),
+                b_id_field: fields[0].clone(),
+                a_fields: fields.clone(),
+                b_fields: fields.clone(),
+                auto_match: 0.9,
+                review_floor: 0.7,
+                min_score_gap: None,
+                top_n: 5,
+                model: String::new(),
+            };
+            let path = dir.path().join(format!("{source_id}.db"));
+            build_db(&path, &records, &records, &[], &[], &manifest)?;
+            let conn = Connection::open(path)?;
+            for table in ["a_records", "b_records"] {
+                let projections = fields
+                    .iter()
+                    .map(|field| record_column(field, &fields))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let actual = conn.query_row(
+                    &format!("SELECT id, {projections} FROM {table}"),
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            fields
+                                .iter()
+                                .enumerate()
+                                .map(|(i, _)| row.get::<_, String>(i + 1))
+                                .collect::<rusqlite::Result<Vec<_>>>()?,
+                        ))
+                    },
+                )?;
+                assert_eq!(actual.0, "internal-key", "output PK must stay internal");
+                assert_eq!(
+                    actual.1,
+                    fields.iter().map(|f| record[f].clone()).collect::<Vec<_>>(),
+                    "output payload must not be replaced by the internal key"
+                );
+                assert_ne!(
+                    record_column_name(source_id, &fields),
+                    "id",
+                    "payload id must have a separate physical column"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn output_db_does_not_duplicate_id_when_it_is_the_configured_key() -> rusqlite::Result<()> {
+        let conn = Connection::open_in_memory()?;
+        let fields = vec!["id".to_owned(), "name".to_owned()];
+        create_records_table(&conn, "a_records", "id", &fields)?;
+        insert_records(
+            &conn,
+            "a_records",
+            "id",
+            &fields,
+            &HashMap::from([(
+                "key".into(),
+                Record::from([("id".into(), "key".into()), ("name".into(), "Alice".into())]),
+            )]),
+        )?;
+        let row: (String, String) = conn.query_row("SELECT * FROM a_records", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        assert_eq!(row, ("key".into(), "Alice".into()), "one key column only");
+        Ok(())
+    }
 }

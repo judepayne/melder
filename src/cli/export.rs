@@ -1,4 +1,4 @@
-//! `meld export` — export live-mode state to CSV files.
+//! `meld export` — export live-mode state to configured output formats.
 //!
 //! Reads from SQLite (if `live.db_path` is set and the DB exists) or
 //! reconstructs state from CSV datasets and WAL replay. Does not require
@@ -34,6 +34,16 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         },
     };
 
+    if let Err(e) = crate::output::build::validate_live_output_path(&cfg) {
+        eprintln!("Export failed: {e}");
+        process::exit(1);
+    }
+
+    if let Err(error) = crate::config::validation::validate_live_outputs(&cfg, Some(out_dir)) {
+        eprintln!("Export failed: {error}");
+        process::exit(1);
+    }
+
     // Guard: batch configs have neither match_log_path nor db_path configured.
     if cfg.live.match_log_path.is_none() && cfg.live.db_path.is_none() {
         eprintln!(
@@ -43,19 +53,25 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         process::exit(1);
     }
 
-    // An explicitly selected graph log is batch history, not live SQLite state.
-    // Otherwise SQLite remains authoritative even with batch graph config enabled.
+    // Batch history is self-contained: never combine it with today's live DB,
+    // datasets or CrossMap. Historical greedy logs use the batch filename namespace.
+    let greedy_path_selected = cfg
+        .live
+        .match_log_path
+        .as_deref()
+        .is_some_and(|path| is_greedy_batch_log_path(Path::new(path)));
     let graph_path_selected = cfg
         .live
         .match_log_path
         .as_deref()
         .is_some_and(|path| crate::state::match_log::is_graph_match_log_path(Path::new(path)));
+    let batch_path_selected = graph_path_selected || greedy_path_selected;
     if let Some(db_path) = cfg
         .live
         .db_path
         .as_deref()
         .map(Path::new)
-        .filter(|p| p.exists() && !graph_path_selected)
+        .filter(|p| p.exists() && !batch_path_selected)
     {
         create_export_dir(out_dir);
         export_sqlite(&cfg, db_path, out_dir);
@@ -66,14 +82,11 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
     // Also produce a SQLite DB if output.db_path is set.
     if let Some(ref ml_path) = cfg.live.match_log_path {
         let ml = std::path::Path::new(ml_path);
-        let (events, graph_segment) = MatchLog::replay_for_output(ml).unwrap_or_else(|e| {
+        let (_, graph_segment) = MatchLog::replay_for_output(ml).unwrap_or_else(|e| {
             eprintln!("Export failed: {e}");
             process::exit(1);
         });
-        let has_assignment = events
-            .iter()
-            .any(|event| matches!(event, MatchLogEvent::AssignmentDelta(_)));
-        let input = if has_assignment {
+        let input = if graph_segment.is_none() && !greedy_path_selected {
             match load_build_input(&cfg) {
                 Ok(input) => input,
                 Err(e) => {
@@ -92,7 +105,7 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
                 eprintln!("Failed to select graph scoring log: {e}");
                 process::exit(1);
             })
-        } else if cfg.scoring_log.enabled {
+        } else if cfg.scoring_log.enabled && !greedy_path_selected {
             let sl_dir = cfg.output.csv_dir_path.as_deref().unwrap_or(".");
             let sl_base = Path::new(sl_dir).join(format!("{}.scoring_log", cfg.job.name));
             let use_zstd = cfg.scoring_log.compression != "none";
@@ -120,14 +133,16 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
                     "  relationships.csv: {} matches + {} review",
                     report.match_count, report.review_count
                 );
+                if cfg.is_enroll_mode() {
+                    println!("  Enrollment edges: {}", report.enroll_edge_count);
+                }
                 println!("  unmatched.csv:     {} records", report.no_match_count);
                 if let Some(db) = db_path {
                     println!("  database:          {}", db.display());
                 }
                 println!("  elapsed:           {:.1}s", report.elapsed_secs);
-                // Retain the legacy four-CSV interface for assignment exports
-                // which previously used only the memory exporter.
-                if has_assignment && parquet_dir.is_none() && db_path.is_none() {
+                // Retain the legacy four-CSV interface for live match exports.
+                if graph_segment.is_none() && !greedy_path_selected && !cfg.is_enroll_mode() {
                     export_memory(&cfg, out_dir);
                 }
                 return;
@@ -141,7 +156,24 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
 
     // No WAL selected and no existing live SQLite database.
     create_export_dir(out_dir);
-    export_memory(&cfg, out_dir);
+    let input = load_build_input(&cfg).unwrap_or_else(|e| {
+        eprintln!("Failed to load export snapshot: {e}");
+        process::exit(1);
+    });
+    crate::output::build::build_live_snapshot_outputs(
+        Some(out_dir),
+        cfg.output.parquet_dir_path.as_deref().map(Path::new),
+        cfg.output.db_path.as_deref().map(Path::new),
+        &crate::output::OutputManifest::from_config(&cfg),
+        input,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("Export failed: {e}");
+        process::exit(1);
+    });
+    if !cfg.is_enroll_mode() {
+        export_memory(&cfg, out_dir);
+    }
 }
 
 fn create_export_dir(out_dir: &Path) {
@@ -154,23 +186,42 @@ fn create_export_dir(out_dir: &Path) {
     }
 }
 
+// Batch run historically wrote <job>.match_log[_<timestamp>[_<sequence>]].ndjson.
+// Do not infer batch intent from the modern assignment config (live uses it too).
+fn is_greedy_batch_log_path(path: &Path) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    stem.ends_with(".match_log") || stem.contains(".match_log_")
+}
+
 fn load_build_input(
     cfg: &Config,
 ) -> Result<crate::output::build::BuildInput, Box<dyn std::error::Error>> {
-    let (a_records, _) = crate::data::load_dataset(
-        Path::new(&cfg.datasets.a.path),
-        &cfg.datasets.a.id_field,
-        &cfg.required_fields_a,
-        cfg.datasets.a.format.as_deref(),
-    )?;
-    let (b_records, _) = crate::data::load_dataset(
-        Path::new(&cfg.datasets.b.path),
-        &cfg.datasets.b.id_field,
-        &cfg.required_fields_b,
-        cfg.datasets.b.format.as_deref(),
-    )?;
+    let a_records = if cfg.is_enroll_mode() && cfg.datasets.a.path.is_empty() {
+        HashMap::new()
+    } else {
+        crate::data::load_dataset(
+            Path::new(&cfg.datasets.a.path),
+            &cfg.datasets.a.id_field,
+            &cfg.required_fields_a,
+            cfg.datasets.a.format.as_deref(),
+        )?
+        .0
+    };
+    let b_records = if cfg.is_enroll_mode() {
+        HashMap::new()
+    } else {
+        crate::data::load_dataset(
+            Path::new(&cfg.datasets.b.path),
+            &cfg.datasets.b.id_field,
+            &cfg.required_fields_b,
+            cfg.datasets.b.format.as_deref(),
+        )?
+        .0
+    };
     let crossmap_path = Path::new(cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv"));
-    let snapshot_pairs = if crossmap_path.exists() {
+    let snapshot_pairs = if !cfg.is_enroll_mode() && crossmap_path.exists() {
         crate::crossmap::MemoryCrossMap::load(
             crossmap_path,
             &cfg.cross_map.a_id_field,
@@ -228,12 +279,14 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
             .filter_map(|r| r.ok())
             .collect()
     };
-    write_results_or_exit(
-        &out_dir.join("results.csv"),
-        &pairs,
-        &cfg.cross_map.a_id_field,
-        &cfg.cross_map.b_id_field,
-    );
+    if !cfg.is_enroll_mode() {
+        write_results_or_exit(
+            &out_dir.join("results.csv"),
+            &pairs,
+            &cfg.cross_map.a_id_field,
+            &cfg.cross_map.b_id_field,
+        );
+    }
 
     // review.csv — pending review-band matches.
     let reviews: Vec<ReviewRow> = {
@@ -266,62 +319,151 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
         .filter_map(|r| r.ok())
         .collect()
     };
-    write_review_or_exit(&out_dir.join("review.csv"), &reviews);
+    if !cfg.is_enroll_mode() {
+        write_review_or_exit(&out_dir.join("review.csv"), &reviews);
+    }
 
     // unmatched_a.csv — A-side records with no crossmap pair.
-    let unmatched_a = query_unmatched(&conn, "a");
-    write_unmatched_or_exit(
-        &out_dir.join("unmatched_a.csv"),
-        &unmatched_a,
-        &cfg.datasets.a.id_field,
-    );
+    let unmatched_a = query_unmatched(&conn, "a", &cfg.required_fields_a);
+    if !cfg.is_enroll_mode() {
+        write_unmatched_or_exit(
+            &out_dir.join("unmatched_a.csv"),
+            &unmatched_a,
+            &cfg.datasets.a.id_field,
+        );
+    }
 
     // unmatched_b.csv — B-side records with no crossmap pair.
-    let unmatched_b = query_unmatched(&conn, "b");
-    write_unmatched_or_exit(
-        &out_dir.join("unmatched_b.csv"),
-        &unmatched_b,
-        &cfg.datasets.b.id_field,
-    );
+    let unmatched_b = query_unmatched(&conn, "b", &cfg.required_fields_b);
+    if !cfg.is_enroll_mode() {
+        write_unmatched_or_exit(
+            &out_dir.join("unmatched_b.csv"),
+            &unmatched_b,
+            &cfg.datasets.b.id_field,
+        );
+    }
 
-    print_summary(
-        "SQLite",
-        out_dir,
-        &pairs,
-        &reviews,
-        &unmatched_a,
-        &unmatched_b,
-    );
+    // Read records from the same transaction as membership/reviews. Never replay
+    // a potentially stale WAL over SQLite's authoritative committed state.
+    let mut a_records: HashMap<_, _> =
+        query_records_or_exit(&conn, "a", false, &cfg.required_fields_a)
+            .into_iter()
+            .collect();
+    let mut b_records: HashMap<_, _> =
+        query_records_or_exit(&conn, "b", false, &cfg.required_fields_b)
+            .into_iter()
+            .collect();
+    for (id, record) in &mut a_records {
+        record.insert(cfg.datasets.a.id_field.clone(), id.clone());
+    }
+    for (id, record) in &mut b_records {
+        record.insert(cfg.datasets.b.id_field.clone(), id.clone());
+    }
+    let input = crate::output::build::BuildInput {
+        a_records,
+        b_records,
+        snapshot_pairs: pairs.clone(),
+        current_reviews: Some(
+            reviews
+                .iter()
+                .map(|review| crate::state::live::ReviewEntry {
+                    id: review.id.clone(),
+                    side: if review.side == "a" { Side::A } else { Side::B },
+                    candidate_id: review.candidate_id.clone(),
+                    score: review.score,
+                })
+                .collect(),
+        ),
+    };
+    let manifest = crate::output::OutputManifest::from_config(cfg);
+    crate::output::build::build_live_snapshot_outputs(
+        Some(out_dir),
+        cfg.output.parquet_dir_path.as_deref().map(Path::new),
+        cfg.output.db_path.as_deref().map(Path::new),
+        &manifest,
+        input,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("Export failed: {e}");
+        process::exit(1);
+    });
+
+    if cfg.is_enroll_mode() {
+        println!(
+            "Export complete (SQLite enrollment snapshot): {}",
+            out_dir.display()
+        );
+    } else {
+        print_summary(
+            "SQLite",
+            out_dir,
+            &pairs,
+            &reviews,
+            &unmatched_a,
+            &unmatched_b,
+        );
+    }
 }
 
 /// Query unmatched records for the given side ("a" or "b").
 ///
 /// Reads the table schema dynamically (columnar storage — no JSON blob).
-fn query_unmatched(conn: &rusqlite::Connection, side: &str) -> Vec<(String, Record)> {
+fn query_unmatched(
+    conn: &rusqlite::Connection,
+    side: &str,
+    fields: &[String],
+) -> Vec<(String, Record)> {
+    query_records_or_exit(conn, side, true, fields)
+}
+
+fn query_records_or_exit(
+    conn: &rusqlite::Connection,
+    side: &str,
+    unmatched: bool,
+    fields: &[String],
+) -> Vec<(String, Record)> {
+    query_records(conn, side, unmatched, fields).unwrap_or_else(|e| {
+        eprintln!("Failed to query {side} records: {e}");
+        process::exit(1);
+    })
+}
+
+fn query_records(
+    conn: &rusqlite::Connection,
+    side: &str,
+    unmatched: bool,
+    fields: &[String],
+) -> rusqlite::Result<Vec<(String, Record)>> {
+    use crate::store::sqlite::{quote_identifier, record_column_name};
     assert!(
         side == "a" || side == "b",
         "query_unmatched: side must be \"a\" or \"b\", got \"{side}\""
     );
-    // Discover columns from the table schema (skip "id")
+    // Reverse the store's mapping using the logical schema. An alias may itself
+    // be a source name, so decoding by prefix alone would lose payload fields.
+    let mapping: HashMap<_, _> = fields
+        .iter()
+        .map(|field| (record_column_name(field, fields), field.clone()))
+        .collect();
+    if mapping.len() != fields.len() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     let columns: Vec<String> = {
-        let mut stmt = conn
-            .prepare(&format!("PRAGMA table_info({side}_records)"))
-            .unwrap_or_else(|e| {
-                eprintln!("Failed to query {side}_records schema: {e}");
-                process::exit(1);
-            });
-        stmt.query_map([], |row| {
-            let name: String = row.get(1)?;
-            Ok(name)
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to query {side}_records schema: {e}");
-            process::exit(1);
-        })
-        .filter_map(|r| r.ok())
-        .filter(|name| name != "id")
-        .collect()
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({side}_records)"))?;
+        stmt.query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|name| name != "id")
+            .collect()
     };
+    let logical_columns: Vec<_> = columns
+        .iter()
+        .map(|name| {
+            mapping
+                .get(name)
+                .ok_or_else(|| rusqlite::Error::InvalidColumnName(name.clone()))
+        })
+        .collect::<rusqlite::Result<_>>()?;
 
     let col_list = if columns.is_empty() {
         "r.id".to_string()
@@ -330,35 +472,28 @@ fn query_unmatched(conn: &rusqlite::Connection, side: &str) -> Vec<(String, Reco
             "r.id, {}",
             columns
                 .iter()
-                .map(|c| format!("r.\"{}\"", c))
+                .map(|c| format!("r.{}", quote_identifier(c)))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
     };
 
-    let sql = format!(
-        "SELECT {col_list} FROM {side}_records r \
-         WHERE NOT EXISTS (SELECT 1 FROM crossmap c WHERE c.{side}_id = r.id) \
-         ORDER BY r.id"
-    );
-    let mut stmt = conn.prepare(&sql).unwrap_or_else(|e| {
-        eprintln!("Failed to query {side} unmatched records: {e}");
-        process::exit(1);
-    });
+    let filter = if unmatched {
+        format!("WHERE NOT EXISTS (SELECT 1 FROM crossmap c WHERE c.{side}_id = r.id)")
+    } else {
+        String::new()
+    };
+    let sql = format!("SELECT {col_list} FROM {side}_records r {filter} ORDER BY r.id");
+    let mut stmt = conn.prepare(&sql)?;
     stmt.query_map([], |row| {
         let id: String = row.get(0)?;
         let mut record = Record::new();
-        for (i, col_name) in columns.iter().enumerate() {
-            let val: Option<String> = row.get(i + 1).unwrap_or(None);
-            record.insert(col_name.clone(), val.unwrap_or_default());
+        for (i, col_name) in logical_columns.iter().enumerate() {
+            let val: Option<String> = row.get(i + 1)?;
+            record.insert((*col_name).clone(), val.unwrap_or_default());
         }
         Ok((id, record))
-    })
-    .unwrap_or_else(|e| {
-        eprintln!("Failed to query {side} unmatched records: {e}");
-        process::exit(1);
-    })
-    .filter_map(|r| r.ok())
+    })?
     .collect()
 }
 
@@ -571,7 +706,8 @@ fn export_memory(cfg: &Config, out_dir: &Path) {
                     );
                 }
                 MatchLogEvent::BatchAssignmentStarted { .. }
-                | MatchLogEvent::BatchAssignmentCompleted { .. } => {}
+                | MatchLogEvent::BatchAssignmentCompleted { .. }
+                | MatchLogEvent::EnrollOutcome { .. } => {}
                 MatchLogEvent::NoMatchBelow { .. } => {
                     // No-match events don't affect export state.
                 }
@@ -752,6 +888,72 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn sqlite_export_reverses_payload_mapping_and_quotes_identifiers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let fields: Vec<String> = [
+            "entity_key",
+            "id",
+            "__melder_source_id",
+            "__MELDER_SOURCE_ID_",
+            "quoted\"; DROP TABLE crossmap; --",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let record: Record = fields
+            .iter()
+            .enumerate()
+            .map(|(i, field)| (field.clone(), format!("payload-{i}")))
+            .collect();
+        let (store, _, writer) = crate::store::sqlite::open_sqlite(
+            &dir.path().join("records.db"),
+            &BlockingConfig::default(),
+            None,
+            &fields,
+            &fields,
+        )?;
+        for side in [Side::A, Side::B] {
+            store.insert(side, "internal-key", &record)?;
+        }
+        let conn = writer.lock().unwrap_or_else(|e| e.into_inner());
+        for side in ["a", "b"] {
+            for unmatched in [false, true] {
+                assert_eq!(
+                    query_records(&conn, side, unmatched, &fields)?,
+                    vec![("internal-key".into(), record.clone())],
+                    "offline reads must preserve logical payload fields for {side}"
+                );
+            }
+        }
+        conn.execute(
+            "INSERT INTO crossmap (a_id, b_id) VALUES (?1, ?1)",
+            ["internal-key"],
+        )?;
+        for side in ["a", "b"] {
+            assert!(
+                query_records(&conn, side, true, &fields)?.is_empty(),
+                "unmatched filtering must still use the internal key"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_export_rejects_unmapped_discovered_columns() -> rusqlite::Result<()> {
+        let conn = rusqlite::Connection::open_in_memory()?;
+        conn.execute_batch("CREATE TABLE a_records (id TEXT PRIMARY KEY, unexpected TEXT);")?;
+        assert!(
+            matches!(
+                query_records(&conn, "a", false, &[]),
+                Err(rusqlite::Error::InvalidColumnName(name)) if name == "unexpected"
+            ),
+            "schema mismatches must not silently rename or omit source fields"
+        );
+        Ok(())
+    }
+
     /// Write a minimal live-mode config YAML to disk and load it.
     /// `a_csv` and `b_csv` are paths that will be written into the YAML.
     /// `wal_path` is written into `live.match_log_path` (may be non-existent).
@@ -809,6 +1011,237 @@ live:
         let config_path = dir.path().join("config.yaml");
         std::fs::write(&config_path, yaml).unwrap();
         crate::config::load_config(&config_path).expect("failed to load test config")
+    }
+
+    #[test]
+    fn seedless_enroll_cli_exports_wal_without_loading_an_a_dataset() {
+        let dir = tempdir().expect("fixture");
+        let wal = dir.path().join("enroll.ndjson");
+        let log = MatchLog::open(&wal).expect("WAL");
+        log.append(&MatchLogEvent::UpsertRecord {
+            side: Side::A,
+            record: make_record(&[("id", "isolated"), ("name", "WAL only")]),
+        })
+        .expect("record");
+        log.append(&MatchLogEvent::EnrollOutcome {
+            query_id: "isolated".into(),
+            edges: vec![],
+        })
+        .expect("outcome");
+        log.flush().expect("flush");
+        let config = dir.path().join("enroll.yaml");
+        std::fs::write(
+            &config,
+            format!(
+                "job: {{ name: enroll }}\nvector_backend: flat\nembeddings: {{ model: ignored, cache_dir: cache }}\nmatch_fields: [{{ field: name, method: exact, weight: 1.0 }}]\nthresholds: {{ auto_match: 0.9, review_floor: 0.5 }}\nlive: {{ match_log_path: {} }}\n",
+                wal.display()
+            ),
+        )
+        .expect("config");
+        let cfg = crate::config::load_enroll_config(&config).expect("enroll config");
+        let input = load_build_input(&cfg).expect("seedless input");
+        assert!(input.a_records.is_empty(), "seedless A must start empty");
+        let out = dir.path().join("export");
+        cmd_export(&config, &out);
+        let unmatched = std::fs::read_to_string(out.join("unmatched.csv")).expect("unmatched");
+        assert!(
+            unmatched.contains("isolated"),
+            "WAL record retained: {unmatched}"
+        );
+        assert!(
+            !out.join("results.csv").exists(),
+            "enroll is not live matching"
+        );
+    }
+
+    #[test]
+    fn historical_greedy_batch_cli_never_loads_modern_snapshots() {
+        for missing_inputs in [false, true] {
+            let dir = tempdir().expect("fixture");
+            let a = dir.path().join("a.csv");
+            let b = dir.path().join("b.csv");
+            if !missing_inputs {
+                std::fs::write(&a, "entity_id,name\nMODERN-A,Modern\n").expect("A");
+                std::fs::write(&b, "counterparty_id,cpty_name\nMODERN-B,Modern\n").expect("B");
+            }
+            std::fs::write(
+                dir.path().join("crossmap.csv"),
+                "entity_id,counterparty_id\nMODERN-A,MODERN-B\n",
+            )
+            .expect("modern crossmap");
+            // Historical greedy runs have no graph framing or new identity event.
+            let wal = dir.path().join("oldjob.match_log.ndjson");
+            let log = MatchLog::open(&wal).expect("WAL");
+            for (side, record) in [
+                (
+                    Side::A,
+                    make_record(&[("entity_id", "OLD-A"), ("name", "Historical")]),
+                ),
+                (
+                    Side::B,
+                    make_record(&[("counterparty_id", "OLD-B"), ("cpty_name", "Historical")]),
+                ),
+            ] {
+                log.append(&MatchLogEvent::UpsertRecord { side, record })
+                    .expect("record");
+            }
+            log.append(&MatchLogEvent::CrossMapConfirm {
+                a_id: "OLD-A".into(),
+                b_id: "OLD-B".into(),
+                score: Some(1.0),
+                rank: None,
+                reason: None,
+            })
+            .expect("pair");
+            log.flush().expect("flush");
+            // Select the timestamped segment, not merely the old base filename.
+            let selected = log.path();
+            assert!(
+                is_greedy_batch_log_path(selected),
+                "historical namespace recognized"
+            );
+            let live_db = dir.path().join("modern-live.db");
+            std::fs::write(&live_db, "not a SQLite DB").expect("unrelated live DB");
+            write_and_load_config(&dir, &a, &b, selected, Some(&live_db));
+            let out = dir.path().join("export");
+            cmd_export(&dir.path().join("config.yaml"), &out);
+            let relationships =
+                std::fs::read_to_string(out.join("relationships.csv")).expect("relationships");
+            assert!(
+                relationships.contains("OLD-A") && relationships.contains("OLD-B"),
+                "historical pair retained: {relationships}"
+            );
+            assert!(
+                !relationships.contains("MODERN"),
+                "modern pairs must not leak: {relationships}"
+            );
+            let unmatched = std::fs::read_to_string(out.join("unmatched.csv")).expect("unmatched");
+            assert!(
+                !unmatched.contains("MODERN"),
+                "modern inputs must not leak: {unmatched}"
+            );
+            assert!(
+                !out.join("results.csv").exists(),
+                "batch must not run legacy live replay"
+            );
+        }
+    }
+
+    #[test]
+    fn greedy_cli_exports_seed_records_and_pairs_without_resurrecting_removals() {
+        let dir = tempdir().expect("fixture");
+        let a = dir.path().join("a.csv");
+        let b = dir.path().join("b.csv");
+        let wal = dir.path().join("wal.ndjson");
+        std::fs::write(&a, "entity_id,name\nA1,Seed\nA2,Removed\n").expect("A seed");
+        std::fs::write(
+            &b,
+            "counterparty_id,cpty_name\nB1,Seed\nB2,Removed\nB3,Untouched\n",
+        )
+        .expect("B seed");
+        std::fs::write(
+            dir.path().join("crossmap.csv"),
+            "entity_id,counterparty_id\nA1,B1\nA2,B2\n",
+        )
+        .expect("pairs");
+        let log = MatchLog::open(&wal).expect("WAL");
+        log.append(&MatchLogEvent::RemoveRecord {
+            side: Side::B,
+            id: "B2".into(),
+        })
+        .expect("remove");
+        log.flush().expect("flush");
+        write_and_load_config(&dir, &a, &b, &wal, None);
+        let out = dir.path().join("export");
+        cmd_export(&dir.path().join("config.yaml"), &out);
+        let rels = std::fs::read_to_string(out.join("relationships.csv")).expect("relationships");
+        assert!(
+            rels.contains("A1") && rels.contains("B1"),
+            "seed pair retained: {rels}"
+        );
+        assert!(!rels.contains("B2"), "removed seed must not return: {rels}");
+        let unmatched = std::fs::read_to_string(out.join("unmatched.csv")).expect("unmatched");
+        assert!(
+            unmatched.contains("B3") && unmatched.contains("Untouched"),
+            "untouched B fields retained: {unmatched}"
+        );
+        assert!(
+            out.join("results.csv").exists(),
+            "legacy exports remain available"
+        );
+    }
+
+    #[test]
+    fn sqlite_snapshot_build_includes_records_absent_from_seeds() {
+        let dir = tempdir().expect("fixture");
+        let db = dir.path().join("live.db");
+        let blocking = BlockingConfig {
+            enabled: false,
+            operator: "and".into(),
+            fields: vec![],
+            field_a: None,
+            field_b: None,
+        };
+        let (store, crossmap, _) = crate::store::sqlite::open_sqlite(
+            &db,
+            &blocking,
+            None,
+            &["entity_id".into(), "name".into()],
+            &["counterparty_id".into(), "cpty_name".into()],
+        )
+        .expect("store");
+        store
+            .insert(
+                Side::A,
+                "A-live",
+                &Record::from([("name".into(), "Authoritative".into())]),
+            )
+            .expect("A record");
+        store
+            .insert(
+                Side::B,
+                "B-live",
+                &Record::from([("cpty_name".into(), "Current".into())]),
+            )
+            .expect("B record");
+        crossmap.add("A-live", "B-live").expect("pair");
+        let a = dir.path().join("missing-a.csv");
+        let b = dir.path().join("missing-b.csv");
+        let mut cfg =
+            write_and_load_config(&dir, &a, &b, &dir.path().join("missing-wal"), Some(&db));
+        cfg.output.db_path = Some(dir.path().join("output.db").to_string_lossy().into_owned());
+        #[cfg(feature = "parquet-format")]
+        {
+            cfg.output.parquet_dir_path =
+                Some(dir.path().join("parquet").to_string_lossy().into_owned());
+        }
+        let out = dir.path().join("export");
+        std::fs::create_dir_all(&out).expect("output dir");
+        export_sqlite(&cfg, &db, &out);
+        let rels = std::fs::read_to_string(out.join("relationships.csv")).expect("relationships");
+        assert!(
+            rels.contains("A-live") && rels.contains("B-live"),
+            "SQLite pairs retained: {rels}"
+        );
+        let output = rusqlite::Connection::open(cfg.output.db_path.as_ref().expect("output path"))
+            .expect("output DB");
+        let count: i64 = output
+            .query_row("SELECT count(*) FROM a_records", [], |row| row.get(0))
+            .expect("record count");
+        assert_eq!(
+            count, 1,
+            "output uses current SQLite records, not missing CSV seeds"
+        );
+        #[cfg(feature = "parquet-format")]
+        assert!(
+            dir.path().join("parquet/relationships.parquet").exists(),
+            "configured parquet generated"
+        );
+        cfg.output.db_path = Some(db.to_string_lossy().into_owned());
+        assert!(
+            crate::output::build::validate_live_output_path(&cfg).is_err(),
+            "live DB must not be an output target"
+        );
     }
 
     #[test]
