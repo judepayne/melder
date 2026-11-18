@@ -12,6 +12,7 @@ import statistics
 import subprocess
 import time
 
+from capture import GREEDY_BATCH_YAML
 from run import save, sha256
 
 REPO = Path(__file__).resolve().parents[2]
@@ -24,7 +25,7 @@ def run_suite(binary, capture, out, repeats, modes=('greedy', 'approximate', 'ex
     report = dict(binary_sha256=sha256(pinned), repeats=repeats, runs=[])
     for size in ('10k', '100k'):
         old = capture / size
-        base = (old / 'config.yaml').read_text()
+        base = (old / 'config.yaml').read_text().removesuffix(GREEDY_BATCH_YAML)
         cache = out / f'{size}-cache'
         shutil.copytree(old / 'cache', cache)
         fingerprint = lambda: {p.name: sha256(p) for p in cache.iterdir() if p.is_file()}
@@ -40,7 +41,9 @@ def run_suite(binary, capture, out, repeats, modes=('greedy', 'approximate', 'ex
                     text = text.replace(str(old.resolve() / name), str(directory / name))
                 if str(old.resolve()) in text or str(directory / 'crossmap.csv') not in text:
                     raise ValueError('capture paths did not resolve cleanly')
-                if mode != 'greedy':
+                if mode == 'greedy':
+                    text += GREEDY_BATCH_YAML
+                else:
                     text += f'\nbatch:\n  assignment:\n    strategy: graph\n    mode: {mode}\n'
                 config.write_text(text)
                 start = time.perf_counter()

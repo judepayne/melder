@@ -303,10 +303,19 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     };
     let db_path = Path::new(&db_path_str);
 
-    // Always fresh: delete existing DB
-    for suffix in &["", "-wal", "-shm"] {
-        let p = format!("{}{}", db_path_str, suffix);
-        let _ = std::fs::remove_file(&p);
+    // Never delete a pre-existing scratch path: validation is advisory,
+    // while exclusive creation also protects against reuse after validation.
+    if let Err(e) = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(db_path)
+    {
+        eprintln!(
+            "Cannot create new batch.db_path {}: {}",
+            db_path.display(),
+            e
+        );
+        process::exit(1);
     }
 
     // Pool config: default read pool to num_cpus for Rayon parallelism

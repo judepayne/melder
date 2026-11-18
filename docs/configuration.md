@@ -342,7 +342,7 @@ Controls where results are written. At least one of `csv_dir_path`, `parquet_dir
 | `csv_dir_path` | no | `None` | Directory for `relationships.csv`, `unmatched.csv`, and `candidates.csv`. Created if it does not exist. |
 | `parquet_dir_path` | no | `None` | Directory for `relationships.parquet`, `unmatched.parquet`, and `candidates.parquet`. Requires `--features parquet-format`. Created if it does not exist. |
 | `db_path` | no | `None` | Path for the output SQLite database with tables and analytical views. |
-| `cleanup_match_log` | no | `false` | Batch mode only. When true, deletes the match log after a successful build. |
+| `cleanup_match_log` | no | `false` | Reserved; currently has no effect. Batch match logs are retained. |
 
 ```yaml
 output:
@@ -378,8 +378,8 @@ scoring_log:
 
 | Output | Description |
 |--------|-------------|
-| `{job_name}.scoring_log.ndjson.zst` | Raw scoring log file (one line per scored record with full candidate set) |
-| `candidates.csv` | Rank-2+ candidates that did not make the final match (written by `build_outputs`) |
+| Raw scoring log | One event per scored query, with its ranked shortlist. In-memory graph batches write `scores.<timestamped-match-log-stem>.scoring_log.ndjson.zst` beside the match log; greedy batches use `{job_name}.scoring_log.ndjson.zst`. With `compression: none`, omit `.zst`. |
+| `candidates.csv` | Candidates ranked second or lower by the scorer. A graph run can select one of these as the final match. For accepted pairs, use rows marked `match` in `relationships.csv`, not the scoring ranks. |
 | `field_scores` DB table | Per-field score breakdowns for all candidates (SQLite output only) |
 
 ### Explainability views (SQLite output)
@@ -396,15 +396,17 @@ These views require the scoring log to be populated:
 
 Settings for `meld run`. Controls assignment policy and in-memory vs SQLite storage for large datasets.
 
-`assignment.strategy` defaults to `greedy`, preserving parallel greedy claims
-without collecting an optimizer graph. Opt in to `graph` to choose pairs jointly
-from the existing eligible shortlists. This is YAML-only; there is no CLI
-override. Live and enroll assignment policies are unchanged.
+`assignment.strategy` defaults to `graph` with `mode: approximate` on both
+in-memory and SQLite record storage, choosing pairs jointly from the existing
+eligible shortlists. Omitted `batch`, `assignment`, or `strategy` uses this
+default. Explicit `strategy: greedy` preserves parallel local claims without
+collecting an optimizer graph. This is YAML-only; there is no CLI override.
+Live and enroll assignment policies are unchanged.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `assignment.strategy` | no | `greedy` | `greedy` or opt-in `graph`. |
-| `assignment.mode` | no | `approximate` for `graph` only | `approximate` or `exact`. Supplying a mode requires explicit `strategy: graph`. |
+| `assignment.strategy` | no | `graph` | `graph` or explicit `greedy`. |
+| `assignment.mode` | no | `approximate` for `graph` only | `approximate` or `exact`. Omitted strategy means graph; any explicit mode with `strategy: greedy` is rejected. |
 | `db_path` | no | `None` | When set, stores records in SQLite instead of RAM. File is created fresh and deleted after the run. |
 | `sqlite_read_pool_size` | no | num_cpus | Read connection pool size. |
 | `sqlite_pool_worker_cache_mb` | no | `128` | Page cache per read connection in MB. |
@@ -420,18 +422,27 @@ batch:
 
 | YAML choice | Effective behavior |
 |-------------|--------------------|
-| Assignment omitted, or `strategy: greedy` with no mode | Existing greedy behavior; no optimizer graph. |
-| `strategy: graph`, mode omitted or `approximate` | Exact through 512 participating records per group (A+B); deterministic fast matching above 512. |
-| `strategy: graph` with `mode: exact` | Exact for every group; failure is an error, never a heuristic fallback. |
-| Explicit mode with omitted strategy or `strategy: greedy` | Validation error: `batch.assignment.mode requires strategy: graph`. |
+| `batch`/assignment omitted, or strategy omitted/`graph` with mode omitted/`approximate` | Graph: exact through 512 participating records per group (A+B); deterministic fast matching above 512. |
+| `mode: exact` with strategy omitted or `graph` | Graph: exact for every group; failure is an error, never a heuristic fallback. |
+| Explicit `strategy: greedy` with no mode | Existing greedy behavior; no optimizer graph. |
+| Any explicit mode with `strategy: greedy` | Validation error: mode requires graph assignment. |
 
-For example, this is **invalid**, even though the mode itself is recognized:
+For example, mode-only exact is **valid**:
 
 ```yaml
 batch:
   assignment:
-    mode: exact         # missing strategy: graph
+    mode: exact         # strategy defaults to graph
 ```
+
+To retain greedy, set `strategy: greedy` and omit `mode` entirely (even
+`mode: approximate` is invalid with greedy).
+
+`batch.db_path` is a temporary work file for either strategy. Give it its own unused path, separate from your datasets, CrossMap, exclusions, live database and outputs. Do not distinguish these names only by capitalization or Unicode spelling; Melder treats such paths conservatively even on case-sensitive disks. Use `output.db_path` for the database you want to keep. SQLite batch storage does not support `method: embedding`; use in-memory storage for semantic matching. Naming an encoder alone does not make a field an embedding field.
+
+SQLite input storage does not move retained candidates, components or graph output assembly to
+SQLite: those remain in memory, including record materialization for output.
+SQLite page-cache budgets do not bound graph/output memory.
 
 Unknown strategy/mode values and unknown assignment fields are rejected;
 `maximum_weight` is not a supported strategy. The 512-record cutoff is fixed,
@@ -522,11 +533,13 @@ No single setting caps total process memory. Different settings control differen
 ### Which knobs to use in which mode
 
 **Batch mode**
-- If records are main problem, use `batch.db_path`.
+- For jobs without embedding match fields, use `batch.db_path` if input records are the main memory cost.
 - If vectors are main problem, use `vector_quantization: f16` first.
 - For very large **warm** usearch runs, try `vector_index_mode: mmap`.
 - Lower `encoder_pool_size` if model copies dominate RAM.
-- Note: current SQLite batch path is for SQLite-backed record storage; embedding-heavy runs still need their own vector-memory tuning.
+- SQLite batch storage does not bound the default graph's retained candidates,
+  components or output assembly memory; budget for those separately.
+  Embedding-heavy runs still need their own vector-memory tuning.
 
 **Live mode (`meld serve`)**
 - Use `live.db_path` if you want records offloaded from RAM.
@@ -567,13 +580,15 @@ If you use SQLite storage, the page-cache budget is roughly:
 - **live / enroll:**  
   `live.sqlite_cache_mb + live.sqlite_read_pool_size × live.sqlite_pool_worker_cache_mb`
 
-This covers SQLite cache only. It does **not** include vector indices, encoder models, BM25, or other heap allocations.
+This covers SQLite cache only. It does **not** include vector indices, encoder
+models, BM25, retained assignment candidates/components, graph output assembly,
+or other heap allocations.
 
 ### Recommended order of attack
 
 If memory is too high:
 
-1. Move records to SQLite (`batch.db_path` or `live.db_path`) if record storage is large.
+1. If record storage is large, consider SQLite (`live.db_path`, or `batch.db_path` for batch jobs without embedding match fields).
 2. Set `vector_quantization: f16` if embeddings are enabled.
 3. Reduce `encoder_pool_size` if encoder slots are large.
 4. For large warm **batch** usearch runs, experiment with `vector_index_mode: mmap`.

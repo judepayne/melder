@@ -1,334 +1,167 @@
 # Batch Mode Worked Example
 
-Batch mode is **asymmetric**: the A side is a pre-indexed reference set
-and each B record is scored against it one by one. A records are encoded
-once into a vector index (and optionally cached to disk); B records are
-encoded on the fly and compared to that index. This means the roles of A
-and B are not interchangeable -- A is the stable reference, B is the
-incoming data you want to match against it.
+Match 25 incoming counterparties (**B**, `incoming.csv`) against 10 reference
+entities (**A**, `reference.csv`). Run the commands below from the project root
+(the directory containing `Cargo.toml`). Batch is asymmetric: A is the indexed
+reference pool; B is the query side.
 
-This example matches 10 reference entities (A, in `reference.csv`)
-against 25 incoming counterparty records (B, in `incoming.csv`) in a
-single batch run. It walks you through validation, running, and
-interpreting the results.
-
-## Prerequisites
-
-Build melder from the project root:
+## 1. Build and fix the teaching config
 
 ```bash
 cargo build --release
-```
-
-All commands below assume you are in the **project root** directory
-(the one containing `Cargo.toml`).
-
-## The data
-
-Open the two csv files in this directory to get a feel for the data:
-
-- `reference.csv` -- 10 reference entities with fields `entity_id`,
-  `legal_name`, `short_name`, `country_code`, `lei`
-- `incoming.csv` -- 25 incoming counterparty records with fields
-  `counterparty_id`, `counterparty_name`, `domicile`, `lei_code`
-
-The field names on each side are different (e.g. `country_code` vs
-`domicile`). The config maps them together.
-
-Some counterparties are obvious matches (e.g. "ACME Corp." / "Acme
-Corporation"), some are ambiguous (e.g. "Sakura Holdings" / "Sakura
-Financial Group"), and some have no match on the A side at all (e.g.
-"Osaka Electronics Co").
-
----
-
-## Step 1: Validate the config
-
-The config file has a deliberate mistake. Try validating it:
-
-```bash
 ./target/release/meld validate -c examples/batch/config.yaml
 ```
 
-You should see an error like:
-
-```
-Config error: weights sum to 1.05, expected 1.0
-```
-
-Melder requires that all match field weights sum to exactly 1.0. Open
-`examples/batch/config.yaml` and find the `lei` match field near the
-bottom:
+The supplied config deliberately has weights summing to **1.05**. In
+`examples/batch/config.yaml`, change the last match field's weight:
 
 ```yaml
   - field_a: lei
     field_b: lei_code
     method: exact
-    weight: 0.10      # <-- this is the problem
+    weight: 0.05     # supplied value: 0.10
 ```
 
-Change `0.10` to `0.05` so the weights sum to 1.0
-(0.55 + 0.20 + 0.20 + 0.05 = 1.00):
-
-```yaml
-  - field_a: lei
-    field_b: lei_code
-    method: exact
-    weight: 0.05
-```
-
-Save the file and validate again:
+The four weights now sum to 1.00 (0.55 + 0.20 + 0.20 + 0.05). Validate and
+check the inputs before matching:
 
 ```bash
 ./target/release/meld validate -c examples/batch/config.yaml
+./target/release/meld run -c examples/batch/config.yaml --dry-run
 ```
 
-You should see:
+Validation checks configuration, not match quality. The dry run also loads
+the data, but does not match or write result files.
 
-```
-Config valid: job="batch_example"
-  datasets: A=examples/batch/reference.csv, B=examples/batch/incoming.csv
-  match_fields: 4 fields
-  thresholds: auto_match=0.85, review_floor=0.6
-  ...
-```
-
-> **What just happened?** `meld validate` parses the YAML, checks that
-> all required fields are present, verifies that match methods are valid
-> (`exact`, `fuzzy`, `embedding`, `numeric`), confirms that weights sum
-> to 1.0, and checks that thresholds are sensible. It does not load
-> data or connect to anything -- it is purely a config syntax check.
-
----
-
-## Step 2: Run the match
+## 2. Run and inspect the results
 
 ```bash
 ./target/release/meld run -c examples/batch/config.yaml --verbose
+ls examples/batch/output/
+head -5 examples/batch/output/relationships.csv
+head -5 examples/batch/output/unmatched.csv
+head -5 examples/batch/output/crossmap.csv
 ```
 
-You will see output like this (timings will vary):
+The first embedding run may need network access to download the configured
+`all-MiniLM-L6-v2` model. Later runs can reuse its downloaded files and vector
+caches. Do not expect particular pair counts or scores from this tutorial:
+they are not verified reference results.
 
+| Output | How to read it |
+|--------|----------------|
+| `relationships.csv` | `relationship_type=match` means an accepted link; `review` means a proposal requiring a decision, **not** an accepted link. Includes configured ID columns (`counterparty_id`, `entity_id`), `score`, `reason`, `rank`, and A-side fields. |
+| `unmatched.csv` | B records without a match or review outcome, with B fields and best-candidate evidence when available. It does not prove that no real-world match exists. |
+| `crossmap.csv` | Accepted one-to-one pairs, using the configured `entity_id,counterparty_id` columns. Later runs reuse these links and skip resolved B records. |
+
+There is no separate `results.csv` or `review.csv`. The supplied config does
+not enable the optional scoring log, so it does not produce `candidates.csv`
+or per-field score columns in `relationships.csv`. To collect additional
+candidate evidence, add this top-level section before a fresh run:
+
+```yaml
+scoring_log:
+  enabled: true
 ```
-Job: batch_example (Worked example — 10 entities vs 25 counterparties)
-Datasets: A=examples/batch/reference.csv B=examples/batch/incoming.csv
-Thresholds: auto_match=0.85, review_floor=0.6
-Initializing encoder pool (model=all-MiniLM-L6-v2, pool_size=2)...
-Encoder ready (dim=384), took 0.1s
-Loaded dataset A: 10 records in 0.0s
-Building A combined embedding index (10 records, dim=384, 1 field(s))...
-  A combined index: encoded 10/10
-A combined embedding index built: 10 vecs in 0.0s (...)
-Saved A combined index cache to examples/batch/cache/a.combined_embedding_XXXXXXXX.index
-...
+
+`candidates.csv` lists ranks 2..N from scoring. **Rank is not acceptance:** a
+rank-two candidate may be selected, while a rank-one candidate may lose to a
+competing query. Use `relationships.csv` and the final crossmap to identify
+accepted links. See [batch outputs](../../docs/batch-mode.md#output-files) for
+logs, optional Parquet/SQLite output and rebuild instructions.
+
+## 3. Understand why graph assignment is the default
+
+Several B records can compete for the same A entity. Melder scores candidates
+first, then jointly chooses eligible one-to-one links with **graph assignment**
+(default mode: `approximate`). It optimizes total represented similarity, not
+pair count or known identity accuracy.
+
+For a hypothetical eligible set:
+
+| Pair | Score |
+|------|-------|
+| B1–A1 | 0.99 |
+| B1–A2 | 0.98 |
+| B2–A1 | 0.97 |
+| B2–A2 | 0.85 |
+
+Greedy can claim B1–A1 followed by B2–A2 (total **1.84**). Graph can instead
+select B1–A2 and B2–A1 (total **1.95**). These are illustrative scores, not
+results from the supplied CSVs. This joint handling of competition is why
+graph is the default; see [measured evidence and solver details](../../docs/batch-mode.md#why-graph-assignment-is-the-default).
+
+The example config omits `batch`, which already selects graph/approximate.
+To compare explicit greedy on a **fresh crossmap**, add:
+
+```yaml
+batch:
+  assignment:
+    strategy: greedy
 ```
 
-Let's break down what happens:
+Greedy claims available partners locally without reconsidering occupied A
+records. Do not specify `mode` with greedy. To return to the default, remove
+this section. Neither strategy guarantees correct real-world identities.
 
-1. **Encoder init** -- the ONNX sentence-transformer model is loaded.
-   On the very first run it downloads to `~/.cache/fastembed/` (~30MB).
-   Subsequent runs use the cached model.
+### Thresholds are eligibility gates, not assignment decisions
 
-2. **A index build** -- each A record's `legal_name` is fed through the
-   model to produce a 384-dimensional vector. These vectors are saved
-   to `examples/batch/cache/a.combined_embedding_XXXXXXXX.index` (the
-   hash in the filename encodes the field spec and quantization so the
-   cache is automatically invalidated when config changes).
+The supplied thresholds are `auto_match: 0.85` and `review_floor: 0.60`.
 
-3. **B index build** -- same for B records, saved alongside the A cache.
+- A candidate must meet automatic eligibility checks to enter graph assignment;
+  exceeding 0.85 alone does **not** guarantee a link.
+- Review-band scores are proposals, not accepted relationships. An otherwise
+  eligible query can also remain in review with `reason=assignment_conflict`.
+- A record without an accepted link or review outcome appears in `unmatched.csv`.
 
-4. **Blocking** -- melder builds an index on `country_code` / `domicile`.
-   Only records in the same country are compared, avoiding wasted work.
+The pipeline maps differently named fields, uses country blocking, retrieves
+embedding candidates, and scores all four configured fields. Graph assignment
+does not change those scores or search beyond the retained candidates. See
+[scoring](../../docs/scoring.md) for the full eligibility rules.
 
-5. **Scoring** -- for each B record, melder applies the scoring
-   pipeline: blocking filter (same country only), embedding candidate
-   selection (top 10 nearest vectors by cosine similarity), then full
-   scoring across all four match fields.
+## 4. Try a clean threshold comparison
 
-6. **Classification** -- each B record's best score is classified:
-   - score >= 0.85 --> **auto-match** (written to results.csv, added
-     to crossmap)
-   - 0.60 <= score < 0.85 --> **review** (written to review.csv)
-   - score < 0.60 --> **no match** (written to unmatched.csv)
+Preserved crossmap links would remain fixed rather than being reconsidered.
+For a comparison, first keep any outputs you need, then change **both** paths
+in your config to a new, unused directory:
 
----
+```yaml
+cross_map:
+  backend: local
+  path: examples/batch/output_trial/crossmap.csv
+  a_id_field: entity_id
+  b_id_field: counterparty_id
 
-## Step 3: Check the cache
+output:
+  csv_dir_path: examples/batch/output_trial/
+```
 
-After the run, look at the cache directory:
+Lower `auto_match` to `0.75` and `review_floor` to `0.50`, then run again.
+This changes eligibility and review coverage; it does not promise more correct
+matches or fewer reviews. Compare accepted pairs and reasons, not just counts.
+Restore the original paths and thresholds when finished. Do not delete a
+production crossmap to tune thresholds. For labelled evaluation, see
+[Accuracy & Tuning](../../docs/accuracy-and-tuning.md).
+
+## 5. Inspect or clear vector caches
 
 ```bash
 ls -lh examples/batch/cache/
 ```
 
-You should see files like:
+Caches include vector indices and manifest/text-hash sidecars. Compatible
+caches can avoid re-encoding unchanged text; changes to embedding fields,
+weights or other index settings can invalidate them. Cache reuse is separate
+from crossmap reuse: a warm cache does not imply records are reconsidered.
 
-```
-a.combined_embedding_XXXXXXXX.index          ~15K
-a.combined_embedding_XXXXXXXX.manifest       manifest metadata
-a.combined_embedding_XXXXXXXX.texthash       per-record text hashes
-b.combined_embedding_XXXXXXXX.index          ~40K
-b.combined_embedding_XXXXXXXX.manifest
-b.combined_embedding_XXXXXXXX.texthash
-```
-
-The `.index` files contain the encoded vectors. The `.manifest` and
-`.texthash` sidecars enable incremental cache updates -- if you add a
-record to the csv and re-run, only the new record is encoded.
-
-Try running again:
+To remove this example's current and stale vector caches:
 
 ```bash
-./target/release/meld run -c examples/batch/config.yaml --verbose
+./target/release/meld cache clear -c examples/batch/config.yaml --all
 ```
 
-Notice the log now says "Loaded A combined embedding index from cache"
--- the encoding step is skipped entirely.
-
-> **Why does this matter?** Encoding is the slowest part of a batch
-> run. At 10 records the difference is negligible, but at 10,000
-> records encoding takes ~8 seconds. Caching drops this to ~5ms.
-> This is especially useful when tuning -- you can change thresholds
-> or weights and re-run without re-encoding.
-
----
-
-## Step 4: Examine the outputs
-
-Three csv files are written to `examples/batch/output/`:
-
-### results.csv -- auto-matched pairs
-
-```bash
-head -5 examples/batch/output/results.csv
-```
-
-Each row is a confirmed match. Key columns:
-
-| Column | Meaning |
-|--------|---------|
-| `a_id` | The A-side record ID (e.g. `ENT-001`) |
-| `b_id` | The B-side record ID (e.g. `CP-001`) |
-| `score` | Composite score (0.0 to 1.0) |
-| `classification` | Always `auto` in this file |
-| `<fieldA>_<fieldB>_score` | One column per match field showing that field's score (e.g. `legal_name_counterparty_name_score`) |
-
-### review.csv -- uncertain matches
-
-```bash
-head -5 examples/batch/output/review.csv
-```
-
-Same format as results.csv, but these scored between 0.60 and 0.85 --
-close enough to be plausible but not confident enough to auto-confirm.
-In production, a human would review these and decide.
-
-### unmatched.csv -- no match found
-
-```bash
-head -5 examples/batch/output/unmatched.csv
-```
-
-B records that scored below 0.60 against all A candidates. These are
-counterparties with no corresponding entity on the A side (e.g.
-"Osaka Electronics Co" has no match because there is no Japanese
-electronics company in the entities file).
-
----
-
-## Step 5: Check the crossmap
-
-The crossmap tracks confirmed pairs. After the run:
-
-```bash
-head examples/batch/output/crossmap.csv
-```
-
-You will see rows like:
-
-```
-entity_id,counterparty_id
-ENT-001,CP-001
-ENT-002,CP-003
-...
-```
-
-These are the auto-matched pairs. On a subsequent run, these B records
-would be **skipped** because the crossmap already records their match.
-
-> **The crossmap is the system of record.** Auto-matched pairs are
-> written here automatically. Review decisions (accepted or rejected)
-> are also recorded here. The crossmap persists across runs -- it is
-> the cumulative result of all matching activity.
-
----
-
-## Step 6: Experiment with thresholds
-
-Try lowering the auto-match threshold to see how the results change.
-Edit `examples/batch/config.yaml`:
-
-```yaml
-thresholds:
-  auto_match: 0.75    # was 0.85
-  review_floor: 0.50  # was 0.60
-```
-
-Clear the crossmap so all records are re-evaluated:
-
-```bash
-rm examples/batch/output/crossmap.csv
-```
-
-Run again:
-
-```bash
-./target/release/meld run -c examples/batch/config.yaml --verbose
-```
-
-Notice that more records are now auto-matched (lower bar) and fewer
-fall into review. The B index loads from cache -- no re-encoding.
-
-> **Tip:** Use `meld tune` on labelled data to find optimal thresholds
-> automatically. See [Accuracy & Tuning](../../docs/accuracy-and-tuning.md) for details.
-
-When you are done experimenting, change the thresholds back to 0.85 /
-0.60.
-
----
-
-## Step 7: Clean up
-
-To remove all cached data and start fresh:
-
-```bash
-./target/release/meld cache clear -c examples/batch/config.yaml
-rm -f examples/batch/output/*.csv
-```
-
-This deletes stale cache files from `cache/` and all output files.
-The next run will re-encode everything from scratch. Add `--all` to
-`cache clear` to delete the current cache too (by default it only
-removes files from old configs).
-
----
-
-## Config reference
-
-Here is what each section of `config.yaml` does:
-
-| Section | Purpose |
-|---------|---------|
-| `job` | Metadata -- name and description for your reference |
-| `datasets` | Paths to the csv files and the ID column in each |
-| `cross_map` | Where to persist confirmed matches |
-| `embeddings` | Model name and cache directories |
-| `vector_backend` | `flat` (brute-force) or `usearch` (ANN). Flat is fine for small datasets |
-| `top_n` | How many candidates to retrieve from the embedding index before full scoring |
-| `blocking` | Pre-filter: only compare records sharing the same country |
-| `match_fields` | The scoring rules: which fields to compare, how, and how much weight each carries |
-| `thresholds` | Score boundaries for auto-match vs review vs no-match |
-| `output` | Where to write the three output csv files |
-| `performance` | Encoder pool size, ONNX quantization, vector index quantization |
-
-For full configuration documentation, see the main [README](../../README.md).
+Without `--all`, only stale caches are cleared. This does not reset accepted
+links or remove outputs/logs. Keep logs you may need for audit or export;
+automatic match-log cleanup is not implemented. See
+[Vector Caching](../../docs/vector-caching.md) and the full
+[configuration reference](../../docs/configuration.md).

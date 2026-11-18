@@ -18,6 +18,7 @@ import subprocess
 
 REPO = Path(__file__).resolve().parents[2]
 SCALE = 1_000_000_000
+GREEDY_BATCH_YAML = '\nbatch:\n  assignment:\n    strategy: greedy\n'
 
 
 def sha(path):
@@ -186,6 +187,7 @@ def capture(size, output, binary, timeout, unseeded=False):
     text = text.replace(prefix + '/cache', str(directory / 'cache'))
     text = text.replace(prefix + '/output', str(directory / 'output'))
     text += '\nscoring_log:\n  enabled: true\n  compression: none\n'
+    text += GREEDY_BATCH_YAML
     (directory / 'config.yaml').write_text(text)
     a_path = REPO / f'benchmarks/data/dataset_a_{size}.csv'
     b_path = REPO / f'benchmarks/data/dataset_b_{size}.csv'

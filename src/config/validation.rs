@@ -2,6 +2,10 @@
 
 use crate::error::ConfigError;
 
+mod batch_scratch;
+
+pub(crate) use batch_scratch::validate_scratch;
+
 use super::schema::{
     BatchAssignmentStrategy, Config, DatasetConfig, LiveAssignmentStrategy, MatchMethod,
 };
@@ -118,6 +122,7 @@ pub(crate) fn validate(cfg: &Config) -> Result<(), ConfigError> {
 
     // Shared checks
     validate_common(cfg)?;
+    validate_scratch(cfg, None)?;
 
     Ok(())
 }
@@ -170,7 +175,7 @@ pub(crate) fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
 
 fn validate_common(cfg: &Config) -> Result<(), ConfigError> {
     if cfg.batch.assignment.mode.is_some()
-        && cfg.batch.assignment.strategy != BatchAssignmentStrategy::Graph
+        && cfg.batch.assignment.strategy == BatchAssignmentStrategy::Greedy
     {
         return Err(ConfigError::InvalidValue {
             field: "batch.assignment.mode".into(),
@@ -644,23 +649,23 @@ output: {{ csv_dir_path: /tmp/test/output }}
     }
 
     #[test]
-    fn batch_assignment_mode_requires_graph_strategy() {
+    fn batch_assignment_mode_rejects_greedy_strategy() {
         let base = base_yaml_with_match_fields(
             "  - { field_a: name, field_b: name, method: exact, weight: 1.0 }",
         );
-        for strategy in ["", "strategy: greedy,"] {
-            for mode in ["approximate", "exact"] {
-                let yaml =
-                    format!("{base}\nbatch: {{ assignment: {{ {strategy} mode: {mode} }} }}");
-                let err = parse_and_validate(&yaml).expect_err("mode requires graph strategy");
-                assert!(
-                    matches!(err, ConfigError::InvalidValue { ref field, .. } if field == "batch.assignment.mode"),
-                    "reject mode without graph: {yaml}: {err}"
-                );
-            }
+        for mode in ["approximate", "exact"] {
+            let yaml =
+                format!("{base}\nbatch: {{ assignment: {{ strategy: greedy, mode: {mode} }} }}");
+            let err = parse_and_validate(&yaml).expect_err("mode cannot be used with greedy");
+            assert!(
+                matches!(err, ConfigError::InvalidValue { ref field, .. } if field == "batch.assignment.mode"),
+                "reject mode with greedy: {yaml}: {err}"
+            );
         }
         for assignment in [
             "{}",
+            "{ mode: approximate }",
+            "{ mode: exact }",
             "{ strategy: greedy }",
             "{ strategy: graph }",
             "{ strategy: graph, mode: approximate }",

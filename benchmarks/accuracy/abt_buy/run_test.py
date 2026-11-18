@@ -14,6 +14,9 @@ Phase 0 — Fetch data:
 
 Phase 1 — Batch match:
   - meld run with config.yaml (A = Abt, B = Buy)
+  - Evaluate the exact graph run's scoring companion, identified by meld's
+    stderr announcement (explicit greedy / older binaries use the job-wide
+    scoring log in the freshly cleaned output directory)
 
 Phase 2 — Evaluate against the perfect mapping:
   - Precision / recall / F1 of auto-matched pairs
@@ -40,6 +43,7 @@ import time
 import urllib.request
 import zipfile
 from itertools import groupby
+from pathlib import Path
 
 TEST_DIR = "benchmarks/accuracy/abt_buy"
 DATA_DIR = f"{TEST_DIR}/data"
@@ -142,9 +146,31 @@ def load_outputs() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
     return auto, review
 
 
-def load_rank_one_candidates() -> dict[str, tuple[str, float]]:
+def scoring_log_for_run(stderr: str) -> Path:
+    """Select this run's evidence, never a latest-file glob.
+
+    The caller starts with an empty output directory. Without a graph-log
+    announcement, the job-wide file is therefore safe for explicit greedy
+    runs (and older binaries). A graph run must have its exact companion;
+    stale job-wide or other runs' evidence must not be used as a fallback.
+    """
+    prefix = "Batch graph log: "
+    logs = [line[len(prefix):] for line in stderr.splitlines()
+            if line.startswith(prefix)]
+    if len(logs) > 1:
+        raise ValueError("Expected exactly one batch graph log announcement")
+    if logs:
+        match_log = Path(logs[0])
+        path = match_log.with_name(f"scores.{match_log.stem}.scoring_log.ndjson")
+    else:
+        path = Path(TEST_DIR) / "output/accuracy_abt_buy.scoring_log.ndjson"
+    if not path.is_file():
+        raise FileNotFoundError(f"Scoring log for this run is missing: {path}")
+    return path
+
+
+def load_rank_one_candidates(path: Path) -> dict[str, tuple[str, float]]:
     """Return each B record's genuine rank-one scored candidate."""
-    path = f"{TEST_DIR}/output/accuracy_abt_buy.scoring_log.ndjson"
     top: dict[str, tuple[str, float]] = {}
 
     with open(path, encoding="utf-8") as f:
@@ -206,11 +232,11 @@ def oracle_f1(top: dict[str, tuple[str, float]], gt: set) -> tuple[float, float]
     return best_f1, best_t
 
 
-def evaluate() -> None:
+def evaluate(scoring_log: Path) -> None:
     gt = load_ground_truth()
     ceiling = max_bipartite_matching(gt)
     auto, review = load_outputs()
-    top = load_rank_one_candidates()
+    top = load_rank_one_candidates(scoring_log)
 
     auto_p, auto_r, auto_f1 = prf(auto, gt)
     combined = auto | review
@@ -295,8 +321,12 @@ def main():
 
     start = time.time()
     result = subprocess.run(
-        [args.binary, "run", "--config", f"{TEST_DIR}/config.yaml", "--verbose"]
+        [args.binary, "run", "--config", f"{TEST_DIR}/config.yaml", "--verbose"],
+        stderr=subprocess.PIPE,
+        text=True,
     )
+    # Preserve diagnostics and the exact run identity printed by meld.
+    print(result.stderr, end="", file=sys.stderr)
     elapsed = time.time() - start
     print(f"\nBatch completed in {elapsed:.1f}s")
 
@@ -304,7 +334,7 @@ def main():
         print("Batch run failed!")
         sys.exit(result.returncode)
 
-    evaluate()
+    evaluate(scoring_log_for_run(result.stderr))
 
 
 if __name__ == "__main__":

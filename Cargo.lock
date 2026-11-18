@@ -2076,6 +2076,7 @@ dependencies = [
  "dashmap",
  "fastembed",
  "hf-hub",
+ "icu_normalizer",
  "libc",
  "ort",
  "parquet",

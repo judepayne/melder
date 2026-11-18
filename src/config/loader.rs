@@ -16,6 +16,7 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     super::defaults::apply_defaults(&mut cfg);
     super::defaults::deprecation_warnings(&cfg);
     super::validation::validate(&cfg)?;
+    super::validation::validate_scratch(&cfg, Some(path))?;
     super::derivation::derive_bm25_fields(&mut cfg);
     super::derivation::derive_synonym_fields(&mut cfg);
     super::derivation::derive_required_fields(&mut cfg);
@@ -100,29 +101,38 @@ output: { csv_dir_path: output }
 "#;
         let dir = tempfile::tempdir().expect("temporary config directory");
         let path = dir.path().join("config.yaml");
-        for (assignment, mode) in [
-            ("{}", None),
-            ("{ strategy: greedy }", None),
+        for (suffix, mode) in [
+            ("", Some(BatchAssignmentMode::Approximate)),
+            ("batch: {}", Some(BatchAssignmentMode::Approximate)),
             (
-                "{ strategy: graph }",
+                "batch: { assignment: {} }",
                 Some(BatchAssignmentMode::Approximate),
             ),
             (
-                "{ strategy: graph, mode: approximate }",
+                "batch: { assignment: { mode: approximate } }",
                 Some(BatchAssignmentMode::Approximate),
             ),
             (
-                "{ strategy: graph, mode: exact }",
+                "batch: { assignment: { mode: exact } }",
+                Some(BatchAssignmentMode::Exact),
+            ),
+            ("batch: { assignment: { strategy: greedy } }", None),
+            (
+                "batch: { assignment: { strategy: graph } }",
+                Some(BatchAssignmentMode::Approximate),
+            ),
+            (
+                "batch: { assignment: { strategy: graph, mode: approximate } }",
+                Some(BatchAssignmentMode::Approximate),
+            ),
+            (
+                "batch: { assignment: { strategy: graph, mode: exact } }",
                 Some(BatchAssignmentMode::Exact),
             ),
         ] {
-            std::fs::write(
-                &path,
-                format!("{base}\nbatch: {{ assignment: {assignment} }}"),
-            )
-            .expect("write config");
+            std::fs::write(&path, format!("{base}\n{suffix}")).expect("write config");
             let cfg = load_config(&path).expect("load valid batch assignment");
-            assert_eq!(cfg.batch.assignment.graph_mode(), mode, "{assignment}");
+            assert_eq!(cfg.batch.assignment.graph_mode(), mode, "{suffix}");
             assert_eq!(
                 cfg.live.assignment,
                 Default::default(),
@@ -130,8 +140,6 @@ output: { csv_dir_path: output }
             );
         }
         for assignment in [
-            "{ mode: approximate }",
-            "{ mode: exact }",
             "{ strategy: greedy, mode: approximate }",
             "{ strategy: greedy, mode: exact }",
             "{ strategy: graph, mode: invalid }",

@@ -8,9 +8,9 @@ use serde::Deserialize;
 use crate::error::ConfigError;
 
 use super::schema::{
-    BatchConfig, Bm25FieldPair, Config, CrossMapConfig, DatasetConfig, DatasetsConfig,
-    EmbeddingsConfig, ExclusionsConfig, HooksConfig, LiveConfig, Mode, OutputConfig,
-    PerformanceConfig, ScoringLogConfig, SynonymDictionaryConfig,
+    BatchAssignmentConfig, BatchAssignmentStrategy, BatchConfig, Bm25FieldPair, Config,
+    CrossMapConfig, DatasetConfig, DatasetsConfig, EmbeddingsConfig, ExclusionsConfig, HooksConfig,
+    LiveConfig, Mode, OutputConfig, PerformanceConfig, ScoringLogConfig, SynonymDictionaryConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -311,7 +311,13 @@ impl EnrollConfig {
             thresholds: self.thresholds,
             output: self.output,
             scoring_log: self.scoring_log,
-            batch: BatchConfig::default(),
+            batch: BatchConfig {
+                assignment: BatchAssignmentConfig {
+                    strategy: BatchAssignmentStrategy::Greedy,
+                    mode: None,
+                },
+                ..BatchConfig::default()
+            },
             live: self.live,
             performance: self.performance,
             hooks: self.hooks,

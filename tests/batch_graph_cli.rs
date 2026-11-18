@@ -109,10 +109,10 @@ impl Fixture {
     }
 
     fn log_path(&self) -> Result<PathBuf, Box<dyn Error>> {
-        let base = if self.config["batch"]["assignment"]["strategy"] == "graph" {
-            "out/graph_cli.graph.match_log.ndjson"
-        } else {
+        let base = if self.config["batch"]["assignment"]["strategy"] == "greedy" {
             "out/graph_cli.match_log.ndjson"
+        } else {
+            "out/graph_cli.graph.match_log.ndjson"
         };
         let files = melder::state::match_log::MatchLog::find_wal_files(&self.path(base));
         assert_eq!(files.len(), 1, "one CLI run must produce one WAL segment");
@@ -125,6 +125,265 @@ impl Fixture {
             .map(serde_json::from_str)
             .collect::<Result<_, _>>()?)
     }
+}
+
+#[test]
+fn sqlite_scratch_guard_rejects_reuse_without_changing_original_files() -> TestResult {
+    for target in [
+        "a.csv",
+        "b.csv",
+        "crossmap.csv",
+        "exclusions.csv",
+        "synonyms.csv",
+        "config.yaml",
+        "output.db",
+        "live.db",
+        "unrelated.bin",
+        "storage.db-wal",
+        "storage.db-shm",
+        "storage.db-journal",
+    ] {
+        for command in ["validate", "run", "dry-run"] {
+            let mut fixture = Fixture::new(true, Value::Null)?;
+            fixture.config["exclusions"] = json!({"path": fixture.path("exclusions.csv"), "a_id_field":"aid", "b_id_field":"bid"});
+            fixture.config["synonym_dictionary"] = json!({"path":fixture.path("synonyms.csv")});
+            fixture.config["live"] = json!({"db_path":fixture.path("live.db")});
+            if !target.starts_with("storage.db-") {
+                fixture.config["batch"]["db_path"] = json!(fixture.path(target));
+            }
+            if !["config.yaml", "a.csv", "b.csv"].contains(&target) {
+                fs::write(fixture.path(target), b"original bytes must survive")?;
+            }
+            let mut cmd = fixture.command(
+                if command == "validate" {
+                    "validate"
+                } else {
+                    "run"
+                },
+                1,
+            )?;
+            if command == "dry-run" {
+                cmd.arg("--dry-run");
+            }
+            let before = fs::read(fixture.path(target))?;
+            let a = fs::read(fixture.path("a.csv"))?;
+            let b = fs::read(fixture.path("b.csv"))?;
+            let output = cmd.output()?;
+            assert!(!output.status.success(), "reject {target} for {command}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("batch.db_path"),
+                "scratch diagnostic: {:?}",
+                output
+            );
+            assert_eq!(
+                fs::read(fixture.path(target))?,
+                before,
+                "preserve {target} for {command}"
+            );
+            assert_eq!(fs::read(fixture.path("a.csv"))?, a, "preserve A");
+            assert_eq!(fs::read(fixture.path("b.csv"))?, b, "preserve B");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn sqlite_scratch_guard_rejects_missing_output_aliases_and_sidecar_collisions() -> TestResult {
+    for target in [
+        "out/relationships.csv",
+        "out/UNMATCHED.CSV",
+        "OUT/RELATIONSHIPS.csv.TMP",
+        "parquet/CANDIDATES.parquet.TMP",
+        "OUTPUT.DB-WAL",
+        "LIVE.DB-ShM",
+        "out/unmatched.csv",
+        "out/candidates.csv",
+        "out/relationships.csv.tmp",
+        "out/unmatched.csv.tmp",
+        "out/candidates.csv.tmp",
+        "parquet/relationships.parquet",
+        "parquet/unmatched.parquet",
+        "parquet/candidates.parquet",
+        "parquet/relationships.parquet.tmp",
+        "parquet/unmatched.parquet.tmp",
+        "parquet/candidates.parquet.tmp",
+        "output.db",
+        "output.db-wal",
+        "output.db-shm",
+        "output.db-journal",
+        "live.db",
+        "live.db-wal",
+        "live.db-shm",
+        "live.db-journal",
+    ] {
+        for command in ["validate", "run", "dry-run"] {
+            let mut fixture = Fixture::new(true, Value::Null)?;
+            fixture.config["batch"]["db_path"] = json!(format!("./{target}"));
+            fixture.config["output"]["parquet_dir_path"] = json!(fixture.path("parquet"));
+            fixture.config["live"] = json!({"db_path":fixture.path("live.db")});
+            let mut cmd = fixture.command(
+                if command == "validate" {
+                    "validate"
+                } else {
+                    "run"
+                },
+                1,
+            )?;
+            if command == "dry-run" {
+                cmd.arg("--dry-run");
+            }
+            let output = cmd.output()?;
+            assert!(
+                !output.status.success(),
+                "reject missing collision {target} for {command}"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("batch.db_path"),
+                "scratch diagnostic: {:?}",
+                output
+            );
+            assert!(!fixture.path(target).exists(), "must not create {target}");
+        }
+    }
+    // A scratch sidecar must not be an output database either.
+    let mut fixture = Fixture::new(true, Value::Null)?;
+    fixture.config["output"]["db_path"] = json!(fixture.path("storage.db-wal"));
+    let output = fixture.command("validate", 1)?.output()?;
+    assert!(
+        !output.status.success(),
+        "protect output against scratch sidecar"
+    );
+    // No csv_dir_path means legacy SQLite CSV output goes to cwd.
+    fixture.config["output"] = json!({"db_path":fixture.path("output.db")});
+    fixture.config["batch"]["db_path"] = json!("relationships.csv.tmp");
+    let output = fixture.command("validate", 1)?.output()?;
+    assert!(
+        !output.status.success(),
+        "protect default cwd CSV temp output"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn sqlite_scratch_guard_rejects_symlinks_and_hardlinks() -> TestResult {
+    for alias in ["symlink", "dangling", "hardlink", "parent"] {
+        let mut fixture = Fixture::new(true, Value::Null)?;
+        let original = fs::read(fixture.path("a.csv"))?;
+        match alias {
+            "symlink" => std::os::unix::fs::symlink(fixture.path("a.csv"), fixture.path("alias"))?,
+            "dangling" => {
+                std::os::unix::fs::symlink(fixture.path("absent"), fixture.path("alias"))?
+            }
+            "hardlink" => fs::hard_link(fixture.path("a.csv"), fixture.path("alias"))?,
+            _ => std::os::unix::fs::symlink(fixture.path("out"), fixture.path("alias"))?,
+        }
+        fixture.config["batch"]["db_path"] = json!(if alias == "parent" {
+            "alias/relationships.csv.tmp"
+        } else {
+            "alias"
+        });
+        for command in ["validate", "run", "dry-run"] {
+            let mut cmd = fixture.command(
+                if command == "validate" {
+                    "validate"
+                } else {
+                    "run"
+                },
+                1,
+            )?;
+            if command == "dry-run" {
+                cmd.arg("--dry-run");
+            }
+            assert!(
+                !cmd.output()?.status.success(),
+                "reject {alias} for {command}"
+            );
+            assert_eq!(
+                fs::read(fixture.path("a.csv"))?,
+                original,
+                "preserve symlink/hardlink target"
+            );
+            assert!(
+                fs::symlink_metadata(fixture.path("alias")).is_ok(),
+                "preserve alias"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn sqlite_rejects_embedding_fields_but_accepts_unused_model_and_fresh_scratch() -> TestResult {
+    let mut fixture = Fixture::new(true, Value::Null)?;
+    fixture.config["match_fields"] =
+        json!([{"field_a":"name", "field_b":"name", "method":"embedding", "weight":1.0}]);
+    for command in ["validate", "run", "dry-run"] {
+        let mut cmd = fixture.command(
+            if command == "validate" {
+                "validate"
+            } else {
+                "run"
+            },
+            1,
+        )?;
+        if command == "dry-run" {
+            cmd.arg("--dry-run");
+        }
+        let output = cmd.output()?;
+        assert!(
+            !output.status.success(),
+            "reject unsupported embedding for {command}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("embedding match fields"),
+            "embedding diagnostic: {:?}",
+            output
+        );
+        assert!(
+            !fixture.path("storage.db").exists(),
+            "reject before creating scratch"
+        );
+    }
+    fixture.config["match_fields"] =
+        json!([{"field_a":"name", "field_b":"name", "method":"exact", "weight":1.0}]);
+    fixture.config["embeddings"]
+        .as_object_mut()
+        .ok_or("embeddings object")?
+        .remove("remote_encoder_cmd");
+    fixture.config["embeddings"]["model"] = json!("unused-do-not-download");
+    assert_success(&fixture.command("validate", 1)?.output()?);
+    let a = fs::read(fixture.path("a.csv"))?;
+    let b = fs::read(fixture.path("b.csv"))?;
+    assert_success(&fixture.command("run", 1)?.arg("--dry-run").output()?);
+    assert!(
+        !fixture.path("storage.db").exists(),
+        "dry-run removes its own fresh scratch"
+    );
+    fixture.run(1)?;
+    assert!(
+        !fixture.path("storage.db").exists(),
+        "run removes its own fresh scratch"
+    );
+    assert_eq!(
+        fs::read(fixture.path("a.csv"))?,
+        a,
+        "preserve A after successful runs"
+    );
+    assert_eq!(
+        fs::read(fixture.path("b.csv"))?,
+        b,
+        "preserve B after successful runs"
+    );
+    // Merely selecting a model, or embedding fields without SQLite batch,
+    // must remain valid for the live/memory configuration path.
+    fixture.config["batch"]
+        .as_object_mut()
+        .ok_or("batch object")?
+        .remove("db_path");
+    fixture.config["match_fields"][0]["method"] = json!("embedding");
+    assert_success(&fixture.command("validate", 1)?.output()?);
+    Ok(())
 }
 
 fn assert_success(output: &Output) {
@@ -304,18 +563,46 @@ fn graph_coordinates_optimum_and_is_repeatable_across_input_order_and_workers() 
 }
 
 #[test]
-fn default_greedy_is_compatible_and_graph_objective_dominates_greedy() -> TestResult {
+fn default_graph_agrees_with_explicit_approximate_on_both_backends() -> TestResult {
+    let selected = expected(&[("a2", "b1"), ("a1", "b2")]);
     for sqlite in [false, true] {
-        let default = Fixture::new(sqlite, Value::Null)?;
-        fs::write(default.path("b.csv"), "bid,name,text\nb1,aaab,shared\n")?;
-        default.run(1)?;
+        for assignment in [
+            Value::Null,
+            json!({"strategy": "graph", "mode": "approximate"}),
+        ] {
+            let mut fixture = Fixture::new(sqlite, assignment)?;
+            if !sqlite && fixture.config["batch"]["assignment"].is_null() {
+                fixture
+                    .config
+                    .as_object_mut()
+                    .expect("fixture config object")
+                    .remove("batch");
+            }
+            let output = fixture.run(2)?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains("Batch assignment: graph (approximate)"),
+                "report the effective default: {stdout}"
+            );
+            assert!(
+                stdout.contains("Groups: 1 exact · 0 approximate · largest: 4 records"),
+                "report the solved group: {stdout}"
+            );
+            assert_outputs(&fixture, &selected)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn explicit_greedy_preserves_claims_and_graph_objective_dominates_greedy() -> TestResult {
+    for sqlite in [false, true] {
         let greedy = Fixture::new(sqlite, json!({"strategy": "greedy"}))?;
         fs::write(greedy.path("b.csv"), "bid,name,text\nb1,aaab,shared\n")?;
-        greedy.run(1)?;
-        assert_eq!(
-            default.pairs()?,
-            greedy.pairs()?,
-            "omission must preserve greedy behavior"
+        let output = greedy.run(1)?;
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("Batch assignment: graph"),
+            "explicit greedy must not run the graph solver"
         );
         assert_eq!(
             greedy.pairs()?,
@@ -496,6 +783,51 @@ fn graph_refuses_malformed_constraints_before_overwriting_any_snapshot() -> Test
 }
 
 #[test]
+fn live_wal_export_is_independent_of_the_batch_graph_default() -> TestResult {
+    use melder::models::Side;
+    use melder::state::match_log::{MatchLog, MatchLogEvent};
+
+    let mut fixture = Fixture::new(false, Value::Null)?;
+    let base = fixture.path("live.match_log.ndjson");
+    let log = MatchLog::open(&base)?;
+    log.append_upsert(
+        Side::A,
+        &std::collections::HashMap::from([
+            ("aid".into(), "a1".into()),
+            ("name".into(), "aaaa".into()),
+        ]),
+    )?;
+    log.append_upsert(
+        Side::B,
+        &std::collections::HashMap::from([
+            ("bid".into(), "b1".into()),
+            ("name".into(), "aaab".into()),
+        ]),
+    )?;
+    log.append(&MatchLogEvent::CrossMapConfirm {
+        a_id: "a1".into(),
+        b_id: "b1".into(),
+        score: Some(0.775),
+        rank: Some(1),
+        reason: None,
+    })?;
+    log.flush()?;
+    fixture.config["live"] = json!({"match_log_path": base});
+    let output = fixture
+        .command("export", 1)?
+        .arg("--out-dir")
+        .arg(fixture.path("live-export"))
+        .output()?;
+    assert_success(&output);
+    assert_eq!(
+        csv_pairs(&fixture.path("live-export/relationships.csv"), true)?,
+        expected(&[("a1", "b1")]),
+        "live export must not require batch assignment markers"
+    );
+    Ok(())
+}
+
+#[test]
 fn historical_export_uses_its_own_scoring_evidence() -> TestResult {
     let mut f = Fixture::new(false, json!({"strategy":"graph"}))?;
     f.run(1)?;
@@ -642,7 +974,7 @@ fn excluded_protected_input_fails_without_replacing_the_snapshot() -> TestResult
 #[test]
 fn invalid_assignment_yaml_is_rejected_by_real_cli() -> TestResult {
     for assignment in [
-        json!({"mode": "exact"}),
+        json!({"strategy": "greedy", "mode": "exact"}),
         json!({"strategy": "greedy", "mode": "approximate"}),
         json!({"strategy": "maximum_weight"}),
         json!({"strategy": "graph", "mode": "unknown"}),
@@ -668,6 +1000,22 @@ fn invalid_assignment_yaml_is_rejected_by_real_cli() -> TestResult {
 }
 
 #[test]
+fn export_reports_the_match_config_error_if_enroll_parsing_also_fails() -> TestResult {
+    let fixture = Fixture::new(false, json!({"strategy":"greedy", "mode":"exact"}))?;
+    let output = fixture
+        .command("export", 1)?
+        .arg("--out-dir")
+        .arg(fixture.path("export"))
+        .output()?;
+    assert!(!output.status.success(), "invalid config must not export");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("batch.assignment.mode"),
+        "show the original match configuration error"
+    );
+    Ok(())
+}
+
+#[test]
 fn default_approximate_dispatch_counts_distinct_endpoints_at_512_and_513() -> TestResult {
     boundary_cases(false)
 }
@@ -681,10 +1029,7 @@ fn boundary_cases(sqlite: bool) -> TestResult {
     // One connected star, not 512 disconnected pairs: 1 A + N B endpoints.
     for (endpoints, approximate) in [(512, 0), (513, 1)] {
         for mode in [None, Some("exact")] {
-            let assignment = mode.map_or(
-                json!({"strategy": "graph"}),
-                |mode| json!({"strategy": "graph", "mode": mode}),
-            );
+            let assignment = mode.map_or(Value::Null, |mode| json!({"mode": mode}));
             let mut fixture = Fixture::new(sqlite, assignment)?;
             fs::write(fixture.path("a.csv"), "aid,name,text\na1,aaaa,shared\n")?;
             let mut b = String::from("bid,name,text\n");

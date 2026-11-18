@@ -262,7 +262,7 @@ pub(crate) fn build_outputs_with_input(
     let start = Instant::now();
 
     // Replay match log events.
-    let (events, _) = MatchLog::replay_for_output(match_log_path, false)?;
+    let (events, _) = MatchLog::replay_for_output(match_log_path)?;
 
     // Validate assignment ownership before creating any output files.
     let final_pairs = if input.current_reviews.is_some() {

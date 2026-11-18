@@ -431,7 +431,7 @@ pub struct OutputConfig {
     /// Path for the SQLite output database.
     #[serde(default)]
     pub db_path: Option<String>,
-    /// Remove the batch match log after a successful build. Default false.
+    /// Reserved; currently does not remove the batch match log.
     #[serde(default)]
     pub cleanup_match_log: bool,
 }
@@ -505,8 +505,8 @@ fn default_max_displacements() -> usize {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BatchAssignmentStrategy {
-    #[default]
     Greedy,
+    #[default]
     Graph,
 }
 
@@ -519,7 +519,7 @@ pub enum BatchAssignmentMode {
     Exact,
 }
 
-/// Batch assignment settings. Graph mode defaults effectively to approximate.
+/// Batch assignment settings. Defaults to graph assignment in approximate mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchAssignmentConfig {
@@ -765,7 +765,9 @@ mod tests {
     #[test]
     fn batch_graph_assignment_modes() {
         for (yaml, effective_mode) in [
-            ("{}", None),
+            ("{}", Some(BatchAssignmentMode::Approximate)),
+            ("mode: approximate", Some(BatchAssignmentMode::Approximate)),
+            ("mode: exact", Some(BatchAssignmentMode::Exact)),
             ("strategy: greedy", None),
             ("strategy: graph", Some(BatchAssignmentMode::Approximate)),
             (
@@ -819,8 +821,8 @@ mod tests {
         );
         assert_eq!(
             batch.assignment.strategy,
-            BatchAssignmentStrategy::Greedy,
-            "batch defaults to greedy"
+            BatchAssignmentStrategy::Graph,
+            "batch defaults to graph"
         );
         for yaml in ["{}", "strategy: greedy"] {
             let config: LiveAssignmentConfig =

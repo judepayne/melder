@@ -107,6 +107,7 @@ def run(binary, directory, a_path, b_path, threads, timeout, queries):
         "embeddings": {"model": "all-MiniLM-L6-v2",
                        "a_cache_dir": str(directory / "unused-embedding-cache")},
         "blocking": {"enabled": False},
+        "batch": {"assignment": {"strategy": "greedy"}},
         "match_fields": [{"method": "bm25", "weight": 1.0,
                           "fields": [{"field_a": "text_a", "field_b": "text_b"}]}],
         "thresholds": {"auto_match": 0.8, "review_floor": 0.5},

@@ -11,6 +11,7 @@ path = "src/main.rs"
 # Config + serialization
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+icu_normalizer = { version = "2.1", default-features = false, features = ["compiled_data"] }
 serde_json = "1"
 
 # CLI

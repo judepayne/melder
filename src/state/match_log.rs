@@ -887,18 +887,18 @@ impl MatchLog {
 
     /// Replay output input, requiring one existing complete segment for graph runs.
     ///
-    /// Graph intent can come from configuration, the graph filename, or markers.
-    /// Unlike live recovery, graph export must not silently ignore torn frames or
-    /// empty segments. The returned path is the selected graph segment, if any.
+    /// The log's graph filename or markers determine graph intent, independently
+    /// of the current batch strategy. Unlike live recovery, graph export must
+    /// not ignore torn frames or empty segments. Returns the selected graph
+    /// segment, if any.
     pub fn replay_for_output(
         base_path: &Path,
-        graph_intended: bool,
     ) -> io::Result<(Vec<MatchLogEvent>, Option<PathBuf>)> {
         let mut paths = Self::find_wal_files(base_path);
         if base_path.exists() && !paths.iter().any(|path| path == base_path) {
             paths.push(base_path.to_owned());
         }
-        let graph_intended = graph_intended || is_graph_match_log_path(base_path);
+        let graph_intended = is_graph_match_log_path(base_path);
         let events = if graph_intended {
             Vec::new()
         } else {
@@ -1181,6 +1181,12 @@ mod tests {
                 "extra_complete",
                 "trailing_torn",
             ] {
+                if name == "legacy.wal"
+                    && matches!(invalid, "missing" | "empty" | "torn" | "markerless")
+                {
+                    // Without the graph namespace or a marker, this is a live log.
+                    continue;
+                }
                 let dir = tempfile::tempdir().expect("tempdir");
                 let base = dir.path().join(name);
                 let start = MatchLog::serialize_event(&MatchLogEvent::BatchAssignmentStarted {
@@ -1224,15 +1230,9 @@ mod tests {
                     }
                 }
                 assert!(
-                    MatchLog::replay_for_output(&base, true).is_err(),
+                    MatchLog::replay_for_output(&base).is_err(),
                     "{name}: {invalid}"
                 );
-                if name.contains(".graph.") {
-                    assert!(
-                        MatchLog::replay_for_output(&base, false).is_err(),
-                        "path implies graph: {invalid}"
-                    );
-                }
             }
         }
     }
@@ -1242,7 +1242,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("live.wal");
         assert!(
-            MatchLog::replay_for_output(&missing, false)
+            MatchLog::replay_for_output(&missing)
                 .expect("missing live WAL")
                 .0
                 .is_empty()
@@ -1251,7 +1251,7 @@ mod tests {
         log.append(&make_reassignment()).expect("legacy event");
         log.flush().expect("flush");
         assert!(
-            MatchLog::replay_for_output(&missing, false)
+            MatchLog::replay_for_output(&missing)
                 .expect("legacy replay")
                 .1
                 .is_none()
@@ -1264,13 +1264,12 @@ mod tests {
         .expect("start");
         log.append(&make_batch_completion()).expect("completion");
         log.flush().expect("flush");
-        let (events, segment) =
-            MatchLog::replay_for_output(&base, false).expect("marker-detected graph");
+        let (events, segment) = MatchLog::replay_for_output(&base).expect("marker-detected graph");
         assert_eq!(events.len(), 2, "complete graph events");
         assert_eq!(segment.as_deref(), Some(log.path()), "resolved segment");
         fs::write(base.with_file_name("batch_extra.wal"), b"").expect("empty sibling");
         assert!(
-            MatchLog::replay_for_output(&base, false).is_err(),
+            MatchLog::replay_for_output(&base).is_err(),
             "markers require single segment even when sibling is empty"
         );
     }

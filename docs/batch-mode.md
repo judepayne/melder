@@ -2,117 +2,214 @@
 
 # Batch Mode
 
-> For a hands-on walkthrough, see the
-> [batch worked example](../examples/batch/README.md).
-
-Batch mode processes an entire B dataset against a pre-indexed A pool in
-a single pass. Run it with:
+Use batch mode to match an incoming dataset **B** against a reference pool
+**A** in one run. A and B have different roles; each record can have at most
+one accepted partner. Start with the small
+[worked example](../examples/batch/README.md), or run your own config:
 
 ```bash
+meld validate --config config.yaml
+meld run --config config.yaml --dry-run
 meld run --config config.yaml
 ```
 
-Batch mode works unchanged whether embeddings come from a local ONNX
-model (`embeddings.model`) or a user-supplied subprocess calling your
-organisation's central embedding service
-(`embeddings.remote_encoder_cmd`). See [Remote Encoder](remote-encoder.md)
-for the subprocess path. A worked batch example using the remote encoder
-stub lives at `benchmarks/batch/10kx10k_remote_encoder/cold/`.
+`validate` checks configuration; `--dry-run` also loads the data without
+matching or writing result files. For an in-memory run configured with
+`output.csv_dir_path`, inspect:
+
+- **`relationships.csv`**: accepted links (`relationship_type=match`) and
+  proposed reviews (`relationship_type=review`). Only matches are accepted.
+- **`unmatched.csv`**: B records without a match or review outcome.
+- **`candidates.csv`**: additional ranked candidates, only when the optional
+  scoring log is enabled. A candidate's rank is not acceptance.
+- **The configured crossmap CSV**: persisted accepted pairs, reused on later runs.
+
+Thresholds determine automatic eligibility and review status; assignment then
+chooses among eligible competing pairs. A score above `auto_match` does **not**
+guarantee acceptance, and a selected pair need not be a query's rank-one candidate.
+
+## Why graph assignment is the default
+
+**Graph assignment** chooses competing eligible one-to-one pairs jointly.
+Explicit **greedy assignment** instead lets each B query claim an available A
+locally; an early claim can prevent a better combination.
+
+For example, suppose eligible pairs score B1–A1 **0.99**, B1–A2 **0.98**,
+B2–A1 **0.97**, and B2–A2 **0.85**. Greedy can take 0.99 + 0.85 = **1.84**;
+graph can choose 0.98 + 0.97 = **1.95**. These are hypothetical scores, not
+worked-example results. Graph optimizes total represented similarity, not pair
+count or verified real-world identity accuracy.
+
+In a measured in-memory 1M × 1M blocked BM25 fixture on an M3 MacBook Air,
+graph found **498,162 correct fixture pairs** versus **456,571** for optimized
+greedy, taking **63 min 9 sec versus 61 min 45 sec** (one run per mode).
+This supports the default, not an accuracy, latency or memory guarantee for
+other data. See [performance evidence](performance.md#batch-graph-optimizer).
+The default `approximate` mode solves small groups exactly and uses deterministic
+fast matching for large groups. Details and limits are
+[below](#choosing-pairs-with-the-graph-optimizer).
 
 ## Command flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--config` | `-c` | Path to YAML config file (required) |
-| `--dry-run` | | Validate config, load data, print what would be processed, then exit. No matching or output files. |
-| `--limit` | | Process only the first N B records. Useful for quick sanity checks on large datasets. |
-| `--verbose` | `-v` | Print job metadata, dataset paths, and threshold values at startup. |
+| `--config` | `-c` | Path to YAML config file (required). |
+| `--dry-run` | | Validate config, load data, print what would be processed, then exit without matching or result files. |
+| `--limit` | | Process only N B records for a smoke test. Graph sorts B IDs before limiting; greedy uses its existing input ordering. Not a representative sample. |
+| `--verbose` | `-v` | Print job metadata, dataset paths and thresholds at startup. |
 
-Use `--dry-run` to validate the config and print what would be processed
-without actually running. Use `--limit N` to process only the first N
-B records (useful for quick sanity checks on large datasets).
+## Output files
 
-## Greedy assignment
+### Sinks and scoring evidence
 
-By default (`batch.assignment.strategy: greedy`), batch matching uses parallel
-greedy claims: each B query tries its scored
-candidates in ranked order, atomically claiming a free A candidate at or above
-the auto-match threshold. Occupied candidates are skipped, not displaced. There
-is no post-pass reassignment or assignment solver in this path. Parallel
-claim order and approximate candidate generation can still produce different
-whole-run assignments between runs.
+For the in-memory path, enable any combination of `output.csv_dir_path`,
+`output.parquet_dir_path`, and `output.db_path`; at least one sink is required.
+They share the same output build, so additional sinks do not re-score records.
+`scoring_log.enabled: true` adds candidate/field-score evidence; it is not
+required for accepted links.
+
+**SQLite input storage is different from SQLite output.** With `batch.db_path`,
+graph runs use the shared builder for CSV and optional Parquet/SQLite sinks,
+but have no match log or scoring log. The current path also writes CSV to `.`
+if `output.csv_dir_path` is omitted; set an explicit CSV directory. Explicit
+greedy with SQLite input writes only its direct CSV outputs, not the optional
+Parquet/SQLite sinks. Do not rely on printed sink paths as proof those optional
+outputs were produced. See [SQLite batch mode](#sqlite-batch-mode-large-datasets)
+for memory and scoring restrictions.
+
+### CSV outputs
+
+The shared output builder writes:
+
+| File | Contents |
+|------|----------|
+| `relationships.csv` | Confirmed matches and reviews, including assignment conflicts. Columns: configured B/A ID names, `score`, `relationship_type` (`match` or `review`), `reason`, `rank`, plus configured A-side fields. |
+| `unmatched.csv` | B records with neither an accepted match nor a review outcome. Columns: configured B ID, B-side fields, `best_score`, `best_a_id` (when available). SQLite graph output does not retain the best candidate ID. |
+| `candidates.csv` | Only with a scoring log: ranks 2..N for scored queries, with configured B/A ID names, `rank`, `score`. These are ranking evidence, not final assignments. |
+
+SQLite input with explicit greedy uses its own CSV writer; do not assume the
+shared-builder schema above for that path.
+
+### Parquet outputs
+
+`output.parquet_dir_path` enables `relationships.parquet`, `unmatched.parquet`
+and, with a scoring log, `candidates.parquet`. Contents match the shared CSV
+outputs row-for-row. Record fields are `Utf8`; engine columns include `Float64`
+scores and `UInt8` ranks. Writes use a temporary file followed by rename.
+
+Requires the `parquet-format` build feature; otherwise the configuration is
+rejected. See [Building](building.md).
+
+### SQLite output database
+
+`output.db_path` enables tables `a_records`, `b_records`, `relationships`,
+`field_scores`, and `metadata`. In log-based builds, field-score evidence
+requires the scoring log; direct SQLite graph builds retain selected/review
+field scores without a scoring log.
+
+Eleven analytical views are included: `confirmed_matches`, `scored_matches`,
+`asserted_matches`, `review_queue`, `near_misses`, `runner_ups`, `unmatched_a`,
+`unmatched_b`, `broken_matches`, `summary`, and `relationship_detail`.
+See the authoritative [schema](../src/output/db.rs) and
+[view definitions](../src/output/views.sql).
+
+### Match log and rebuilding outputs
+
+The in-memory path writes events to a match log, then builds outputs from that
+log and the optional scoring log. A crashed greedy run leaves a log that can
+be rebuilt with `meld export` without re-scoring; it is not necessarily a
+completed batch. SQLite input storage produces neither log, so this recovery
+path does not apply.
+
+Graph logs use `batch_assignment_started` and `batch_assignment_completed`
+markers around publication. **No partial export:** output building and
+`meld export` reject a started graph run without its completion marker.
+
+To rebuild a completed graph run:
+
+1. Copy the job config and set `live.match_log_path` to the **single timestamped
+   graph log** printed by `meld run`.
+2. Keep that run's scoring log beside it if candidate/field-score evidence is
+   needed. Without the companion, export rebuilds accepted links but does not
+   borrow scores from another run.
+3. Export into a fresh directory:
+
+   ```bash
+   meld export --config <config-copy.yaml> --out-dir <fresh-directory>
+   ```
+
+A missing, empty, damaged or ambiguous graph log is an error, not an empty
+batch. Do not pass the untimestamped base when multiple runs exist, use a
+batch graph log for live startup, or delete the start marker to force export.
+Solver/publication/logging failure does not save final CrossMap/CSV outputs
+or print a successful assignment summary. Rollback preserves protected links.
+Hooks are best-effort notifications, not substitutes for completed logs or
+final CrossMap membership.
+
+Match logs are retained after output building. `output.cleanup_match_log` is
+**not implemented**; do not use it to request deletion. Remove logs manually
+only when no longer needed for audit or export. The configured crossmap CSV
+persists accepted pairs so later runs skip resolved B records.
 
 ## Choosing pairs with the graph optimizer
 
-For graph assignment, an existing protection or exclusion CSV must contain the configured ID columns and nonempty IDs. Protected pairs must be one-to-one: if an A or B has two different partners, `meld run` rejects the input rather than picking one. These checks apply to both memory and SQLite batch storage.
-
-The optimizer changes **which pairs are accepted**, not how Melder scores them.
-For example, suppose B1 scores 0.99 with A1 and 0.98 with A2; B2 scores 0.97
-with A1 and 0.85 with A2. Taking the strongest pair first gives 1.84 in total.
-Choosing B1–A2 and B2–A1 gives 1.95. Each record still has at most one partner,
-and records may remain unmatched. The objective is total similarity score,
-not maximum pair count or verified real-world identity accuracy.
-
-Enable it in YAML; this is not a new CLI subcommand:
+Graph/approximate is the default with either in-memory or SQLite input storage.
+Omitting `batch`, `assignment`, or `strategy` retains it. To spell it out
+(there is no assignment CLI override):
 
 ```yaml
 batch:
   assignment:
     strategy: graph
-    mode: approximate   # optional; default for graph
+    mode: approximate
 ```
 
-Protected/preloaded links and common-ID/exact prematches stay fixed. Melder
-considers only automatically eligible candidates on the existing shortlists,
-using the shared scoring pipeline. It does not widen `top_n`, refill slots
-occupied by protected endpoints, reconsider excluded pairs, or turn a list
-demoted for ambiguity into an automatic match. Threshold and whole-list
-score-gap eligibility checks happen **before** scores are rounded to nine
-decimal places for the assignment objective. Selected output scores retain
-the original scoring metadata.
+`batch.assignment.mode: exact` alone is also valid: omitted strategy means graph.
+The optimizer changes accepted pairs, not scoring. It uses retained,
+automatically eligible candidates from the shared pipeline; it does not widen
+`top_n`, refill slots occupied by protected endpoints, reconsider excluded pairs,
+or promote a list demoted for ambiguity. Threshold and whole-list score-gap
+checks happen **before** rounding weights to nine decimal places for the
+objective. Output scores retain their original metadata.
+
+Protected/preloaded links and common-ID/exact prematches remain fixed. Existing
+protection or exclusion CSVs must contain configured ID columns and nonempty
+IDs. Protected links must be one-to-one; conflicting partners cause an error
+on both storage paths.
 
 ### Approximate or exact?
 
-**Start with approximate.** Melder divides candidates into independent groups
-(connected components): records belong to the same group if you can follow a
-chain of candidate pairs between them. No pair crosses a group boundary. Group
-size counts **distinct participating records on both sides together**, not
-edges or records in the whole batch.
+**Start with approximate.** Candidates are split into independent connected
+groups: records share a group if a chain of candidate pairs connects them.
+Size counts distinct participating **A+B records**, not edges or whole-batch size.
 
 - Through **512 records inclusive**, solve exactly.
-- At **513 and above**, try two deterministic answers: take the highest-scoring
-  available pairs first, and separately find a matching with the most pairs.
-  Choose the answer with the higher total represented score for that group;
-  on a tie keep score-first.
+- At **513 and above**, try deterministic score-first and maximum-pair-count
+  matchings; choose the higher total represented score, keeping score-first
+  on ties.
 
-A million-record batch can therefore finish entirely exact. The cutoff is
-fixed, not a tuning setting, and no score-loss tolerance is promised.
+A large batch can therefore be entirely exact. This cutoff is fixed, not a
+config setting, and no score-loss tolerance is promised.
 
-**Choose `mode: exact` if the highest possible total similarity score matters
-more than runtime.** Every group is solved exactly, with no heuristic fallback.
-The guarantee is over the eligible retained pairs and their nine-decimal
-represented scores. It does not mean the shortlist contains every possible
-match or that the selected pairs are the correct real-world identities.
-Failure to finish is an error, not permission to publish a partial result as
-optimal. Large connected groups can be expensive; see
-[Performance](performance.md#batch-graph-optimizer).
+Use **`mode: exact`** when maximizing represented similarity matters more than
+runtime. Every group is solved exactly, with no heuristic fallback. This is a
+guarantee over retained eligible pairs and nine-decimal weights, not every
+possible pair or correct real-world identities. Large connected groups can be
+expensive; failure is an error, not permission to publish a partial optimum.
+See [Performance](performance.md#batch-graph-optimizer).
 
-**Repeatability:** the same Melder version, mode, retained pairs and represented
-weights produce the same assignments regardless of worker scheduling or edge
-order. Different retrieval results can change the graph; this is not a promise
-of repeatable ANN retrieval. Hardware speed and elapsed time never determine
-which method runs. With `--limit`, graph mode sorts B IDs before applying the
-limit; greedy retains its existing input ordering.
-
-Unlike [live deferred acceptance](live-mode.md#live-assignment-policy), this
-is a batch-wide choice after scoring, not a sequence of reciprocal proposals
-or incumbent displacements. Live and enroll behavior is unchanged.
+**Repeatability:** the same version, mode, retained pairs and represented weights
+produce the same assignments regardless of scheduling or edge order. This does
+not promise repeatable ANN retrieval or identical whole runs. Hardware speed and
+elapsed time never select the method. Unlike
+[live deferred acceptance](live-mode.md#live-assignment-policy), this is a
+batch-wide choice, not reciprocal proposals or incumbent displacements.
 
 ### Reading the assignment summary
 
-The successful completion summary reports the **effective** strategy/mode,
-exact and approximate group counts, largest group size, and objective guarantee.
-These illustrative numbers are not new measurements:
+The successful completion summary includes effective strategy/mode, exact and
+approximate group counts, largest group, retained edges, fixed pairs, solver
+time and objective guarantee. These excerpts are **illustrative**, not measurements:
 
 ```text
 Batch assignment: graph (approximate)
@@ -126,176 +223,71 @@ Groups: 38 exact · 2 approximate · largest: 1,420 records
 Total score: at least 98.7% of the best possible over retained eligible pairs.
 ```
 
-Approximate mode can still be entirely exact, as the first example shows.
-For a mixed run, the bound combines the exact objective of each exact group
-with an upper bound for each fast group: the smaller of the sum of each A's
-best score and the sum of each B's best score. Achieved total divided by the
-combined upper bound certifies a lower bound on the fraction of optimal score.
-Displayed lower bounds are rounded **down**, never up. A loose bound is not
-measured score loss or identity accuracy. If the upper bound is zero, Melder
-reports no positive eligible score instead of dividing by zero. The completion
-summary is emitted only after successful publication.
+Approximate mode can still be entirely exact. For mixed runs, the bound combines
+exact group objectives with an upper bound for each fast group: the smaller of
+the sums of each A's best score and each B's best score. Achieved total divided
+by the combined upper bound certifies a lower bound on the fraction of optimal
+score. Displayed bounds round **down**; they are not measured score loss or
+identity accuracy. A zero upper bound reports no positive eligible score.
+The summary appears only after successful publication.
 
-A query that loses an eligible candidate to assignment competition may remain
-in review with reason `assignment_conflict`, even above `auto_match`. That
-review is not an accepted link. Scoring-log candidates are evidence of what was
-scored, not final assignments; graph-selected matches use source
-`graph_assignment` in the match log.
+A query losing assignment competition may remain in review with reason
+`assignment_conflict`, even above `auto_match`. Graph-selected matches use
+source `graph_assignment` in the match log.
 
-## Output files
+### Explicit greedy assignment
 
-Batch mode is event-sourced: during scoring, events are written to a
-match log on disk. At the end of the run, the build pipeline reads the
-match log (and the optional scoring log) to produce outputs. This means
-a crashed greedy run leaves a recoverable match log, and outputs can be rebuilt
-with `meld export` without re-scoring. The SQLite record-storage batch path
-(`batch.db_path`) does not produce a match log or scoring log; its results are
-built directly, so this log-based recovery does not apply to that path.
-
-For graph runs that write a match log, `batch_assignment_started` and
-`batch_assignment_completed` frame the assignment publication. **No partial
-export:** if a started graph run lacks its completion marker, output building
-and `meld export` reject it rather than treating a prefix as final or optimal.
-To rebuild a completed graph run, set `live.match_log_path` in a copy of the job config to the **single timestamped graph log** printed by `meld run`, then run `meld export --config <copy> --out-dir <directory>`. A missing, empty, damaged, or ambiguous graph log is an error, not an empty batch. Keep the scoring log from the same run beside the match log if you need candidate and field-score evidence. Without that companion, export can rebuild accepted links but will not borrow another run’s scores. Use a fresh export directory for historical results. Do not pass the untimestamped base if there are multiple runs, and do not use this log for live startup. Do not delete the start marker to force export. A solver/publication/logging
-failure is an error: Melder does not save final CrossMap/CSV outputs or print a
-successful assignment summary for that failed run. Protected links are not
-removed to roll back new automatic selections. Hooks, if configured, remain
-best-effort notifications, not a substitute for completed logs and final
-CrossMap membership.
-
-Output is written to any combination of three independent sinks:
-`output.csv_dir_path` (directory for CSV files),
-`output.parquet_dir_path` (directory for Parquet files), and
-`output.db_path` (SQLite database). At least one must be set. Setting
-more than one is allowed — all enabled sinks read from the same match
-log, so enabling Parquet alongside CSV adds no extra scoring work.
-
-### CSV outputs
-
-| File | Contents |
-|------|----------|
-| `relationships.csv` | All confirmed matches and review-band pairs. Columns: `b_id`, `a_id`, `score`, `relationship_type` (`match` or `review`), `reason`, `rank`, plus configured A-side fields. Replaces the former `results.csv` + `review.csv` split. |
-| `unmatched.csv` | B records with no match above `review_floor`. Columns: `b_id`, B-side fields, `best_score`, `best_a_id`. The `best_a_id` column is new — it shows the closest A-side record even when below threshold. |
-| `candidates.csv` | Produced only when the scoring log is enabled. Ranks 2..N for every scored query record. Columns: `b_id`, `rank`, `a_id`, `score`. |
-
-### Parquet outputs
-
-When `output.parquet_dir_path` is set, the build pipeline writes
-`relationships.parquet`, `unmatched.parquet`, and (when the scoring log
-is enabled) `candidates.parquet` alongside any CSV output. Contents
-match the CSV files row-for-row. Schemas: record field columns are
-written as `Utf8` (the internal "everything is string" dataset model),
-while engine-generated columns are typed — `score` as `Float64`,
-`rank` as `UInt8`. Writes are atomic (`*.parquet.tmp` then rename).
-
-Requires the `parquet-format` feature at build time (see
-[Building](building.md)). If the binary was built without the feature,
-starting a run with `parquet_dir_path` set returns an error.
-
-### SQLite output database
-
-When `output.db_path` is set, the build pipeline writes a SQLite
-database with tables `a_records`, `b_records`, `relationships`,
-`field_scores` (populated when the scoring log is on), and `metadata`.
-Eleven analytical views are included: `confirmed_matches`,
-`scored_matches`, `asserted_matches`, `review_queue`, `near_misses`,
-`runner_ups`, `unmatched_a`, `unmatched_b`, `broken_matches`, `summary`,
-and `relationship_detail`. The authoritative schema is in
-`src/output/db.rs`; view definitions are in `src/output/views.sql`.
-
-### Match log
-
-The match log is written during scoring to a file in the output
-directory. By default it is kept after the build for debugging and
-rebuilds. Set `output.cleanup_match_log: true` to delete it after a
-successful build.
-
-The cross-map csv is also updated: every auto-matched pair is added so
-that re-running the job skips already-resolved records.
-
-## Stdout summary
-
-A summary is printed to stdout at the end:
-
-```
-Batch matching complete:
-  Total B records: 1000
-  Skipped (crossmap): 0
-  Auto-matched: 712
-  Review:       138
-  No match:     150
-  Index build:  14.2s
-  Scoring time: 8.3s
-  Total elapsed:22.5s
-  Throughput:   120 records/sec
-
-Output files:
-  relationships: output/relationships.csv (850 rows)
-  unmatched:     output/unmatched.csv (150 rows)
-```
+Set `batch.assignment.strategy: greedy` and omit `mode`; any explicit mode with
+greedy is rejected. Each B query tries scored candidates in rank order,
+atomically claiming a free eligible A. Occupied candidates are skipped, not
+displaced. There is no optimizer graph or post-pass reassignment. Parallel
+claim order and approximate retrieval can produce different whole-run results.
 
 ## SQLite batch mode (large datasets)
 
-For datasets that exceed available RAM (e.g. 55M A records would need
-~100 GB in memory), set `batch.db_path` to store records in SQLite
-instead:
+To reduce input-record storage in RAM, set `batch.db_path`. Test on a small
+representative subset first; this is not bounded-memory execution or a
+recommendation for datasets exceeding your machine's capacity.
 
 ```yaml
 batch:
   db_path: batch.db
+  sqlite_read_pool_size: 8          # default: num_cpus
+  sqlite_pool_worker_cache_mb: 128  # default: 128 MB per read connection
+  sqlite_cache_mb: 64               # default: 64 MB write cache
 ```
 
-The database is created fresh each run and deleted on completion — the
-source CSV files, crossmap.csv, and exclusions.csv (if configured) remain
-the only persistent state.
-Records are stored in columnar format (one column per field, no JSON
-serialization) for fast scoring. Data is loaded via streaming — only one
-10K-record chunk is in memory at a time, regardless of dataset size.
+Choose an unused path for `batch.db_path`. Melder refuses an existing database or SQLite sidecar, even for a dry run; it does not clear old files for you. If a run was interrupted, choose a new path or inspect the leftovers first. The temporary database is deleted on successful completion.
+Source datasets and configured crossmap/exclusion files remain; configured
+output sinks are separate from this temporary database. Records use one column
+per field, not JSON. Loading streams 10,000-record chunks; that limits the
+loader's chunk size, not the rest of the run's memory.
 
 ### Memory footprint
 
-The memory footprint is approximately: `sqlite_cache_mb + pool_size ×
-pool_worker_cache_mb + BM25 index + blocking index` (typically 10-12 GB
-for a 55M-record dataset). This estimate describes the existing greedy path.
-Opting into graph assignment retains the candidate graph and materializes records
-for the shared CSV, Parquet and SQLite output builder. Do not assume the same
-bounded memory footprint for graph assignment.
+Budget for SQLite page caches (`sqlite_cache_mb` plus
+`sqlite_read_pool_size × sqlite_pool_worker_cache_mb`), BM25/blocking indices,
+result collections and other allocations. Default graph assignment also keeps
+retained candidates and connected components in memory and materializes records
+for output assembly. **SQLite does not bound graph/output memory**; page-cache
+settings are not a total RAM cap. Explicit greedy avoids the optimizer graph,
+but does not make total memory constant.
 
-### Configuration
+Use SQLite when measured record-storage savings justify disk/lookup overhead
+and you can budget separately for indices, graph and output assembly. Prefer
+the in-memory path when data fits comfortably and you want log-based outputs.
+SQLite input currently supports BM25, fuzzy and exact scoring, not embeddings.
 
-```yaml
-batch:
-  db_path: batch.db                 # optional — triggers SQLite batch mode.
-                                    #   The file is created fresh and deleted after the run.
-                                    #   Default: not set (in-memory storage).
-  sqlite_read_pool_size: 8          # optional — read connection pool size.
-                                    #   Default: num_cpus (matches Rayon parallelism).
-  sqlite_pool_worker_cache_mb: 128  # optional — page cache per read connection in MB.
-                                    #   Total read cache = pool_size × this value.
-                                    #   Default: 128.
-  sqlite_cache_mb: 64               # optional — write connection page cache in MB.
-                                    #   Default: 64.
-```
+## Encoder choices
 
-### When to use SQLite batch mode
-
-- Datasets larger than ~50% of available RAM (to avoid swap pressure)
-- Any dataset where you want predictable, bounded memory usage
-
-### When to use in-memory batch mode (the default)
-
-- Datasets that fit comfortably in RAM
-- Maximum scoring throughput is needed (in-memory is ~1.6x faster)
-
-**Note:** SQLite batch mode currently supports BM25 + fuzzy + exact
-scoring methods. Embedding-based scoring requires the in-memory path
-(embedding indices are held in RAM regardless of storage backend).
+The in-memory path supports local ONNX models (`embeddings.model`) and a
+subprocess calling a central embedding service (`embeddings.remote_encoder_cmd`).
+See [Remote Encoder](remote-encoder.md).
 
 ## Data Formats
 
-The melder reads CSV (default), JSONL/NDJSON, and Parquet files. The
-format is inferred from the file extension or can be set explicitly in
-the config:
+Inputs can be CSV (default), JSONL/NDJSON or Parquet. Format is inferred from
+extension or set explicitly:
 
 ```yaml
 datasets:
@@ -304,17 +296,12 @@ datasets:
     format: jsonl   # csv, jsonl, ndjson, parquet
 ```
 
-Parquet support (both input and output) requires a feature flag at
-build time:
+Parquet input and output require:
 
 ```bash
 cargo build --release --features parquet-format
 ```
 
-All input column types (string, integer, float, boolean) are converted
-to strings internally to provide a uniform interface across formats.
-Snappy-compressed Parquet files are supported on input.
-
-Parquet output is controlled by `output.parquet_dir_path` and is
-independent of the input format — you can read CSV and write Parquet,
-or vice versa. See [Output files](#output-files) above.
+Input string, integer, float and boolean columns become strings internally.
+Snappy-compressed Parquet input is supported. Output format is independent of
+input format; CSV input can produce Parquet output and vice versa.

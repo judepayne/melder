@@ -42,17 +42,47 @@ crossmappings.
 ## Batch graph optimizer
 
 [`batch.assignment.strategy: graph`](batch-mode.md#choosing-pairs-with-the-graph-optimizer)
-adds graph collection, solving and publication after scoring. Greedy remains
-the default and does not collect this graph. Graph defaults to `approximate`:
-exact for groups of at most **512 participating records (A+B)**, deterministic
-fast matching at **513 and above**. Explicit `mode: exact` solves every group
-exactly, with no time-based or heuristic fallback.
+is the default on both in-memory and SQLite record storage. It adds graph
+collection, solving and publication after scoring. Explicit `strategy: greedy`
+avoids collecting this graph; omit `mode` with greedy. Graph defaults to
+`approximate`: exact for groups of at most **512 participating records (A+B)**,
+deterministic fast matching at **513 and above**. Explicit `mode: exact`
+(with strategy omitted or `graph`) solves every group exactly, with no time-based
+or heuristic fallback.
+
+### Why graph is the default
+
+An end-to-end **1M × 1M blocked BM25** fixture comparison on an **M3 MacBook
+Air**, using in-memory record storage, measured:
+
+| Assignment | Correct fixture pairs | Wall time |
+|------------|----------------------:|----------:|
+| Optimized greedy | 456,571 | 61:45 |
+| Graph / approximate | 498,162 | 63:09 |
+
+These are **one run per mode**, not repeated-run averages or SQLite
+measurements. Graph found 41,591 more known-correct pairs for 1:24 additional
+wall time in this comparison. The largest connected group had 711 participating
+records. This supports the default choice, but does not establish a general
+accuracy gain, latency budget or memory guarantee, including at 3M × 3M.
+
+**Fixture truth and the optimization objective are different.** Correct fixture
+pairs count agreement with known identities; graph maximizes total represented
+similarity over retained eligible candidates when exact, and uses a deterministic
+approximation for larger groups in approximate mode. Even an exact optimum need
+not maximize correct identities or pair count. Approximate mode promises no
+fixed score-loss tolerance. For a fixed retained graph, represented weights,
+mode and Melder version, assignments are deterministic across edge order and
+worker scheduling; candidate retrieval can still change the graph between runs.
 
 **Connected group size, not batch size, drives solver difficulty.** A large
 batch with small independent groups can be solved entirely exactly. One dense,
 connected group may cost much more than many small groups with the same total
-record count. Graph collection also retains eligible edges in memory; SQLite
-record storage does not remove this optimizer memory cost.
+record count. Graph collection retains eligible edges and components in memory.
+The existing `batch.db_path` moves input records to SQLite, not the graph or
+output assembly: graph output materializes records in memory for the shared
+CSV, Parquet and SQLite builder. SQLite page-cache settings therefore do not
+bound graph/output memory.
 
 The standalone prototype comparisons below are **solver-only**, not integrated
 `meld run` timings. They exclude retrieval, scoring, output generation and

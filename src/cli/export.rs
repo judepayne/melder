@@ -23,10 +23,12 @@ use crate::state::match_log::{MatchLog, MatchLogEvent};
 pub fn cmd_export(config_path: &Path, out_dir: &Path) {
     let cfg = match crate::config::load_config(config_path) {
         Ok(c) => c,
-        Err(_) => match crate::config::load_enroll_config(config_path) {
+        Err(match_error) => match crate::config::load_enroll_config(config_path) {
             Ok(c) => c,
-            Err(e) => {
-                eprintln!("Config error: {}", e);
+            Err(enroll_error) => {
+                eprintln!(
+                    "Config error (match): {match_error}\nConfig error (enroll): {enroll_error}"
+                );
                 process::exit(1);
             }
         },
@@ -64,12 +66,10 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
     // Also produce a SQLite DB if output.db_path is set.
     if let Some(ref ml_path) = cfg.live.match_log_path {
         let ml = std::path::Path::new(ml_path);
-        let (events, graph_segment) =
-            MatchLog::replay_for_output(ml, cfg.batch.assignment.graph_mode().is_some())
-                .unwrap_or_else(|e| {
-                    eprintln!("Export failed: {e}");
-                    process::exit(1);
-                });
+        let (events, graph_segment) = MatchLog::replay_for_output(ml).unwrap_or_else(|e| {
+            eprintln!("Export failed: {e}");
+            process::exit(1);
+        });
         let has_assignment = events
             .iter()
             .any(|event| matches!(event, MatchLogEvent::AssignmentDelta(_)));
@@ -139,28 +139,9 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         }
     }
 
-    if cfg.batch.assignment.graph_mode().is_some() {
-        eprintln!(
-            "Export failed: graph export requires a single existing complete run log segment"
-        );
-        process::exit(1);
-    }
-
+    // No WAL selected and no existing live SQLite database.
     create_export_dir(out_dir);
-
-    // Legacy path: SQLite if DB exists, otherwise WAL replay.
-    let sqlite_db = cfg
-        .live
-        .db_path
-        .as_deref()
-        .map(Path::new)
-        .filter(|p| p.exists());
-
-    if let Some(db_path) = sqlite_db {
-        export_sqlite(&cfg, db_path, out_dir);
-    } else {
-        export_memory(&cfg, out_dir);
-    }
+    export_memory(&cfg, out_dir);
 }
 
 fn create_export_dir(out_dir: &Path) {
