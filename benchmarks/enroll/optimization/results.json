@@ -1,0 +1,599 @@
+{
+  "runs": [
+    {
+      "binary": "baseline",
+      "case": "c1",
+      "trial": 0,
+      "seconds": 2.417753833000461,
+      "records_s": 413.6070373876683,
+      "start": 1795265840.8507211,
+      "end": 1795265843.591865,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-c1-0"
+    },
+    {
+      "binary": "baseline",
+      "case": "c10",
+      "trial": 0,
+      "seconds": 1.8544797920003475,
+      "records_s": 539.234778569004,
+      "start": 1795265963.93667,
+      "end": 1795265966.2336571,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-c10-0"
+    },
+    {
+      "binary": "baseline",
+      "case": "bulk50",
+      "trial": 0,
+      "seconds": 1.7556865829992603,
+      "records_s": 569.5777422253168,
+      "start": 1795266086.449431,
+      "end": 1795266088.649718,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-bulk50-0"
+    },
+    {
+      "binary": "candidate",
+      "case": "c1",
+      "trial": 1,
+      "seconds": 2.1130051250001998,
+      "records_s": 473.25961880944584,
+      "start": 1795266208.8661299,
+      "end": 1795266212.0437179,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "candidate-c1-1"
+    },
+    {
+      "binary": "baseline",
+      "case": "c1",
+      "trial": 1,
+      "seconds": 2.114793374999863,
+      "records_s": 472.8594347899661,
+      "start": 1795266332.2452831,
+      "end": 1795266334.6997912,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-c1-1"
+    },
+    {
+      "binary": "candidate",
+      "case": "c10",
+      "trial": 1,
+      "seconds": 0.9692425000002913,
+      "records_s": 1031.7335444944886,
+      "start": 1795266454.8847659,
+      "end": 1795266456.1926231,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "candidate-c10-1"
+    },
+    {
+      "binary": "baseline",
+      "case": "c10",
+      "trial": 1,
+      "seconds": 1.7784841249995225,
+      "records_s": 562.2765960872822,
+      "start": 1795266576.387323,
+      "end": 1795266578.504878,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-c10-1"
+    },
+    {
+      "binary": "candidate",
+      "case": "bulk50",
+      "trial": 1,
+      "seconds": 1.0486374169995543,
+      "records_s": 953.618461242095,
+      "start": 1795266698.711123,
+      "end": 1795266700.091518,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "candidate-bulk50-1"
+    },
+    {
+      "binary": "baseline",
+      "case": "bulk50",
+      "trial": 1,
+      "seconds": 1.7724286669999856,
+      "records_s": 564.1975999477603,
+      "start": 1795266820.297101,
+      "end": 1795266822.408013,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-bulk50-1"
+    },
+    {
+      "binary": "baseline",
+      "case": "c1",
+      "trial": 2,
+      "seconds": 2.0875913330000913,
+      "records_s": 479.0209578820647,
+      "start": 1795266942.622613,
+      "end": 1795266945.158017,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-c1-2"
+    },
+    {
+      "binary": "candidate",
+      "case": "c1",
+      "trial": 2,
+      "seconds": 2.0502460420002535,
+      "records_s": 487.74633849524895,
+      "start": 1795267065.3410501,
+      "end": 1795267067.734899,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "candidate-c1-2"
+    },
+    {
+      "binary": "baseline",
+      "case": "c10",
+      "trial": 2,
+      "seconds": 1.7976507499997751,
+      "records_s": 556.2815802792201,
+      "start": 1795267187.938634,
+      "end": 1795267190.076502,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-c10-2"
+    },
+    {
+      "binary": "candidate",
+      "case": "c10",
+      "trial": 2,
+      "seconds": 0.9653238749997399,
+      "records_s": 1035.9217521686899,
+      "start": 1795267310.285546,
+      "end": 1795267311.583755,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "candidate-c10-2"
+    },
+    {
+      "binary": "baseline",
+      "case": "bulk50",
+      "trial": 2,
+      "seconds": 1.7140506250007093,
+      "records_s": 583.4133399645569,
+      "start": 1795267431.793928,
+      "end": 1795267433.847699,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-bulk50-2"
+    },
+    {
+      "binary": "candidate",
+      "case": "bulk50",
+      "trial": 2,
+      "seconds": 1.0313914580001438,
+      "records_s": 969.5639732551098,
+      "start": 1795267554.0534558,
+      "end": 1795267555.4165142,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "candidate-bulk50-2"
+    },
+    {
+      "binary": "candidate",
+      "case": "c1",
+      "trial": 3,
+      "seconds": 2.0028179589999127,
+      "records_s": 499.2965014650359,
+      "start": 1795267675.588049,
+      "end": 1795267677.930156,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "candidate-c1-3"
+    },
+    {
+      "binary": "baseline",
+      "case": "c1",
+      "trial": 3,
+      "seconds": 2.0443317919998663,
+      "records_s": 489.1573882054393,
+      "start": 1795267798.139719,
+      "end": 1795267800.523199,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-c1-3"
+    },
+    {
+      "binary": "candidate",
+      "case": "c10",
+      "trial": 3,
+      "seconds": 0.9740095839997593,
+      "records_s": 1026.6839427734492,
+      "start": 1795267920.7080362,
+      "end": 1795267922.029655,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "candidate-c10-3"
+    },
+    {
+      "binary": "baseline",
+      "case": "c10",
+      "trial": 3,
+      "seconds": 1.790819165999892,
+      "records_s": 558.4036730150008,
+      "start": 1795268042.233823,
+      "end": 1795268044.363692,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-c10-3"
+    },
+    {
+      "binary": "candidate",
+      "case": "bulk50",
+      "trial": 3,
+      "seconds": 1.0371917920001579,
+      "records_s": 964.1418373274668,
+      "start": 1795268164.608932,
+      "end": 1795268165.984464,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "candidate-bulk50-3"
+    },
+    {
+      "binary": "baseline",
+      "case": "bulk50",
+      "trial": 3,
+      "seconds": 1.7151100000000952,
+      "records_s": 583.0529820244442,
+      "start": 1795268286.173989,
+      "end": 1795268288.227573,
+      "health_before": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10000,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "health_after": {
+        "status": "ready",
+        "model": "all-MiniLM-L6-v2",
+        "records_a": 10998,
+        "records_b": 0,
+        "crossmap_entries": 0
+      },
+      "job": "baseline-bulk50-3"
+    }
+  ],
+  "summary": {
+    "c1": {
+      "baseline": 479.0209578820647,
+      "candidate": 487.74633849524895,
+      "speedup": 1.0182150289452105
+    },
+    "c10": {
+      "baseline": 558.4036730150008,
+      "candidate": 1031.7335444944886,
+      "speedup": 1.8476482056857324
+    },
+    "bulk50": {
+      "baseline": 583.0529820244442,
+      "candidate": 964.1418373274668,
+      "speedup": 1.6536093066188033
+    }
+  },
+  "audit": [
+    {
+      "case": "c1",
+      "trial": 1,
+      "ordered_edge_differences": 0,
+      "edge_set_differences": 0,
+      "max_score_difference": 0,
+      "response_differences": 0
+    },
+    {
+      "case": "c1",
+      "trial": 2,
+      "ordered_edge_differences": 0,
+      "edge_set_differences": 0,
+      "max_score_difference": 0,
+      "response_differences": 0
+    },
+    {
+      "case": "c1",
+      "trial": 3,
+      "ordered_edge_differences": 0,
+      "edge_set_differences": 0,
+      "max_score_difference": 0,
+      "response_differences": 0
+    },
+    {
+      "case": "c10",
+      "trial": 1,
+      "ordered_edge_differences": 0,
+      "edge_set_differences": 0,
+      "max_score_difference": 0,
+      "response_differences": 0
+    },
+    {
+      "case": "c10",
+      "trial": 2,
+      "ordered_edge_differences": 0,
+      "edge_set_differences": 0,
+      "max_score_difference": 0,
+      "response_differences": 0
+    },
+    {
+      "case": "c10",
+      "trial": 3,
+      "ordered_edge_differences": 0,
+      "edge_set_differences": 0,
+      "max_score_difference": 0,
+      "response_differences": 0
+    },
+    {
+      "case": "bulk50",
+      "trial": 1,
+      "ordered_edge_differences": 3,
+      "edge_set_differences": 0,
+      "max_score_difference": 2.980232238769531e-07,
+      "response_differences": 442
+    },
+    {
+      "case": "bulk50",
+      "trial": 2,
+      "ordered_edge_differences": 3,
+      "edge_set_differences": 0,
+      "max_score_difference": 2.980232238769531e-07,
+      "response_differences": 442
+    },
+    {
+      "case": "bulk50",
+      "trial": 3,
+      "ordered_edge_differences": 3,
+      "edge_set_differences": 0,
+      "max_score_difference": 2.980232238769531e-07,
+      "response_differences": 442
+    }
+  ]
+}

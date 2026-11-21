@@ -2336,28 +2336,35 @@ impl Session {
     /// 3. Add record to pool (store, blocking, BM25, synonym, vector index)
     /// 4. Return edges above `review_floor`, capped at `top_n`
     pub fn enroll(&self, record: Record) -> Result<EnrollResponse, SessionError> {
+        let id = self.enroll_id(&record)?;
+        // Encoding is pure preparation: do not serialize it with pool mutations.
+        let combined_vec = self.encode_combined(&record, &self.emb_specs, true)?;
+        self.enroll_prepared(record, id, combined_vec)
+    }
+
+    fn enroll_id(&self, record: &Record) -> Result<String, SessionError> {
+        let field = &self.state.config.datasets.a.id_field;
+        record
+            .get(field)
+            .filter(|id| !id.is_empty())
+            .cloned()
+            .ok_or_else(|| SessionError::MissingField {
+                field: field.clone(),
+            })
+    }
+
+    fn enroll_prepared(
+        &self,
+        record: Record,
+        id: String,
+        combined_vec: Vec<f32>,
+    ) -> Result<EnrollResponse, SessionError> {
         let _guard = self.assignment_guard()?;
         let config = &self.state.config;
         let store = &self.state.store;
-        let side = Side::A; // Enroll always uses A-side as the pool.
+        let side = Side::A; // The single enrollment pool.
 
-        // Extract ID
-        let id_field = &config.datasets.a.id_field;
-        let id = record
-            .get(id_field)
-            .ok_or_else(|| SessionError::MissingField {
-                field: id_field.clone(),
-            })?
-            .to_string();
-
-        if id.is_empty() {
-            return Err(SessionError::MissingField {
-                field: id_field.clone(),
-            });
-        }
-
-        // 1. Encode combined vector and upsert into index
-        let combined_vec = self.encode_combined(&record, &self.emb_specs, true)?;
+        // Install the prepared vector only while holding the mutation gate.
         if let Some(idx) = self.state.a.combined_index.as_ref()
             && !combined_vec.is_empty()
         {
@@ -2479,6 +2486,35 @@ impl Session {
         })
     }
 
+    fn encode_enroll_batch(&self, records: &[&Record]) -> Result<Vec<Vec<f32>>, SessionError> {
+        let mut combined = vec![Vec::new(); records.len()];
+        if records.is_empty() {
+            return Ok(combined);
+        }
+        for (field, _, weight) in &self.emb_specs {
+            let texts: Vec<&str> = records
+                .iter()
+                .map(|r| r.get(field).map(|v| v.trim()).unwrap_or_default())
+                .collect();
+            let vectors = self.state.encoder_pool.encode(&texts)?;
+            if vectors.len() != records.len()
+                || vectors
+                    .iter()
+                    .any(|v| v.len() != self.state.encoder_pool.dim())
+            {
+                return Err(crate::error::EncoderError::Inference(
+                    "enrollment encoder returned invalid vector shape".into(),
+                )
+                .into());
+            }
+            let scale = weight.sqrt() as f32;
+            for (out, vector) in combined.iter_mut().zip(vectors) {
+                out.extend(vector.into_iter().map(|v| v * scale));
+            }
+        }
+        Ok(combined)
+    }
+
     /// Enroll a batch of records sequentially.
     ///
     /// Each record is scored against the pool (including previously enrolled
@@ -2503,9 +2539,33 @@ impl Session {
             });
         }
 
+        // Validate before encoding, but keep per-item errors and input order.
+        let ids: Vec<_> = records
+            .iter()
+            .map(|record| self.enroll_id(record))
+            .collect();
+        let valid: Vec<_> = records
+            .iter()
+            .zip(&ids)
+            .filter_map(|(r, id)| id.as_ref().ok().map(|_| r))
+            .collect();
+        let prepared = self.encode_enroll_batch(&valid);
+        let mut vectors = prepared.as_ref().ok().map(|v| v.iter());
         let mut results = Vec::with_capacity(records.len());
-        for record in records {
-            match self.enroll(record) {
+        for (record, id) in records.into_iter().zip(ids) {
+            let result = id.and_then(|id| {
+                // A batch encoder failure must not turn one bad item into a
+                // request-wide failure. Retry individually to preserve semantics.
+                let vector = match vectors.as_mut() {
+                    Some(v) => v
+                        .next()
+                        .expect("one prepared vector per validated record")
+                        .clone(),
+                    None => self.encode_combined(&record, &self.emb_specs, true)?,
+                };
+                self.enroll_prepared(record, id, vector)
+            });
+            match result {
                 Ok(resp) => results.push(resp),
                 Err(e) => {
                     tracing::warn!(error = %e, "enroll-batch item failed");

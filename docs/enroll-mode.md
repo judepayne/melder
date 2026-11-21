@@ -169,9 +169,16 @@ up to `top_n` results, sorted by score descending. There is no
 ## Batch enrollment
 
 `POST /enroll-batch` enrolls multiple records in a single request.
-Records are processed **sequentially** — record N is scored against the
-pool including records 1..N-1 from the same batch. This means
-intra-batch edges are discovered.
+Embedding fields are encoded together before changing the pool. Records are
+then matched and inserted **sequentially** — record N is scored against the
+pool including records 1..N-1 from the same batch, so intra-batch edges are
+still discovered. Invalid records remain per-item errors; if batch encoding
+fails, Melder retries encoding each valid record individually.
+
+For individual requests, encoding also runs before acquiring the pool's
+mutation lock. Concurrent clients can prepare their vectors in parallel,
+but scoring and publication remain serialized: a record never searches a
+partially applied enrollment.
 
 ### Request
 

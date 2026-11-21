@@ -41,7 +41,7 @@ impl Encoder for PausingEncoder {
 }
 
 #[test]
-fn enrollment_serializes_reenroll_remove_exclude_and_admin_snapshots() -> TestResult {
+fn enrollment_preparation_allows_mutations_and_admin_snapshots() -> TestResult {
     for sqlite in [false, true] {
         for operation in ["reenroll", "remove", "exclude", "unexclude", "snapshot"] {
             let fixture = make_fixture(sqlite, None)?;
@@ -82,8 +82,8 @@ fn enrollment_serializes_reenroll_remove_exclude_and_admin_snapshots() -> TestRe
                         let _guard = competing.assignment_guard()?;
                         competing.flush_assignment_log()?;
                         assert!(
-                            competing.state.store.get(Side::A, "query")?.is_some(),
-                            "snapshot must observe the completed enrollment"
+                            competing.state.store.get(Side::A, "query")?.is_none(),
+                            "pure preparation must not expose an uncommitted record"
                         );
                         Ok(())
                     })(),
@@ -92,29 +92,105 @@ fn enrollment_serializes_reenroll_remove_exclude_and_admin_snapshots() -> TestRe
                 done_tx.send(result).expect("test receiver exists");
             });
             started_rx.recv_timeout(Duration::from_secs(5))?;
-            let premature = done_rx.recv_timeout(Duration::from_millis(50));
+            let completed = done_rx.recv_timeout(Duration::from_secs(5));
             // Always release the worker before asserting, even if serialization regresses.
             encoder.release.wait();
-            let enrolled = enrollment.join().map_err(|_| "enrollment panicked")??;
+            let _enrolled = enrollment.join().map_err(|_| "enrollment panicked")??;
             competitor
                 .join()
                 .map_err(|_| "competing operation panicked")?;
-            assert!(
-                matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)),
-                "{operation} must wait for enrollment evidence publication (sqlite={sqlite})"
-            );
-            done_rx.recv_timeout(Duration::from_secs(5))??;
-            assert_eq!(
-                enrolled.edges.len(),
-                1,
-                "enrollment retains its scored edge"
-            );
+            completed
+                .map_err(|_| format!("{operation} blocked on pure encoding (sqlite={sqlite})"))??;
             assert!(
                 session.state.crossmap.is_empty(),
                 "enroll never claims pairs"
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn enrollment_batch_preserves_order_and_invalid_items() -> TestResult {
+    let fixture = make_fixture(false, None)?;
+    let old = Arc::try_unwrap(fixture.session).map_err(|_| "shared fixture")?;
+    let mut state = old.state;
+    Arc::get_mut(&mut state).ok_or("shared state")?.config.mode = Mode::Enroll;
+    let session = Session::new(state, None, None);
+    let response = session.enroll_batch(vec![
+        make_record(Side::A, "first", "0"),
+        make_record(Side::A, "second", "0"),
+        make_record(Side::A, "", "0"),
+        make_record(Side::A, "first", "0"),
+        make_record(Side::A, "third", "0"),
+    ])?;
+    assert_eq!(response.results.len(), 5, "one result per input");
+    assert!(
+        !response.results[2].enrolled,
+        "invalid ID remains per-item error"
+    );
+    assert!(
+        response.results[0].edges.is_empty(),
+        "first sees empty pool"
+    );
+    assert_eq!(
+        response.results[1].edges[0].id, "first",
+        "second sees first"
+    );
+    assert_eq!(
+        response.results[3].edges[0].id, "second",
+        "duplicate excludes self"
+    );
+    assert_eq!(
+        response.results[4].edges.len(),
+        2,
+        "later record sees both IDs"
+    );
+    Ok(())
+}
+
+#[derive(Debug)]
+struct RejectBatchEncoder;
+
+impl Encoder for RejectBatchEncoder {
+    fn encode(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EncoderError> {
+        if texts.len() > 1 {
+            return Err(EncoderError::Inference("test batch rejection".into()));
+        }
+        AngleEncoder.encode(texts)
+    }
+    fn dim(&self) -> usize {
+        2
+    }
+    fn pool_size(&self) -> usize {
+        1
+    }
+    fn encode_batch_size(&self) -> usize {
+        32
+    }
+}
+
+#[test]
+fn enrollment_batch_retries_individual_encoding_on_batch_failure() -> TestResult {
+    let fixture = make_fixture(false, None)?;
+    let old = Arc::try_unwrap(fixture.session).map_err(|_| "shared fixture")?;
+    let mut state = old.state;
+    let mutable = Arc::get_mut(&mut state).ok_or("shared state")?;
+    mutable.config.mode = Mode::Enroll;
+    mutable.encoder_pool = Arc::new(RejectBatchEncoder);
+    let session = Session::new(state, None, None);
+    let response = session.enroll_batch(vec![
+        make_record(Side::A, "first", "0"),
+        make_record(Side::A, "second", "0"),
+    ])?;
+    assert!(
+        response.results.iter().all(|r| r.enrolled),
+        "batch failure must not fail healthy individual records"
+    );
+    assert_eq!(
+        response.results[1].edges[0].id, "first",
+        "fallback preserves incremental visibility"
+    );
     Ok(())
 }
 

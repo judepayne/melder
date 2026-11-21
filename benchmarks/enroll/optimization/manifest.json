@@ -1,0 +1,10 @@
+{
+  "baseline_rev": "3feb0270dd4f9ffb6611b997c8c47aa2b23d98bd",
+  "hardware": "Apple M3",
+  "sha256": {
+    "baseline": "c878faa2285db39ff06616fd6c163e50acc2594b1a4e08e37e82d0f37d33a261",
+    "candidate": "5423dfef8af01260d38164d3c7fbbea64b614d8b0d2eeaebc74f5aec8210dd3e",
+    "seed.csv": "aa181b8f7a83767c47216621fdd5dd3cb1e14e00655d3da20245a348397ef650",
+    "records.json": "b18f77fd07b55a9938c1660f19618477dacaf727c3fa876a66ed0c9e69b36c27"
+  }
+}
