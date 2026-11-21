@@ -30,24 +30,48 @@ guarantee acceptance, and a selected pair need not be a query's rank-one candida
 
 ## Why graph assignment is the default
 
-**Graph assignment** chooses competing eligible one-to-one pairs jointly.
-Explicit **greedy assignment** instead lets each B query claim an available A
-locally; an early claim can prevent a better combination.
+Both strategies use the same scoring rules. They differ in how they choose
+one-to-one matches from the eligible candidates.
 
-For example, suppose eligible pairs score B1–A1 **0.99**, B1–A2 **0.98**,
-B2–A1 **0.97**, and B2–A2 **0.85**. Greedy can take 0.99 + 0.85 = **1.84**;
-graph can choose 0.98 + 0.97 = **1.95**. These are hypothetical scores, not
-worked-example results. Graph optimizes total represented similarity, not pair
-count or verified real-world identity accuracy.
+**Greedy claims matches as it goes.**
 
-In a measured in-memory 1M × 1M blocked BM25 fixture on an M3 MacBook Air,
-graph found **498,162 correct fixture pairs** versus **456,571** for optimized
-greedy, taking **63 min 9 sec versus 61 min 45 sec** (one run per mode).
-This supports the default, not an accuracy, latency or memory guarantee for
-other data. See [performance evidence](performance.md#batch-graph-optimizer).
-The default `approximate` mode solves small groups exactly and uses deterministic
-fast matching for large groups. Details and limits are
-[below](#choosing-pairs-with-the-graph-optimizer).
+1. For each B record, try its eligible A candidates from highest to lowest score.
+2. Claim the first A that's still free. If none is free, don't accept a match
+   for that B record.
+3. Keep each claim. A later B record can't displace an earlier match, even if
+   swapping partners would improve the total score.
+
+**Graph chooses competing matches together.**
+
+1. Score the candidates for each B record and collect the pairs eligible for
+   automatic matching. Leave already confirmed matches in place.
+2. Group competing pairs. If two B records could both match the same A, put
+   those choices in the same group. Follow any other shared candidates until
+   the group is complete. Choices in one group don't affect another.
+3. Look for the combination of one-to-one matches with the highest total score
+   in each group. The default finds the best combination in small groups and
+   uses a faster approximation for large groups. Some records may not get an
+   accepted match.
+
+For example, suppose all four pairs qualify. B1 scores **0.99** with A1 and
+**0.98** with A2; B2 scores **0.97** with A1 and **0.85** with A2. If B1 claims
+first, greedy picks B1–A1 and B2–A2 for **1.84** total. If B2 claims first,
+greedy picks B2–A1 and B1–A2 for **1.95**. Graph picks the **1.95** combination
+regardless of which B record is scored first.
+
+**Greedy is order-dependent; graph assignment is deterministic.** With greedy,
+changing which B record claims first can change the result. Even with the same
+input order, parallel workers can claim in a different order. With graph, you
+can shuffle the B records and get the same matches as long as the retained
+candidates and scores are unchanged and you use the same Melder version and
+assignment mode.
+
+Graph is the default because it can achieve a higher **total match score across
+A and B** without depending on claim order. A higher score doesn't guarantee more
+matches or more correct identities. Graph takes extra work to collect and solve
+competing pairs. In our [1M × 1M benchmark](performance.md#batch-graph-optimizer),
+it was about **2% slower** end to end than greedy and found more correct pairs.
+See [graph settings and limits](#choosing-pairs-with-the-graph-optimizer) below.
 
 ## Command flags
 

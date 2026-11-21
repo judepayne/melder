@@ -11,9 +11,12 @@ characters. Two records about the same entity produce vectors that point
 in nearly the same direction, even if the wording differs completely.
 This is how `method: embedding` scoring works.
 
-Encoding is expensive: running 10,000 records through the ONNX model
-takes around 8 seconds. To avoid repeating this work, the melder caches
-the encoded vectors to disk after the first run.
+Caching lets Melder reuse an index instead of encoding unchanged records
+again. In the [M1 Ultra batch benchmark](performance.md#batch-mode-performance),
+with 10,000 records on each side, encoding the records on the CPU and building
+both USearch indexes took **5.6 seconds**. Loading those same indexes from disk
+took **45.6 milliseconds**. These are index timings, not whole-job times;
+the build figure excludes saving the indexes.
 
 ## The combined embedding index
 
@@ -44,9 +47,9 @@ embeddings:
 ```
 
 `a_cache_dir` is required — the A-side combined index is always cached
-to disk. On first run the directory is created and populated; on
-subsequent runs the index loads in milliseconds (~170ms for 100k
-records).
+to disk. Melder creates the directory on the first run. When both sides
+were cached in the same benchmark with 100,000 records per side, loading
+the two USearch indexes took **447.1 milliseconds in total**.
 
 `b_cache_dir` is optional. When set, the B-side combined index is also
 saved to disk. When omitted, B vectors are re-encoded from scratch on

@@ -1,0 +1,842 @@
+[
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      12,
+      256,
+      2
+    ],
+    "phases": {
+      "A": 11.5,
+      "B": 6.0
+    },
+    "rate": 1828.5714285714287,
+    "seconds": 17.5,
+    "gpu_mean": 43.1578947368421,
+    "gpu_max": 64,
+    "gpu_active": 18,
+    "samples": 19,
+    "cpu_mean": 884.5526315789474,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "1-screen-gpu-cap-12-256-2"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      12,
+      256,
+      0
+    ],
+    "phases": {
+      "A": 12.3,
+      "B": 11.6
+    },
+    "rate": 1338.9121338912134,
+    "seconds": 23.9,
+    "gpu_mean": 40.72,
+    "gpu_max": 52,
+    "gpu_active": 25,
+    "samples": 25,
+    "cpu_mean": 1748.204,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "2-screen-gpu-cap-12-256-0"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      12,
+      128,
+      2
+    ],
+    "phases": {
+      "A": 7.8,
+      "B": 7.3
+    },
+    "rate": 2119.2052980132453,
+    "seconds": 15.1,
+    "gpu_mean": 48.3125,
+    "gpu_max": 54,
+    "gpu_active": 16,
+    "samples": 16,
+    "cpu_mean": 1341.29375,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "3-screen-gpu-cap-12-128-2"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "cap",
+      4,
+      64,
+      4
+    ],
+    "phases": {
+      "A": 12.0,
+      "B": 12.1
+    },
+    "rate": 1327.8008298755185,
+    "seconds": 24.1,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 26,
+    "cpu_mean": 1581.3653846153845,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "4-screen-cpu-cap-4-64-4"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "stock",
+      8,
+      32,
+      0
+    ],
+    "phases": {
+      "A": 11.0,
+      "B": 10.9
+    },
+    "rate": 1461.1872146118722,
+    "seconds": 21.9,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 24,
+    "cpu_mean": 1793.5333333333333,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "5-screen-cpu-stock-8-32-0"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "cap",
+      8,
+      64,
+      2
+    ],
+    "phases": {
+      "A": 10.6,
+      "B": 10.6
+    },
+    "rate": 1509.433962264151,
+    "seconds": 21.2,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 24,
+    "cpu_mean": 1553.9166666666667,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "6-screen-cpu-cap-8-64-2"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "stock",
+      4,
+      64,
+      0
+    ],
+    "phases": {
+      "A": 11.3,
+      "B": 11.3
+    },
+    "rate": 1415.929203539823,
+    "seconds": 22.6,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 25,
+    "cpu_mean": 1845.116,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "7-screen-cpu-stock-4-64-0"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "cap",
+      12,
+      64,
+      1
+    ],
+    "phases": {
+      "A": 13.0,
+      "B": 13.1
+    },
+    "rate": 1226.0536398467432,
+    "seconds": 26.1,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 30,
+    "cpu_mean": 1130.3133333333333,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "8-screen-cpu-cap-12-64-1"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      8,
+      256,
+      2
+    ],
+    "phases": {
+      "A": 7.8,
+      "B": 7.5
+    },
+    "rate": 2091.503267973856,
+    "seconds": 15.3,
+    "gpu_mean": 46.294117647058826,
+    "gpu_max": 54,
+    "gpu_active": 17,
+    "samples": 17,
+    "cpu_mean": 846.5705882352942,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "9-screen-gpu-cap-8-256-2"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      8,
+      256,
+      0
+    ],
+    "phases": {
+      "A": 13.1,
+      "B": 12.9
+    },
+    "rate": 1230.7692307692307,
+    "seconds": 26.0,
+    "gpu_mean": 32.370370370370374,
+    "gpu_max": 46,
+    "gpu_active": 26,
+    "samples": 27,
+    "cpu_mean": 1684.9074074074074,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "10-screen-gpu-cap-8-256-0"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      8,
+      256,
+      1
+    ],
+    "phases": {
+      "A": 8.0,
+      "B": 7.5
+    },
+    "rate": 2064.516129032258,
+    "seconds": 15.5,
+    "gpu_mean": 46.111111111111114,
+    "gpu_max": 53,
+    "gpu_active": 18,
+    "samples": 18,
+    "cpu_mean": 668.9,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "11-screen-gpu-cap-8-256-1"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      8,
+      128,
+      2
+    ],
+    "phases": {
+      "A": 10.6,
+      "B": 9.9
+    },
+    "rate": 1560.9756097560976,
+    "seconds": 20.5,
+    "gpu_mean": 34.78260869565217,
+    "gpu_max": 41,
+    "gpu_active": 23,
+    "samples": 23,
+    "cpu_mean": 919.6565217391304,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "12-screen-gpu-cap-8-128-2"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      8,
+      128,
+      1
+    ],
+    "phases": {
+      "A": 10.6,
+      "B": 10.2
+    },
+    "rate": 1538.4615384615386,
+    "seconds": 20.799999999999997,
+    "gpu_mean": 36.17391304347826,
+    "gpu_max": 44,
+    "gpu_active": 23,
+    "samples": 23,
+    "cpu_mean": 755.5347826086957,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "13-screen-gpu-cap-8-128-1"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "stock",
+      8,
+      64,
+      0
+    ],
+    "phases": {
+      "A": 10.0,
+      "B": 10.2
+    },
+    "rate": 1584.1584158415842,
+    "seconds": 20.2,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 22,
+    "cpu_mean": 1897.0863636363636,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "14-screen-cpu-stock-8-64-0"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "stock",
+      12,
+      64,
+      0
+    ],
+    "phases": {
+      "A": 10.1,
+      "B": 10.2
+    },
+    "rate": 1576.3546798029558,
+    "seconds": 20.299999999999997,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 22,
+    "cpu_mean": 1871.6363636363637,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "15-screen-cpu-stock-12-64-0"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      8,
+      64,
+      2
+    ],
+    "phases": {
+      "A": 16.7,
+      "B": 16.2
+    },
+    "rate": 972.6443768996961,
+    "seconds": 32.9,
+    "gpu_mean": 24.54054054054054,
+    "gpu_max": 27,
+    "gpu_active": 37,
+    "samples": 37,
+    "cpu_mean": 990.3189189189189,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "16-screen-gpu-cap-8-64-2"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "cap",
+      8,
+      128,
+      2
+    ],
+    "phases": {
+      "A": 11.1,
+      "B": 11.1
+    },
+    "rate": 1441.4414414414414,
+    "seconds": 22.2,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 24,
+    "cpu_mean": 1538.05,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "17-screen-cpu-cap-8-128-2"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "stock",
+      8,
+      128,
+      0
+    ],
+    "phases": {
+      "A": 9.8,
+      "B": 9.7
+    },
+    "rate": 1641.025641025641,
+    "seconds": 19.5,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 21,
+    "cpu_mean": 1908.5761904761905,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "18-screen-cpu-stock-8-128-0"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "cpu",
+      "cap",
+      16,
+      64,
+      1
+    ],
+    "phases": {
+      "A": 10.2,
+      "B": 10.2
+    },
+    "rate": 1568.6274509803923,
+    "seconds": 20.4,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 22,
+    "cpu_mean": 1573.859090909091,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "19-screen-cpu-cap-16-64-1"
+  },
+  {
+    "stage": "screen",
+    "n": 16000,
+    "key": [
+      "gpu",
+      "cap",
+      4,
+      128,
+      2
+    ],
+    "phases": {
+      "A": 18.8,
+      "B": 18.3
+    },
+    "rate": 862.5336927223719,
+    "seconds": 37.1,
+    "gpu_mean": 18.78048780487805,
+    "gpu_max": 22,
+    "gpu_active": 41,
+    "samples": 41,
+    "cpu_mean": 502.7048780487805,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "20-screen-gpu-cap-4-128-2"
+  },
+  {
+    "stage": "confirm",
+    "n": 64000,
+    "key": [
+      "gpu",
+      "cap",
+      12,
+      128,
+      2
+    ],
+    "phases": {
+      "A": 34.3,
+      "B": 33.3
+    },
+    "rate": 1893.4911242603553,
+    "seconds": 67.6,
+    "gpu_mean": 42.148648648648646,
+    "gpu_max": 55,
+    "gpu_active": 74,
+    "samples": 74,
+    "cpu_mean": 1168.1202702702703,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "21-confirm-gpu-cap-12-128-2"
+  },
+  {
+    "stage": "confirm",
+    "n": 64000,
+    "key": [
+      "gpu",
+      "cap",
+      8,
+      256,
+      2
+    ],
+    "phases": {
+      "A": 34.8,
+      "B": 34.1
+    },
+    "rate": 1857.764876632801,
+    "seconds": 68.9,
+    "gpu_mean": 40.526315789473685,
+    "gpu_max": 73,
+    "gpu_active": 75,
+    "samples": 76,
+    "cpu_mean": 748.3473684210526,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "22-confirm-gpu-cap-8-256-2"
+  },
+  {
+    "stage": "confirm",
+    "n": 64000,
+    "key": [
+      "cpu",
+      "stock",
+      8,
+      128,
+      0
+    ],
+    "phases": {
+      "A": 40.0,
+      "B": 43.7
+    },
+    "rate": 1529.2712066905615,
+    "seconds": 83.7,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 92,
+    "cpu_mean": 1864.7521739130434,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "23-confirm-cpu-stock-8-128-0"
+  },
+  {
+    "stage": "confirm",
+    "n": 64000,
+    "key": [
+      "cpu",
+      "stock",
+      8,
+      64,
+      0
+    ],
+    "phases": {
+      "A": 43.5,
+      "B": 43.6
+    },
+    "rate": 1469.5752009184846,
+    "seconds": 87.1,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 96,
+    "cpu_mean": 1850.7645833333333,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "24-confirm-cpu-stock-8-64-0"
+  },
+  {
+    "stage": "confirm",
+    "n": 64000,
+    "key": [
+      "cpu",
+      "stock",
+      8,
+      64,
+      0
+    ],
+    "phases": {
+      "A": 42.1,
+      "B": 41.9
+    },
+    "rate": 1523.8095238095239,
+    "seconds": 84.0,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 92,
+    "cpu_mean": 1911.3217391304347,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "25-confirm-cpu-stock-8-64-0"
+  },
+  {
+    "stage": "confirm",
+    "n": 64000,
+    "key": [
+      "cpu",
+      "stock",
+      8,
+      128,
+      0
+    ],
+    "phases": {
+      "A": 39.9,
+      "B": 40.5
+    },
+    "rate": 1592.0398009950247,
+    "seconds": 80.4,
+    "gpu_mean": 0,
+    "gpu_max": 0,
+    "gpu_active": 0,
+    "samples": 88,
+    "cpu_mean": 1909.4306818181817,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "26-confirm-cpu-stock-8-128-0"
+  },
+  {
+    "stage": "confirm",
+    "n": 64000,
+    "key": [
+      "gpu",
+      "cap",
+      8,
+      256,
+      2
+    ],
+    "phases": {
+      "A": 35.0,
+      "B": 34.0
+    },
+    "rate": 1855.072463768116,
+    "seconds": 69.0,
+    "gpu_mean": 41.09090909090909,
+    "gpu_max": 54,
+    "gpu_active": 77,
+    "samples": 77,
+    "cpu_mean": 743.5103896103897,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "27-confirm-gpu-cap-8-256-2"
+  },
+  {
+    "stage": "confirm",
+    "n": 64000,
+    "key": [
+      "gpu",
+      "cap",
+      12,
+      128,
+      2
+    ],
+    "phases": {
+      "A": 34.6,
+      "B": 33.5
+    },
+    "rate": 1879.588839941263,
+    "seconds": 68.1,
+    "gpu_mean": 41.973333333333336,
+    "gpu_max": 59,
+    "gpu_active": 75,
+    "samples": 75,
+    "cpu_mean": 1175.0013333333334,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "28-confirm-gpu-cap-12-128-2"
+  },
+  {
+    "stage": "full",
+    "n": 1000000,
+    "key": [
+      "cpu",
+      "stock",
+      8,
+      128,
+      0
+    ],
+    "phases": {
+      "A": 1093.2,
+      "B": 1054.3
+    },
+    "rate": 931.3154831199068,
+    "seconds": 2147.5,
+    "gpu_mean": 0.10099573257467995,
+    "gpu_max": 32,
+    "gpu_active": 11,
+    "samples": 703,
+    "cpu_mean": 1384.911522048364,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "29-full-cpu-stock-8-128-0"
+  },
+  {
+    "stage": "full",
+    "n": 1000000,
+    "key": [
+      "gpu",
+      "cap",
+      12,
+      128,
+      2
+    ],
+    "phases": {
+      "A": 1122.7,
+      "B": 1087.5
+    },
+    "rate": 904.895484571532,
+    "seconds": 2210.2,
+    "gpu_mean": 21.084254143646408,
+    "gpu_max": 49,
+    "gpu_active": 717,
+    "samples": 724,
+    "cpu_mean": 609.824861878453,
+    "idle": [
+      0,
+      0,
+      0
+    ],
+    "job": "30-full-gpu-cap-12-128-2"
+  }
+]

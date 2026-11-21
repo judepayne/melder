@@ -35,13 +35,15 @@ meld serve listening on port 8090
 
 ## Storage backends
 
-SQLite throughput is ~18% lower than in-memory at the same scale
-(~1,395 vs ~1,698 req/s at 10k, c=10). The gap comes from B-tree
-traversal and per-connection page cache overhead vs DashMap hash lookups.
-Tail latencies (p95, p99) are actually better with SQLite — the
-connection pool smooths out contention spikes. Records are stored in
-columnar format (one column per field) for fast access with no JSON
-serialization overhead.
+In the [M3 MacBook Air benchmark](performance.md#sqlite-live-mode), ten
+concurrent clients sent 10,000 requests against warm USearch indexes with
+10,000 records per side. In-memory storage handled **1,214 requests/s**;
+SQLite handled **903 requests/s**, about 26% fewer. SQLite's 95th-percentile
+response time was slightly higher (19.6 vs 18.3 ms), but its 99th-percentile
+response time was slightly lower (24.8 vs 25.5 ms).
+
+SQLite stores each record field in its own column, so it can read fields
+without decoding a JSON record.
 
 SQLite uses a writer + reader pool architecture:
 `sqlite_read_pool_size` (default 4) read-only connections serve

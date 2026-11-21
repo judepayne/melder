@@ -658,7 +658,7 @@ The primary benefit is **disk cache size**. At 100k records with 384-dim embeddi
 **`encoder_device`** — ONNX encoding device for batch mode. When set to `"gpu"`, embedding inference is offloaded to CoreML (macOS) or CUDA (Linux). Requires `--features gpu-encode`. See [Building: GPU encoding](building.md#gpu-encoding) for platform setup. Ignored in live mode.
 
 > [!TIP]
-> **Tuning GPU encoding for maximum throughput.** GPU encoding benefits from multiple concurrent ONNX sessions to keep the GPU fed while CPU cores handle tokenisation. Set `encoder_pool_size` to ~60% of your CPU core count. Use `encoder_batch_size: 256`. Avoid a `pool_size × batch_size` product above ~3,000 — concurrent GPU memory usage degrades throughput beyond that.
+> **Tuning GPU encoding.** On the M1 Ultra, `encoder_pool_size: 8` and `encoder_batch_size: 256` were the fastest CoreML settings tested with the unmodified release: 827 records/s to encode and build both indexes with one million records per side. Use these settings as a starting point, not a rule. Compare settings on a sample of your own data, then check the best one at full scale. See [Measured GPU settings by pool size](performance.md#measured-gpu-settings-by-pool-size) for the comparison.
 
 **`encoder_batch_size`** — texts per ONNX inference call. Default: 64 for CPU, 256 for GPU. Batch mode only.
 

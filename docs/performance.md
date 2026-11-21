@@ -4,8 +4,11 @@
 
 ## Overview
 
-Benchmarked on Apple M3 MacBook Air, `all-MiniLM-L6-v2` model,
-`encoder_pool_size: 4`.
+Benchmarks on this page were run on two Macs. The **M1 Ultra Mac Studio**
+is the reference machine for batch benchmarks: its extra CPU cores typically
+help on larger jobs. The **M3 MacBook Air** is the reference machine for live
+benchmarks: its faster individual cores typically help with the work done
+for each request.
 
 ## Batch mode performance
 
@@ -20,11 +23,18 @@ crossmappings.
 
 | | flat 10k x 10k | usearch 10k x 10k | flat 100k x 100k | usearch 100k x 100k |
 |---|---:|---:|---:|---:|
-| Index build time (no cache) | ~17s | ~17s | ~3m | ~3m 32s |
-| Index load time (cached) | ~47ms | ~78ms | ~650ms | ~235ms (A) + ~261ms (B) |
-| Scoring throughput | 5,507 rec/s | **33,738 rec/s** | — | **10,539 rec/s** |
-| Wall time (cold) | — | — | — | 3m 32s |
-| Wall time (warm) | 2.2s | 0.3s | — | **9.5s** |
+| Index build time (no cache) | 5.5 s | 5.6 s | 51.1 s | 64.4 s |
+| Index load time (cached) | 35.5 ms | 45.6 ms | 360.8 ms | 447.1 ms |
+| Scoring throughput (warm) | 1,678 rec/s | **45,370 rec/s** | 182 rec/s | **31,094 rec/s** |
+| Wall time (cold) | 11.507 s | 6.470 s | 538.145 s | 71.741 s |
+| Wall time (warm) | 6.510 s | 0.787 s | 553.018 s | 6.471 s |
+
+Measured on the M1 Ultra with default graph assignment and CPU encoding
+using `all-MiniLM-L6-v2`, `encoder_pool_size: 4`, and the default CPU
+`encoder_batch_size: 64`. Index timings cover both datasets; build time
+includes encoding but excludes saving the cache. The
+10k and warm 100k figures are medians of three runs; each cold 100k figure
+is from one run.
 
 > [!TIP]
 > The first build of cached indices for large datasets can be slow —
@@ -41,131 +51,77 @@ crossmappings.
 
 ## Batch graph optimizer
 
-[`batch.assignment.strategy: graph`](batch-mode.md#choosing-pairs-with-the-graph-optimizer)
-is the default on both in-memory and SQLite record storage. It adds graph
-collection, solving and publication after scoring. Explicit `strategy: greedy`
-avoids collecting this graph; omit `mode` with greedy. Graph defaults to
-`approximate`: exact for groups of at most **512 participating records (A+B)**,
-deterministic fast matching at **513 and above**. Explicit `mode: exact`
-(with strategy omitted or `graph`) solves every group exactly, with no time-based
-or heuristic fallback.
+For a step-by-step explanation of how the two strategies choose pairs, see
+[Graph versus greedy in Batch Mode](batch-mode.md#why-graph-assignment-is-the-default).
 
-### Why graph is the default
-
-An end-to-end **1M × 1M blocked BM25** fixture comparison on an **M3 MacBook
-Air**, using in-memory record storage, measured:
+One end-to-end **1M × 1M blocked BM25** comparison on an **M3 MacBook Air**
+used in-memory record storage and known correct pairs:
 
 | Assignment | Correct fixture pairs | Wall time |
 |------------|----------------------:|----------:|
 | Optimized greedy | 456,571 | 61:45 |
 | Graph / approximate | 498,162 | 63:09 |
 
-These are **one run per mode**, not repeated-run averages or SQLite
-measurements. Graph found 41,591 more known-correct pairs for 1:24 additional
-wall time in this comparison. The largest connected group had 711 participating
-records. This supports the default choice, but does not establish a general
-accuracy gain, latency budget or memory guarantee, including at 3M × 3M.
+Graph found **41,591 more correct pairs** for **1 min 24 sec** of additional
+wall time. This was one run per strategy on one fixture, not a general
+accuracy or runtime guarantee.
 
-**Fixture truth and the optimization objective are different.** Correct fixture
-pairs count agreement with known identities; graph maximizes total represented
-similarity over retained eligible candidates when exact, and uses a deterministic
-approximation for larger groups in approximate mode. Even an exact optimum need
-not maximize correct identities or pair count. Approximate mode promises no
-fixed score-loss tolerance. For a fixed retained graph, represented weights,
-mode and Melder version, assignments are deterministic across edge order and
-worker scheduling; candidate retrieval can still change the graph between runs.
-
-**Connected group size, not batch size, drives solver difficulty.** A large
-batch with small independent groups can be solved entirely exactly. One dense,
-connected group may cost much more than many small groups with the same total
-record count. Graph collection retains eligible edges and components in memory.
-The existing `batch.db_path` moves input records to SQLite, not the graph or
-output assembly: graph output materializes records in memory for the shared
-CSV, Parquet and SQLite builder. SQLite page-cache settings therefore do not
-bound graph/output memory.
-
-The standalone prototype comparisons below are **solver-only**, not integrated
-`meld run` timings. They exclude retrieval, scoring, output generation and
-validation. Measured on Apple M3, medians of three fresh release processes with
-four workers:
-
-| Retained graph | Exact solver | Prototype hybrid solver | Interpretation |
-|----------------|-------------:|------------------------:|----------------|
-| Captured fresh 100k-per-side batch | 23.88 ms | 21.83 ms | All 51,695 groups exact; largest 76 records. Difference is not evidence of an algorithmic speedup. |
-| Synthetic connected 10k-per-side, degree 5 | 11.404 s | 9.73 ms | Hybrid achieved 92.28% of exact total score on broad synthetic weights. |
-| Synthetic connected 100k-per-side, degree 5 | Timed out at 25 s (process limit) | 129.66 ms | Exact optimum unknown; hybrid certified at least 83.27% of optimum. |
-
-The prototype hybrid used a historical **256**-record cutoff; the shipped
-contract uses **512**, so those timings are evidence about these graphs, not
-measurements of the integrated 512/513 boundary. The captured graph came from
-the existing benchmark datasets with warm caches and an empty private starting
-CrossMap, not a live production workload. Its groups fit either cutoff. The
-synthetic giants deliberately stress connected graphs and use broad weights,
-not the captured 0.85 automatic-match threshold. A timed-out exact run is not
-a measured exact latency or a partial optimum.
-
-A separate single-group cutoff study (one worker) found median exact/fast
-solver times of **7.225/0.346 ms at 512 records** and **28.539/0.715 ms at
-1,024 records**, across degree-5/20 graphs with competing 0.85–1.00 scores.
-Observed median score losses were 1.26% and 1.10%, respectively, not guaranteed
-loss limits. A large speedup ratio can hide a small absolute saving; saving a
-few milliseconds need not justify changing pairs. Graph shape, score profile,
-hardware and number of groups all affect the trade-off. No claim is made that
-exact met a 100k-connected-group latency target.
-
-For end-to-end comparisons, use identical inputs, cache bytes, retained-candidate
-settings and fresh starting CrossMaps; measure wall time and peak memory as
-well as solver time. Check accepted pair sets, not just counts or summed
-scores. The completion summary describes the effective exact/approximate work
-and a conservative objective bound, **not identity accuracy**. Different ANN
-retrieval can change that work even though solving a fixed graph is deterministic.
-
-Evidence and reproduction details:
-[matched prototype comparisons](../benchmarks/assignment_solver/approx-results.md),
+For solver-only results, see the [prototype comparisons](../benchmarks/assignment_solver/approx-results.md),
 [cutoff study](../benchmarks/assignment_solver/cutoff-results.md), and
-[exact scaling](../benchmarks/assignment_solver/results.md).
+[exact scaling tests](../benchmarks/assignment_solver/results.md).
 
 ## GPU-accelerated batch encoding
 
-Embedding encoding is the dominant cost in cold batch runs — at 1M x 1M
-with the production scoring config, encoding accounts for ~72% of total
-wall time. The `gpu-encode` feature offloads ONNX inference to the GPU
-(CoreML on macOS, CUDA on Linux), significantly reducing encoding time.
+The `gpu-encode` build can run batch inference through CoreML on macOS
+or CUDA on Linux. On the M1 Ultra, using CoreML did not shorten the
+full index build compared with the standard CPU release.
 
-Encoding also uses parallelised ONNX sessions via Rayon — multiple
-encoder pool slots are exercised concurrently, regardless of whether
-the device is CPU or GPU.
+### Encoding throughput (M1 Ultra, 20 CPU cores, 64 GPU cores, 64 GB)
 
-### Encoding throughput (M1 Ultra, 20 cores, 64 GPU cores, 64 GB)
+Each run started with empty caches and built both USearch indexes: one
+million records per side, encoding name and address with all-MiniLM-L6-v2.
+The rate is **two million records divided by the combined build time**.
+It includes encoding and inserting vectors into the indexes, but excludes
+cache saves and matching. Each full-scale setting was measured once.
 
-1M x 1M cold batch, all-MiniLM-L6-v2, production scoring config
-(name_emb 0.30, addr_emb 0.20, BM25 0.50, synonym 0.20):
+| Build and device | Encoder slots | Batch size | Records/s | Measured A+B build time |
+|---|---:|---:|---:|---:|
+| Standard CPU | 1 | 64 | 435 | 76 min 36 s |
+| Standard CPU | 8 | 64 | 920 | 36 min 14 s |
+| **Standard CPU** | **8** | **128** | **931** | **35 min 48 s** |
+| CoreML | 8 | 256 | 827 | 40 min 18 s |
+| CoreML, experimental thread cap | 12 | 128 | 905 | 36 min 50 s |
 
-| Configuration | Encoding rate | vs baseline | Projected 1M x 1M encoding time |
-|---|---:|:---:|---:|
-| Sequential CPU (pool=1) | 210 rec/s | 1.0x | ~79 min |
-| Parallel CPU (pool=8) | 369 rec/s | 1.8x | ~45 min |
-| **GPU CoreML (pool=12, batch=256)** | **1,828 rec/s** | **8.7x** | **~18 min** |
+The two finalists were chosen on smaller samples. At 64k records per side,
+CoreML led on throughput (1,887 vs 1,561 records/s, median of two runs each).
+At full scale they finished about one minute apart. The older ~18-minute
+GPU figure was a projection, not a measured build time.
 
-### Optimal GPU settings by pool size
+<a id="optimal-gpu-settings-by-pool-size"></a>
 
-Sweep results at 1M scale on M1 Ultra. The sweet spot is
-`pool_size: 12, encoder_batch_size: 256`:
+### Measured GPU settings by pool size
 
-| pool | batch | rec/s | Notes |
-|-----:|------:|------:|-------|
-| 12 | 256 | **1,828** | Best overall |
-| 16 | 128 | 1,718 | |
-| 8 | 256 | 1,677 | |
-| 12 | 128 | 1,590 | |
-| 4 | 256 | 1,152 | GPU underutilised |
-| 12 | 512 | 765 | GPU memory pressure |
-| 16 | 512 | 473 | GPU memory pressure |
+These are full 1M × 1M builds with CoreML and Homebrew ONNX Runtime 1.31.1.
+The first seven rows use the GPU-enabled release with its default CPU
+thread count. The last row uses an experimental build that limits each
+encoder session to two CPU threads; this is **not a YAML setting**.
 
-**General tuning rule:** set `encoder_pool_size` to ~60% of your CPU
-core count and `encoder_batch_size` to 256. Avoid `pool_size x
-batch_size` products above ~3,000 — beyond that, concurrent GPU memory
-usage causes throughput to collapse.
+| Encoder slots | Batch size | CPU threads per session | Records/s |
+|---:|---:|---|---:|
+| 4 | 256 | Default | 754 |
+| 8 | 256 | Default | **827** |
+| 12 | 128 | Default | 758 |
+| 12 | 256 | Default | 735 |
+| 12 | 512 | Default | 610 |
+| 16 | 128 | Default | 665 |
+| 16 | 512 | Default | 255 |
+| 12 | 128 | 2 (experimental) | **905** |
+
+For this Mac and workload, **8 slots and batch size 256** was the fastest
+CoreML configuration tested without modifying the release. More slots or
+larger batches did not consistently help. For another machine or model,
+use a small sample to select candidates, then check them at the intended
+dataset size.
 
 See [Building: GPU encoding](building.md#gpu-encoding) for setup
 instructions and [Configuration](configuration.md#performance-field-reference)
@@ -204,26 +160,41 @@ Blocked searches and live/enroll behavior are unchanged.
 
 ### Unblocked batch BM25 comparison
 
-Measured against commit `877f261` on Apple M1 Ultra (20 cores, 64 GB),
-default-feature release builds, four Rayon threads, median of three runs.
-Each case has **1,000 B queries**, not a full square A × A workload.
-Selective queries use unique tokens; common-term queries also include two
-tokens present in every A record. Both binaries produced identical output
-CSVs in every run: 900 matches and 100 unmatched queries.
+For each record in B, Melder uses BM25 to find possible matches in A.
+With blocking enabled, the search can be restricted to records that share
+a value, such as a country code. With blocking off, any record in A can
+be a match. Earlier versions still built a list of all eligible A records
+for every B record. Melder now searches the index without rebuilding that
+identical list.
 
-| A pool | Query type | Scoring before → after | Wall time before → after |
-|---|---|---:|---:|
-| 10,000 | Selective | 0.321s → 0.011s | 0.511s → 0.508s |
-| 10,000 | Common terms | 0.957s → 0.887s | 1.124s → 1.066s |
-| 100,000 | Selective | 3.968s → 0.014s | 4.509s → 0.569s |
-| 100,000 | Common terms | 13.333s → 8.065s | 13.957s → 8.660s |
+We tested two kinds of search. **Distinctive only** means that each A
+record contains a term found nowhere else in A, such as `unique000000010`.
+**Distinctive + common** keeps that term but adds the words `common shared`
+to every A record and to every B record intended to match. Those two words
+give BM25 more records to consider without helping it tell them apart.
+In both tests, 900 B records contained a matching term. The other 100
+contained only a term absent from A.
 
-Scoring times are estimates reconstructed from the CLI's rounded
-records/second throughput, because its duration display rounds to 0.1s.
-Wall times include startup, index construction, and exports. These synthetic
-results isolate the removed bookkeeping; they are not production speedup
-guarantees. Common-term searches still pay posting-list copying and search
-costs, so the gain can be much smaller or within measurement noise.
+Each row shows the time to process **1,000 B records**. Throughput is
+1,000 divided by that total time, including startup, index construction,
+matching and CSV export. It is not the scoring-only rate printed by the CLI.
+
+| Records in A | Search terms | Earlier time | Current time | Earlier B records/s | Current B records/s |
+|---:|---|---:|---:|---:|---:|
+| 10000 | Distinctive only | 0.517 s | 0.188 s | 1934 | 5319 |
+| 10000 | Distinctive + common | 1.168 s | 1.111 s | 856 | 900 |
+| 100000 | Distinctive only | 4.724 s | 0.568 s | 212 | 1761 |
+| 100000 | Distinctive + common | 12.479 s | 8.561 s | 80 | 117 |
+
+With 100,000 records in A, distinctive searches finished in **0.57 s
+instead of 4.72 s**. Adding common words reduced the gain: the same job
+took **8.56 s instead of 12.48 s**. Both versions returned the same
+900 matched pairs and the same 100 unmatched B records in every run.
+
+*Test conditions: M1 Ultra Mac Studio, four worker threads, default-feature
+release builds `877f261` (earlier) and `3e3dc2f` (current). Both used
+greedy assignment. Times are medians of three runs with fresh matching
+files and warm operating-system and model caches.*
 
 Reproduce with separate baseline and candidate release binaries:
 
@@ -239,61 +210,86 @@ output equivalence. Every run uses a fresh crossmap and output directory.
 
 ### Blocked batch benchmarks
 
-10k × 10k:
+Here BM25 searches within a country rather than across all of A. For
+example, when a B record has country code `GB`, BM25 looks for candidates
+among the A records with that code. These tests use no embedding fields.
 
-| Metric | In-memory | SQLite |
-|---|---:|---:|
-| Bulk load | — | 170–194K rec/s |
-| Scoring throughput | **49,337 rec/s** | 2,099 rec/s |
-| Auto-matched | 7,824 | 7,931 |
-| Peak memory | ~2 GB | ~1.2 GB |
+**How much difference does storage make?** We matched 10,000 B records
+against 10,000 A records using the default graph assignment strategy.
+Only the main record storage changes from memory to disk with SQLite;
+Melder still uses memory to choose and export the pairs.
 
-1M × 1M (in-memory, `bm25_candidates: 10`):
+| Record storage | Total time | B records/s | Peak process memory | Accepted pairs |
+|---|---:|---:|---:|---:|
+| In memory | 0.760 s | 13,158 | 599 MiB | 6,092 |
+| SQLite | 4.617 s | 2,166 | 148 MiB | 6,092 |
 
-| Metric | Value |
-|---|---:|
-| Scoring throughput | **1,062 rec/s** |
-| Projected full run | ~16 minutes |
+SQLite used about a quarter of the peak memory but took about six times
+as long. As in the unblocked table, throughput is the number of B records
+divided by the **whole job time**, from startup through CSV export.
 
-The in-memory vs SQLite gap is larger for BM25-only than for embedding
-pipelines because the in-memory BM25 fast path queries Tantivy and
-fetches only the top survivors — no bulk record loading. SQLite batch
-mode trades throughput for bounded memory: at 55M scale where in-memory
-needs ~15-20 GB, SQLite keeps memory at ~10-12 GB.
+**What happens at one million records per side?** We kept the records in
+memory, asked BM25 for up to ten candidates per query, and compared two ways
+to choose one-to-one pairs. Graph considers competing claims together;
+greedy accepts eligible pairs as records are processed.
+
+| Assignment | Total time | B records/s | Accepted pairs |
+|---|---:|---:|---:|
+| Graph (default) | 18 min 29 s | 901 | 657,119 |
+| Greedy | 18 min 32 s | 899 | 645,954 |
+
+Both jobs finished in about eighteen and a half minutes. Graph accepted
+11,165 more pairs. That is a difference in the number accepted, not a
+count of additional correct matches; this benchmark did not verify their
+identities.
+
+*Test conditions: M1 Ultra Mac Studio, 20 CPU cores, default-feature
+release build `3e3dc2f`, with all 20 worker threads available. Each run
+started with fresh matching files; operating-system and model caches were
+not cleared. The 10,000-record figures are medians of three runs. Each
+million-record job ran once to completion; its time is not a projection.*
 
 ## Live mode performance
 
-Pre-populated caches (10k x 10k). `c=1` means one HTTP client
-submitting 3,000 requests sequentially. `c=10` means ten concurrent
-clients each submitting 3,000 requests (30k total). 80% of requests
-require ONNX encoding; 20% modify only non-embedding fields and skip
-the model entirely.
+We started with 10,000 records on each side and sent 30,000 requests from
+ten concurrent clients. The workload was set to 80% encoding: the remaining
+updates changed only non-embedding fields. Live assignment used the default,
+greedy. Figures are medians of three runs on an M3 MacBook Air on AC power,
+with at least two minutes between runs. Request timings exclude startup.
 
-| Metric | flat (c=10) cold | usearch (c=10) cold | flat (c=10) warm | usearch (c=10) warm |
-|--------|----------------:|--------------------:|-----------------:|--------------------:|
-| Throughput | 843 req/s | 1,045 req/s | 1,113 req/s | **1,558 req/s** |
-| p50 latency | 8.4ms | 5.5ms | 7.2ms | 3.5ms |
-| p95 latency | 30.4ms | 29.0ms | 21.2ms | 25.6ms |
+| Metric | Flat, cold | USearch, cold | Flat, warm | USearch, warm |
+|---|---:|---:|---:|---:|
+| Requests/s | 740 | 1,093 | 731 | **1,166** |
+| Median latency | 10.5 ms | 8.5 ms | 10.0 ms | 7.8 ms |
+| 95th-percentile latency | 33.7 ms | 20.3 ms | 35.9 ms | 18.7 ms |
 
-Cold = fresh index build on startup. Warm = pre-built cache loaded from disk (~1.7s startup vs ~18s cold).
+Cold and warm describe how the server starts. Building the indexes from
+scratch took 12.6–13.4 s to reach readiness; loading saved indexes took
+0.33–0.36 s. All requests completed without HTTP errors, but the flat
+backend logged warnings that some candidates had missing vectors and
+received an embedding score of zero. These timings do not compare match quality.
 
-At 100k x 100k (80% encoding, c=10, 10k events), usearch reaches **1,325 req/s** warm
-with p50 latency of 6.0ms and p95 of 19.0ms.
+With 100,000 records per side and warm USearch indexes, ten clients sent
+10,000 requests at **991 requests/s**. Median latency was 9.3 ms and
+95th-percentile latency was 20.4 ms.
 
 ### SQLite live mode
 
-Pre-populated caches (10k x 10k), usearch, warm start, c=10, 10k events:
+We compared in-memory and SQLite storage using warm USearch indexes and
+10,000 records per side. Each run started from the same seed records;
+ten clients sent 10,000 requests with the same 80% encoding workload.
 
-| Metric | In-memory | SQLite |
-|--------|----------:|-------:|
-| Throughput | 1,698 req/s | **1,395 req/s** |
-| p50 latency | 3.4ms | 6.4ms |
-| p95 latency | 23.9ms | 13.6ms |
-| p99 latency | 37.3ms | 20.3ms |
+| Metric | In memory | SQLite |
+|---|---:|---:|
+| Requests/s | 1,214 | 903 |
+| Median latency | 7.9 ms | 10.3 ms |
+| 95th-percentile latency | 18.3 ms | 19.6 ms |
+| 99th-percentile latency | 25.5 ms | 24.8 ms |
 
-SQLite is ~18% slower on throughput but has better tail latency (p95/p99).
-The trade-off is durability and instant warm restarts (~0.4s vs ~18s for
-in-memory cold start).
+SQLite handled about 26% fewer requests per second. Its 95th-percentile
+latency was slightly higher, but its 99th-percentile latency was slightly
+lower. Both started from saved state in under a second: 0.36 s for the
+in-memory server with cached indexes and 0.53 s for SQLite.
 
 ### Deferred acceptance performance
 
@@ -303,12 +299,10 @@ close to main. Turning it on roughly halved throughput.
 
 | Workload | Assignment mode | Throughput | Request run time | p95 latency |
 |---|---|---:|---:|---:|
-| 10k × 10k, 3,000 requests | Main (greedy) | 1,601 req/s | 1.87 s | 20.7 ms |
-| | New build, off | 1,592 req/s | 1.89 s | 20.2 ms |
-| | New build, on | 785 req/s | 3.82 s | 23.6 ms |
-| 100k × 100k, 10,000 requests | Main (greedy) | 1,289 req/s | 7.76 s | 22.3 ms |
-| | New build, off | 1,263 req/s | 7.92 s | 22.5 ms |
-| | New build, on | 574 req/s | 17.42 s | 30.3 ms |
+| 10k × 10k, 3,000 requests | Off | 1,592 req/s | 1.89 s | 20.2 ms |
+| | On | 785 req/s | 3.82 s | 23.6 ms |
+| 100k × 100k, 10,000 requests | Off | 1,263 req/s | 7.92 s | 22.5 ms |
+| | On | 574 req/s | 17.42 s | 30.3 ms |
 
 Figures are medians of three runs per mode and workload on an Apple M3 with
 16 GiB RAM: in-memory storage, USearch, 10 concurrent clients, and identical
@@ -518,7 +512,7 @@ All four scripts accept `--no-serve` to skip starting the server:
 
 ```bash
 # Terminal 1: start the server manually
-meld serve --config benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml --port 8090
+./target/release/meld serve --config benchmarks/live/10kx10k_inject3k_usearch/warm/config.yaml --port 8090
 
 # Terminal 2: run the benchmark against it
 python3 benchmarks/scripts/live_concurrent_test.py --no-serve --port 8090 --iterations 3000
