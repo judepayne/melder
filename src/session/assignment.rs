@@ -87,7 +87,7 @@ impl Session {
         }
     }
 
-    fn append_assignment(&self, bytes: &[u8]) -> std::io::Result<()> {
+    pub(super) fn append_assignment(&self, bytes: &[u8]) -> std::io::Result<()> {
         #[cfg(test)]
         if self
             .assignment

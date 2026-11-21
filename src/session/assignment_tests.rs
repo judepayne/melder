@@ -29,6 +29,9 @@ mod enroll_concurrency_tests;
 #[path = "assignment_policy_tests.rs"]
 mod policy_tests;
 
+#[path = "startup_input_tests.rs"]
+mod startup_input_tests;
+
 #[path = "assignment_cid_tests.rs"]
 mod cid_tests;
 #[path = "assignment_take_tests.rs"]

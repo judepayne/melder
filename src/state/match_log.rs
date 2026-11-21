@@ -513,6 +513,42 @@ pub fn reconstruct_assignment_history(
     Ok(map.pairs())
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StartupFrame {
+    StartupAssignment {
+        version: u8,
+        events: Vec<MatchLogEvent>,
+    },
+}
+
+fn validate_startup_assignment(version: u8, events: &[MatchLogEvent]) -> io::Result<()> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid startup_assignment v1");
+    if version != 1 {
+        return Err(invalid());
+    }
+    let mut a_ids = HashSet::new();
+    let mut b_ids = HashSet::new();
+    for event in events {
+        match event {
+            MatchLogEvent::CrossMapConfirm {
+                a_id, b_id, score, ..
+            } => {
+                if !a_ids.insert(a_id)
+                    || !b_ids.insert(b_id)
+                    || score.is_some_and(|s| !s.is_finite())
+                {
+                    return Err(invalid());
+                }
+            }
+            MatchLogEvent::ReviewMatch { score, .. } if score.is_finite() => {}
+            MatchLogEvent::NoMatchBelow { .. } => {}
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(())
+}
+
 // Accept only incomplete JSON with a recognized canonical header. For a torn
 // UTF-8 code point, parse the valid prefix; other invalid UTF-8 is corruption.
 fn is_torn_final_frame(line: &[u8]) -> bool {
@@ -538,6 +574,7 @@ fn is_torn_final_frame(line: &[u8]) -> bool {
             r#""type":"crossmap_confirm","#,
             r#""type":"crossmap_reassign","#,
             r#""type":"assignment_delta","version":1,"#,
+            r#""type":"startup_assignment","version":1,"#,
             r#""type":"review_match","#,
             r#""type":"no_match_below","#,
             r#""type":"crossmap_break","#,
@@ -548,7 +585,9 @@ fn is_torn_final_frame(line: &[u8]) -> bool {
         .iter()
         .any(|prefix| header.starts_with(prefix))
     });
-    known_header && serde_json::from_str::<MatchLogEvent>(text).is_err_and(|error| error.is_eof())
+    known_header
+        && (serde_json::from_str::<MatchLogEvent>(text).is_err_and(|error| error.is_eof())
+            || serde_json::from_str::<StartupFrame>(text).is_err_and(|error| error.is_eof()))
 }
 
 /// Write-ahead log for crash recovery.
@@ -648,6 +687,25 @@ impl MatchLog {
         };
         let mut bytes = serde_json::to_vec(&wrapped)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    /// Serialize a whole startup assignment as one recoverable WAL frame.
+    /// Replay expands it into ordinary confirmations and review outcomes.
+    pub(crate) fn serialize_startup_assignment(events: Vec<MatchLogEvent>) -> io::Result<Vec<u8>> {
+        validate_startup_assignment(1, &events)?;
+        #[derive(Serialize)]
+        struct Timestamped {
+            ts: String,
+            #[serde(flatten)]
+            frame: StartupFrame,
+        }
+        let mut bytes = serde_json::to_vec(&Timestamped {
+            ts: iso8601_now(),
+            frame: StartupFrame::StartupAssignment { version: 1, events },
+        })
+        .map_err(io::Error::other)?;
         bytes.push(b'\n');
         Ok(bytes)
     }
@@ -845,6 +903,15 @@ impl MatchLog {
                     events.push(event);
                 }
                 Err(e) => {
+                    if let Ok(StartupFrame::StartupAssignment {
+                        version,
+                        events: inner,
+                    }) = serde_json::from_slice::<StartupFrame>(&line)
+                    {
+                        validate_startup_assignment(version, &inner)?;
+                        events.extend(inner);
+                        continue;
+                    }
                     // Recover a torn final frame written by this logger, but
                     // never skip a corrupt complete line or an unknown schema.
                     if !allow_torn || !is_torn_final_frame(&line) {
@@ -2064,6 +2131,72 @@ mod tests {
         File::create(&path).unwrap();
         let events = MatchLog::replay(&path).unwrap();
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn startup_assignment_frame_is_all_or_nothing_on_recovery() -> io::Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("startup.wal");
+        let frame = MatchLog::serialize_startup_assignment(vec![
+            MatchLogEvent::CrossMapConfirm {
+                a_id: "a1".into(),
+                b_id: "b1".into(),
+                score: Some(0.9),
+                rank: Some(1),
+                reason: None,
+            },
+            MatchLogEvent::ReviewMatch {
+                id: "b2".into(),
+                side: Side::B,
+                candidate_id: "a2".into(),
+                score: 0.7,
+                rank: Some(1),
+                reason: None,
+            },
+        ])?;
+        fs::write(&path, &frame)?;
+        let recovered = MatchLog::replay_file(&path)?;
+        assert_eq!(recovered.len(), 2, "complete frame expands both decisions");
+        let membership = reconstruct_assignment_history(&recovered, &[])?;
+        assert_eq!(
+            membership,
+            vec![("a1".into(), "b1".into())],
+            "expanded confirmations recover membership"
+        );
+        for offset in 80..frame.len() - 1 {
+            fs::write(&path, &frame[..offset])?;
+            assert!(
+                MatchLog::replay_file(&path)?.is_empty(),
+                "a torn frame cannot expose a decision prefix at byte {offset}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn startup_assignment_rejects_invalid_versions_and_bijections() -> io::Result<()> {
+        let duplicate = || MatchLogEvent::CrossMapConfirm {
+            a_id: "a".into(),
+            b_id: "b".into(),
+            score: Some(0.9),
+            rank: None,
+            reason: None,
+        };
+        assert!(
+            MatchLog::serialize_startup_assignment(vec![duplicate(), duplicate()]).is_err(),
+            "duplicate endpoint publication must fail"
+        );
+        let dir = tempdir()?;
+        let path = dir.path().join("startup.wal");
+        fs::write(
+            &path,
+            b"{\"type\":\"startup_assignment\",\"version\":2,\"events\":[]}\n",
+        )?;
+        assert!(
+            MatchLog::replay_file(&path).is_err(),
+            "unknown startup versions must not be skipped"
+        );
+        Ok(())
     }
 
     #[test]

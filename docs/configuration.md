@@ -459,7 +459,9 @@ Settings for `meld serve`. Ignored by `meld run`.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `assignment.strategy` | no | `greedy` | `greedy` or opt-in `deferred_acceptance`. Enroll only supports `greedy`. |
+| `startup.assignment.strategy` | no | `graph` | Initial two-pool matching pass only: `graph` or `greedy`. Independent of incoming requests and `batch.assignment`. |
+| `startup.assignment.mode` | no | `approximate` (graph) | `approximate` solves small groups exactly; `exact` solves every group exactly. Omit for greedy. Unknown fields inside `startup` and `startup.assignment` are rejected. |
+| `assignment.strategy` | no | `greedy` | Incoming requests: `greedy` or opt-in `deferred_acceptance`. Enroll only supports `greedy`. |
 | `assignment.max_displacements` | no | `32` | Nonnegative integer budget of successful displacements per live assignment attempt. Zero allows reciprocal free matches but no displacement. Ignored by greedy. |
 | `match_log_path` | no | `"bench/upsert.wal"` | Base path for timestamped match-log (WAL) segments, not one file overwritten on each start. Clean shutdown compacts only the current segment; prior segments are retained. |
 | `crossmap_flush_secs` | no | `5` | Interval in seconds for flushing dirty in-memory CrossMap state to its configured CSV. Separate from WAL flushing; SQLite CrossMap writes are already durable. |

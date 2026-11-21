@@ -569,8 +569,20 @@ pub struct BatchConfig {
     pub sqlite_cache_mb: Option<u64>,
 }
 
+/// Initial matching settings, independent of incoming-request assignment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveStartupConfig {
+    /// Startup uses the shared graph solver settings, not `batch.assignment`.
+    #[serde(default)]
+    pub assignment: BatchAssignmentConfig,
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct LiveConfig {
+    /// Matching policy before the HTTP server starts accepting requests.
+    #[serde(default)]
+    pub startup: LiveStartupConfig,
     #[serde(default)]
     pub assignment: LiveAssignmentConfig,
     #[serde(default)]
@@ -797,6 +809,44 @@ mod tests {
             assert!(
                 serde_yaml::from_str::<BatchAssignmentConfig>(&yaml).is_err(),
                 "reject unknown batch mode {mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_startup_assignment_defaults_and_strict_keys() {
+        for (yaml, mode) in [
+            ("{}", Some(BatchAssignmentMode::Approximate)),
+            ("startup: {}", Some(BatchAssignmentMode::Approximate)),
+            (
+                "startup: { assignment: {} }",
+                Some(BatchAssignmentMode::Approximate),
+            ),
+            (
+                "startup: { assignment: { mode: exact } }",
+                Some(BatchAssignmentMode::Exact),
+            ),
+            ("startup: { assignment: { strategy: greedy } }", None),
+        ] {
+            let live: LiveConfig = serde_yaml::from_str(yaml).expect("valid startup assignment");
+            assert_eq!(live.startup.assignment.graph_mode(), mode, "{yaml}");
+            assert_eq!(
+                live.assignment,
+                LiveAssignmentConfig::default(),
+                "startup does not alter incoming-request policy: {yaml}"
+            );
+        }
+        for yaml in [
+            "startup: { strategy: greedy }",
+            "startup: { typo: true }",
+            "startup: { assignment: { strategy: deferred_acceptance } }",
+            "startup: { assignment: { strategy: maximum_weight } }",
+            "startup: { assignment: { mode: invalid } }",
+            "startup: { assignment: { max_displacements: 1 } }",
+        ] {
+            assert!(
+                serde_yaml::from_str::<LiveConfig>(yaml).is_err(),
+                "reject invalid startup setting: {yaml}"
             );
         }
     }

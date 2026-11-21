@@ -184,6 +184,15 @@ fn validate_common(cfg: &Config) -> Result<(), ConfigError> {
         });
     }
 
+    if cfg.live.startup.assignment.mode.is_some()
+        && cfg.live.startup.assignment.strategy == BatchAssignmentStrategy::Greedy
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "live.startup.assignment.mode".into(),
+            message: "requires live.startup.assignment.strategy: graph".into(),
+        });
+    }
+
     // job.name
     require_non_empty(&cfg.job.name, "job.name")?;
 

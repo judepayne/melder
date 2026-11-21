@@ -115,6 +115,22 @@ pub trait CrossMapOps: Send + Sync {
         replacements: &[(&str, &str)],
     ) -> Result<bool, CrossMapError>;
 
+    /// Publish startup pairs and reviews. Durable backends commit reviews and
+    /// matched flags in the same transaction as membership; volatile backends
+    /// leave review caching and flags to the session after WAL publication.
+    /// Review tuples are `(key, B query ID, A candidate ID, score)`.
+    fn publish_startup(
+        &self,
+        pairs: &[(&str, &str)],
+        _reviews: &[(&str, &str, &str, f64)],
+    ) -> Result<bool, CrossMapError> {
+        if pairs.is_empty() {
+            Ok(true)
+        } else {
+            self.apply_assignment_delta(&[], pairs)
+        }
+    }
+
     /// A→B lookup.
     fn get_b(&self, a_id: &str) -> Option<String>;
 

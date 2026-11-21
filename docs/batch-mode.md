@@ -30,6 +30,8 @@ guarantee acceptance, and a selected pair need not be a query's rank-one candida
 
 ## Why graph assignment is the default
 
+The [live startup pass](live-mode.md#initial-matching-pass) uses this optimizer by default too, but reads `live.startup.assignment`, not `batch.assignment`.
+
 Both strategies use the same scoring rules. They differ in how they choose
 one-to-one matches from the eligible candidates.
 

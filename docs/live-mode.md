@@ -72,12 +72,7 @@ What happens at launch depends on the storage backend:
 7. Unmatched sets and common-ID indices are rebuilt from the final state
 8. Review queue is populated from unresolved `ReviewMatch` WAL events
 9. A new timestamped WAL file is opened for the current run
-10. **Initial matching pass** — all unmatched B records are scored against
-    the A pool using the full scoring pipeline (blocking, BM25, ANN,
-    synonym). Eligible matches are recorded in the crossmap and WAL;
-    uncertain results can go to review, and some records may remain unmatched.
-    Set `live.skip_initial_match: true` to skip this step and start the
-    API immediately.
+10. Run the [initial matching pass](#initial-matching-pass) before opening the API.
 
 ### SQLite — cold start (DB file does not exist)
 
@@ -99,11 +94,41 @@ What happens at launch depends on the storage backend:
 
 No CSV loading. No WAL replay. Restarts are fast.
 
+### Initial matching pass
+
+After loading either backend, Melder matches the remaining B records against A
+before accepting HTTP requests. By default, it considers competing candidates
+together using the same [graph optimizer as batch mode](batch-mode.md#why-graph-assignment-is-the-default).
+It leaves existing pairs in place, respects exclusions, and makes accepted pairs
+and review candidates available to the live session. Set
+`live.skip_initial_match: true` to skip the pass.
+
+Startup and incoming requests have **independent policies**. For example:
+
+```yaml
+live:
+  startup:
+    assignment:
+      strategy: graph
+      mode: exact
+  assignment:
+    strategy: deferred_acceptance
+```
+
+If omitted, startup uses `graph` with `approximate` mode and incoming requests
+use `greedy`. Startup does not read `batch.assignment`. In earlier releases
+startup followed `live.assignment`; set `live.startup.assignment.strategy: greedy`
+to retain greedy startup. Deferred acceptance now applies only to incoming
+requests, not startup. New pairs selected by graph startup are protected from
+later deferred-acceptance displacement. Older binaries cannot replay or export
+the new startup assignment log entries; changing the policy later does not
+remove entries already written.
+
 <a id="live-assignment-policy"></a>
 
 ## Deferred acceptance
 
-By default, live mode uses `greedy` matching: ordinary scoring can claim a free
+By default, incoming requests use `greedy` matching: ordinary scoring can claim a free
 match but won't move an existing match to make room. Deferred acceptance lets a better
 candidate take the place of a weaker match, then tries to find a new partner
 for the record that lost its match. It works the same way on either side.

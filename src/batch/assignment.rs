@@ -194,12 +194,12 @@ fn exact_key(config: &Config, rec: &Record, side: Side) -> Option<Vec<String>> {
         .collect()
 }
 
-pub(super) struct ScoredQuery {
+pub(crate) struct ScoredQuery {
     pub best: Option<MatchResult>,
     pub eligible: Vec<MatchResult>,
 }
 
-pub(super) fn retain(
+pub(crate) fn retain(
     config: &Config,
     crossmap: &dyn CrossMapOps,
     mut results: Vec<MatchResult>,
@@ -236,6 +236,33 @@ pub(super) fn finish(
     work_ids: &[&str],
     scored: Vec<ScoredQuery>,
     log: Option<&MatchLog>,
+) -> Result<(Vec<RecordOutcome>, AssignmentSummary), MelderError> {
+    let (outcomes, summary) = solve(mode, store, crossmap, work_ids, scored)?;
+    let pairs: Vec<_> = outcomes
+        .iter()
+        .filter_map(|o| match o {
+            RecordOutcome::Auto(r) => Some((r.matched_id.as_str(), r.query_id.as_str())),
+            _ => None,
+        })
+        .collect();
+    publish_changes(
+        &pairs,
+        |expected, replacements| crossmap.apply_assignment_delta(expected, replacements),
+        || match log {
+            Some(log) => publish_log(log, &outcomes, &summary),
+            None => Ok(()),
+        },
+    )?;
+    Ok((outcomes, summary))
+}
+
+/// Resolve retained candidates without publishing; live startup owns its own WAL handoff.
+pub(crate) fn solve(
+    mode: BatchAssignmentMode,
+    store: &dyn RecordStore,
+    crossmap: &dyn CrossMapOps,
+    work_ids: &[&str],
+    scored: Vec<ScoredQuery>,
 ) -> Result<(Vec<RecordOutcome>, AssignmentSummary), MelderError> {
     if scored.len() != work_ids.len() {
         return Err(BatchAssignmentError::Invariant("missing graph query result").into());
@@ -357,21 +384,6 @@ pub(super) fn finish(
         }
         offset += width;
     }
-    let pairs: Vec<_> = outcomes
-        .iter()
-        .filter_map(|o| match o {
-            RecordOutcome::Auto(r) => Some((r.matched_id.as_str(), r.query_id.as_str())),
-            _ => None,
-        })
-        .collect();
-    publish_changes(
-        &pairs,
-        |expected, replacements| crossmap.apply_assignment_delta(expected, replacements),
-        || match log {
-            Some(log) => publish_log(log, &outcomes, &summary),
-            None => Ok(()),
-        },
-    )?;
     Ok((outcomes, summary))
 }
 

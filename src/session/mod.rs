@@ -20,6 +20,8 @@ use crate::state::match_log::MatchLogEvent;
 mod assignment;
 #[cfg(test)]
 mod assignment_tests;
+mod startup;
+mod startup_publish;
 
 /// Response types for API serialization.
 pub mod response {
@@ -346,8 +348,8 @@ impl Session {
     ///
     /// Called at startup after datasets are loaded and indices are built,
     /// before the HTTP server starts listening. Uses the same scoring
-    /// pipeline and claim logic as live upserts, including WAL writes,
-    /// hooks, and review queue entries.
+    /// pipeline as live upserts, with the independent startup assignment policy.
+    /// Applies decisions, WAL writes, hooks, and review queue entries before serving.
     ///
     /// Skips encoding — records are already in the store and vector index.
     pub fn initial_match_pass(&self) -> Result<(), SessionError> {
@@ -355,23 +357,21 @@ impl Session {
         let store = &self.state.store;
 
         // Only run if both sides have data
-        let a_count = store.len(Side::A).unwrap_or(0);
-        let b_count = store.len(Side::B).unwrap_or(0);
+        let a_count = store.len(Side::A)?;
+        let b_count = store.len(Side::B)?;
         if a_count == 0 || b_count == 0 {
             return Ok(());
         }
 
         // Collect unmatched B IDs
-        let mut unmatched_b: Vec<String> = store.unmatched_ids(Side::B).unwrap_or_default();
-        if self.assignment.is_some() {
-            let _guard = self.assignment_guard()?;
-            unmatched_b.sort_unstable();
-            for id in unmatched_b {
-                let seed = (Side::B, id);
-                self.reconcile_assignment(seed.clone(), vec![seed])?;
-            }
-            return Ok(());
+        let mut unmatched_b: Vec<String> = store.unmatched_ids(Side::B)?;
+        unmatched_b.sort_unstable();
+        unmatched_b.retain(|id| !self.state.crossmap.has_b(id));
+        let graph_mode = config.live.startup.assignment.graph_mode();
+        if graph_mode.is_some() {
+            self.validate_startup_constraints()?;
         }
+        let mut graph_scored = Vec::new();
         if unmatched_b.is_empty() {
             info!(
                 a_count,
@@ -392,8 +392,6 @@ impl Session {
         let ann_candidates = config.ann_candidates.unwrap_or(50);
         let bm25_candidates_n = config.bm25_candidates.unwrap_or(10);
         let syn_fields = &config.synonym_fields;
-        let b_side = self.state.side(Side::B);
-
         let mut auto_matched = 0usize;
         let mut review_count = 0usize;
         let mut no_match = 0usize;
@@ -417,26 +415,21 @@ impl Session {
             }
 
             // Get the B record from the store
-            let b_record = match store.get(Side::B, b_id) {
-                Ok(Some(rec)) => rec,
-                _ => continue,
-            };
+            let b_record = store
+                .get(Side::B, b_id)?
+                .ok_or_else(|| SessionError::NotFound {
+                    message: format!("startup B record {b_id}"),
+                })?;
 
             // Blocking query
             let blocked_ids: Vec<String> = if config.blocking.enabled {
-                store
-                    .blocking_query(&b_record, Side::B, Side::A)
-                    .unwrap_or_default()
+                store.blocking_query(&b_record, Side::B, Side::A)?
             } else {
-                store.ids(Side::A).unwrap_or_default()
+                store.ids(Side::A)?
             };
 
             // Get combined vec from index (already encoded during startup)
-            let query_combined_vec: Vec<f32> = b_side
-                .combined_index
-                .as_ref()
-                .and_then(|idx| idx.get(b_id).ok().flatten())
-                .unwrap_or_default();
+            let query_combined_vec = self.startup_query_vector(b_id, graph_mode.is_some())?;
 
             // BM25 candidate generation
             let (bm25_cand_ids, bm25_scores_map) = if let Some(bm25) = opp_bm25 {
@@ -490,11 +483,28 @@ impl Session {
                 synonym_dictionary: self.state.synonym_dictionary.as_deref(),
                 exclusions: &self.state.exclusions,
             };
-            let results =
-                pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
+            let results = if graph_mode.is_some() {
+                pipeline::score_pool_strict(
+                    &scoring_query,
+                    &scoring_pool,
+                    config,
+                    ann_candidates,
+                    top_n,
+                )?
+            } else {
+                pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n)
+            };
 
             if let Some(ref sl) = self.scoring_log {
                 sl.send(b_id, Side::B, &results);
+            }
+
+            if graph_mode.is_some() {
+                graph_scored.push(
+                    crate::batch::assignment::retain(config, self.state.crossmap.as_ref(), results)
+                        .map_err(|e| SessionError::Assignment(e.to_string()))?,
+                );
+                continue;
             }
 
             // Claim loop — same logic as upsert_record_inner
@@ -558,6 +568,10 @@ impl Session {
             {
                 no_match += 1;
             }
+        }
+
+        if let Some(mode) = graph_mode {
+            return self.finish_startup_graph(mode, &unmatched_b, graph_scored);
         }
 
         let elapsed = start.elapsed().as_secs_f64();

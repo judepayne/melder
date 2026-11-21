@@ -50,7 +50,7 @@ pub struct BatchStats {
 }
 
 /// Outcome for a single B record after scoring.
-pub(super) enum RecordOutcome {
+pub(crate) enum RecordOutcome {
     Scored(ScoredQuery),
     Auto(MatchResult),
     Review(MatchResult),

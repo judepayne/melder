@@ -250,67 +250,15 @@ impl CrossMapOps for SqliteCrossMap {
         expected: &[(&str, &str)],
         replacements: &[(&str, &str)],
     ) -> Result<bool, CrossMapError> {
-        let Some((expected_a, expected_b)) =
-            super::traits::validate_assignment_delta(expected, replacements)
-        else {
-            return Ok(false);
-        };
-        let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for &(a, b) in expected {
-            let existing_b: Option<String> = tx
-                .query_row(
-                    "SELECT b_id FROM crossmap WHERE a_id = ?1",
-                    params![a],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let existing_a: Option<String> = tx
-                .query_row(
-                    "SELECT a_id FROM crossmap WHERE b_id = ?1",
-                    params![b],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if existing_b.as_deref() != Some(b) || existing_a.as_deref() != Some(a) {
-                return Ok(false);
-            }
-        }
-        for &(a, b) in replacements {
-            let existing_b: Option<String> = tx
-                .query_row(
-                    "SELECT b_id FROM crossmap WHERE a_id = ?1",
-                    params![a],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let existing_a: Option<String> = tx
-                .query_row(
-                    "SELECT a_id FROM crossmap WHERE b_id = ?1",
-                    params![b],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if existing_b.is_some() && !expected_a.contains(a)
-                || existing_a.is_some() && !expected_b.contains(b)
-            {
-                return Ok(false);
-            }
-        }
-        for &(a, b) in expected {
-            tx.execute(
-                "DELETE FROM crossmap WHERE a_id = ?1 AND b_id = ?2",
-                params![a, b],
-            )?;
-        }
-        for &(a, b) in replacements {
-            tx.execute(
-                "INSERT INTO crossmap (a_id, b_id) VALUES (?1, ?2)",
-                params![a, b],
-            )?;
-        }
-        tx.commit()?;
-        Ok(true)
+        self.apply_delta_and_startup_reviews(expected, replacements, None)
+    }
+
+    fn publish_startup(
+        &self,
+        pairs: &[(&str, &str)],
+        reviews: &[(&str, &str, &str, f64)],
+    ) -> Result<bool, CrossMapError> {
+        self.apply_delta_and_startup_reviews(&[], pairs, Some(reviews))
     }
 
     fn get_b(&self, a_id: &str) -> Option<String> {
@@ -386,6 +334,93 @@ impl CrossMapOps for SqliteCrossMap {
     }
 }
 
+impl SqliteCrossMap {
+    fn apply_delta_and_startup_reviews(
+        &self,
+        expected: &[(&str, &str)],
+        replacements: &[(&str, &str)],
+        reviews: Option<&[(&str, &str, &str, f64)]>,
+    ) -> Result<bool, CrossMapError> {
+        let validated = if reviews.is_some() && expected.is_empty() && replacements.is_empty() {
+            Some((
+                std::collections::HashSet::new(),
+                std::collections::HashSet::new(),
+            ))
+        } else {
+            super::traits::validate_assignment_delta(expected, replacements)
+        };
+        let Some((expected_a, expected_b)) = validated else {
+            return Ok(false);
+        };
+        let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for &(a, b) in expected {
+            let existing_b: Option<String> = tx
+                .query_row(
+                    "SELECT b_id FROM crossmap WHERE a_id = ?1",
+                    params![a],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let existing_a: Option<String> = tx
+                .query_row(
+                    "SELECT a_id FROM crossmap WHERE b_id = ?1",
+                    params![b],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing_b.as_deref() != Some(b) || existing_a.as_deref() != Some(a) {
+                return Ok(false);
+            }
+        }
+        for &(a, b) in replacements {
+            let existing_b: Option<String> = tx
+                .query_row(
+                    "SELECT b_id FROM crossmap WHERE a_id = ?1",
+                    params![a],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let existing_a: Option<String> = tx
+                .query_row(
+                    "SELECT a_id FROM crossmap WHERE b_id = ?1",
+                    params![b],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing_b.is_some() && !expected_a.contains(a)
+                || existing_a.is_some() && !expected_b.contains(b)
+            {
+                return Ok(false);
+            }
+        }
+        for &(a, b) in expected {
+            tx.execute(
+                "DELETE FROM crossmap WHERE a_id = ?1 AND b_id = ?2",
+                params![a, b],
+            )?;
+        }
+        for &(a, b) in replacements {
+            tx.execute(
+                "INSERT INTO crossmap (a_id, b_id) VALUES (?1, ?2)",
+                params![a, b],
+            )?;
+        }
+        if let Some(reviews) = reviews {
+            for &(a, b) in replacements {
+                tx.execute("DELETE FROM reviews WHERE (side = 'a' AND id = ?1) OR (side = 'b' AND id = ?2)", params![a, b])?;
+                tx.execute("DELETE FROM a_unmatched WHERE id = ?1", params![a])?;
+                tx.execute("DELETE FROM b_unmatched WHERE id = ?1", params![b])?;
+            }
+            for &(key, id, candidate, score) in reviews {
+                tx.execute("INSERT OR REPLACE INTO reviews (key,id,side,candidate_id,score) VALUES (?1,?2,'b',?3,?4)", params![key,id,candidate,score])?;
+            }
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -413,6 +448,108 @@ mod tests {
             crate::store::sqlite::open_sqlite(&path, &bc, Some(pool_cfg), &[], &[]).unwrap();
         std::mem::forget(dir);
         crossmap
+    }
+
+    #[test]
+    fn startup_review_failure_rolls_back_all_decisions() -> Result<(), CrossMapError> {
+        let cm = make_crossmap();
+        cm.writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute_batch(
+                "INSERT INTO reviews VALUES ('old','b1','b','a1',0.7);
+             INSERT INTO a_unmatched VALUES ('a1');
+             INSERT INTO b_unmatched VALUES ('b1');
+             CREATE TRIGGER reject_startup_review BEFORE INSERT ON reviews
+             BEGIN SELECT RAISE(ABORT, 'injected review persistence failure'); END;",
+            )?;
+        assert!(
+            cm.publish_startup(&[("a1", "b1")], &[("new", "b2", "a2", 0.75)])
+                .is_err(),
+            "review failure must fail publication"
+        );
+        assert!(cm.is_empty(), "failed reviews must roll back membership");
+        let conn = cm.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let old: i64 = conn.query_row("SELECT COUNT(*) FROM reviews WHERE key='old'", [], |r| {
+            r.get(0)
+        })?;
+        let unmatched: i64 =
+            conn.query_row("SELECT COUNT(*) FROM b_unmatched WHERE id='b1'", [], |r| {
+                r.get(0)
+            })?;
+        assert_eq!(
+            (old, unmatched),
+            (1, 1),
+            "review deletion and matched flags must roll back too"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_pairs_reviews_and_flags_survive_reopen() -> Result<(), CrossMapError> {
+        let cm = make_crossmap();
+        cm.writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute_batch(
+                "INSERT INTO reviews VALUES ('old','b1','b','a1',0.7);
+             INSERT INTO a_unmatched VALUES ('a1');
+             INSERT INTO b_unmatched VALUES ('b1');",
+            )?;
+        assert!(
+            cm.publish_startup(&[("a1", "b1")], &[("new", "b2", "a2", 0.75)])?,
+            "publication should commit"
+        );
+        let path: String = cm
+            .writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .query_row(
+                "SELECT file FROM pragma_database_list WHERE name='main'",
+                [],
+                |r| r.get(0),
+            )?;
+        drop(cm);
+        let conn = Connection::open(path)?;
+        let pairs: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM crossmap WHERE a_id='a1' AND b_id='b1'",
+            [],
+            |r| r.get(0),
+        )?;
+        let stale: i64 =
+            conn.query_row("SELECT COUNT(*) FROM reviews WHERE key='old'", [], |r| {
+                r.get(0)
+            })?;
+        let fresh: i64 =
+            conn.query_row("SELECT COUNT(*) FROM reviews WHERE key='new'", [], |r| {
+                r.get(0)
+            })?;
+        let unmatched: i64 =
+            conn.query_row("SELECT COUNT(*) FROM b_unmatched WHERE id='b1'", [], |r| {
+                r.get(0)
+            })?;
+        assert_eq!(
+            (pairs, stale, fresh, unmatched),
+            (1, 0, 1, 0),
+            "all graph decisions must commit before a restart"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_review_only_publishes_without_pairs() -> Result<(), CrossMapError> {
+        let cm = make_crossmap();
+        assert!(
+            cm.publish_startup(&[], &[("new", "b2", "a2", 0.75)])?,
+            "review-only graphs must publish"
+        );
+        let count: i64 = cm
+            .writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .query_row("SELECT COUNT(*) FROM reviews", [], |r| r.get(0))?;
+        assert_eq!(count, 1, "review-only result is durable");
+        Ok(())
     }
 
     #[test]

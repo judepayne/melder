@@ -84,7 +84,7 @@ pub fn cmd_serve(config_path: &Path, port: u16, bind: &str) {
         if !state.config.live.skip_initial_match
             && let Err(e) = session.initial_match_pass()
         {
-            eprintln!("Initial match pass failed (WAL write error): {}", e);
+            eprintln!("Initial match pass failed: {}", e);
             process::exit(1);
         }
 

@@ -155,6 +155,62 @@ output: { csv_dir_path: output }
     }
 
     #[test]
+    fn load_live_startup_assignment_modes() {
+        use crate::config::schema::{BatchAssignmentMode, LiveAssignmentStrategy};
+
+        let base = std::fs::read_to_string("benchmarks/batch/10kx10k_flat/cold/config.yaml")
+            .expect("read baseline config");
+        let dir = tempfile::tempdir().expect("temporary config directory");
+        let path = dir.path().join("config.yaml");
+        // Force unrelated policies away from startup's graph/approximate defaults.
+        let base = format!(
+            "{base}\nbatch: {{ assignment: {{ strategy: greedy }} }}\nlive:\n  assignment: {{ strategy: deferred_acceptance }}\n"
+        );
+        for (startup, expected) in [
+            ("", Some(BatchAssignmentMode::Approximate)),
+            ("  startup: {}", Some(BatchAssignmentMode::Approximate)),
+            (
+                "  startup: { assignment: { mode: exact } }",
+                Some(BatchAssignmentMode::Exact),
+            ),
+            ("  startup: { assignment: { strategy: greedy } }", None),
+        ] {
+            std::fs::write(&path, format!("{base}{startup}\n")).expect("write startup config");
+            let cfg = load_config(&path).expect("load valid startup config");
+            assert_eq!(
+                cfg.live.startup.assignment.graph_mode(),
+                expected,
+                "{startup}"
+            );
+            assert_eq!(
+                cfg.batch.assignment.graph_mode(),
+                None,
+                "batch stays greedy"
+            );
+            assert_eq!(
+                cfg.live.assignment.strategy,
+                LiveAssignmentStrategy::DeferredAcceptance,
+                "incoming requests keep their independent policy"
+            );
+        }
+        for assignment in [
+            "{ strategy: greedy, mode: approximate }",
+            "{ strategy: greedy, mode: exact }",
+        ] {
+            std::fs::write(
+                &path,
+                format!("{base}  startup: {{ assignment: {assignment} }}\n"),
+            )
+            .expect("write invalid startup config");
+            let error = load_config(&path).expect_err("greedy startup must reject mode");
+            assert!(
+                matches!(error, ConfigError::InvalidValue { ref field, .. } if field == "live.startup.assignment.mode"),
+                "startup error must identify its own setting: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn load_bench_live() {
         let cfg = load_config(Path::new(
             "benchmarks/live/10kx10k_inject3k_flat/warm/config.yaml",
