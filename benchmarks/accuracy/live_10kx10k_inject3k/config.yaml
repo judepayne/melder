@@ -66,6 +66,10 @@ performance:
   vector_index_mode: "load"
 
 live:
+  # The expected crossmaps were recorded with greedy startup matching.
+  startup:
+    assignment:
+      strategy: greedy
   skip_initial_match: false
   match_log_path: benchmarks/accuracy/live_10kx10k_inject3k/wal/events.ndjson
 
