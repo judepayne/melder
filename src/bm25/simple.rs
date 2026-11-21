@@ -17,10 +17,11 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 
+use crate::config::enroll_schema::EnrollBm25Field;
 use crate::config::schema::Bm25FieldPair;
 use crate::error::StoreError;
 use crate::models::{Record, Side};
-use crate::store::RecordStore;
+use crate::store::{RecordCollection, RecordStore, ScopedCollection};
 
 // ---
 // BM25 constants (Tantivy / Lucene defaults)
@@ -249,6 +250,20 @@ struct DocMeta {
 // SimpleBm25
 // ---
 
+enum FieldNames {
+    Paired(Vec<Bm25FieldPair>),
+    Enroll(Vec<String>),
+}
+
+impl FieldNames {
+    fn text(&self, record: &Record, side: Side) -> String {
+        match self {
+            Self::Paired(fields) => concat_fields(record, fields, side),
+            Self::Enroll(fields) => concat_named_fields(record, fields.iter().map(String::as_str)),
+        }
+    }
+}
+
 /// Lock-free, concurrent BM25 scorer backed by `DashMap` with WAND support.
 ///
 /// Thread-safe for concurrent reads and writes without external
@@ -273,7 +288,7 @@ pub struct SimpleBm25 {
     total_tokens: AtomicU64,
 
     /// Which record fields to concatenate and tokenise.
-    fields: Vec<Bm25FieldPair>,
+    fields: FieldNames,
 
     /// Which side (A or B) this index serves.
     side: Side,
@@ -294,6 +309,10 @@ impl std::fmt::Debug for SimpleBm25 {
 impl SimpleBm25 {
     /// Create a new empty index.
     pub fn new(fields: &[Bm25FieldPair], side: Side) -> Self {
+        Self::with_fields(FieldNames::Paired(fields.to_vec()), side)
+    }
+
+    fn with_fields(fields: FieldNames, side: Side) -> Self {
         Self {
             docs: DashMap::new(),
             doc_freq: DashMap::new(),
@@ -301,7 +320,7 @@ impl SimpleBm25 {
             id_map: CompactIdMap::new(),
             total_docs: AtomicUsize::new(0),
             total_tokens: AtomicU64::new(0),
-            fields: fields.to_vec(),
+            fields,
             side,
             exhaustive_threshold: DEFAULT_EXHAUSTIVE_THRESHOLD,
         }
@@ -311,8 +330,17 @@ impl SimpleBm25 {
     ///
     /// Use [`Self::try_build`] when an incomplete index must not be accepted.
     pub fn build(store: &dyn RecordStore, side: Side, fields: &[Bm25FieldPair]) -> Self {
+        Self::build_collection(&ScopedCollection::new(store, side), side, fields)
+    }
+
+    /// Bulk-build a collection, retaining partial results on scan failure.
+    pub(crate) fn build_collection(
+        collection: &dyn RecordCollection,
+        side: Side,
+        fields: &[Bm25FieldPair],
+    ) -> Self {
         let idx = Self::new(fields, side);
-        let _ = store.for_each_record(side, &mut |id, record| {
+        let _ = collection.for_each_record(&mut |id, record| {
             idx.upsert(id, record);
         });
         idx
@@ -324,10 +352,33 @@ impl SimpleBm25 {
         side: Side,
         fields: &[Bm25FieldPair],
     ) -> Result<Self, StoreError> {
+        Self::try_build_collection(&ScopedCollection::new(store, side), side, fields)
+    }
+
+    /// Bulk-build a collection, rejecting partial results on scan failure.
+    pub(crate) fn try_build_collection(
+        collection: &dyn RecordCollection,
+        side: Side,
+        fields: &[Bm25FieldPair],
+    ) -> Result<Self, StoreError> {
         let idx = Self::new(fields, side);
-        store.for_each_record(side, &mut |id, record| {
+        collection.for_each_record(&mut |id, record| {
             idx.upsert(id, record);
         })?;
+        Ok(idx)
+    }
+
+    /// Bulk-build a native enrollment index using one name per field.
+    ///
+    /// Query and update records use the same names regardless of query side.
+    /// Scan errors reject the index rather than returning partial results.
+    pub fn try_build_enroll(
+        collection: &dyn RecordCollection,
+        fields: &[EnrollBm25Field],
+    ) -> Result<Self, StoreError> {
+        let names = fields.iter().map(|field| field.field.clone()).collect();
+        let idx = Self::with_fields(FieldNames::Enroll(names), Side::A);
+        collection.for_each_record(&mut |id, record| idx.upsert(id, record))?;
         Ok(idx)
     }
 
@@ -337,7 +388,7 @@ impl SimpleBm25 {
 
     /// Insert or update a document in the index. Instantly visible.
     pub fn upsert(&self, id: &str, record: &Record) {
-        let text = concat_fields(record, &self.fields, self.side);
+        let text = self.fields.text(record, self.side);
         let tokens = tokenise(&text);
 
         // Remove old entry if exists.
@@ -436,7 +487,7 @@ impl SimpleBm25 {
 
     /// Build the concatenated query text for a record.
     pub fn query_text_for(&self, record: &Record, query_side: Side) -> String {
-        concat_fields(record, &self.fields, query_side)
+        self.fields.text(record, query_side)
     }
 
     /// Search all indexed documents without constructing an eligibility filter.
@@ -949,20 +1000,22 @@ fn term_frequencies(tokens: &[String]) -> HashMap<String, u32> {
 
 /// Concatenate the relevant text fields from a record into a single string.
 pub fn concat_fields(record: &Record, fields: &[Bm25FieldPair], side: Side) -> String {
-    let mut parts = Vec::new();
-    for pair in fields {
-        let key = match side {
+    concat_named_fields(
+        record,
+        fields.iter().map(|pair| match side {
             Side::A => pair.field_a.as_str(),
             Side::B => pair.field_b.as_str(),
-        };
-        if let Some(val) = record.get(key) {
-            let trimmed = val.trim();
-            if !trimmed.is_empty() {
-                parts.push(trimmed.to_string());
-            }
-        }
-    }
-    parts.join(" ")
+        }),
+    )
+}
+
+fn concat_named_fields<'a>(record: &Record, names: impl Iterator<Item = &'a str>) -> String {
+    names
+        .filter_map(|name| record.get(name))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Sanitize text for BM25 querying. Strips punctuation and special characters,
@@ -1024,6 +1077,68 @@ mod tests {
     }
 
     #[test]
+    fn enroll_uses_single_names_for_build_queries_and_updates() -> Result<(), StoreError> {
+        let fields: Vec<EnrollBm25Field> = ["name", "missing", "blank", "description", "name"]
+            .into_iter()
+            .map(|field| EnrollBm25Field {
+                field: field.to_string(),
+            })
+            .collect();
+        let record = make_record(&[
+            ("name", "  Apple  Inc  "),
+            ("blank", " \t "),
+            ("description", " technology\ncompany "),
+        ]);
+        let store = make_store(vec![("1", record.clone())], Side::B);
+        let collection = ScopedCollection::new(&store, Side::B);
+        let idx = SimpleBm25::try_build_enroll(&collection, &fields)?;
+        assert!(
+            matches!(&idx.fields, FieldNames::Enroll(names) if names.len() == 5),
+            "native enrollment must store one name per configured field"
+        );
+        let paired: Vec<Bm25FieldPair> = fields
+            .iter()
+            .map(|field| Bm25FieldPair {
+                field_a: field.field.clone(),
+                field_b: field.field.clone(),
+            })
+            .collect();
+        let legacy = SimpleBm25::try_build_collection(&collection, Side::A, &paired)?;
+        for side in [Side::A, Side::B] {
+            assert_eq!(
+                idx.query_text_for(&record, side),
+                "Apple  Inc technology\ncompany Apple  Inc",
+                "joining must preserve internal whitespace, duplicates and field order"
+            );
+        }
+        assert_eq!(idx.num_docs(), 1, "must scan the supplied collection");
+        assert_eq!(
+            idx.score_all("apple", 5),
+            legacy.score_all("apple", 5),
+            "native enrollment must retain paired scoring semantics"
+        );
+        idx.upsert("1", &make_record(&[("name", "Microsoft")]));
+        assert!(
+            idx.score_all("apple", 5).is_empty(),
+            "updates remove old terms"
+        );
+        assert_eq!(
+            idx.score_all("microsoft", 5).len(),
+            1,
+            "updates use native names"
+        );
+        idx.remove("1");
+        assert_eq!(
+            idx.num_docs(),
+            0,
+            "removal must update native index statistics"
+        );
+        let empty = SimpleBm25::try_build_enroll(&collection, &[])?;
+        assert_eq!(empty.num_docs(), 0, "empty fields index no documents");
+        Ok(())
+    }
+
+    #[test]
     fn try_build_matches_legacy_on_both_sides() -> Result<(), StoreError> {
         for side in [Side::A, Side::B] {
             let field = if side == Side::A { "name_a" } else { "name_b" };
@@ -1038,6 +1153,26 @@ mod tests {
                 "checked build must preserve scores on {side:?}",
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn collection_build_binds_fields_independently_of_storage_side() -> Result<(), StoreError> {
+        let store = make_store(
+            vec![("1", make_record(&[("name_b", "Apple Inc")]))],
+            Side::A,
+        );
+        let collection = ScopedCollection::new(&store, Side::A);
+        let fields = test_fields();
+        let lenient = SimpleBm25::build_collection(&collection, Side::B, &fields);
+        let strict = SimpleBm25::try_build_collection(&collection, Side::B, &fields)?;
+        assert_eq!(
+            strict.num_docs(),
+            1,
+            "must scan the collection, not direction"
+        );
+        assert_eq!(strict.score_all("apple", 3), lenient.score_all("apple", 3));
+        assert_eq!(strict.score_all("apple", 3).len(), 1, "must bind B fields");
         Ok(())
     }
 
@@ -1070,6 +1205,16 @@ mod tests {
         assert!(
             matches!(checked, Err(StoreError::Sqlite(_))),
             "checked build must return the scan error, not a partial index",
+        );
+        let enroll = SimpleBm25::try_build_enroll(
+            &ScopedCollection::new(&store, Side::A),
+            &[EnrollBm25Field {
+                field: "name_a".to_string(),
+            }],
+        );
+        assert!(
+            matches!(enroll, Err(StoreError::Sqlite(_))),
+            "native enrollment must reject partial scan results"
         );
         let legacy = SimpleBm25::build(&store, Side::A, &fields);
         assert_eq!(legacy.num_docs(), 1, "legacy must retain the valid prefix");

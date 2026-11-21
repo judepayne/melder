@@ -109,72 +109,91 @@ fn warn_if_synonym_fields_redundant(cfg: &Config) {
     }
 }
 
+pub(super) fn required_fields<'a>(
+    id: &str,
+    common_id: Option<&str>,
+    fields: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut seen: HashSet<String> = fields.into_iter().map(str::to_owned).collect();
+    // Preserve the historical empty-ID behavior: identifier validation rejects it.
+    seen.insert(id.to_owned());
+    if let Some(common) = common_id.filter(|s| !s.is_empty()) {
+        seen.insert(common.to_owned());
+    }
+    let mut fields: Vec<_> = seen.into_iter().collect();
+    fields.sort();
+    fields
+}
+
 pub(crate) fn derive_required_fields(cfg: &mut Config) {
-    let mut seen_a = HashSet::new();
-    let mut seen_b = HashSet::new();
-
-    // id fields
-    seen_a.insert(cfg.datasets.a.id_field.clone());
-    seen_b.insert(cfg.datasets.b.id_field.clone());
-
-    // common_id fields
-    if let Some(ref cid) = cfg.datasets.a.common_id_field
-        && !cid.is_empty()
-    {
-        seen_a.insert(cid.clone());
-    }
-    if let Some(ref cid) = cfg.datasets.b.common_id_field
-        && !cid.is_empty()
-    {
-        seen_b.insert(cid.clone());
-    }
-
-    // match fields (skip BM25 — no field_a/field_b)
-    for mf in &cfg.match_fields {
-        if mf.method == MatchMethod::Bm25 {
-            continue;
-        }
-        seen_a.insert(mf.field_a.clone());
-        seen_b.insert(mf.field_b.clone());
-    }
-
-    // bm25_fields (explicit or derived — fields must be loadable from datasets)
-    for pair in &cfg.bm25_fields {
-        seen_a.insert(pair.field_a.clone());
-        seen_b.insert(pair.field_b.clone());
-    }
-
-    // synonym_fields (explicit or derived)
-    for sf in &cfg.synonym_fields {
-        seen_a.insert(sf.field_a.clone());
-        seen_b.insert(sf.field_b.clone());
-    }
-
-    // output mapping (from side A)
-    for om in &cfg.output_mapping {
-        seen_a.insert(om.from.clone());
-    }
-
-    // blocking fields
-    if cfg.blocking.enabled {
-        for fp in &cfg.blocking.fields {
-            seen_a.insert(fp.field_a.clone());
-            seen_b.insert(fp.field_b.clone());
-        }
-    }
-
-    // exact_prefilter fields
-    if cfg.exact_prefilter.enabled {
-        for fp in &cfg.exact_prefilter.fields {
-            seen_a.insert(fp.field_a.clone());
-            seen_b.insert(fp.field_b.clone());
-        }
-    }
-
-    let mut a: Vec<String> = seen_a.into_iter().collect();
-    let mut b: Vec<String> = seen_b.into_iter().collect();
-    a.sort();
-    b.sort();
+    let fields = |side_a: bool| {
+        cfg.match_fields
+            .iter()
+            .filter(|f| f.method != MatchMethod::Bm25)
+            .map(move |f| {
+                if side_a {
+                    f.field_a.as_str()
+                } else {
+                    f.field_b.as_str()
+                }
+            })
+            .chain(cfg.bm25_fields.iter().map(move |f| {
+                if side_a {
+                    f.field_a.as_str()
+                } else {
+                    f.field_b.as_str()
+                }
+            }))
+            .chain(cfg.synonym_fields.iter().map(move |f| {
+                if side_a {
+                    f.field_a.as_str()
+                } else {
+                    f.field_b.as_str()
+                }
+            }))
+            .chain(
+                cfg.output_mapping
+                    .iter()
+                    .filter(move |_| side_a)
+                    .map(|f| f.from.as_str()),
+            )
+            .chain(
+                cfg.blocking
+                    .fields
+                    .iter()
+                    .filter(|_| cfg.blocking.enabled)
+                    .map(move |f| {
+                        if side_a {
+                            f.field_a.as_str()
+                        } else {
+                            f.field_b.as_str()
+                        }
+                    }),
+            )
+            .chain(
+                cfg.exact_prefilter
+                    .fields
+                    .iter()
+                    .filter(|_| cfg.exact_prefilter.enabled)
+                    .map(move |f| {
+                        if side_a {
+                            f.field_a.as_str()
+                        } else {
+                            f.field_b.as_str()
+                        }
+                    }),
+            )
+    };
+    let a = required_fields(
+        &cfg.datasets.a.id_field,
+        cfg.datasets.a.common_id_field.as_deref(),
+        fields(true),
+    );
+    let b = required_fields(
+        &cfg.datasets.b.id_field,
+        cfg.datasets.b.common_id_field.as_deref(),
+        fields(false),
+    );
     cfg.required_fields_a = a;
     cfg.required_fields_b = b;
 }

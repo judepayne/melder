@@ -280,8 +280,42 @@ pub fn spec_hash(emb_specs: &[(String, String, f64)], vector_quantization: &str)
     crate::util::fnv1a_8(&s)
 }
 
-/// Returns `(field_a, field_b, weight)` for every `method: embedding` match
-/// field, in config order.
+/// Adapt singular enrollment fields to the shared VectorDB backend API.
+/// Backends store paired embedding tuples for side-aware text hashing/upserts;
+/// this conversion is required by that API, not by enrollment's blocking cache hash.
+pub(crate) fn enroll_embedding_field_specs(
+    config: &crate::config::enroll_schema::EnrollJobConfig,
+) -> Vec<(String, String, f64)> {
+    config
+        .match_fields
+        .iter()
+        .filter(|f| f.method == crate::config::schema::MatchMethod::Embedding)
+        .map(|f| (f.field.clone(), f.field.clone(), f.weight))
+        .collect()
+}
+
+/// Adapt singular fields for the shared usearch backend's block-routing API.
+/// This is not used to compute enrollment cache identity.
+pub(crate) fn enroll_backend_blocking_config(
+    config: &crate::config::enroll_schema::EnrollBlockingConfig,
+) -> BlockingConfig {
+    BlockingConfig {
+        enabled: config.enabled,
+        operator: config.operator.clone(),
+        fields: config
+            .fields
+            .iter()
+            .map(|field| crate::config::schema::BlockingFieldPair {
+                field_a: field.field.clone(),
+                field_b: field.field.clone(),
+            })
+            .collect(),
+        field_a: None,
+        field_b: None,
+    }
+}
+
+/// Return `(field_a, field_b, weight)` for embedding fields in config order.
 pub fn embedding_field_specs(config: &Config) -> Vec<(String, String, f64)> {
     config
         .match_fields
@@ -382,7 +416,43 @@ pub fn build_or_load_combined_index(
     skip_deletes: bool,
     source_path: Option<&Path>,
 ) -> Result<Option<Box<dyn VectorDB>>, MelderError> {
-    let emb_specs = embedding_field_specs(config);
+    build_or_load_combined_index_resources(
+        backend,
+        cache_dir,
+        records,
+        ids,
+        &embedding_field_specs(config),
+        blocking_hash(&config.blocking),
+        config.blocking.enabled.then_some(&config.blocking),
+        &config.performance,
+        &config.embeddings.model,
+        is_a_side,
+        encoder,
+        skip_deletes,
+        source_path,
+    )
+}
+
+/// Build an index from resource settings without requiring a paired job.
+/// Specs use the shared backend's paired field API; the caller supplies the
+/// blocking hash for its native configuration shape. `blocking_config` is only
+/// for actual backend block routing, never for manifest hashing.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_or_load_combined_index_resources(
+    backend: &str,
+    cache_dir: Option<&str>,
+    records: &HashMap<String, Record>,
+    ids: &[String],
+    emb_specs: &[(String, String, f64)],
+    current_blocking_hash: String,
+    blocking_config: Option<&BlockingConfig>,
+    performance: &crate::config::schema::PerformanceConfig,
+    model: &str,
+    is_a_side: bool,
+    encoder: &dyn Encoder,
+    skip_deletes: bool,
+    source_path: Option<&Path>,
+) -> Result<Option<Box<dyn VectorDB>>, MelderError> {
     if emb_specs.is_empty() {
         return Ok(None);
     }
@@ -390,28 +460,13 @@ pub fn build_or_load_combined_index(
     let side = if is_a_side { "A" } else { "B" };
     let side_prefix = if is_a_side { "a" } else { "b" };
     let side_enum = if is_a_side { Side::A } else { Side::B };
-    let blocking_config = if config.blocking.enabled {
-        Some(&config.blocking)
-    } else {
-        None
-    };
-
     let field_dim = encoder.dim();
     let combined_dim = field_dim * emb_specs.len();
-    let vq = config
-        .performance
-        .vector_quantization
-        .as_deref()
-        .unwrap_or("f32");
-    let vim = config
-        .performance
-        .vector_index_mode
-        .as_deref()
-        .unwrap_or("load");
-    let es = config.performance.expansion_search.unwrap_or(0);
-    let current_spec_hash = spec_hash(&emb_specs, vq);
-    let current_blocking_hash = blocking_hash(&config.blocking);
-    let current_model = &config.embeddings.model;
+    let vq = performance.vector_quantization.as_deref().unwrap_or("f32");
+    let vim = performance.vector_index_mode.as_deref().unwrap_or("load");
+    let es = performance.expansion_search.unwrap_or(0);
+    let current_spec_hash = spec_hash(emb_specs, vq);
+    let current_model = model;
     let current_fp = source_path.and_then(file_fingerprint);
 
     // -----------------------------------------------------------------------
@@ -480,7 +535,7 @@ pub fn build_or_load_combined_index(
                         .iter()
                         .filter(|id| {
                             let record = records.get(id.as_str()).unwrap();
-                            let current_hash = compute_text_hash(record, &emb_specs, side_enum);
+                            let current_hash = compute_text_hash(record, emb_specs, side_enum);
                             stored.get(id.as_str()) != Some(&current_hash)
                         })
                         .collect();
@@ -554,7 +609,7 @@ pub fn build_or_load_combined_index(
                             &*index,
                             &to_encode,
                             records,
-                            &emb_specs,
+                            emb_specs,
                             encoder,
                             combined_dim,
                             is_a_side,
@@ -610,14 +665,14 @@ pub fn build_or_load_combined_index(
         "building combined embedding index"
     );
     let build_start = Instant::now();
-    let index = new_index(backend, combined_dim, blocking_config, &emb_specs, vq, es);
+    let index = new_index(backend, combined_dim, blocking_config, emb_specs, vq, es);
     let all_ids: Vec<&String> = ids.iter().collect();
 
     encode_and_upsert(
         &*index,
         &all_ids,
         records,
-        &emb_specs,
+        emb_specs,
         encoder,
         combined_dim,
         is_a_side,

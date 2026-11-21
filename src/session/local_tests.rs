@@ -836,9 +836,30 @@ fn live_local_repair_preserves_reviews_owned_by_other_queries() -> TestResult {
 }
 
 #[test]
-fn local_trial_does_not_change_enroll_multi_edge_semantics() -> TestResult {
-    let fixture = make_fixture(0.8)?;
-    let session = &fixture.session;
+fn native_enroll_preserves_multi_edge_semantics() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("enroll.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+job: {{name: multi_edge}}
+vector_backend: flat
+dataset: {{path: "", id_field: a_id}}
+embeddings: {{model: test, cache_dir: {:?}}}
+match_fields:
+  - {{field: name, method: embedding, weight: 1.0}}
+thresholds: {{auto_match: 0.8, review_floor: 0.1}}
+live: {{match_log_path: {:?}}}
+"#,
+            dir.path().join("vectors"),
+            dir.path().join("enroll.wal")
+        ),
+    )?;
+    let config = crate::config::load_enroll_job_config(&path)?;
+    let state =
+        crate::state::enroll::EnrollState::load_job_with_encoder(config, Arc::new(LocalEncoder))?;
+    let session = crate::session::enroll::EnrollSession::new(state, None);
     session.enroll(make_record(Side::A, "one", "axis0"))?;
     session.enroll(make_record(Side::A, "two", "angle27"))?;
     let result = session.enroll(make_record(Side::A, "three", "axis0"))?;
@@ -846,18 +867,6 @@ fn local_trial_does_not_change_enroll_multi_edge_semantics() -> TestResult {
         result.edges.len(),
         2,
         "enroll still returns multiple qualifying edges"
-    );
-    assert!(
-        session.state.crossmap.is_empty(),
-        "enroll must not install 1:1 pairs"
-    );
-    assert!(
-        session
-            .local_automatic
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty(),
-        "enroll must not populate the optimizer hints"
     );
     session.state.wal.flush()?;
     let (events, _) =

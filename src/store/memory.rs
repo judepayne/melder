@@ -15,22 +15,168 @@ use crate::models::{Record, Side};
 
 use super::RecordStore;
 
+/// Independent in-memory collection without paired matching state.
+/// Enrollment uses one set of blocking fields; paired jobs retain their directional mappings.
+pub struct MemoryCollection {
+    records: DashMap<String, Record>,
+    blocking: RwLock<BlockingIndex>,
+    common_ids: DashMap<String, String>,
+    exact: DashMap<String, String>,
+}
+impl MemoryCollection {
+    /// Construct an empty single collection.
+    pub fn new(config: &BlockingConfig) -> Self {
+        Self::with_index(BlockingIndex::from_config(config))
+    }
+
+    fn with_index(index: BlockingIndex) -> Self {
+        Self {
+            records: DashMap::new(),
+            blocking: RwLock::new(index),
+            common_ids: DashMap::new(),
+            exact: DashMap::new(),
+        }
+    }
+    /// Load records and build their blocking index.
+    pub fn from_records(records: HashMap<String, Record>, config: &BlockingConfig) -> Self {
+        Self::new(config).populate(records)
+    }
+
+    pub(crate) fn from_enroll_records(
+        records: HashMap<String, Record>,
+        config: &crate::config::enroll_schema::EnrollBlockingConfig,
+    ) -> Self {
+        Self::with_index(BlockingIndex::single(
+            config.fields.iter().map(|f| f.field.clone()).collect(),
+        ))
+        .populate(records)
+    }
+
+    fn populate(self, records: HashMap<String, Record>) -> Self {
+        {
+            let mut index = self.blocking.write().unwrap_or_else(|e| e.into_inner());
+            for (id, record) in records {
+                index.insert(&id, &record, Side::A);
+                self.records.insert(id, record);
+            }
+        }
+        self
+    }
+}
+impl super::RecordCollection for MemoryCollection {
+    fn get(&self, id: &str) -> Result<Option<Record>, StoreError> {
+        Ok(self.records.get(id).map(|r| r.value().clone()))
+    }
+    fn insert(&self, id: &str, record: &Record) -> Result<Option<Record>, StoreError> {
+        Ok(self.records.insert(id.to_string(), record.clone()))
+    }
+    fn remove(&self, id: &str) -> Result<Option<Record>, StoreError> {
+        Ok(self.records.remove(id).map(|(_, v)| v))
+    }
+    fn contains(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(self.records.contains_key(id))
+    }
+    fn len(&self) -> Result<usize, StoreError> {
+        Ok(self.records.len())
+    }
+    fn ids(&self) -> Result<Vec<String>, StoreError> {
+        Ok(self.records.iter().map(|e| e.key().clone()).collect())
+    }
+    fn for_each_record(&self, f: &mut dyn FnMut(&str, &Record)) -> Result<(), StoreError> {
+        for entry in self.records.iter() {
+            f(entry.key(), entry.value());
+        }
+        Ok(())
+    }
+    fn get_many(&self, ids: &[String]) -> Result<Vec<(String, Record)>, StoreError> {
+        Ok(ids
+            .iter()
+            .filter_map(|id| {
+                self.records
+                    .get(id)
+                    .map(|r| (id.clone(), r.value().clone()))
+            })
+            .collect())
+    }
+    fn get_many_fields(
+        &self,
+        ids: &[String],
+        _fields: &[String],
+    ) -> Result<Vec<(String, Record)>, StoreError> {
+        // In-memory: no deserialization cost, return full records.
+        self.get_many(ids)
+    }
+    fn blocking_insert(&self, id: &str, record: &Record) -> Result<(), StoreError> {
+        let mut bi = self.blocking.write().unwrap_or_else(|e| e.into_inner());
+        bi.insert(id, record, Side::A);
+        Ok(())
+    }
+    fn blocking_remove(&self, id: &str, record: &Record) -> Result<(), StoreError> {
+        let mut bi = self.blocking.write().unwrap_or_else(|e| e.into_inner());
+        bi.remove(id, record, Side::A);
+        Ok(())
+    }
+    fn blocking_query(&self, record: &Record) -> Result<Vec<String>, StoreError> {
+        let bi = self.blocking.read().unwrap_or_else(|e| e.into_inner());
+        Ok(bi.query(record, Side::A).into_iter().collect())
+    }
+    fn build_exact_index(&self, field_names: &[String]) -> Result<(), StoreError> {
+        let exact = &self.exact;
+        exact.clear();
+        self.records.iter().for_each(|entry| {
+            let id = entry.key();
+            let rec = entry.value();
+            let key = make_exact_key(rec, field_names);
+            if !key.is_empty() {
+                exact.insert(key, id.clone());
+            }
+        });
+        Ok(())
+    }
+    fn exact_lookup(&self, kvs: &[(String, String)]) -> Result<Option<String>, StoreError> {
+        if kvs.is_empty() {
+            return Ok(None);
+        }
+        // Build composite key from query values — same separator and lowercasing
+        // as make_exact_key used when building the index.
+        let mut parts = Vec::with_capacity(kvs.len());
+        for (_, v) in kvs {
+            let v = v.trim();
+            if v.is_empty() {
+                return Ok(None); // AND: any empty value → no match
+            }
+            parts.push(v.to_lowercase());
+        }
+        let key = parts.join("\0");
+        let exact = &self.exact;
+        Ok(exact.get(&key).map(|e| e.value().clone()))
+    }
+    fn common_id_insert(&self, common_id: &str, record_id: &str) -> Result<(), StoreError> {
+        self.common_ids
+            .insert(common_id.to_string(), record_id.to_string());
+        Ok(())
+    }
+    fn common_id_lookup(&self, common_id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.common_ids.get(common_id).map(|e| e.value().clone()))
+    }
+    fn common_id_remove(&self, common_id: &str) -> Result<(), StoreError> {
+        self.common_ids.remove(common_id);
+        Ok(())
+    }
+    fn common_id_remove_owned(&self, common_id: &str, record_id: &str) -> Result<(), StoreError> {
+        self.common_ids
+            .remove_if(common_id, |_, owner| owner == record_id);
+        Ok(())
+    }
+}
+
 /// In-memory record store wrapping the same data structures previously
 /// spread across `LiveSideState`, `LiveMatchState`, and `MatchState`.
 pub struct MemoryStore {
-    a_records: DashMap<String, Record>,
-    b_records: DashMap<String, Record>,
-    a_blocking: RwLock<BlockingIndex>,
-    b_blocking: RwLock<BlockingIndex>,
+    a: MemoryCollection,
+    b: MemoryCollection,
     a_unmatched: DashSet<String>,
     b_unmatched: DashSet<String>,
-    a_common_ids: DashMap<String, String>,
-    b_common_ids: DashMap<String, String>,
-    /// Exact prefilter index: composite key → record ID.
-    /// Built on demand by `build_exact_index()`. Key is field values joined
-    /// by `\0` (null byte separator, safe since field values are plain text).
-    a_exact: DashMap<String, String>,
-    b_exact: DashMap<String, String>,
 }
 
 impl MemoryStore {
@@ -38,16 +184,10 @@ impl MemoryStore {
     /// blocking config.
     pub fn new(blocking_config: &BlockingConfig) -> Self {
         Self {
-            a_records: DashMap::new(),
-            b_records: DashMap::new(),
-            a_blocking: RwLock::new(BlockingIndex::from_config(blocking_config)),
-            b_blocking: RwLock::new(BlockingIndex::from_config(blocking_config)),
+            a: MemoryCollection::new(blocking_config),
+            b: MemoryCollection::new(blocking_config),
             a_unmatched: DashSet::new(),
             b_unmatched: DashSet::new(),
-            a_common_ids: DashMap::new(),
-            b_common_ids: DashMap::new(),
-            a_exact: DashMap::new(),
-            b_exact: DashMap::new(),
         }
     }
 
@@ -63,38 +203,38 @@ impl MemoryStore {
 
         // Load A records and build blocking index
         {
-            let mut bi = store.a_blocking.write().unwrap_or_else(|e| e.into_inner());
+            let mut bi = store.a.blocking.write().unwrap_or_else(|e| e.into_inner());
             for (id, record) in records_a {
                 bi.insert(&id, &record, Side::A);
-                store.a_records.insert(id, record);
+                store.a.records.insert(id, record);
             }
         }
 
         // Load B records and build blocking index
         {
-            let mut bi = store.b_blocking.write().unwrap_or_else(|e| e.into_inner());
+            let mut bi = store.b.blocking.write().unwrap_or_else(|e| e.into_inner());
             for (id, record) in records_b {
                 bi.insert(&id, &record, Side::B);
-                store.b_records.insert(id, record);
+                store.b.records.insert(id, record);
             }
         }
 
         store
     }
 
-    // --- Side accessors (for internal use and migration) ---
-
-    fn records(&self, side: Side) -> &DashMap<String, Record> {
+    fn collection(&self, side: Side) -> &MemoryCollection {
         match side {
-            Side::A => &self.a_records,
-            Side::B => &self.b_records,
+            Side::A => &self.a,
+            Side::B => &self.b,
         }
     }
 
+    // --- Side accessors (for internal use and migration) ---
+
     fn blocking(&self, side: Side) -> &RwLock<BlockingIndex> {
         match side {
-            Side::A => &self.a_blocking,
-            Side::B => &self.b_blocking,
+            Side::A => &self.a.blocking,
+            Side::B => &self.b.blocking,
         }
     }
 
@@ -104,20 +244,13 @@ impl MemoryStore {
             Side::B => &self.b_unmatched,
         }
     }
-
-    fn common_ids(&self, side: Side) -> &DashMap<String, String> {
-        match side {
-            Side::A => &self.a_common_ids,
-            Side::B => &self.b_common_ids,
-        }
-    }
 }
 
 impl std::fmt::Debug for MemoryStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemoryStore")
-            .field("a_records", &self.a_records.len())
-            .field("b_records", &self.b_records.len())
+            .field("a_records", &self.a.records.len())
+            .field("b_records", &self.b.records.len())
             .field("a_unmatched", &self.a_unmatched.len())
             .field("b_unmatched", &self.b_unmatched.len())
             .finish()
@@ -128,37 +261,40 @@ impl RecordStore for MemoryStore {
     // --- Records ---
 
     fn get(&self, side: Side, id: &str) -> Result<Option<Record>, StoreError> {
-        Ok(self.records(side).get(id).map(|r| r.value().clone()))
+        super::RecordCollection::get(self.collection(side), id)
     }
 
     fn insert(&self, side: Side, id: &str, record: &Record) -> Result<Option<Record>, StoreError> {
-        Ok(self.records(side).insert(id.to_string(), record.clone()))
+        super::RecordCollection::insert(self.collection(side), id, record)
     }
 
     fn remove(&self, side: Side, id: &str) -> Result<Option<Record>, StoreError> {
-        Ok(self.records(side).remove(id).map(|(_, v)| v))
+        super::RecordCollection::remove(self.collection(side), id)
     }
 
     fn contains(&self, side: Side, id: &str) -> Result<bool, StoreError> {
-        Ok(self.records(side).contains_key(id))
+        super::RecordCollection::contains(self.collection(side), id)
     }
 
     fn len(&self, side: Side) -> Result<usize, StoreError> {
-        Ok(self.records(side).len())
+        super::RecordCollection::len(self.collection(side))
     }
 
     fn ids(&self, side: Side) -> Result<Vec<String>, StoreError> {
-        Ok(self.records(side).iter().map(|e| e.key().clone()).collect())
+        super::RecordCollection::ids(self.collection(side))
+    }
+
+    fn get_many(&self, side: Side, ids: &[String]) -> Result<Vec<(String, Record)>, StoreError> {
+        super::RecordCollection::get_many(self.collection(side), ids)
     }
 
     fn get_many_fields(
         &self,
         side: Side,
         ids: &[String],
-        _fields: &[String],
+        fields: &[String],
     ) -> Result<Vec<(String, Record)>, StoreError> {
-        // In-memory: no deserialization cost, return full records.
-        self.get_many(side, ids)
+        super::RecordCollection::get_many_fields(self.collection(side), ids, fields)
     }
 
     fn for_each_record(
@@ -166,10 +302,7 @@ impl RecordStore for MemoryStore {
         side: Side,
         f: &mut dyn FnMut(&str, &Record),
     ) -> Result<(), StoreError> {
-        for entry in self.records(side).iter() {
-            f(entry.key(), entry.value());
-        }
-        Ok(())
+        super::RecordCollection::for_each_record(self.collection(side), f)
     }
 
     // --- Blocking ---
@@ -243,21 +376,15 @@ impl RecordStore for MemoryStore {
         common_id: &str,
         record_id: &str,
     ) -> Result<(), StoreError> {
-        self.common_ids(side)
-            .insert(common_id.to_string(), record_id.to_string());
-        Ok(())
+        super::RecordCollection::common_id_insert(self.collection(side), common_id, record_id)
     }
 
     fn common_id_lookup(&self, side: Side, common_id: &str) -> Result<Option<String>, StoreError> {
-        Ok(self
-            .common_ids(side)
-            .get(common_id)
-            .map(|e| e.value().clone()))
+        super::RecordCollection::common_id_lookup(self.collection(side), common_id)
     }
 
     fn common_id_remove(&self, side: Side, common_id: &str) -> Result<(), StoreError> {
-        self.common_ids(side).remove(common_id);
-        Ok(())
+        super::RecordCollection::common_id_remove(self.collection(side), common_id)
     }
 
     fn common_id_remove_owned(
@@ -266,28 +393,13 @@ impl RecordStore for MemoryStore {
         common_id: &str,
         record_id: &str,
     ) -> Result<(), StoreError> {
-        self.common_ids(side)
-            .remove_if(common_id, |_, owner| owner == record_id);
-        Ok(())
+        super::RecordCollection::common_id_remove_owned(self.collection(side), common_id, record_id)
     }
 
     // --- Exact prefilter ---
 
     fn build_exact_index(&self, side: Side, field_names: &[String]) -> Result<(), StoreError> {
-        let exact = match side {
-            Side::A => &self.a_exact,
-            Side::B => &self.b_exact,
-        };
-        exact.clear();
-        self.records(side).iter().for_each(|entry| {
-            let id = entry.key();
-            let rec = entry.value();
-            let key = make_exact_key(rec, field_names);
-            if !key.is_empty() {
-                exact.insert(key, id.clone());
-            }
-        });
-        Ok(())
+        super::RecordCollection::build_exact_index(self.collection(side), field_names)
     }
 
     fn exact_lookup(
@@ -295,25 +407,7 @@ impl RecordStore for MemoryStore {
         side: Side,
         kvs: &[(String, String)],
     ) -> Result<Option<String>, StoreError> {
-        if kvs.is_empty() {
-            return Ok(None);
-        }
-        // Build composite key from query values — same separator and lowercasing
-        // as make_exact_key used when building the index.
-        let mut parts = Vec::with_capacity(kvs.len());
-        for (_, v) in kvs {
-            let v = v.trim();
-            if v.is_empty() {
-                return Ok(None); // AND: any empty value → no match
-            }
-            parts.push(v.to_lowercase());
-        }
-        let key = parts.join("\0");
-        let exact = match side {
-            Side::A => &self.a_exact,
-            Side::B => &self.b_exact,
-        };
-        Ok(exact.get(&key).map(|e| e.value().clone()))
+        super::RecordCollection::exact_lookup(self.collection(side), kvs)
     }
 
     // --- Review persistence (no-op for memory — DashMap is source of truth) ---

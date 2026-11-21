@@ -4,13 +4,12 @@
 //! All operations are synchronous internally; the HTTP layer wraps them
 //! in `spawn_blocking` as needed.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tracing::{info, info_span, warn};
 
-use crate::bm25::scorer::normalise_bm25;
 use crate::error::SessionError;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
@@ -20,6 +19,7 @@ use crate::state::match_log::MatchLogEvent;
 mod assignment;
 #[cfg(test)]
 mod assignment_tests;
+pub mod enroll;
 mod startup;
 mod startup_publish;
 
@@ -298,9 +298,8 @@ pub struct Session {
     /// Scoring log sender. `None` when scoring log is not enabled.
     scoring_log: Option<crate::output::scoring_log::ScoringLogSender>,
     assignment: Option<assignment::LiveAssignmentState>,
-    // Enrollment must keep scoring, pool mutation, and evidence publication atomic
-    // with respect to other mutations and admin output snapshots.
-    enroll_gate: Option<Mutex<()>>,
+    search_a_to_b: pipeline::SearchPlan,
+    search_b_to_a: pipeline::SearchPlan,
     /// Cross-platform shutdown trigger. `admin_shutdown` notifies waiters on
     /// this; `start_server`'s graceful-shutdown future selects on it
     /// alongside `ctrl_c` / `SIGTERM`. Using a `Notify` (rather than a
@@ -316,12 +315,14 @@ impl Session {
         scoring_log: Option<crate::output::scoring_log::ScoringLogSender>,
     ) -> Self {
         let emb_specs = crate::vectordb::embedding_field_specs(&state.config);
-        let enroll_gate = state.config.is_enroll_mode().then(Mutex::default);
-        let enabled = !state.config.is_enroll_mode()
-            && state.config.live.assignment.strategy
-                == crate::config::LiveAssignmentStrategy::DeferredAcceptance;
+        let enabled = state.config.live.assignment.strategy
+            == crate::config::LiveAssignmentStrategy::DeferredAcceptance;
         info!(strategy = ?state.config.live.assignment.strategy, max_displacements = state.config.live.assignment.max_displacements, "live assignment policy");
+        let search_a_to_b = pipeline::SearchPlan::new(&state.config, Side::A, Side::B);
+        let search_b_to_a = pipeline::SearchPlan::new(&state.config, Side::B, Side::A);
         Self {
+            search_a_to_b,
+            search_b_to_a,
             state,
             start_time: Instant::now(),
             upsert_count: AtomicU64::new(0),
@@ -330,7 +331,6 @@ impl Session {
             hook_tx,
             scoring_log,
             assignment: enabled.then(assignment::LiveAssignmentState::default),
-            enroll_gate,
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -433,19 +433,13 @@ impl Session {
 
             // BM25 candidate generation
             let (bm25_cand_ids, bm25_scores_map) = if let Some(bm25) = opp_bm25 {
-                let query_text = bm25.query_text_for(&b_record, Side::B);
-                let self_score = bm25.analytical_self_score(&query_text);
-                let raw_results = bm25.score_blocked(&query_text, &blocked_ids, bm25_candidates_n);
-                let scored: Vec<(String, f64)> = raw_results
-                    .into_iter()
-                    .map(|(cid, raw)| {
-                        let norm = crate::bm25::scorer::normalise_bm25(raw, self_score);
-                        (cid, norm)
-                    })
-                    .collect();
-                let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
-                let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
-                (ids, map)
+                pipeline::bm25_candidate_stage(
+                    bm25,
+                    &b_record,
+                    Side::B,
+                    Some(&blocked_ids),
+                    bm25_candidates_n,
+                )
             } else {
                 (Vec::new(), std::collections::HashMap::new())
             };
@@ -466,34 +460,39 @@ impl Session {
             };
 
             // Score
-            let scoring_query = pipeline::ScoringQuery {
+            let scoring_query = pipeline::PreparedQuery {
                 id: b_id,
                 record: &b_record,
-                side: Side::B,
                 combined_vec: &query_combined_vec,
             };
-            let scoring_pool = pipeline::ScoringPool {
-                store: store.as_ref(),
-                side: Side::A,
+            let collection = crate::store::ScopedCollection::new(store.as_ref(), Side::A);
+            let scoring_pool = pipeline::SearchPool {
+                collection: &collection,
                 combined_index: opp_side.combined_index.as_deref(),
-                blocked_ids: &blocked_ids,
+                synonym_dictionary: self.state.synonym_dictionary.as_deref(),
+            };
+            let inputs = pipeline::SearchCandidates {
+                eligible_ids: &blocked_ids,
                 bm25_candidate_ids: &bm25_cand_ids,
                 bm25_scores_map: &bm25_scores_map,
                 synonym_candidate_ids: &synonym_cand_ids,
-                synonym_dictionary: self.state.synonym_dictionary.as_deref(),
                 exclusions: &self.state.exclusions,
+                same_collection: false,
             };
-            let results = if graph_mode.is_some() {
-                pipeline::score_pool_strict(
-                    &scoring_query,
-                    &scoring_pool,
-                    config,
-                    ann_candidates,
-                    top_n,
-                )?
-            } else {
-                pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n)
-            };
+            let results = pipeline::search(
+                &scoring_query,
+                &scoring_pool,
+                &self.search_b_to_a,
+                config,
+                &inputs,
+                ann_candidates,
+                top_n,
+                if graph_mode.is_some() {
+                    pipeline::SearchPolicy::Graph
+                } else {
+                    pipeline::SearchPolicy::Ordinary
+                },
+            )?;
 
             if let Some(ref sl) = self.scoring_log {
                 sl.send(b_id, Side::B, &results);
@@ -649,50 +648,20 @@ impl Session {
         emb_specs: &[(String, String, f64)],
         is_a_side: bool,
     ) -> Result<Vec<f32>, SessionError> {
-        let _span = info_span!("encode_combined").entered();
-        if let Some(ref coordinator) = self.state.coordinator {
-            // Coordinator path: submit texts for batched encoding.
-            // Fully synchronous — safe from rayon/spawn_blocking threads.
-            let field_dim = self.state.encoder_pool.dim();
-            let mut combined = Vec::with_capacity(field_dim * emb_specs.len());
-
-            let texts: Vec<String> = emb_specs
+        enroll::encode_combined(
+            record,
+            emb_specs
                 .iter()
-                .map(|(field_a, field_b, _weight)| {
-                    let field_name = if is_a_side { field_a } else { field_b };
-                    record
-                        .get(field_name)
-                        .map(|v| v.trim().to_string())
-                        .unwrap_or_default()
-                })
-                .collect();
-
-            let vecs = coordinator
-                .encode_many(texts)
-                .map_err(|e| melder_to_session_err(crate::error::MelderError::Encoder(e)))?;
-
-            for (vec, (_fa, _fb, weight)) in vecs.into_iter().zip(emb_specs.iter()) {
-                let sqrt_w = weight.sqrt() as f32;
-                let scaled: Vec<f32> = vec.into_iter().map(|v| v * sqrt_w).collect();
-                combined.extend_from_slice(&scaled);
-            }
-            Ok(combined)
-        } else {
-            // Direct path: no coordinator, encode synchronously.
-            crate::vectordb::encode_combined_vector(
-                record,
-                emb_specs,
-                self.state.encoder_pool.as_ref(),
-                is_a_side,
-            )
-            .map_err(melder_to_session_err)
-        }
+                .map(|(a, b, weight)| (if is_a_side { a.as_str() } else { b.as_str() }, *weight)),
+            self.state.encoder_pool.as_ref(),
+            &self.state.coordinator,
+        )
     }
 
     /// Generate BM25/synonym candidates, build a ScoringPool, run score_pool,
     /// and optionally send to the scoring log.
     ///
-    /// Shared helper used by upsert_record_inner, try_match_inner, and enroll_inner
+    /// Shared helper used by upsert_record_inner and try_match_inner
     /// to avoid triplicating this logic.
     #[allow(clippy::too_many_arguments)]
     fn score_against_pool(
@@ -711,26 +680,19 @@ impl Session {
         syn_fields: &[crate::config::schema::SynonymFieldConfig],
     ) -> Vec<MatchResult> {
         // BM25 candidate generation.
-        let (bm25_cand_ids, bm25_scores_map) = if let Some(ref pool_bm25) =
-            pool_side_state.bm25_index
-        {
-            let _span = info_span!("bm25_score").entered();
-            let query_text = pool_bm25.query_text_for(record, side);
-            let self_score = pool_bm25.analytical_self_score(&query_text);
-            let raw_results = pool_bm25.score_blocked(&query_text, blocked_ids, bm25_candidates_n);
-            let scored: Vec<(String, f64)> = raw_results
-                .into_iter()
-                .map(|(cid, raw)| {
-                    let norm = normalise_bm25(raw, self_score);
-                    (cid, norm)
-                })
-                .collect();
-            let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
-            let map: std::collections::HashMap<String, f64> = scored.into_iter().collect();
-            (ids, map)
-        } else {
-            (Vec::new(), std::collections::HashMap::new())
-        };
+        let (bm25_cand_ids, bm25_scores_map) =
+            if let Some(ref pool_bm25) = pool_side_state.bm25_index {
+                let _span = info_span!("bm25_score").entered();
+                pipeline::bm25_candidate_stage(
+                    pool_bm25,
+                    record,
+                    side,
+                    Some(blocked_ids),
+                    bm25_candidates_n,
+                )
+            } else {
+                (Vec::new(), std::collections::HashMap::new())
+            };
 
         // Synonym candidate generation.
         let syn_guard = pool_side_state
@@ -749,25 +711,41 @@ impl Session {
 
         let _span = info_span!("score_pool").entered();
         let store = &self.state.store;
-        let scoring_query = pipeline::ScoringQuery {
+        let scoring_query = pipeline::PreparedQuery {
             id,
             record,
-            side,
             combined_vec,
         };
-        let scoring_pool = pipeline::ScoringPool {
-            store: store.as_ref(),
-            side: pool_side,
+        let collection = crate::store::ScopedCollection::new(store.as_ref(), pool_side);
+        let scoring_pool = pipeline::SearchPool {
+            collection: &collection,
             combined_index: pool_side_state.combined_index.as_deref(),
-            blocked_ids,
+            synonym_dictionary: self.state.synonym_dictionary.as_deref(),
+        };
+        let inputs = pipeline::SearchCandidates {
+            eligible_ids: blocked_ids,
             bm25_candidate_ids: &bm25_cand_ids,
             bm25_scores_map: &bm25_scores_map,
             synonym_candidate_ids: &synonym_cand_ids,
-            synonym_dictionary: self.state.synonym_dictionary.as_deref(),
             exclusions: &self.state.exclusions,
+            same_collection: side == pool_side,
         };
-        let results =
-            pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n);
+        let plan = match (side, pool_side) {
+            (Side::A, Side::B) => &self.search_a_to_b,
+            (Side::B, Side::A) => &self.search_b_to_a,
+            _ => unreachable!("matching requires opposite collections"),
+        };
+        let results = pipeline::search(
+            &scoring_query,
+            &scoring_pool,
+            plan,
+            config,
+            &inputs,
+            ann_candidates,
+            top_n,
+            pipeline::SearchPolicy::Ordinary,
+        )
+        .expect("lenient scoring does not propagate store errors");
 
         if let Some(ref sl) = self.scoring_log {
             sl.send(id, side, &results);
@@ -2323,261 +2301,6 @@ impl Session {
             coverage_a,
             coverage_b,
         }
-    }
-
-    // -------------------------------------------------------------------
-    // Enroll mode
-    // -------------------------------------------------------------------
-
-    /// Enroll a record into the single pool, returning scored edges.
-    ///
-    /// 1. Encode combined vector
-    /// 2. Score against the pool (same side, excluding self)
-    /// 3. Add record to pool (store, blocking, BM25, synonym, vector index)
-    /// 4. Return edges above `review_floor`, capped at `top_n`
-    pub fn enroll(&self, record: Record) -> Result<EnrollResponse, SessionError> {
-        let id = self.enroll_id(&record)?;
-        // Encoding is pure preparation: do not serialize it with pool mutations.
-        let combined_vec = self.encode_combined(&record, &self.emb_specs, true)?;
-        self.enroll_prepared(record, id, combined_vec)
-    }
-
-    fn enroll_id(&self, record: &Record) -> Result<String, SessionError> {
-        let field = &self.state.config.datasets.a.id_field;
-        record
-            .get(field)
-            .filter(|id| !id.is_empty())
-            .cloned()
-            .ok_or_else(|| SessionError::MissingField {
-                field: field.clone(),
-            })
-    }
-
-    fn enroll_prepared(
-        &self,
-        record: Record,
-        id: String,
-        combined_vec: Vec<f32>,
-    ) -> Result<EnrollResponse, SessionError> {
-        let _guard = self.assignment_guard()?;
-        let config = &self.state.config;
-        let store = &self.state.store;
-        let side = Side::A; // The single enrollment pool.
-
-        // Install the prepared vector only while holding the mutation gate.
-        if let Some(idx) = self.state.a.combined_index.as_ref()
-            && !combined_vec.is_empty()
-        {
-            let _ = idx.upsert(&id, &combined_vec, &record, side);
-        }
-
-        // 2. Score against the pool (same side)
-        let top_n = config.top_n.unwrap_or(5);
-        let ann_candidates = config.ann_candidates.unwrap_or(50);
-        let bm25_candidates = config.bm25_candidates.unwrap_or(10);
-
-        let blocked_ids: Vec<String> = if config.blocking.enabled {
-            store.blocking_query(&record, side, side)?
-        } else {
-            store.ids(side)?
-        };
-
-        let pool_state = &self.state.a;
-
-        let results = self.score_against_pool(
-            &id,
-            &record,
-            side,
-            &combined_vec,
-            &blocked_ids,
-            pool_state,
-            side, // pool_side = same side (enroll)
-            config,
-            ann_candidates,
-            bm25_candidates,
-            top_n,
-            &config.synonym_fields,
-        );
-
-        // 3. Add record to pool
-        // Handle upsert: remove old blocking entry if exists
-        if let Some(old_rec) = store.get(side, &id)? {
-            store.blocking_remove(side, &id, &old_rec)?;
-        }
-
-        // WAL append
-        self.state.wal.append_upsert(side, &record)?;
-
-        // Insert into store
-        store.insert(side, &id, &record)?;
-        store.mark_unmatched(side, &id)?;
-
-        // Update blocking index
-        store.blocking_insert(side, &id, &record)?;
-
-        // Update BM25 index (SimpleBm25: lock-free, instant visibility)
-        if let Some(ref bm25) = pool_state.bm25_index {
-            bm25.upsert(&id, &record);
-        }
-
-        // Update synonym index
-        if let Some(ref syn_lock) = pool_state.synonym_index {
-            let mut syn = syn_lock.write().unwrap_or_else(|e| e.into_inner());
-            syn.upsert(&id, &record, side, &config.synonym_fields);
-        }
-
-        self.upsert_count.fetch_add(1, Ordering::Relaxed);
-
-        // 4. Build response — filter by review_floor, cap at top_n
-        let review_floor = config.thresholds.review_floor;
-        let edges: Vec<EnrollEdge> = results
-            .iter()
-            .filter(|r| r.matched_id != id && r.score >= review_floor)
-            .take(top_n)
-            .map(|r| EnrollEdge {
-                id: r.matched_id.clone(),
-                score: r.score,
-                field_scores: r
-                    .field_scores
-                    .iter()
-                    .map(|fs| EnrollFieldScore {
-                        // In enroll mode field_a == field_b; use field_a
-                        field: fs.field_a.clone(),
-                        method: fs.method.clone(),
-                        score: fs.score,
-                        weight: fs.weight,
-                    })
-                    .collect(),
-            })
-            .collect();
-
-        // Essential single-pool evidence belongs in the WAL, not the optional,
-        // asynchronous scoring log. Never express these edges as bijective claims.
-        self.state
-            .wal
-            .append(&crate::state::match_log::MatchLogEvent::EnrollOutcome {
-                query_id: id.clone(),
-                edges: edges
-                    .iter()
-                    .map(|edge| crate::state::match_log::EnrollEvidence {
-                        id: edge.id.clone(),
-                        score: edge.score,
-                        field_scores: if self.scoring_log.is_some() {
-                            edge.field_scores
-                                .iter()
-                                .map(|field| crate::state::match_log::EnrollEvidenceField {
-                                    field: field.field.clone(),
-                                    method: field.method.clone(),
-                                    score: field.score,
-                                    weight: field.weight,
-                                })
-                                .collect()
-                        } else {
-                            Vec::new()
-                        },
-                    })
-                    .collect(),
-            })?;
-
-        Ok(EnrollResponse {
-            id,
-            enrolled: true,
-            edges,
-        })
-    }
-
-    fn encode_enroll_batch(&self, records: &[&Record]) -> Result<Vec<Vec<f32>>, SessionError> {
-        let mut combined = vec![Vec::new(); records.len()];
-        if records.is_empty() {
-            return Ok(combined);
-        }
-        for (field, _, weight) in &self.emb_specs {
-            let texts: Vec<&str> = records
-                .iter()
-                .map(|r| r.get(field).map(|v| v.trim()).unwrap_or_default())
-                .collect();
-            let vectors = self.state.encoder_pool.encode(&texts)?;
-            if vectors.len() != records.len()
-                || vectors
-                    .iter()
-                    .any(|v| v.len() != self.state.encoder_pool.dim())
-            {
-                return Err(crate::error::EncoderError::Inference(
-                    "enrollment encoder returned invalid vector shape".into(),
-                )
-                .into());
-            }
-            let scale = weight.sqrt() as f32;
-            for (out, vector) in combined.iter_mut().zip(vectors) {
-                out.extend(vector.into_iter().map(|v| v * scale));
-            }
-        }
-        Ok(combined)
-    }
-
-    /// Enroll a batch of records sequentially.
-    ///
-    /// Each record is scored against the pool (including previously enrolled
-    /// records from this batch), then added to the pool.
-    ///
-    /// Per-item errors are collected into the response (with `enrolled: false`)
-    /// rather than aborting the entire batch. This matches the error handling
-    /// policy of `upsert_batch` and `match_batch`.
-    pub fn enroll_batch(&self, records: Vec<Record>) -> Result<BatchEnrollResponse, SessionError> {
-        if records.is_empty() {
-            return Err(SessionError::BatchValidation {
-                message: "records array is empty".into(),
-            });
-        }
-        if records.len() > Self::MAX_BATCH_SIZE {
-            return Err(SessionError::BatchValidation {
-                message: format!(
-                    "batch size {} exceeds maximum of {}",
-                    records.len(),
-                    Self::MAX_BATCH_SIZE
-                ),
-            });
-        }
-
-        // Validate before encoding, but keep per-item errors and input order.
-        let ids: Vec<_> = records
-            .iter()
-            .map(|record| self.enroll_id(record))
-            .collect();
-        let valid: Vec<_> = records
-            .iter()
-            .zip(&ids)
-            .filter_map(|(r, id)| id.as_ref().ok().map(|_| r))
-            .collect();
-        let prepared = self.encode_enroll_batch(&valid);
-        let mut vectors = prepared.as_ref().ok().map(|v| v.iter());
-        let mut results = Vec::with_capacity(records.len());
-        for (record, id) in records.into_iter().zip(ids) {
-            let result = id.and_then(|id| {
-                // A batch encoder failure must not turn one bad item into a
-                // request-wide failure. Retry individually to preserve semantics.
-                let vector = match vectors.as_mut() {
-                    Some(v) => v
-                        .next()
-                        .expect("one prepared vector per validated record")
-                        .clone(),
-                    None => self.encode_combined(&record, &self.emb_specs, true)?,
-                };
-                self.enroll_prepared(record, id, vector)
-            });
-            match result {
-                Ok(resp) => results.push(resp),
-                Err(e) => {
-                    tracing::warn!(error = %e, "enroll-batch item failed");
-                    results.push(EnrollResponse {
-                        id: format!("error: {}", e),
-                        enrolled: false,
-                        edges: vec![],
-                    });
-                }
-            }
-        }
-        Ok(BatchEnrollResponse { results })
     }
 
     /// Return pending review-band matches with cursor-based pagination.

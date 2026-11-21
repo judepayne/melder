@@ -20,7 +20,7 @@ Single crate, binary `meld`, crate `melder`.
 ## 2. Invariants (bugs if violated)
 
 1. Batch asymmetry, live symmetry.
-2. One scoring pipeline only: all matching flows through `src/matching/pipeline.rs::score_pool()`.
+2. One scoring pipeline only: production matching uses `src/matching/pipeline.rs::search` with borrowed pool/query inputs and reusable directional plans. The public `score_pool` family must forward into that same implementation.
 3. CrossMap bijection: 1:1 A<->B enforced atomically under one lock / transaction; never bypass `claim()` semantics.
 4. Combined vector identity: concatenated `sqrt(weight)`-scaled normalized field vectors must preserve weighted cosine identity.
 
@@ -68,7 +68,7 @@ Rules:
 - `src/synonym/`: acronym generation, synonym dictionary, bidirectional synonym index
 - `src/encoder/`: `Encoder` trait; local ONNX pool; local/HF/builtin model loading; optional batching coordinator; subprocess remote encoder
 - `src/vectordb/`: `VectorDB` trait; flat + usearch backends; manifest + text hash caches
-- `src/store/`: `RecordStore` trait; memory + sqlite implementations
+- `src/store/`: `RecordCollection` for one pool's records and indexes. Borrow a `ScopedCollection` over an existing paired `RecordStore` rather than opening another SQLite backend; keep cross-endpoint membership and review updates with their transaction owner.
 - `src/crossmap/`: `CrossMapOps`; memory + sqlite bijection implementations
 - `src/bm25/`: `SimpleBm25` scorer, WAND path for large blocks
 - `src/session/`: operational core for live/enroll flows; `assignment.rs` implements opt-in synchronous reciprocal live proposals
@@ -96,7 +96,7 @@ When a task mentions these features, start with the listed docs/code:
 - Live assignment: `docs/live-mode.md#live-assignment-policy`, `docs/scoring.md#live-deferred-acceptance`, `src/session/assignment.rs`, `src/config/schema.rs`. Historical bounded-repair evidence remains in `docs/local-reassignment-productionization.md` and benchmark reports; it is not the active policy.
 - Batch graph assignment: `docs/configuration.md#batch`, `docs/batch-mode.md#choosing-pairs-with-the-graph-optimizer`, `docs/performance.md#batch-graph-optimizer`, `src/matching/assignment/`, `src/batch/`. Keep one promoted solver implementation; benchmark adapters must reuse it. The agreed integration contract and evidence are in `benchmarks/assignment_solver/phase-2b-config-and-docs.md`.
 - Batch SQLite mode: `docs/batch-mode.md#sqlite-batch-mode-large-datasets`, `src/batch/`, `src/store/sqlite.rs`.
-- Enroll-specific config/endpoints: `docs/enroll-mode.md`, `src/config/enroll_schema.rs`, `src/api/handlers.rs`.
+- Enroll-specific config/endpoints: `docs/enroll-mode.md`, `src/config/enroll_schema.rs`, `src/state/enroll.rs`, `src/api/enroll.rs`. Enrollment and offline enrollment export use the single-pool job config. Do not accept a paired `Config` or fabricate a second dataset or CrossMap. Shared relationship output labels identify endpoints, not configured pools.
 
 ## 5. Preferred Design Moves
 
@@ -142,7 +142,7 @@ When a task mentions these features, start with the listed docs/code:
 - Optional mutation-response `assignment` summaries are omitted for greedy. Candidate `matches` are not accepted links; bulk responses must reflect final CrossMap membership. Emit best-effort Break/Confirm hooks only for completed steps, with confirm source `deferred_acceptance`.
 - Batch defaults to `graph` / `approximate` on both storage backends, including when `batch`, `assignment` or `strategy` is omitted. YAML-only explicit `strategy: greedy` retains local claims without an optimizer graph and rejects any explicit `mode`. Mode-only `exact` is valid with the default graph strategy. Approximate is exact through 512 distinct participating A+B endpoints per connected group, deterministic best of score-first/count-first above 512 (score-first wins ties). Explicit `mode: exact` never falls back. Reject unknown values, including `maximum_weight`; no CLI/cutoff/worker-count/tolerance knobs.
 - Graph assignment uses only retained automatically eligible shared-pipeline candidates; preserve protected links, exclusions and whole-list ambiguity gates. Check eligibility before rounding assignment weights to nine decimal places; this is not a live scoring rule. Optimize total represented similarity, not pair count or identity accuracy. Fixed-graph results must not depend on edge order, worker scheduling or elapsed time.
-- In enroll mode, avoid self-matches when query side equals pool side. Persist returned edges as single-pool enrollment evidence, never CrossMap claims. Flush and offline outputs include seed and isolated records. Enroll uses memory plus WAL; `output.db_path` is an export, not pool storage.
+- In enroll mode, avoid self-matches when query side equals pool side. Persist returned edges as single-pool enrollment evidence, never CrossMap claims. Flush and offline outputs include seed and isolated records. Enroll uses a single memory collection plus WAL; `output.db_path` is an export, not pool storage. Never infer enrollment edges or isolation from matching flags. Replay the directed evidence even when records come from a current admin snapshot.
 
 ## 9. Storage / Persistence Rules
 

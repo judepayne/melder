@@ -6,9 +6,7 @@ mod batch_scratch;
 
 pub(crate) use batch_scratch::{validate_live_outputs, validate_scratch};
 
-use super::schema::{
-    BatchAssignmentStrategy, Config, DatasetConfig, LiveAssignmentStrategy, MatchMethod,
-};
+use super::schema::{BatchAssignmentStrategy, Config, DatasetConfig, MatchMethod};
 
 /// Valid cross-map backends.
 const VALID_BACKENDS: &[&str] = &["local"];
@@ -87,10 +85,10 @@ pub(crate) fn validate(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // Blocking: validate both field_a and field_b
-    validate_blocking(cfg, false)?;
+    validate_blocking(cfg)?;
 
     // Exact prefilter: validate both field_a and field_b
-    validate_exact_prefilter(cfg, false)?;
+    validate_exact_prefilter(cfg)?;
 
     // vector_quantization / vector_index_mode flat-backend notes
     if let Some(ref vq) = cfg.performance.vector_quantization {
@@ -124,48 +122,6 @@ pub(crate) fn validate(cfg: &Config) -> Result<(), ConfigError> {
     validate_common(cfg)?;
     validate_scratch(cfg, None)?;
     validate_live_outputs(cfg, None)?;
-
-    Ok(())
-}
-
-/// Validate an enroll-mode config.
-pub(crate) fn validate_enroll(cfg: &Config) -> Result<(), ConfigError> {
-    if cfg.live.assignment.strategy != LiveAssignmentStrategy::Greedy {
-        return Err(ConfigError::InvalidValue {
-            field: "live.assignment.strategy".into(),
-            message: "enroll mode only supports greedy assignment".into(),
-        });
-    }
-
-    // Enroll: dataset A is optional (empty pool is valid)
-    if !cfg.datasets.a.path.is_empty() {
-        validate_dataset(&cfg.datasets.a, "dataset")?;
-    }
-
-    // Blocking: enroll only checks field_a (field_a == field_b after into_config)
-    validate_blocking(cfg, true)?;
-
-    // Exact prefilter: enroll only checks field_a
-    validate_exact_prefilter(cfg, true)?;
-
-    // vector_quantization / vector_index_mode (no flat-backend notes for enroll)
-    if let Some(ref vq) = cfg.performance.vector_quantization {
-        require_one_of(
-            vq,
-            VALID_VECTOR_QUANTIZATIONS,
-            "performance.vector_quantization",
-        )?;
-    }
-    if let Some(ref vim) = cfg.performance.vector_index_mode {
-        require_one_of(
-            vim,
-            VALID_VECTOR_INDEX_MODES,
-            "performance.vector_index_mode",
-        )?;
-    }
-
-    // Shared checks
-    validate_common(cfg)?;
 
     Ok(())
 }
@@ -205,7 +161,10 @@ fn validate_common(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // embeddings: exactly one of `model` / `remote_encoder_cmd`
-    validate_embeddings_source(cfg)?;
+    validate_embeddings_source(
+        &cfg.embeddings.model,
+        cfg.embeddings.remote_encoder_cmd.as_deref(),
+    )?;
     require_non_empty(&cfg.embeddings.a_cache_dir, "embeddings.a_cache_dir")?;
 
     // at least one match field
@@ -220,19 +179,15 @@ fn validate_common(cfg: &Config) -> Result<(), ConfigError> {
     validate_match_fields(cfg)?;
 
     // thresholds
-    validate_thresholds(cfg)?;
+    validate_thresholds(&cfg.thresholds)?;
 
     // performance
-    validate_performance(cfg)?;
+    validate_performance(
+        &cfg.performance,
+        cfg.embeddings.remote_encoder_cmd.as_deref(),
+    )?;
 
-    // vector_backend
-    require_one_of(&cfg.vector_backend, VALID_VECTOR_BACKENDS, "vector_backend")?;
-    if cfg.vector_backend == "usearch" && !cfg!(feature = "usearch") {
-        return Err(ConfigError::InvalidValue {
-            field: "vector_backend".into(),
-            message: "usearch backend requires building with --features usearch".into(),
-        });
-    }
+    super::validation::validate_vector_backend(&cfg.vector_backend)?;
 
     // synonym_dictionary
     if let Some(ref sd) = cfg.synonym_dictionary {
@@ -240,7 +195,7 @@ fn validate_common(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     // hooks
-    validate_hooks(cfg)?;
+    validate_hooks(&cfg.hooks)?;
 
     Ok(())
 }
@@ -268,7 +223,6 @@ fn validate_match_fields(cfg: &Config) -> Result<(), ConfigError> {
             bm25_count += 1;
         } else {
             require_non_empty(&mf.field_a, &format!("{}.field_a", prefix))?;
-            // field_b may equal field_a in enroll mode; just check it's non-empty
             require_non_empty(&mf.field_b, &format!("{}.field_b", prefix))?;
         }
 
@@ -336,6 +290,26 @@ fn validate_match_fields(cfg: &Config) -> Result<(), ConfigError> {
     let ann_candidates = cfg.ann_candidates.unwrap_or(50);
     let bm25_candidates = cfg.bm25_candidates.unwrap_or(10);
 
+    super::validation::validate_candidates_and_weight(
+        has_embedding,
+        has_bm25,
+        top_n,
+        ann_candidates,
+        bm25_candidates,
+        weight_sum,
+    )?;
+
+    Ok(())
+}
+
+pub(super) fn validate_candidates_and_weight(
+    has_embedding: bool,
+    has_bm25: bool,
+    top_n: usize,
+    ann_candidates: usize,
+    bm25_candidates: usize,
+    weight_sum: f64,
+) -> Result<(), ConfigError> {
     if has_embedding && ann_candidates < top_n {
         return Err(ConfigError::InvalidValue {
             field: "ann_candidates".into(),
@@ -363,29 +337,72 @@ fn validate_match_fields(cfg: &Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_thresholds(cfg: &Config) -> Result<(), ConfigError> {
-    if cfg.thresholds.auto_match <= 0.0 || cfg.thresholds.auto_match > 1.0 {
+pub(super) fn validate_vector_backend(backend: &str) -> Result<(), ConfigError> {
+    // vector_backend
+    require_one_of(backend, VALID_VECTOR_BACKENDS, "vector_backend")?;
+    if backend == "usearch" && !cfg!(feature = "usearch") {
+        return Err(ConfigError::InvalidValue {
+            field: "vector_backend".into(),
+            message: "usearch backend requires building with --features usearch".into(),
+        });
+    }
+
+    Ok(())
+}
+
+pub(super) fn validate_blocking_operator(operator: &str) -> Result<(), ConfigError> {
+    let op = operator.to_lowercase();
+    if op != "and" {
+        return Err(ConfigError::InvalidValue {
+            field: "blocking.operator".into(),
+            message: format!(
+                "must be \"and\" (OR blocking is no longer supported), got {:?}",
+                operator
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn validate_retrieval_enabled(
+    enabled: bool,
+    field_count: usize,
+    field: &str,
+) -> Result<bool, ConfigError> {
+    if enabled && field_count == 0 {
+        return Err(ConfigError::InvalidValue {
+            field: field.into(),
+            message: "at least one field pair required when enabled".into(),
+        });
+    }
+    Ok(enabled)
+}
+
+pub(super) fn validate_thresholds(
+    cfg: &super::schema::ThresholdsConfig,
+) -> Result<(), ConfigError> {
+    if cfg.auto_match <= 0.0 || cfg.auto_match > 1.0 {
         return Err(ConfigError::InvalidValue {
             field: "thresholds.auto_match".into(),
             message: "must be in range (0, 1]".into(),
         });
     }
-    if cfg.thresholds.review_floor < 0.0 || cfg.thresholds.review_floor >= 1.0 {
+    if cfg.review_floor < 0.0 || cfg.review_floor >= 1.0 {
         return Err(ConfigError::InvalidValue {
             field: "thresholds.review_floor".into(),
             message: "must be in range [0, 1)".into(),
         });
     }
-    if cfg.thresholds.auto_match <= cfg.thresholds.review_floor {
+    if cfg.auto_match <= cfg.review_floor {
         return Err(ConfigError::InvalidValue {
             field: "thresholds".into(),
             message: format!(
                 "auto_match ({:.2}) must be greater than review_floor ({:.2})",
-                cfg.thresholds.auto_match, cfg.thresholds.review_floor
+                cfg.auto_match, cfg.review_floor
             ),
         });
     }
-    if let Some(gap) = cfg.thresholds.min_score_gap
+    if let Some(gap) = cfg.min_score_gap
         && !(0.0..1.0).contains(&gap)
     {
         return Err(ConfigError::InvalidValue {
@@ -396,15 +413,13 @@ fn validate_thresholds(cfg: &Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_performance(cfg: &Config) -> Result<(), ConfigError> {
-    let remote_set = cfg
-        .embeddings
-        .remote_encoder_cmd
-        .as_deref()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
+pub(super) fn validate_performance(
+    cfg: &super::schema::PerformanceConfig,
+    remote_cmd: Option<&str>,
+) -> Result<(), ConfigError> {
+    let remote_set = remote_cmd.is_some_and(|s| !s.trim().is_empty());
 
-    if let Some(pool) = cfg.performance.encoder_pool_size
+    if let Some(pool) = cfg.encoder_pool_size
         && pool < 1
     {
         return Err(ConfigError::InvalidValue {
@@ -415,7 +430,7 @@ fn validate_performance(cfg: &Config) -> Result<(), ConfigError> {
     // When remote_encoder_cmd is set, pool size must be explicit. No default.
     // See docs/remote-encoder.md — startup cost scales with pool size, so
     // we require the operator to think about it deliberately.
-    if remote_set && cfg.performance.encoder_pool_size.is_none() {
+    if remote_set && cfg.encoder_pool_size.is_none() {
         return Err(ConfigError::InvalidValue {
             field: "performance.encoder_pool_size".into(),
             message: "required when embeddings.remote_encoder_cmd is set (no default). \
@@ -423,7 +438,7 @@ fn validate_performance(cfg: &Config) -> Result<(), ConfigError> {
                 .into(),
         });
     }
-    if let Some(ref dev) = cfg.performance.encoder_device {
+    if let Some(ref dev) = cfg.encoder_device {
         if remote_set {
             // Silently ignored (documented). Info log for operator visibility.
             tracing::info!(
@@ -439,7 +454,7 @@ fn validate_performance(cfg: &Config) -> Result<(), ConfigError> {
             }
         }
     }
-    if let Some(bs) = cfg.performance.encoder_batch_size
+    if let Some(bs) = cfg.encoder_batch_size
         && bs < 1
     {
         return Err(ConfigError::InvalidValue {
@@ -447,7 +462,7 @@ fn validate_performance(cfg: &Config) -> Result<(), ConfigError> {
             message: "must be >= 1".into(),
         });
     }
-    if let Some(ms) = cfg.performance.encoder_call_timeout_ms
+    if let Some(ms) = cfg.encoder_call_timeout_ms
         && ms < 1
     {
         return Err(ConfigError::InvalidValue {
@@ -461,14 +476,12 @@ fn validate_performance(cfg: &Config) -> Result<(), ConfigError> {
 /// Validate that exactly one of `embeddings.model` / `embeddings.remote_encoder_cmd`
 /// is set. Empty-string `model` is treated as unset to avoid requiring
 /// `Option<String>` migration across every existing test fixture.
-fn validate_embeddings_source(cfg: &Config) -> Result<(), ConfigError> {
-    let has_model = !cfg.embeddings.model.trim().is_empty();
-    let has_remote = cfg
-        .embeddings
-        .remote_encoder_cmd
-        .as_deref()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
+pub(super) fn validate_embeddings_source(
+    model: &str,
+    remote_cmd: Option<&str>,
+) -> Result<(), ConfigError> {
+    let has_model = !model.trim().is_empty();
+    let has_remote = remote_cmd.is_some_and(|s| !s.trim().is_empty());
     match (has_model, has_remote) {
         (false, false) => Err(ConfigError::MissingField {
             field: "embeddings.model or embeddings.remote_encoder_cmd".into(),
@@ -481,61 +494,42 @@ fn validate_embeddings_source(cfg: &Config) -> Result<(), ConfigError> {
     }
 }
 
-/// Validate blocking config. When `enroll_mode` is true, only checks field_a
-/// (enroll has field_a == field_b).
-fn validate_blocking(cfg: &Config, enroll_mode: bool) -> Result<(), ConfigError> {
-    if !cfg.blocking.enabled {
+fn validate_blocking(cfg: &Config) -> Result<(), ConfigError> {
+    if !super::validation::validate_retrieval_enabled(
+        cfg.blocking.enabled,
+        cfg.blocking.fields.len(),
+        "blocking",
+    )? {
         return Ok(());
-    }
-    if cfg.blocking.fields.is_empty() {
-        return Err(ConfigError::InvalidValue {
-            field: "blocking".into(),
-            message: "at least one field pair required when enabled".into(),
-        });
     }
     for (i, fp) in cfg.blocking.fields.iter().enumerate() {
         let prefix = format!("blocking.fields[{}]", i);
         require_non_empty(&fp.field_a, &format!("{}.field_a", prefix))?;
-        if !enroll_mode {
-            require_non_empty(&fp.field_b, &format!("{}.field_b", prefix))?;
-        }
+        require_non_empty(&fp.field_b, &format!("{}.field_b", prefix))?;
     }
-    let op = cfg.blocking.operator.to_lowercase();
-    if op != "and" {
-        return Err(ConfigError::InvalidValue {
-            field: "blocking.operator".into(),
-            message: format!(
-                "must be \"and\" (OR blocking is no longer supported), got {:?}",
-                cfg.blocking.operator
-            ),
-        });
-    }
+    super::validation::validate_blocking_operator(&cfg.blocking.operator)?;
+
     Ok(())
 }
 
-/// Validate exact_prefilter config. When `enroll_mode` is true, only checks field_a.
-fn validate_exact_prefilter(cfg: &Config, enroll_mode: bool) -> Result<(), ConfigError> {
-    if !cfg.exact_prefilter.enabled {
+fn validate_exact_prefilter(cfg: &Config) -> Result<(), ConfigError> {
+    if !super::validation::validate_retrieval_enabled(
+        cfg.exact_prefilter.enabled,
+        cfg.exact_prefilter.fields.len(),
+        "exact_prefilter",
+    )? {
         return Ok(());
-    }
-    if cfg.exact_prefilter.fields.is_empty() {
-        return Err(ConfigError::InvalidValue {
-            field: "exact_prefilter".into(),
-            message: "at least one field pair required when enabled".into(),
-        });
     }
     for (i, fp) in cfg.exact_prefilter.fields.iter().enumerate() {
         let prefix = format!("exact_prefilter.fields[{}]", i);
         require_non_empty(&fp.field_a, &format!("{}.field_a", prefix))?;
-        if !enroll_mode {
-            require_non_empty(&fp.field_b, &format!("{}.field_b", prefix))?;
-        }
+        require_non_empty(&fp.field_b, &format!("{}.field_b", prefix))?;
     }
     Ok(())
 }
 
-fn validate_hooks(cfg: &Config) -> Result<(), ConfigError> {
-    if let Some(ref cmd) = cfg.hooks.command
+pub(super) fn validate_hooks(cfg: &super::schema::HooksConfig) -> Result<(), ConfigError> {
+    if let Some(ref cmd) = cfg.command
         && cmd.trim().is_empty()
     {
         return Err(ConfigError::InvalidValue {
@@ -568,6 +562,12 @@ pub(crate) fn validate_dataset(d: &DatasetConfig, prefix: &str) -> Result<(), Co
 
 /// Validate that all field names used as SQL column names are safe identifiers.
 pub(crate) fn validate_field_names(cfg: &Config) -> Result<(), ConfigError> {
+    validate_identifiers(cfg.required_fields_a.iter().chain(&cfg.required_fields_b))
+}
+
+pub(super) fn validate_identifiers<'a>(
+    names: impl IntoIterator<Item = &'a String>,
+) -> Result<(), ConfigError> {
     fn is_safe_identifier(s: &str) -> bool {
         !s.is_empty()
             && s.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
@@ -575,7 +575,7 @@ pub(crate) fn validate_field_names(cfg: &Config) -> Result<(), ConfigError> {
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
     }
 
-    for name in cfg.required_fields_a.iter().chain(&cfg.required_fields_b) {
+    for name in names {
         if !is_safe_identifier(name) {
             return Err(ConfigError::InvalidValue {
                 field: "field name".into(),
@@ -593,7 +593,7 @@ pub(crate) fn validate_field_names(cfg: &Config) -> Result<(), ConfigError> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn require_non_empty(value: &str, field: &str) -> Result<(), ConfigError> {
+pub(super) fn require_non_empty(value: &str, field: &str) -> Result<(), ConfigError> {
     if value.trim().is_empty() {
         return Err(ConfigError::MissingField {
             field: field.into(),
@@ -602,7 +602,7 @@ fn require_non_empty(value: &str, field: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn require_one_of(value: &str, valid: &[&str], field: &str) -> Result<(), ConfigError> {
+pub(super) fn require_one_of(value: &str, valid: &[&str], field: &str) -> Result<(), ConfigError> {
     if !valid.contains(&value) {
         return Err(ConfigError::InvalidValue {
             field: field.into(),
@@ -651,11 +651,10 @@ output: {{ csv_dir_path: /tmp/test/output }}
     }
 
     fn parse_and_validate_enroll(yaml: &str) -> Result<(), ConfigError> {
-        let enroll: crate::config::enroll_schema::EnrollConfig =
+        let mut cfg: crate::config::enroll_schema::EnrollJobConfig =
             serde_yaml::from_str(yaml).map_err(ConfigError::Parse)?;
-        let mut cfg = enroll.into_config()?;
-        apply_defaults(&mut cfg);
-        validate_enroll(&cfg)
+        super::super::enroll_native::apply_defaults(&mut cfg);
+        super::super::enroll_validation::validate_enroll(&cfg)
     }
 
     #[test]
@@ -690,7 +689,7 @@ output: {{ csv_dir_path: /tmp/test/output }}
     }
 
     #[test]
-    fn enroll_assignment_remains_greedy() {
+    fn enroll_rejects_paired_runtime_settings() {
         let base = r#"
 job: { name: test }
 vector_backend: flat
@@ -699,41 +698,25 @@ match_fields:
   - { field: name, method: exact, weight: 1.0 }
 thresholds: { auto_match: 0.85, review_floor: 0.6 }
 "#;
-        let enroll: crate::config::enroll_schema::EnrollConfig =
-            serde_yaml::from_str(base).expect("valid enroll config");
-        let cfg = enroll.into_config().expect("valid enroll conversion");
-        assert_eq!(
-            cfg.live.assignment.strategy,
-            LiveAssignmentStrategy::Greedy,
-            "enroll live defaults to greedy"
+        assert!(
+            parse_and_validate_enroll(base).is_ok(),
+            "native defaults are valid"
         );
-        assert_eq!(
-            cfg.batch.assignment.strategy,
-            crate::config::schema::BatchAssignmentStrategy::Greedy,
-            "enroll batch defaults to greedy"
-        );
-        assert_eq!(
-            cfg.live.assignment.max_displacements, 32,
-            "enroll preserves the default budget"
-        );
-        for assignment in [
-            "",
-            "live: { assignment: { strategy: greedy, max_displacements: 0 } }",
+        for settings in [
+            "assignment: { strategy: greedy }",
+            "assignment: { strategy: deferred_acceptance }",
+            "startup: {}",
+            "db_path: pool.db",
+            "skip_initial_match: true",
+            "crossmap_flush_secs: 5",
         ] {
+            let yaml = format!("{base}\nlive: {{ {settings} }}");
             assert!(
-                parse_and_validate_enroll(&format!("{base}\n{assignment}")).is_ok(),
-                "greedy enroll config remains valid: {assignment}"
+                parse_and_validate_enroll(&yaml).is_err(),
+                "reject paired runtime setting: {settings}"
             );
         }
-        let yaml = format!("{base}\nlive: {{ assignment: {{ strategy: deferred_acceptance }} }}");
-        let err = parse_and_validate_enroll(&yaml).expect_err("enroll must reject reassignment");
-        assert!(
-            err.to_string().contains("live.assignment.strategy"),
-            "assignment error identifies its field: {err}"
-        );
     }
-
-    // --- Format inference ---
 
     #[test]
     fn format_inference() {

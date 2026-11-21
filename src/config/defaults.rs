@@ -6,15 +6,16 @@ use super::schema::{BlockingFieldPair, Config, FuzzyScorer, MatchMethod};
 // Defaults
 // ---------------------------------------------------------------------------
 
-pub(crate) fn apply_defaults(cfg: &mut Config) {
+pub(super) fn apply_component_defaults(
+    top_n: &mut Option<usize>,
+    performance: &mut super::schema::PerformanceConfig,
+    remote_cmd: Option<&str>,
+    ann_candidates: &mut Option<usize>,
+    bm25_candidates: &mut Option<usize>,
+) {
     // top_n: default 5
-    if cfg.top_n.is_none() || cfg.top_n == Some(0) {
-        cfg.top_n = Some(5);
-    }
-
-    // live
-    if cfg.live.crossmap_flush_secs.is_none() || cfg.live.crossmap_flush_secs == Some(0) {
-        cfg.live.crossmap_flush_secs = Some(5);
+    if top_n.is_none() || *top_n == Some(0) {
+        *top_n = Some(5);
     }
 
     // Default encoder_pool_size to 1 if not set — but only for local
@@ -22,32 +23,38 @@ pub(crate) fn apply_defaults(cfg: &mut Config) {
     // MUST specify pool size explicitly; validation will reject a missing
     // value with a clear error. See docs/remote-encoder.md for why this
     // is not silently defaulted.
-    let remote_set = cfg
-        .embeddings
-        .remote_encoder_cmd
-        .as_deref()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
+    let remote_set = remote_cmd.is_some_and(|s| !s.trim().is_empty());
     if !remote_set
-        && (cfg.performance.encoder_pool_size.is_none()
-            || cfg.performance.encoder_pool_size == Some(0))
+        && (performance.encoder_pool_size.is_none() || performance.encoder_pool_size == Some(0))
     {
-        cfg.performance.encoder_pool_size = Some(1);
-    }
-
-    // cross_map backend already has serde default, but belt-and-suspenders
-    if cfg.cross_map.backend.is_empty() {
-        cfg.cross_map.backend = "local".into();
+        performance.encoder_pool_size = Some(1);
     }
 
     // ann_candidates: default 50
-    if cfg.ann_candidates.is_none() || cfg.ann_candidates == Some(0) {
-        cfg.ann_candidates = Some(50);
+    if ann_candidates.is_none() || *ann_candidates == Some(0) {
+        *ann_candidates = Some(50);
     }
 
     // bm25_candidates: default 10
-    if cfg.bm25_candidates.is_none() || cfg.bm25_candidates == Some(0) {
-        cfg.bm25_candidates = Some(10);
+    if bm25_candidates.is_none() || *bm25_candidates == Some(0) {
+        *bm25_candidates = Some(10);
+    }
+}
+
+pub(crate) fn apply_defaults(cfg: &mut Config) {
+    if cfg.live.crossmap_flush_secs.is_none() || cfg.live.crossmap_flush_secs == Some(0) {
+        cfg.live.crossmap_flush_secs = Some(5);
+    }
+    super::defaults::apply_component_defaults(
+        &mut cfg.top_n,
+        &mut cfg.performance,
+        cfg.embeddings.remote_encoder_cmd.as_deref(),
+        &mut cfg.ann_candidates,
+        &mut cfg.bm25_candidates,
+    );
+    // cross_map backend already has serde default, but belt-and-suspenders
+    if cfg.cross_map.backend.is_empty() {
+        cfg.cross_map.backend = "local".into();
     }
 
     // fuzzy scorer defaults

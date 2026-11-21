@@ -62,6 +62,13 @@ pub(crate) struct BuildInput {
     pub current_reviews: Option<Vec<crate::state::live::ReviewEntry>>,
 }
 
+/// Whether enrollment records are historical seeds or a complete current pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnrollRecordAuthority {
+    SeedAndReplay,
+    Snapshot,
+}
+
 /// Prevent a live export from replacing its authoritative SQLite database.
 pub(crate) fn validate_live_output_path(cfg: &crate::config::Config) -> std::io::Result<()> {
     if let (Some(live), Some(output)) = (&cfg.live.db_path, &cfg.output.db_path) {
@@ -326,8 +333,32 @@ pub(crate) fn build_outputs_with_input(
     manifest: &OutputManifest,
     input: BuildInput,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    build_wal_outputs(
+        match_log_path,
+        scoring_log_path,
+        csv_dir,
+        parquet_dir,
+        db_path,
+        manifest,
+        input,
+        EnrollRecordAuthority::SeedAndReplay,
+    )
+}
+
+/// Build from a specific source of records and the corresponding WAL history.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_wal_outputs(
+    match_log_path: &Path,
+    scoring_log_path: Option<&Path>,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+    input: BuildInput,
+    authority: EnrollRecordAuthority,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
     let (events, _) = MatchLog::replay_for_output(match_log_path)?;
-    build_outputs_from_events(
+    build_outputs_from_events_with_authority(
         &events,
         scoring_log_path,
         csv_dir,
@@ -335,6 +366,7 @@ pub(crate) fn build_outputs_with_input(
         db_path,
         manifest,
         input,
+        authority,
     )
 }
 
@@ -346,11 +378,24 @@ pub(crate) fn build_live_snapshot_outputs(
     manifest: &OutputManifest,
     input: BuildInput,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
-    build_outputs_from_events(&[], None, csv_dir, parquet_dir, db_path, manifest, input)
+    build_outputs_from_events_with_authority(
+        &[],
+        None,
+        csv_dir,
+        parquet_dir,
+        db_path,
+        manifest,
+        input,
+        EnrollRecordAuthority::Snapshot,
+    )
 }
 
+/// Build captured output events with explicit enrollment record authority.
+///
+/// Snapshot records remain authoritative, while events still supply ordered
+/// enrollment evidence and invalidations. Seed records instead evolve by replay.
 #[allow(clippy::too_many_arguments)]
-fn build_outputs_from_events(
+pub(crate) fn build_outputs_from_events_with_authority(
     events: &[MatchLogEvent],
     scoring_log_path: Option<&Path>,
     csv_dir: Option<&Path>,
@@ -358,6 +403,7 @@ fn build_outputs_from_events(
     db_path: Option<&Path>,
     manifest: &OutputManifest,
     input: BuildInput,
+    authority: EnrollRecordAuthority,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
     let start = Instant::now();
 
@@ -365,6 +411,7 @@ fn build_outputs_from_events(
         return build_enroll_outputs(
             events,
             input,
+            authority,
             csv_dir,
             parquet_dir,
             db_path,
@@ -862,9 +909,11 @@ fn build_outputs_from_events(
 // Enrollment has one ID namespace and directed historical evidence, not a
 // bijection. Replay it separately so live confirmation/review rules cannot
 // accidentally turn qualifying edges into accepted CrossMap membership.
+#[allow(clippy::too_many_arguments)]
 fn build_enroll_outputs(
     events: &[MatchLogEvent],
     input: BuildInput,
+    authority: EnrollRecordAuthority,
     csv_dir: Option<&Path>,
     parquet_dir: Option<&Path>,
     db_path: Option<&Path>,
@@ -875,7 +924,7 @@ fn build_enroll_outputs(
     let mut outcomes = HashMap::new();
     let mut last_change = HashMap::new();
     let mut last_excluded = HashMap::new();
-    let authoritative_records = input.current_reviews.is_some();
+    let authoritative_records = authority == EnrollRecordAuthority::Snapshot;
     for (sequence, event) in events.iter().enumerate() {
         match event {
             MatchLogEvent::UpsertRecord {
@@ -1270,6 +1319,62 @@ fn read_scoring_log(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enroll_explicit_authority_is_independent_of_reviews()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut manifest = make_graph_manifest();
+        manifest.mode = crate::config::Mode::Enroll;
+        manifest.b_id_field = manifest.a_id_field.clone();
+        manifest.b_fields = manifest.a_fields.clone();
+        let events = [serde_json::from_str::<MatchLogEvent>(
+            r#"{"type":"upsert_record","side":"a","record":{"aid":"historical","name":"old"}}"#,
+        )?];
+        for authority in [
+            EnrollRecordAuthority::Snapshot,
+            EnrollRecordAuthority::SeedAndReplay,
+        ] {
+            let dir = tempfile::tempdir()?;
+            let db = dir.path().join("output.sqlite");
+            // Deliberately oppose the legacy signal: explicit authority wins.
+            let input = BuildInput {
+                a_records: HashMap::from([(
+                    "current".into(),
+                    Record::from([
+                        ("aid".into(), "current".into()),
+                        ("name".into(), "new".into()),
+                    ]),
+                )]),
+                current_reviews: (authority == EnrollRecordAuthority::SeedAndReplay).then(Vec::new),
+                ..BuildInput::default()
+            };
+            let report = build_outputs_from_events_with_authority(
+                &events,
+                None,
+                Some(dir.path()),
+                None,
+                Some(&db),
+                &manifest,
+                input,
+                authority,
+            )?;
+            let expected = if authority == EnrollRecordAuthority::Snapshot {
+                1
+            } else {
+                2
+            };
+            assert_eq!(
+                report.a_record_count, expected,
+                "explicit authority controls replay"
+            );
+            assert_eq!(report.no_match_count, expected, "isolates remain visible");
+            let conn = rusqlite::Connection::open(db)?;
+            let count: usize =
+                conn.query_row("SELECT count(*) FROM a_records", [], |r| r.get(0))?;
+            assert_eq!(count, expected, "SQL uses the same authoritative pool");
+        }
+        Ok(())
+    }
 
     #[test]
     fn enroll_outputs_preserve_all_edges_and_isolated_records_through_compaction()

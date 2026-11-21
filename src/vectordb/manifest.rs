@@ -14,6 +14,7 @@
 
 use std::path::Path;
 
+use crate::config::enroll_schema::EnrollBlockingConfig;
 use crate::config::schema::BlockingConfig;
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,21 @@ pub fn blocking_hash(bc: &BlockingConfig) -> String {
     pairs.sort();
     let s = format!("{}/{}/{}", bc.enabled, bc.operator, pairs.join(","));
     fnv1a_8(&s)
+}
+
+/// Hash native enrollment blocking fields without synthesizing paired fields.
+///
+/// Sorted singular fields make YAML ordering irrelevant. The enrollment domain
+/// prefix deliberately invalidates historical synthetic-pair cache manifests.
+pub fn enroll_blocking_hash(bc: &EnrollBlockingConfig) -> String {
+    let mut fields: Vec<&str> = bc.fields.iter().map(|field| field.field.as_str()).collect();
+    fields.sort();
+    fnv1a_8(&format!(
+        "enroll/{}/{}/{}",
+        bc.enabled,
+        bc.operator,
+        fields.join(",")
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +301,57 @@ mod tests {
         let c1 = bc(true, "and", &[("aa", "bb"), ("cc", "dd")]);
         let c2 = bc(true, "and", &[("cc", "dd"), ("aa", "bb")]);
         assert_eq!(blocking_hash(&c1), blocking_hash(&c2));
+    }
+
+    #[test]
+    fn enroll_blocking_hash_native_identity() {
+        let mut config: EnrollBlockingConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "operator": "and",
+            "fields": [{"field": "country"}, {"field": "name"}]
+        }))
+        .expect("valid native blocking config");
+        let original = enroll_blocking_hash(&config);
+        assert_eq!(
+            original,
+            fnv1a_8("enroll/true/and/country,name"),
+            "hash singular fields"
+        );
+        assert_ne!(
+            original,
+            blocking_hash(&bc(
+                true,
+                "and",
+                &[("country", "country"), ("name", "name")]
+            )),
+            "invalidate synthetic paired identity"
+        );
+        config.fields.reverse();
+        assert_eq!(
+            original,
+            enroll_blocking_hash(&config),
+            "field order is irrelevant"
+        );
+        config.enabled = false;
+        assert_ne!(
+            original,
+            enroll_blocking_hash(&config),
+            "enabled affects identity"
+        );
+        config.enabled = true;
+        config.operator = "other".to_string();
+        assert_ne!(
+            original,
+            enroll_blocking_hash(&config),
+            "operator affects identity"
+        );
+        config.operator = "and".to_string();
+        config.fields.pop();
+        assert_ne!(
+            original,
+            enroll_blocking_hash(&config),
+            "fields affect identity"
+        );
     }
 
     #[test]

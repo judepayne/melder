@@ -46,7 +46,6 @@ performance:
   vector_index_mode: "load"
 
 live:
-  skip_initial_match: true
   match_log_path: benchmarks/enroll/10kx10k_enroll3k_scoring_log/wal/events.ndjson
 
 scoring_log:

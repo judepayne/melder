@@ -1,16 +1,12 @@
 //! Enroll-mode YAML schema — single-pool entity resolution.
 //!
-//! Deserialized from YAML when `meld enroll` is invoked, then normalised
-//! into the engine-facing `Config` via `into_config()`.
+//! Native jobs use a single pool without paired matching state.
 
 use serde::Deserialize;
 
-use crate::error::ConfigError;
-
 use super::schema::{
-    BatchAssignmentConfig, BatchAssignmentStrategy, BatchConfig, Bm25FieldPair, Config,
-    CrossMapConfig, DatasetConfig, DatasetsConfig, EmbeddingsConfig, ExclusionsConfig, HooksConfig,
-    LiveConfig, Mode, OutputConfig, PerformanceConfig, ScoringLogConfig, SynonymDictionaryConfig,
+    DatasetConfig, ExclusionsConfig, HooksConfig, OutputConfig, PerformanceConfig,
+    ScoringLogConfig, SynonymDictionaryConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -18,8 +14,9 @@ use super::schema::{
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnrollMatchField {
-    /// Single field name — used for both sides internally.
+    /// Name used to look up the value in any record in this pool.
     /// Empty for `method: bm25` when using inline `fields`.
     #[serde(default)]
     pub field: String,
@@ -35,16 +32,19 @@ pub struct EnrollMatchField {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct EnrollBm25Field {
     pub field: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct EnrollBlockingField {
     pub field: String,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct EnrollBlockingConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -55,6 +55,7 @@ pub struct EnrollBlockingConfig {
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct EnrollExactPrefilterConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -63,6 +64,7 @@ pub struct EnrollExactPrefilterConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnrollEmbeddingsConfig {
     /// HuggingFace model name or local ONNX path. Mutually exclusive
     /// with `remote_encoder_cmd`.
@@ -77,6 +79,7 @@ pub struct EnrollEmbeddingsConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnrollDatasetConfig {
     pub path: String,
     pub id_field: String,
@@ -89,6 +92,7 @@ pub struct EnrollDatasetConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnrollSynonymFieldConfig {
     pub field: String,
     #[serde(default = "super::schema::default_synonym_generators")]
@@ -101,12 +105,13 @@ pub struct EnrollSynonymFieldConfig {
 
 /// YAML schema for `meld enroll`. Clean single-pool configuration.
 #[derive(Debug, Deserialize)]
-pub struct EnrollConfig {
+#[serde(deny_unknown_fields)]
+pub struct EnrollJobConfig {
     pub job: super::schema::JobConfig,
 
     /// Optional initial dataset to pre-load into the pool (no edges generated).
-    #[serde(default)]
-    pub dataset: Option<EnrollDatasetConfig>,
+    #[serde(default = "default_dataset", deserialize_with = "deserialize_dataset")]
+    pub dataset: DatasetConfig,
 
     pub embeddings: EnrollEmbeddingsConfig,
 
@@ -121,7 +126,7 @@ pub struct EnrollConfig {
     pub thresholds: super::schema::ThresholdsConfig,
 
     #[serde(default)]
-    pub live: LiveConfig,
+    pub live: EnrollRuntimeConfig,
 
     #[serde(default)]
     pub performance: PerformanceConfig,
@@ -142,9 +147,6 @@ pub struct EnrollConfig {
     pub bm25_candidates: Option<usize>,
 
     #[serde(default)]
-    pub bm25_commit_batch_size: Option<usize>,
-
-    #[serde(default)]
     pub bm25_fields: Vec<EnrollBm25Field>,
 
     #[serde(default)]
@@ -162,207 +164,40 @@ pub struct EnrollConfig {
 
     #[serde(default)]
     pub scoring_log: ScoringLogConfig,
+
+    /// Derived record fields, never accepted from YAML.
+    #[serde(skip)]
+    pub required_fields: Vec<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Conversion to engine Config
-// ---------------------------------------------------------------------------
+fn deserialize_dataset<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<DatasetConfig, D::Error> {
+    let seed = EnrollDatasetConfig::deserialize(deserializer)?;
+    Ok(DatasetConfig {
+        path: seed.path,
+        id_field: seed.id_field,
+        format: seed.format,
+        encoding: seed.encoding,
+        common_id_field: seed.common_id_field,
+    })
+}
 
-impl EnrollConfig {
-    /// Convert enroll-mode YAML into the engine-facing `Config`.
-    ///
-    /// Expands single `field` names to `field_a = field_b`, maps
-    /// `dataset` to `datasets.a`, and fills B-side/crossmap/output
-    /// with inert defaults.
-    pub fn into_config(self) -> Result<Config, ConfigError> {
-        if self.live.db_path.is_some() {
-            return Err(ConfigError::InvalidValue {
-                field: "live.db_path".into(),
-                message: "SQLite live storage is not supported in enroll mode; use live match_log for persistence".into(),
-            });
-        }
-        // Dataset: map to A-side, B-side is a dummy copy
-        let a_dataset = match self.dataset {
-            Some(d) => DatasetConfig {
-                path: d.path,
-                id_field: d.id_field.clone(),
-                common_id_field: d.common_id_field,
-                format: d.format,
-                encoding: d.encoding,
-            },
-            None => DatasetConfig {
-                path: String::new(),
-                id_field: "id".into(),
-                common_id_field: None,
-                format: None,
-                encoding: None,
-            },
-        };
-
-        // B-side mirrors A-side field names (enroll mode: field_a == field_b)
-        let b_dataset = DatasetConfig {
-            path: String::new(),
-            id_field: a_dataset.id_field.clone(),
-            common_id_field: None,
-            format: None,
-            encoding: None,
-        };
-
-        // Expand match fields: field -> field_a = field_b
-        let match_fields: Vec<super::schema::MatchField> = self
-            .match_fields
-            .into_iter()
-            .map(|ef| {
-                let bm25_fields = ef.fields.map(|fs| {
-                    fs.into_iter()
-                        .map(|f| Bm25FieldPair {
-                            field_a: f.field.clone(),
-                            field_b: f.field,
-                        })
-                        .collect()
-                });
-                super::schema::MatchField {
-                    field_a: ef.field.clone(),
-                    field_b: ef.field,
-                    method: ef.method,
-                    scorer: ef.scorer,
-                    weight: ef.weight,
-                    fields: bm25_fields,
-                }
-            })
-            .collect();
-
-        // Expand blocking fields
-        let blocking = super::schema::BlockingConfig {
-            enabled: self.blocking.enabled,
-            operator: self.blocking.operator,
-            fields: self
-                .blocking
-                .fields
-                .into_iter()
-                .map(|f| super::schema::BlockingFieldPair {
-                    field_a: f.field.clone(),
-                    field_b: f.field,
-                })
-                .collect(),
-            field_a: None,
-            field_b: None,
-        };
-
-        // Expand exact prefilter fields
-        let exact_prefilter = super::schema::ExactPrefilterConfig {
-            enabled: self.exact_prefilter.enabled,
-            fields: self
-                .exact_prefilter
-                .fields
-                .into_iter()
-                .map(|f| super::schema::BlockingFieldPair {
-                    field_a: f.field.clone(),
-                    field_b: f.field,
-                })
-                .collect(),
-        };
-
-        // Expand BM25 fields
-        let bm25_fields: Vec<Bm25FieldPair> = self
-            .bm25_fields
-            .into_iter()
-            .map(|f| Bm25FieldPair {
-                field_a: f.field.clone(),
-                field_b: f.field,
-            })
-            .collect();
-
-        // Expand synonym fields
-        let synonym_fields: Vec<super::schema::SynonymFieldConfig> = self
-            .synonym_fields
-            .into_iter()
-            .map(|sf| super::schema::SynonymFieldConfig {
-                field_a: sf.field.clone(),
-                field_b: sf.field,
-                generators: sf.generators,
-            })
-            .collect();
-
-        // Embeddings: cache_dir maps to a_cache_dir
-        let embeddings = EmbeddingsConfig {
-            model: self.embeddings.model,
-            remote_encoder_cmd: self.embeddings.remote_encoder_cmd,
-            a_cache_dir: self.embeddings.cache_dir,
-            b_cache_dir: None,
-        };
-
-        // Dummy crossmap (not used in enroll mode)
-        let cross_map = CrossMapConfig {
-            backend: "local".into(),
-            path: None,
-            a_id_field: a_dataset.id_field.clone(),
-            b_id_field: a_dataset.id_field.clone(),
-        };
-
-        Ok(Config {
-            mode: Mode::Enroll,
-            job: self.job,
-            datasets: DatasetsConfig {
-                a: a_dataset,
-                b: b_dataset,
-            },
-            cross_map,
-            exclusions: self.exclusions,
-            embeddings,
-            blocking,
-            exact_prefilter,
-            match_fields,
-            output_mapping: Vec::new(),
-            thresholds: self.thresholds,
-            output: self.output,
-            scoring_log: self.scoring_log,
-            batch: BatchConfig {
-                assignment: BatchAssignmentConfig {
-                    strategy: BatchAssignmentStrategy::Greedy,
-                    mode: None,
-                },
-                ..BatchConfig::default()
-            },
-            live: self.live,
-            performance: self.performance,
-            hooks: self.hooks,
-            vector_backend: self.vector_backend,
-            top_n: self.top_n,
-            ann_candidates: self.ann_candidates,
-            bm25_candidates: self.bm25_candidates,
-            bm25_commit_batch_size: self.bm25_commit_batch_size,
-            required_fields_a: Vec::new(),
-            required_fields_b: Vec::new(),
-            bm25_fields,
-            synonym_fields,
-            synonym_dictionary: self.synonym_dictionary,
-        })
+fn default_dataset() -> DatasetConfig {
+    DatasetConfig {
+        path: String::new(),
+        id_field: "id".into(),
+        format: None,
+        encoding: None,
+        common_id_field: None,
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_unsupported_sqlite_live_storage() -> Result<(), Box<dyn std::error::Error>> {
-        let config: EnrollConfig = serde_yaml::from_str(
-            r#"
-job: { name: enroll }
-embeddings: { model: ignored, cache_dir: cache }
-match_fields: []
-thresholds: { auto_match: 0.9, review_floor: 0.5 }
-live: { db_path: pool.db }
-"#,
-        )?;
-        let error = config
-            .into_config()
-            .expect_err("enroll must not silently ignore SQLite storage");
-        assert!(
-            error.to_string().contains("live.db_path"),
-            "error must identify unsupported setting: {error}"
-        );
-        Ok(())
-    }
+/// Persistence settings for the single-pool runtime.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnrollRuntimeConfig {
+    /// Base path for enrollment WAL and snapshots.
+    #[serde(default)]
+    pub match_log_path: Option<String>,
 }

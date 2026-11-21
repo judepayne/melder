@@ -26,7 +26,7 @@ use rayon::prelude::*;
 use crate::error::StoreError;
 use crate::models::{Record, Side};
 use crate::scoring::embedding::dot_product_f32;
-use crate::store::RecordStore;
+use crate::store::{RecordCollection, RecordStore, ScopedCollection};
 use crate::vectordb::VectorDB;
 
 /// A candidate record from the opposite pool, with its combined embedding
@@ -80,8 +80,7 @@ pub fn select_candidates(
         top_n,
         pool_combined_index,
         blocked_ids,
-        pool_store,
-        pool_side,
+        &ScopedCollection::new(pool_store, pool_side),
         query_record,
         query_side,
         backend,
@@ -97,8 +96,7 @@ pub(super) fn select_candidates_checked(
     top_n: usize,
     pool_combined_index: Option<&dyn VectorDB>,
     blocked_ids: &[String],
-    pool_store: &dyn RecordStore,
-    pool_side: Side,
+    collection: &dyn RecordCollection,
     query_record: &Record,
     query_side: Side,
     backend: &str,
@@ -106,7 +104,7 @@ pub(super) fn select_candidates_checked(
     strict_vectors: bool,
 ) -> Result<Vec<Candidate>, StoreError> {
     let has_embeddings = !query_combined_vec.is_empty();
-    let load_record = |id: &str| match pool_store.get(pool_side, id) {
+    let load_record = |id: &str| match collection.get(id) {
         Err(_) if !strict => Ok(None),
         result => result,
     };
