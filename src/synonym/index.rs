@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::config::SynonymFieldConfig;
 use crate::error::StoreError;
 use crate::models::{Record, Side};
-use crate::store::RecordStore;
+use crate::store::{RecordCollection, RecordStore, ScopedCollection};
 use crate::synonym::dictionary::SynonymDictionary;
 use crate::synonym::generator::generate_acronyms;
 
@@ -103,8 +103,23 @@ impl SynonymIndex {
         synonym_fields: &[SynonymFieldConfig],
         dictionary: Option<Arc<SynonymDictionary>>,
     ) -> Self {
+        Self::build_collection(
+            &ScopedCollection::new(store, side),
+            side,
+            synonym_fields,
+            dictionary,
+        )
+    }
+
+    /// Build from a collection, retaining partial results on scan failure.
+    pub(crate) fn build_collection(
+        collection: &dyn RecordCollection,
+        side: Side,
+        synonym_fields: &[SynonymFieldConfig],
+        dictionary: Option<Arc<SynonymDictionary>>,
+    ) -> Self {
         let mut idx = Self::new(dictionary);
-        let _ = store.for_each_record(side, &mut |id, record| {
+        let _ = collection.for_each_record(&mut |id, record| {
             idx.index_record(id, record, side, synonym_fields);
         });
         idx
@@ -117,8 +132,23 @@ impl SynonymIndex {
         synonym_fields: &[SynonymFieldConfig],
         dictionary: Option<Arc<SynonymDictionary>>,
     ) -> Result<Self, StoreError> {
+        Self::try_build_collection(
+            &ScopedCollection::new(store, side),
+            side,
+            synonym_fields,
+            dictionary,
+        )
+    }
+
+    /// Build from a collection, returning any scan error instead of a partial index.
+    pub(crate) fn try_build_collection(
+        collection: &dyn RecordCollection,
+        side: Side,
+        synonym_fields: &[SynonymFieldConfig],
+        dictionary: Option<Arc<SynonymDictionary>>,
+    ) -> Result<Self, StoreError> {
         let mut idx = Self::new(dictionary);
-        store.for_each_record(side, &mut |id, record| {
+        collection.for_each_record(&mut |id, record| {
             idx.index_record(id, record, side, synonym_fields);
         })?;
         Ok(idx)
@@ -198,6 +228,36 @@ impl SynonymIndex {
     ) {
         self.remove(id, side);
         self.index_record(id, record, side, synonym_fields);
+    }
+
+    /// Add or replace single-pool entries using native field settings.
+    /// Paired names are confined to this index's legacy key encoding.
+    pub fn upsert_enroll(
+        &mut self,
+        id: &str,
+        record: &Record,
+        fields: &[crate::config::enroll_schema::EnrollSynonymFieldConfig],
+    ) {
+        let fields: Vec<_> = fields
+            .iter()
+            .map(|f| SynonymFieldConfig {
+                field_a: f.field.clone(),
+                field_b: f.field.clone(),
+                generators: f.generators.clone(),
+            })
+            .collect();
+        self.upsert(id, record, Side::A, &fields);
+    }
+
+    /// Build a single-pool index from native settings.
+    pub(crate) fn try_build_enroll_collection(
+        collection: &dyn RecordCollection,
+        fields: &[crate::config::enroll_schema::EnrollSynonymFieldConfig],
+        dictionary: Option<Arc<SynonymDictionary>>,
+    ) -> Result<Self, StoreError> {
+        let mut index = Self::new(dictionary);
+        collection.for_each_record(&mut |id, record| index.upsert_enroll(id, record, fields))?;
+        Ok(index)
     }
 
     /// Remove all entries for a record (live mode).
@@ -342,6 +402,52 @@ mod tests {
             assert!(!checked.is_empty(), "checked build must index records");
         }
         Ok(())
+    }
+
+    #[test]
+    fn collection_build_binds_fields_independently_of_storage_side() -> Result<(), StoreError> {
+        let store = make_store();
+        store.insert(
+            Side::A,
+            "1",
+            &make_record(&[("counterparty_name", "Harris, Watkins and Goodwin BV")]),
+        )?;
+        let collection = ScopedCollection::new(&store, Side::A);
+        let fields = make_config();
+        let lenient = SynonymIndex::build_collection(&collection, Side::B, &fields, None);
+        let strict = SynonymIndex::try_build_collection(&collection, Side::B, &fields, None)?;
+        let candidates = strict.lookup("HWAG", "legal_name", "counterparty_name", 3);
+        assert_eq!(candidates, ["1"], "must scan collection and bind B fields");
+        assert_eq!(
+            candidates,
+            lenient.lookup("HWAG", "legal_name", "counterparty_name", 3),
+            "strict and lenient collection builds must agree",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_enroll_upsert_preserves_lookup_and_replacement() {
+        let fields = vec![crate::config::enroll_schema::EnrollSynonymFieldConfig {
+            field: "name".into(),
+            generators: crate::config::schema::default_synonym_generators(),
+        }];
+        let mut index = SynonymIndex::new(None);
+        index.upsert_enroll(
+            "1",
+            &make_record(&[("name", "Harris, Watkins and Goodwin BV")]),
+            &fields,
+        );
+        assert_eq!(
+            index.lookup("HWAG", "name", "name", 3),
+            ["1"],
+            "native fields preserve acronym keys"
+        );
+        index.upsert_enroll("1", &make_record(&[("name", "Other Company")]), &fields);
+        assert!(
+            index.lookup("HWAG", "name", "name", 3).is_empty(),
+            "native replacement removes old keys"
+        );
     }
 
     #[test]

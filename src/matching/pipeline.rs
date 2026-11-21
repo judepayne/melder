@@ -17,8 +17,8 @@
 //! found by ANY method. Full scoring is the single place where all signals
 //! combine.
 //!
-//! Both batch and live call `score_pool()` with the same arguments; the only
-//! difference is where the data comes from (MatchState vs LiveSideState).
+//! Batch, live and enroll call `search()` with a directional plan and borrowed
+//! pool and query inputs. The public `score_pool` wrappers use the same path.
 //!
 //! ## Why blocked_ids is passed in rather than BlockingIndex
 //!
@@ -38,7 +38,7 @@ use crate::matching::candidates;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::scoring;
 use crate::scoring::embedding::dot_product_f32;
-use crate::store::RecordStore;
+use crate::store::{RecordCollection, RecordStore, ScopedCollection};
 use crate::vectordb::VectorDB;
 
 /// The record being scored against the pool.
@@ -67,6 +67,162 @@ pub struct ScoringPool<'a> {
     pub exclusions: &'a crate::matching::exclusions::Exclusions,
 }
 
+/// A prepared, borrowed query, independent of retrieval scratch.
+pub(crate) struct PreparedQuery<'a> {
+    pub id: &'a str,
+    pub record: &'a Record,
+    pub combined_vec: &'a [f32],
+}
+
+/// Stable side-bound resources; constructing a view does not allocate or lock.
+pub(crate) struct SearchPool<'a> {
+    pub collection: &'a dyn RecordCollection,
+    pub combined_index: Option<&'a dyn VectorDB>,
+    pub synonym_dictionary: Option<&'a crate::synonym::dictionary::SynonymDictionary>,
+}
+
+/// Per-invocation retrieval results and matching constraints.
+pub(crate) struct SearchCandidates<'a> {
+    pub eligible_ids: &'a [String],
+    pub bm25_candidate_ids: &'a [String],
+    pub bm25_scores_map: &'a HashMap<String, f64>,
+    pub synonym_candidate_ids: &'a [String],
+    pub exclusions: &'a crate::matching::exclusions::Exclusions,
+    /// Explicit collection identity, not equality of literal record IDs.
+    pub same_collection: bool,
+}
+
+/// Immutable directional settings reusable across queries.
+pub(crate) struct SearchPlan {
+    query_side: Side,
+    scoring_fields: Vec<String>,
+    bindings: Vec<BoundField>,
+}
+
+enum BindingNames {
+    Single(String),
+    Paired { a: String, b: String },
+}
+
+struct BoundField {
+    names: BindingNames,
+    method: MatchMethod,
+    scorer: Option<crate::config::FuzzyScorer>,
+    weight: f64,
+}
+pub(crate) trait SearchSettings {
+    fn vector_backend(&self) -> &str;
+    fn thresholds(&self) -> &crate::config::schema::ThresholdsConfig;
+    fn output_record(&self, record: &Record) -> Record;
+}
+impl SearchSettings for Config {
+    fn vector_backend(&self) -> &str {
+        &self.vector_backend
+    }
+    fn thresholds(&self) -> &crate::config::schema::ThresholdsConfig {
+        &self.thresholds
+    }
+    fn output_record(&self, record: &Record) -> Record {
+        apply_output_mapping(record, self)
+    }
+}
+impl SearchSettings for crate::config::enroll_schema::EnrollJobConfig {
+    fn vector_backend(&self) -> &str {
+        &self.vector_backend
+    }
+    fn thresholds(&self) -> &crate::config::schema::ThresholdsConfig {
+        &self.thresholds
+    }
+    fn output_record(&self, record: &Record) -> Record {
+        record.clone()
+    }
+}
+impl SearchPlan {
+    /// Borrow the query-side embedding layout without mirroring native names.
+    pub(crate) fn embedding_fields(&self) -> impl Iterator<Item = (&str, f64)> + Clone {
+        self.embedding_bindings().map(|(a, b, weight)| {
+            (
+                match self.query_side {
+                    Side::A => a,
+                    Side::B => b,
+                },
+                weight,
+            )
+        })
+    }
+
+    fn embedding_bindings(&self) -> impl Iterator<Item = (&str, &str, f64)> + Clone {
+        self.bindings
+            .iter()
+            .filter(|f| f.method == MatchMethod::Embedding)
+            .map(|f| {
+                let (a, b) = match &f.names {
+                    BindingNames::Single(name) => (name.as_str(), name.as_str()),
+                    BindingNames::Paired { a, b } => (a.as_str(), b.as_str()),
+                };
+                (a, b, f.weight)
+            })
+    }
+    /// Compile the projected fields and embedding layout for a direction.
+    pub fn new(config: &Config, query_side: Side, pool_side: Side) -> Self {
+        let scoring_fields = config
+            .match_fields
+            .iter()
+            .filter(|mf| mf.method != MatchMethod::Bm25 && mf.method != MatchMethod::Embedding)
+            .map(|mf| match pool_side {
+                Side::A => mf.field_a.clone(),
+                Side::B => mf.field_b.clone(),
+            })
+            .collect();
+        Self {
+            query_side,
+            scoring_fields,
+            bindings: config
+                .match_fields
+                .iter()
+                .map(|f| BoundField {
+                    names: BindingNames::Paired {
+                        a: f.field_a.clone(),
+                        b: f.field_b.clone(),
+                    },
+                    method: f.method,
+                    scorer: f.scorer,
+                    weight: f.weight,
+                })
+                .collect(),
+        }
+    }
+    /// Compile native single-name enrollment bindings once for the session.
+    pub fn enroll(config: &crate::config::enroll_schema::EnrollJobConfig) -> Self {
+        Self {
+            query_side: Side::A,
+            scoring_fields: config
+                .match_fields
+                .iter()
+                .filter(|f| !matches!(f.method, MatchMethod::Bm25 | MatchMethod::Embedding))
+                .map(|f| f.field.clone())
+                .collect(),
+            bindings: config
+                .match_fields
+                .iter()
+                .map(|f| BoundField {
+                    names: BindingNames::Single(f.field.clone()),
+                    method: f.method,
+                    scorer: f.scorer,
+                    weight: f.weight,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Error and verification policy for a search invocation.
+pub(crate) enum SearchPolicy<'a> {
+    Ordinary,
+    Graph,
+    Verified(&'a [String]),
+}
+
 /// Score a single query record against the opposite-side pool.
 ///
 /// Runs independent candidate generators (ANN, BM25, synonym), unions their
@@ -90,9 +246,7 @@ pub fn score_pool(
         config,
         ann_candidates,
         top_n,
-        &[],
-        false,
-        false,
+        SearchPolicy::Ordinary,
     )
     .expect("lenient scoring does not propagate store errors")
 }
@@ -108,7 +262,14 @@ pub fn score_pool_strict(
     ann_candidates: usize,
     top_n: usize,
 ) -> Result<Vec<MatchResult>, StoreError> {
-    score_pool_internal(query, pool, config, ann_candidates, top_n, &[], true, true)
+    score_pool_internal(
+        query,
+        pool,
+        config,
+        ann_candidates,
+        top_n,
+        SearchPolicy::Graph,
+    )
 }
 
 /// Score the ordinary candidate union plus caller-validated verification IDs.
@@ -134,9 +295,7 @@ pub fn score_pool_verified(
         config,
         ann_candidates,
         top_n,
-        verification_ids,
-        true,
-        false,
+        SearchPolicy::Verified(verification_ids),
     )
 }
 
@@ -147,11 +306,54 @@ fn score_pool_internal(
     config: &Config,
     ann_candidates: usize,
     top_n: usize,
-    verification_ids: &[String],
-    strict: bool,
-    strict_vectors: bool,
+    policy: SearchPolicy<'_>,
 ) -> Result<Vec<MatchResult>, StoreError> {
-    if pool.blocked_ids.is_empty() {
+    let plan = SearchPlan::new(config, query.side, pool.side);
+    search(
+        &PreparedQuery {
+            id: query.id,
+            record: query.record,
+            combined_vec: query.combined_vec,
+        },
+        &SearchPool {
+            collection: &ScopedCollection::new(pool.store, pool.side),
+            combined_index: pool.combined_index,
+            synonym_dictionary: pool.synonym_dictionary,
+        },
+        &plan,
+        config,
+        &SearchCandidates {
+            eligible_ids: pool.blocked_ids,
+            bm25_candidate_ids: pool.bm25_candidate_ids,
+            bm25_scores_map: pool.bm25_scores_map,
+            synonym_candidate_ids: pool.synonym_candidate_ids,
+            exclusions: pool.exclusions,
+            same_collection: query.side == pool.side,
+        },
+        ann_candidates,
+        top_n,
+        policy,
+    )
+}
+
+/// Search borrowed views through the shared scoring pipeline.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn search(
+    query: &PreparedQuery<'_>,
+    pool: &SearchPool<'_>,
+    plan: &SearchPlan,
+    config: &dyn SearchSettings,
+    inputs: &SearchCandidates<'_>,
+    ann_candidates: usize,
+    top_n: usize,
+    policy: SearchPolicy<'_>,
+) -> Result<Vec<MatchResult>, StoreError> {
+    let (strict, strict_vectors, verification_ids) = match policy {
+        SearchPolicy::Ordinary => (false, false, &[][..]),
+        SearchPolicy::Graph => (true, true, &[][..]),
+        SearchPolicy::Verified(ids) => (true, false, ids),
+    };
+    if inputs.eligible_ids.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -159,15 +361,7 @@ fn score_pool_internal(
 
     // Pool-side fields needed for scoring (used by get_many_fields to
     // avoid full JSON deserialization in SQLite).
-    let scoring_fields: Vec<String> = config
-        .match_fields
-        .iter()
-        .filter(|mf| mf.method != MatchMethod::Bm25 && mf.method != MatchMethod::Embedding)
-        .map(|mf| match pool.side {
-            Side::A => mf.field_a.clone(),
-            Side::B => mf.field_b.clone(),
-        })
-        .collect();
+    let scoring_fields = &plan.scoring_fields;
 
     // --- Stage 2: Independent candidate generation ---
     //
@@ -181,12 +375,11 @@ fn score_pool_internal(
             query.combined_vec,
             ann_candidates,
             pool.combined_index,
-            pool.blocked_ids,
-            pool.store,
-            pool.side,
+            inputs.eligible_ids,
+            pool.collection,
             query.record,
-            query.side,
-            &config.vector_backend,
+            plan.query_side,
+            config.vector_backend(),
             strict,
             strict_vectors,
         )?
@@ -203,13 +396,13 @@ fn score_pool_internal(
     // Only caller-validated verification IDs within the blocking pool may be added.
     let verified_ids = verification_ids
         .iter()
-        .filter(|id| pool.blocked_ids.contains(id));
+        .filter(|id| inputs.eligible_ids.contains(id));
     let mut extra_ids: Vec<String> = Vec::new();
     let mut extra_id_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for id in pool
+    for id in inputs
         .bm25_candidate_ids
         .iter()
-        .chain(pool.synonym_candidate_ids.iter())
+        .chain(inputs.synonym_candidate_ids.iter())
         .chain(verified_ids)
     {
         if !ann_id_set.contains(id.as_str()) && extra_id_set.insert(id.clone()) {
@@ -222,10 +415,9 @@ fn score_pool_internal(
         Vec::new()
     } else {
         let fetched = if scoring_fields.is_empty() {
-            pool.store.get_many(pool.side, &extra_ids)
+            pool.collection.get_many(&extra_ids)
         } else {
-            pool.store
-                .get_many_fields(pool.side, &extra_ids, &scoring_fields)
+            pool.collection.get_many_fields(&extra_ids, scoring_fields)
         };
         let records = match fetched {
             Ok(records) => records,
@@ -253,35 +445,34 @@ fn score_pool_internal(
     // Self-match exclusion: when query_side == pool_side (enroll mode),
     // the query record may appear in the pool index. Filter it out before
     // scoring so a record never matches itself.
-    let filter_self = query.side == pool.side;
+    // Collection identity is supplied by the search boundary.
 
     // --- Stage 4: Full scoring with per-field decomposition ---
     let _span = info_span!("full_scoring").entered();
-    let emb_specs = crate::vectordb::embedding_field_specs(config);
-    let has_emb_specs = has_embeddings && !emb_specs.is_empty();
+    let has_emb_specs = has_embeddings && plan.embedding_bindings().next().is_some();
 
     let mut results: Vec<MatchResult> = Vec::with_capacity(ann_cands.len() + extra_cands.len());
 
     // Score all candidates through the same path.
     for cand in ann_cands.iter().chain(extra_cands.iter()) {
         // Skip self-match in enroll mode
-        if filter_self && cand.id == query.id {
+        if inputs.same_collection && cand.id == query.id {
             continue;
         }
         // Skip known non-matching pairs
-        if !pool.exclusions.is_empty() && pool.exclusions.contains(query.id, &cand.id) {
+        if !inputs.exclusions.is_empty() && inputs.exclusions.contains(query.id, &cand.id) {
             continue;
         }
         results.push(score_candidate(
             cand,
             query.id,
             query.record,
-            query.side,
+            plan.query_side,
             query.combined_vec,
             pool.combined_index,
             config,
-            pool.bm25_scores_map,
-            &emb_specs,
+            plan,
+            inputs.bm25_scores_map,
             has_emb_specs,
             pool.synonym_dictionary,
             strict_vectors,
@@ -308,7 +499,7 @@ fn score_pool_internal(
     }
 
     // Apply score gap check before truncation so rank-2 is still present.
-    if let Some(min_gap) = config.thresholds.min_score_gap {
+    if let Some(min_gap) = config.thresholds().min_score_gap {
         apply_score_gap_check(&mut results, min_gap);
     }
 
@@ -324,7 +515,7 @@ fn score_pool_internal(
             .chain(extra_cands.iter())
             .find(|c| c.id == top.matched_id);
         if let Some(cand) = matched {
-            top.matched_record = Some(apply_output_mapping(&cand.record, config));
+            top.matched_record = Some(config.output_record(&cand.record));
         }
     }
 
@@ -344,9 +535,9 @@ fn score_candidate(
     query_side: Side,
     query_combined_vec: &[f32],
     pool_combined_index: Option<&dyn VectorDB>,
-    config: &Config,
+    config: &dyn SearchSettings,
+    plan: &SearchPlan,
     bm25_scores: &HashMap<String, f64>,
-    emb_specs: &[(String, String, f64)],
     has_emb_specs: bool,
     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
     strict_vectors: bool,
@@ -358,21 +549,40 @@ fn score_candidate(
             Some(Ok(vector)) => vector,
             _ => None,
         };
-        pool_vec.map(|pool_vec| decompose_emb_scores(query_combined_vec, &pool_vec, emb_specs))
+        pool_vec.map(|pool_vec| {
+            decompose_emb_bindings(query_combined_vec, &pool_vec, plan.embedding_bindings())
+        })
     } else {
         None
     };
 
     let precomputed_bm25 = bm25_scores.get(&cand.id).copied();
 
-    let score_result = scoring::score_pair(
+    let score_result = scoring::score_bound_pair(
         query_record,
         &cand.record,
-        &config.match_fields,
+        plan.bindings.iter().map(|f| {
+            let (a, b) = match &f.names {
+                BindingNames::Single(name) => (name.as_str(), name.as_str()),
+                BindingNames::Paired { a, b } => (a.as_str(), b.as_str()),
+            };
+            let (query, candidate) = match plan.query_side {
+                Side::A => (a, b),
+                Side::B => (b, a),
+            };
+            scoring::FieldBinding {
+                query,
+                candidate,
+                field_a: a,
+                field_b: b,
+                method: f.method,
+                scorer: f.scorer,
+                weight: f.weight,
+            }
+        }),
         emb_scores.as_ref(),
         precomputed_bm25,
         synonym_dictionary,
-        query_side.opposite(),
     );
 
     Ok(scoring::build_match_result(
@@ -380,11 +590,37 @@ fn score_candidate(
         &cand.id,
         query_side,
         score_result,
-        config.thresholds.auto_match,
-        config.thresholds.review_floor,
+        config.thresholds().auto_match,
+        config.thresholds().review_floor,
         None,
         false,
     ))
+}
+
+/// Retrieve and normalize ordinary BM25 candidates once.
+///
+/// `None` selects native unblocked retrieval (including WAND); `Some(&[])`
+/// is an empty eligible set, never an unrestricted search. Verification may
+/// supply additional per-ID scores independently of this ordinary retrieval.
+pub(crate) fn bm25_candidate_stage(
+    index: &crate::bm25::simple::SimpleBm25,
+    record: &Record,
+    side: Side,
+    eligible_ids: Option<&[String]>,
+    limit: usize,
+) -> (Vec<String>, HashMap<String, f64>) {
+    let query_text = index.query_text_for(record, side);
+    let self_score = index.analytical_self_score(&query_text);
+    let raw = match eligible_ids {
+        Some(ids) => index.score_blocked(&query_text, ids, limit),
+        None => index.score_all(&query_text, limit),
+    };
+    let scored: Vec<_> = raw
+        .into_iter()
+        .map(|(id, score)| (id, crate::bm25::scorer::normalise_bm25(score, self_score)))
+        .collect();
+    let ids = scored.iter().map(|(id, _)| id.clone()).collect();
+    (ids, scored.into_iter().collect())
 }
 
 /// Independent synonym candidate generation stage.
@@ -398,14 +634,31 @@ pub fn synonym_candidate_stage(
     query_side: Side,
     synonym_fields: &[crate::config::SynonymFieldConfig],
 ) -> Vec<String> {
+    synonym_candidates(
+        index,
+        query_record,
+        synonym_fields.iter().map(|f| {
+            (
+                match query_side {
+                    Side::A => f.field_a.as_str(),
+                    Side::B => f.field_b.as_str(),
+                },
+                f.field_a.as_str(),
+                f.field_b.as_str(),
+                f.generators.first().map_or(3, |g| g.min_length),
+            )
+        }),
+    )
+}
+
+pub(crate) fn synonym_candidates<'a>(
+    index: &crate::synonym::index::SynonymIndex,
+    query_record: &Record,
+    fields: impl Iterator<Item = (&'a str, &'a str, &'a str, usize)>,
+) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
-
-    for sf in synonym_fields {
-        let query_field = match query_side {
-            Side::A => &sf.field_a,
-            Side::B => &sf.field_b,
-        };
+    for (query_field, field_a, field_b, min_len) in fields {
         let query_value = query_record
             .get(query_field)
             .map(|s| s.as_str())
@@ -414,9 +667,7 @@ pub fn synonym_candidate_stage(
             continue;
         }
 
-        let min_len = sf.generators.first().map(|g| g.min_length).unwrap_or(3);
-
-        let candidates = index.lookup(query_value, &sf.field_a, &sf.field_b, min_len);
+        let candidates = index.lookup(query_value, field_a, field_b, min_len);
         for id in candidates {
             if seen.insert(id.clone()) {
                 result.push(id);
@@ -436,36 +687,52 @@ pub fn synonym_candidate_stage(
 ///
 /// Returns a `HashMap<"field_a/field_b", cosᵢ>` compatible with
 /// `scoring::score_pair`'s `precomputed_emb_scores` argument.
+#[cfg(test)]
 fn decompose_emb_scores<'a>(
     query_combined: &[f32],
     pool_combined: &[f32],
     emb_specs: &'a [(String, String, f64)],
 ) -> HashMap<(&'a str, &'a str), f64> {
-    if emb_specs.is_empty() || query_combined.is_empty() || pool_combined.is_empty() {
+    decompose_emb_bindings(
+        query_combined,
+        pool_combined,
+        emb_specs
+            .iter()
+            .map(|(a, b, w)| (a.as_str(), b.as_str(), *w)),
+    )
+}
+
+fn decompose_emb_bindings<'a>(
+    query_combined: &[f32],
+    pool_combined: &[f32],
+    emb_specs: impl Iterator<Item = (&'a str, &'a str, f64)> + Clone,
+) -> HashMap<(&'a str, &'a str), f64> {
+    let field_count = emb_specs.clone().count();
+    if field_count == 0 || query_combined.is_empty() || pool_combined.is_empty() {
         return HashMap::new();
     }
-    let field_dim = query_combined.len() / emb_specs.len();
+    let field_dim = query_combined.len() / field_count;
     if field_dim == 0 {
         return HashMap::new();
     }
     debug_assert_eq!(
-        query_combined.len() % emb_specs.len(),
+        query_combined.len() % field_count,
         0,
         "combined vector length {} not evenly divisible by {} fields",
         query_combined.len(),
-        emb_specs.len()
+        field_count
     );
-    if !query_combined.len().is_multiple_of(emb_specs.len()) {
+    if !query_combined.len().is_multiple_of(field_count) {
         tracing::warn!(
             vec_len = query_combined.len(),
-            fields = emb_specs.len(),
+            fields = field_count,
             "combined vector not evenly divisible by field count — last field will be truncated"
         );
     }
 
-    let mut scores = HashMap::with_capacity(emb_specs.len());
+    let mut scores = HashMap::with_capacity(field_count);
 
-    for (i, (field_a, field_b, weight)) in emb_specs.iter().enumerate() {
+    for (i, (field_a, field_b, weight)) in emb_specs.enumerate() {
         let start = i * field_dim;
         let end = start + field_dim;
 
@@ -486,13 +753,13 @@ fn decompose_emb_scores<'a>(
 
         let dot: f32 = dot_product_f32(q_sub, p_sub);
 
-        let cos = if *weight > 0.0 {
+        let cos = if weight > 0.0 {
             (dot as f64 / weight).clamp(0.0, 1.0)
         } else {
             0.0
         };
 
-        scores.insert((field_a.as_str(), field_b.as_str()), cos);
+        scores.insert((field_a, field_b), cos);
     }
 
     scores
@@ -747,6 +1014,80 @@ vector_backend: flat
         crate::config::load_config(tmp.path()).unwrap()
     }
 
+    fn make_enroll_config_exact(field: &str) -> crate::config::enroll_schema::EnrollJobConfig {
+        let yaml = format!(
+            "job: {{name: test}}\nembeddings: {{model: test, cache_dir: cache}}\nvector_backend: flat\nmatch_fields: [{{field: {field}, method: exact, weight: 1}}]\nthresholds: {{auto_match: 0.85, review_floor: 0.6}}\n"
+        );
+        let file = tempfile::NamedTempFile::new().expect("temporary config");
+        std::fs::write(file.path(), yaml).expect("write enrollment config");
+        crate::config::load_enroll_job_config(file.path()).expect("native enrollment config")
+    }
+
+    #[test]
+    fn native_embedding_bindings_preserve_unequal_weights() {
+        let mut config = make_enroll_config_exact("first");
+        config.match_fields = [("first", 0.25), ("second", 0.75)]
+            .into_iter()
+            .map(
+                |(field, weight)| crate::config::enroll_schema::EnrollMatchField {
+                    field: field.into(),
+                    method: MatchMethod::Embedding,
+                    scorer: None,
+                    weight,
+                    fields: None,
+                },
+            )
+            .collect();
+        let plan = SearchPlan::enroll(&config);
+        assert_eq!(
+            plan.embedding_fields().collect::<Vec<_>>(),
+            vec![("first", 0.25), ("second", 0.75)],
+            "native layout preserves order and weights"
+        );
+        let q = [0.5, 0.0, 0.75_f32.sqrt(), 0.0];
+        let p = [0.5, 0.0, 0.0, 0.75_f32.sqrt()];
+        let scores = decompose_emb_bindings(&q, &p, plan.embedding_bindings());
+        assert_eq!(scores[&("first", "first")], 1.0, "first weight is removed");
+        assert_eq!(
+            scores[&("second", "second")],
+            0.0,
+            "orthogonal second field stays zero"
+        );
+    }
+
+    #[test]
+    fn native_enroll_bindings_score_single_named_fields() {
+        let config = make_enroll_config_exact("name");
+        let plan = SearchPlan::enroll(&config);
+        let record = make_record(&[("name", "Alice")]);
+        let candidate = candidates::Candidate {
+            id: "other".into(),
+            record: record.clone(),
+            combined_dot: 0.0,
+        };
+        let result = score_candidate(
+            &candidate,
+            "query",
+            &record,
+            Side::A,
+            &[],
+            None,
+            &config,
+            &plan,
+            &HashMap::new(),
+            false,
+            None,
+            false,
+        )
+        .expect("native exact scoring succeeds");
+        assert_eq!(
+            result.score, 1.0,
+            "single-name bindings read the same field"
+        );
+        assert_eq!(result.field_scores[0].field_a, "name");
+        assert_eq!(result.field_scores[0].field_b, "name");
+    }
+
     fn unit_vec(dim: usize, seed: u64) -> Vec<f32> {
         let mut state = seed.wrapping_add(1);
         let mut v: Vec<f32> = (0..dim)
@@ -972,6 +1313,85 @@ vector_backend: flat
                 format!("{strict:?}"),
                 format!("{ordinary:?}"),
                 "strict must preserve normal scoring including absent vectors"
+            );
+        }
+    }
+
+    #[test]
+    fn search_collection_identity_and_asymmetric_directions() {
+        let store = make_store();
+        let config = make_config_exact("left_name", "right_name");
+        let left = make_record(&[("left_name", "Acme")]);
+        let right = make_record(&[("right_name", "Acme")]);
+        store.insert(Side::A, "same", &left).expect("insert A");
+        store.insert(Side::B, "same", &right).expect("insert B");
+        let ids = vec!["same".to_string()];
+        let scores = HashMap::new();
+        let exclusions = crate::matching::exclusions::Exclusions::new();
+        for (side, record) in [(Side::A, &left), (Side::B, &right)] {
+            let pool = SearchPool {
+                collection: &ScopedCollection::new(&store, side.opposite()),
+                combined_index: None,
+                synonym_dictionary: None,
+            };
+            let plan = SearchPlan::new(&config, side, side.opposite());
+            let query = PreparedQuery {
+                id: "same",
+                record,
+                combined_vec: &[],
+            };
+            let mut inputs = SearchCandidates {
+                eligible_ids: &ids,
+                bm25_candidate_ids: &ids,
+                bm25_scores_map: &scores,
+                synonym_candidate_ids: &[],
+                exclusions: &exclusions,
+                same_collection: false,
+            };
+            let results = search(
+                &query,
+                &pool,
+                &plan,
+                &config,
+                &inputs,
+                50,
+                0,
+                SearchPolicy::Graph,
+            )
+            .expect("directional search");
+            assert_eq!(
+                results.len(),
+                1,
+                "equal IDs across collections remain eligible"
+            );
+            assert_eq!(
+                results[0].score, 1.0,
+                "asymmetric fields bind in both directions"
+            );
+            for policy in [SearchPolicy::Ordinary, SearchPolicy::Verified(&ids)] {
+                let alternate = search(&query, &pool, &plan, &config, &inputs, 50, 0, policy)
+                    .expect("valid search policy");
+                assert_eq!(
+                    format!("{alternate:?}"),
+                    format!("{results:?}"),
+                    "all policies preserve directional scoring on valid inputs"
+                );
+            }
+            inputs.same_collection = true;
+            assert!(
+                search(
+                    &query,
+                    &pool,
+                    &plan,
+                    &config,
+                    &inputs,
+                    50,
+                    0,
+                    SearchPolicy::Graph,
+                )
+                .expect("self filter")
+                .is_empty(),
+                "collection identity explicitly excludes self"
             );
         }
     }
@@ -1213,6 +1633,41 @@ vector_backend: flat
                 };
                 for top_n in [0, 1, 2, 3] {
                     let results = score_pool(&query, &pool, &config, 50, top_n);
+                    let plan = SearchPlan::new(&config, side, Side::A);
+                    let prepared = PreparedQuery {
+                        id: query.id,
+                        record: query.record,
+                        combined_vec: query.combined_vec,
+                    };
+                    let resources = SearchPool {
+                        collection: &ScopedCollection::new(&store, Side::A),
+                        combined_index: None,
+                        synonym_dictionary: None,
+                    };
+                    let inputs = SearchCandidates {
+                        eligible_ids: &ids,
+                        bm25_candidate_ids: &ids,
+                        bm25_scores_map: &bm25_scores,
+                        synonym_candidate_ids: &[],
+                        exclusions: &exclusions,
+                        same_collection: side == Side::A,
+                    };
+                    let searched = search(
+                        &prepared,
+                        &resources,
+                        &plan,
+                        &config,
+                        &inputs,
+                        50,
+                        top_n,
+                        SearchPolicy::Ordinary,
+                    )
+                    .expect("borrowed search should succeed");
+                    assert_eq!(
+                        format!("{searched:?}"),
+                        format!("{results:?}"),
+                        "borrowed search and compatibility entry point must agree",
+                    );
                     let count = if top_n == 0 { 3 } else { top_n };
                     let actual: Vec<&str> = results
                         .iter()

@@ -92,9 +92,6 @@ impl std::fmt::Display for FuzzyScorer {
 /// may contain extension fields (e.g. `sidecar`) read by external tooling.
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    /// Operating mode. Set by the CLI subcommand, not from YAML.
-    #[serde(skip)]
-    pub mode: Mode,
     pub job: JobConfig,
     #[serde(default)]
     pub datasets: DatasetsConfig,
@@ -443,7 +440,7 @@ pub struct OutputConfig {
 /// and explainability views.
 #[derive(Debug, Deserialize)]
 pub struct ScoringLogConfig {
-    /// Enable the scoring log. Default false for batch/live, true for enroll.
+    /// Enable the scoring log. Disabled by default.
     #[serde(default)]
     pub enabled: bool,
     /// Compression: "zstd" (default) or "none".
@@ -749,13 +746,6 @@ pub struct HooksConfig {
     /// disabled. Example: `"python scripts/hook.py"`
     #[serde(default)]
     pub command: Option<String>,
-}
-
-impl Config {
-    /// Returns `true` when the engine is running in single-pool enrollment mode.
-    pub fn is_enroll_mode(&self) -> bool {
-        self.mode == Mode::Enroll
-    }
 }
 
 fn default_backend() -> String {

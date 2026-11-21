@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process;
 
-use crate::config::Config;
+use crate::config::{Config, EnrollJobConfig};
 use crate::crossmap::traits::CrossMapOps;
 use crate::models::{Record, Side};
 use crate::state::match_log::{MatchLog, MatchLogEvent};
@@ -23,8 +23,11 @@ use crate::state::match_log::{MatchLog, MatchLogEvent};
 pub fn cmd_export(config_path: &Path, out_dir: &Path) {
     let cfg = match crate::config::load_config(config_path) {
         Ok(c) => c,
-        Err(match_error) => match crate::config::load_enroll_config(config_path) {
-            Ok(c) => c,
+        Err(match_error) => match crate::config::load_enroll_job_config(config_path) {
+            Ok(c) => {
+                export_enroll(&c, out_dir);
+                return;
+            }
             Err(enroll_error) => {
                 eprintln!(
                     "Config error (match): {match_error}\nConfig error (enroll): {enroll_error}"
@@ -133,16 +136,13 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
                     "  relationships.csv: {} matches + {} review",
                     report.match_count, report.review_count
                 );
-                if cfg.is_enroll_mode() {
-                    println!("  Enrollment edges: {}", report.enroll_edge_count);
-                }
                 println!("  unmatched.csv:     {} records", report.no_match_count);
                 if let Some(db) = db_path {
                     println!("  database:          {}", db.display());
                 }
                 println!("  elapsed:           {:.1}s", report.elapsed_secs);
                 // Retain the legacy four-CSV interface for live match exports.
-                if graph_segment.is_none() && !greedy_path_selected && !cfg.is_enroll_mode() {
+                if graph_segment.is_none() && !greedy_path_selected {
                     export_memory(&cfg, out_dir);
                 }
                 return;
@@ -171,9 +171,64 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         eprintln!("Export failed: {e}");
         process::exit(1);
     });
-    if !cfg.is_enroll_mode() {
-        export_memory(&cfg, out_dir);
+    export_memory(&cfg, out_dir);
+}
+
+fn load_enroll_build_input(
+    cfg: &EnrollJobConfig,
+) -> Result<crate::output::build::BuildInput, Box<dyn std::error::Error>> {
+    let a_records = if cfg.dataset.path.is_empty() {
+        HashMap::new()
+    } else {
+        crate::data::load_dataset(
+            Path::new(&cfg.dataset.path),
+            &cfg.dataset.id_field,
+            &cfg.required_fields,
+            cfg.dataset.format.as_deref(),
+        )?
+        .0
+    };
+    Ok(crate::output::build::BuildInput {
+        a_records,
+        ..Default::default()
+    })
+}
+
+fn export_enroll(cfg: &EnrollJobConfig, out_dir: &Path) {
+    let Some(log_path) = cfg.live.match_log_path.as_deref() else {
+        eprintln!("Error: enroll export requires live.match_log_path");
+        process::exit(1);
+    };
+    let input = load_enroll_build_input(cfg).unwrap_or_else(|e| {
+        eprintln!("Failed to load export snapshot: {e}");
+        process::exit(1);
+    });
+    let manifest = crate::output::OutputManifest::from_enroll_job(cfg);
+    let scoring = crate::output::manifest::enroll_scoring_log_path(cfg);
+    let report = crate::output::build::build_outputs_with_input(
+        Path::new(log_path),
+        scoring.as_deref(),
+        Some(out_dir),
+        cfg.output.parquet_dir_path.as_deref().map(Path::new),
+        cfg.output.db_path.as_deref().map(Path::new),
+        &manifest,
+        input,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("Export failed: {e}");
+        process::exit(1);
+    });
+    println!("Export complete (build pipeline):");
+    println!(
+        "  relationships.csv: {} matches + {} review",
+        report.match_count, report.review_count
+    );
+    println!("  Enrollment edges: {}", report.enroll_edge_count);
+    println!("  unmatched.csv:     {} records", report.no_match_count);
+    if let Some(db) = &cfg.output.db_path {
+        println!("  database:          {db}");
     }
+    println!("  elapsed:           {:.1}s", report.elapsed_secs);
 }
 
 fn create_export_dir(out_dir: &Path) {
@@ -198,30 +253,22 @@ fn is_greedy_batch_log_path(path: &Path) -> bool {
 fn load_build_input(
     cfg: &Config,
 ) -> Result<crate::output::build::BuildInput, Box<dyn std::error::Error>> {
-    let a_records = if cfg.is_enroll_mode() && cfg.datasets.a.path.is_empty() {
-        HashMap::new()
-    } else {
-        crate::data::load_dataset(
-            Path::new(&cfg.datasets.a.path),
-            &cfg.datasets.a.id_field,
-            &cfg.required_fields_a,
-            cfg.datasets.a.format.as_deref(),
-        )?
-        .0
-    };
-    let b_records = if cfg.is_enroll_mode() {
-        HashMap::new()
-    } else {
-        crate::data::load_dataset(
-            Path::new(&cfg.datasets.b.path),
-            &cfg.datasets.b.id_field,
-            &cfg.required_fields_b,
-            cfg.datasets.b.format.as_deref(),
-        )?
-        .0
-    };
+    let a_records = crate::data::load_dataset(
+        Path::new(&cfg.datasets.a.path),
+        &cfg.datasets.a.id_field,
+        &cfg.required_fields_a,
+        cfg.datasets.a.format.as_deref(),
+    )?
+    .0;
+    let b_records = crate::data::load_dataset(
+        Path::new(&cfg.datasets.b.path),
+        &cfg.datasets.b.id_field,
+        &cfg.required_fields_b,
+        cfg.datasets.b.format.as_deref(),
+    )?
+    .0;
     let crossmap_path = Path::new(cfg.cross_map.path.as_deref().unwrap_or("crossmap.csv"));
-    let snapshot_pairs = if !cfg.is_enroll_mode() && crossmap_path.exists() {
+    let snapshot_pairs = if crossmap_path.exists() {
         crate::crossmap::MemoryCrossMap::load(
             crossmap_path,
             &cfg.cross_map.a_id_field,
@@ -279,14 +326,12 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
             .filter_map(|r| r.ok())
             .collect()
     };
-    if !cfg.is_enroll_mode() {
-        write_results_or_exit(
-            &out_dir.join("results.csv"),
-            &pairs,
-            &cfg.cross_map.a_id_field,
-            &cfg.cross_map.b_id_field,
-        );
-    }
+    write_results_or_exit(
+        &out_dir.join("results.csv"),
+        &pairs,
+        &cfg.cross_map.a_id_field,
+        &cfg.cross_map.b_id_field,
+    );
 
     // review.csv — pending review-band matches.
     let reviews: Vec<ReviewRow> = {
@@ -319,29 +364,23 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
         .filter_map(|r| r.ok())
         .collect()
     };
-    if !cfg.is_enroll_mode() {
-        write_review_or_exit(&out_dir.join("review.csv"), &reviews);
-    }
+    write_review_or_exit(&out_dir.join("review.csv"), &reviews);
 
     // unmatched_a.csv — A-side records with no crossmap pair.
     let unmatched_a = query_unmatched(&conn, "a", &cfg.required_fields_a);
-    if !cfg.is_enroll_mode() {
-        write_unmatched_or_exit(
-            &out_dir.join("unmatched_a.csv"),
-            &unmatched_a,
-            &cfg.datasets.a.id_field,
-        );
-    }
+    write_unmatched_or_exit(
+        &out_dir.join("unmatched_a.csv"),
+        &unmatched_a,
+        &cfg.datasets.a.id_field,
+    );
 
     // unmatched_b.csv — B-side records with no crossmap pair.
     let unmatched_b = query_unmatched(&conn, "b", &cfg.required_fields_b);
-    if !cfg.is_enroll_mode() {
-        write_unmatched_or_exit(
-            &out_dir.join("unmatched_b.csv"),
-            &unmatched_b,
-            &cfg.datasets.b.id_field,
-        );
-    }
+    write_unmatched_or_exit(
+        &out_dir.join("unmatched_b.csv"),
+        &unmatched_b,
+        &cfg.datasets.b.id_field,
+    );
 
     // Read records from the same transaction as membership/reviews. Never replay
     // a potentially stale WAL over SQLite's authoritative committed state.
@@ -388,21 +427,14 @@ fn export_sqlite(cfg: &Config, db_path: &Path, out_dir: &Path) {
         process::exit(1);
     });
 
-    if cfg.is_enroll_mode() {
-        println!(
-            "Export complete (SQLite enrollment snapshot): {}",
-            out_dir.display()
-        );
-    } else {
-        print_summary(
-            "SQLite",
-            out_dir,
-            &pairs,
-            &reviews,
-            &unmatched_a,
-            &unmatched_b,
-        );
-    }
+    print_summary(
+        "SQLite",
+        out_dir,
+        &pairs,
+        &reviews,
+        &unmatched_a,
+        &unmatched_b,
+    );
 }
 
 /// Query unmatched records for the given side ("a" or "b").
@@ -1038,8 +1070,8 @@ live:
             ),
         )
         .expect("config");
-        let cfg = crate::config::load_enroll_config(&config).expect("enroll config");
-        let input = load_build_input(&cfg).expect("seedless input");
+        let cfg = crate::config::load_enroll_job_config(&config).expect("enroll config");
+        let input = load_enroll_build_input(&cfg).expect("seedless input");
         assert!(input.a_records.is_empty(), "seedless A must start empty");
         let out = dir.path().join("export");
         cmd_export(&config, &out);
@@ -1051,6 +1083,41 @@ live:
         assert!(
             !out.join("results.csv").exists(),
             "enroll is not live matching"
+        );
+    }
+
+    #[test]
+    fn native_enroll_export_replays_seed_removal_and_keeps_isolated_seed() {
+        let dir = tempdir().expect("fixture");
+        let seed = dir.path().join("seed.csv");
+        std::fs::write(&seed, "key,name\nkept,Isolated\nremoved,Deleted\n").expect("seed");
+        let wal = dir.path().join("enroll.ndjson");
+        let log = MatchLog::open(&wal).expect("WAL");
+        log.append(&MatchLogEvent::RemoveRecord {
+            side: Side::A,
+            id: "removed".into(),
+        })
+        .expect("remove");
+        log.flush().expect("flush");
+        let config = dir.path().join("enroll.yaml");
+        std::fs::write(&config, format!(
+            "job: {{name: enroll}}\ndataset: {{path: '{}', id_field: key}}\nvector_backend: flat\nembeddings: {{model: ignored, cache_dir: cache}}\nmatch_fields: [{{field: name, method: exact, weight: 1.0}}]\nthresholds: {{auto_match: 0.9, review_floor: 0.5}}\nlive: {{match_log_path: '{}'}}\n",
+            seed.display(), wal.display()
+        )).expect("config");
+        let out = dir.path().join("out");
+        cmd_export(&config, &out);
+        let unmatched = std::fs::read_to_string(out.join("unmatched.csv")).expect("unmatched");
+        assert!(
+            unmatched.contains("kept") && unmatched.contains("Isolated"),
+            "isolated seed retained: {unmatched}"
+        );
+        assert!(
+            !unmatched.contains("removed"),
+            "historical removal respected: {unmatched}"
+        );
+        assert!(
+            !out.join("results.csv").exists(),
+            "no paired export artifacts"
         );
     }
 

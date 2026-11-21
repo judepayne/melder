@@ -26,19 +26,28 @@ pub(crate) fn build_encoder(
     config: &Config,
     force_cpu: bool,
 ) -> Result<Arc<dyn Encoder>, MelderError> {
-    if let Some(cmd) = config
-        .embeddings
-        .remote_encoder_cmd
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-    {
+    build_encoder_resources(
+        &config.embeddings.model,
+        config.embeddings.remote_encoder_cmd.as_deref(),
+        &config.performance,
+        force_cpu,
+    )
+}
+
+/// Construct an encoder independently of a paired job configuration.
+pub(crate) fn build_encoder_resources(
+    model: &str,
+    remote_encoder_cmd: Option<&str>,
+    performance: &crate::config::schema::PerformanceConfig,
+    force_cpu: bool,
+) -> Result<Arc<dyn Encoder>, MelderError> {
+    if let Some(cmd) = remote_encoder_cmd.filter(|s| !s.trim().is_empty()) {
         // Remote path: validation guarantees pool_size is set.
-        let pool_size = config
-            .performance
+        let pool_size = performance
             .encoder_pool_size
             .expect("validated: encoder_pool_size required with remote_encoder_cmd");
-        let batch_size = config.performance.encoder_batch_size.unwrap_or(256);
-        let timeout_ms = config.performance.encoder_call_timeout_ms.unwrap_or(60_000);
+        let batch_size = performance.encoder_batch_size.unwrap_or(256);
+        let timeout_ms = performance.encoder_call_timeout_ms.unwrap_or(60_000);
         eprintln!(
             "Initializing remote encoder (cmd={:?}, pool_size={}, timeout_ms={})...",
             cmd, pool_size, timeout_ms
@@ -57,8 +66,8 @@ pub(crate) fn build_encoder(
         );
         Ok(Arc::new(enc))
     } else {
-        let gpu = !force_cpu && config.performance.encoder_device.as_deref() == Some("gpu");
-        let pool_size = config.performance.encoder_pool_size.unwrap_or_else(|| {
+        let gpu = !force_cpu && performance.encoder_device.as_deref() == Some("gpu");
+        let pool_size = performance.encoder_pool_size.unwrap_or_else(|| {
             if gpu {
                 let cores = std::thread::available_parallelism()
                     .map(|n| n.get())
@@ -76,16 +85,16 @@ pub(crate) fn build_encoder(
         });
         eprintln!(
             "Initializing encoder pool (model={}, pool_size={}, device={})...",
-            config.embeddings.model,
+            model,
             pool_size,
             if gpu { "gpu" } else { "cpu" }
         );
         let pool = EncoderPool::new(EncoderOptions {
-            model_name: config.embeddings.model.clone(),
+            model_name: model.to_owned(),
             pool_size,
-            quantized: config.performance.quantized,
+            quantized: performance.quantized,
             gpu,
-            encode_batch_size: config.performance.encoder_batch_size,
+            encode_batch_size: performance.encoder_batch_size,
         })
         .map_err(MelderError::Encoder)?;
         Ok(Arc::new(pool))

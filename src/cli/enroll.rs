@@ -14,7 +14,7 @@ pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
     }
 
     // 1. Load enroll config
-    let cfg = match crate::config::load_enroll_config(config_path) {
+    let cfg = match crate::config::load_enroll_job_config(config_path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Config error: {}", e);
@@ -22,8 +22,8 @@ pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
         }
     };
 
-    // 2. Load live match state (enroll path)
-    let mut state = match crate::state::LiveMatchState::load(cfg) {
+    // 2. Load the enrollment pool.
+    let mut state = match crate::state::enroll::EnrollState::load_job(cfg) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to load enroll state: {}", e);
@@ -56,7 +56,7 @@ pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
             let sl_dir = state.config.output.csv_dir_path.as_deref().unwrap_or(".");
             let sl_base =
                 std::path::Path::new(sl_dir).join(format!("{}.scoring_log", state.config.job.name));
-            let manifest = crate::output::OutputManifest::from_config(&state.config);
+            let manifest = crate::output::OutputManifest::from_enroll_job(&state.config);
             let use_zstd = state.config.scoring_log.compression != "none";
             match crate::output::scoring_log::open_scoring_log(&sl_base, use_zstd, &manifest) {
                 Ok((sender, writer)) => (Some(sender), Some(writer)),
@@ -69,20 +69,22 @@ pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
             (None, None)
         };
 
-        let session = std::sync::Arc::new(crate::session::Session::new(
-            state.clone(),
-            hook_tx,
-            scoring_log_sender,
-        ));
+        let session = std::sync::Arc::new(
+            crate::session::enroll::EnrollSession::new(state.clone(), scoring_log_sender)
+                .with_hooks(hook_tx),
+        );
 
         // Start background WAL flusher
         let wal_state = state.clone();
-        tokio::spawn(async move {
+        let wal_flusher = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
             loop {
                 interval.tick().await;
-                if let Err(e) = wal_state.wal.flush() {
-                    warn!(error = %e, "wal flush failed");
+                let state = wal_state.clone();
+                match tokio::task::spawn_blocking(move || state.flush()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!(error = %e, "wal flush failed"),
+                    Err(e) => warn!(error = %e, "wal flush worker failed"),
                 }
             }
         });
@@ -91,7 +93,7 @@ pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
 
         // Start HTTP server
         info!(port, "starting enroll server");
-        if let Err(e) = crate::api::server::start_server(session.clone(), port, bind).await {
+        if let Err(e) = crate::api::server::start_enroll_server(session.clone(), port, bind).await {
             eprintln!("Server error: {}", e);
             process::exit(1);
         }
@@ -99,35 +101,38 @@ pub fn cmd_enroll(config_path: &Path, port: u16, bind: &str) {
         // Shutdown sequence
         info!("running shutdown sequence");
 
-        // Flush WAL
-        if let Err(e) = state.wal.flush() {
-            warn!(error = %e, "wal flush failed");
+        wal_flusher.abort();
+        if let Err(e) = state.shutdown() {
+            warn!(error = %e, "enroll shutdown flush failed");
         }
-
-        // Compact WAL
-        let id_field = &state.config.datasets.a.id_field;
-        if let Err(e) = state.wal.compact(id_field, id_field) {
+        if let Err(e) = state.compact() {
             warn!(error = %e, "wal compact failed");
         }
 
-        // Flush exclusions
-        if let Err(e) = state.exclusions.flush() {
-            warn!(error = %e, "exclusions flush failed");
-        }
-
-        // Save combined embedding index caches
-        if let Err(e) = state.save_combined_index_caches() {
-            warn!(error = %e, "combined index cache save failed");
-        }
-
-        let sess = session.as_ref();
-        let uptime_s = format!("{:.0}", sess.start_time.elapsed().as_secs_f64());
-        let enrollments = sess.upsert_count.load(std::sync::atomic::Ordering::Relaxed);
-        info!(uptime_s, enrollments, "shutdown complete");
+        info!("shutdown complete");
 
         // Drop session (and its ScoringLogSender) before the writer, so the
         // channel closes and the writer thread can drain and finalize.
         drop(session);
         // _scoring_log_writer drops here, joining the writer thread.
     });
+}
+
+#[cfg(all(test, feature = "usearch"))]
+mod tests {
+    #[test]
+    fn enroll_benchmark_configs_load_as_single_pool_jobs() {
+        for file in [
+            "benchmarks/enroll/10kx10k_enroll3k_scoring_log/config.yaml",
+            "benchmarks/enroll/10kx10k_enroll3k_usearch/warm/config.yaml",
+            "benchmarks/accuracy/enroll_5k_inject1k/config.yaml",
+        ] {
+            let job = crate::config::load_enroll_job_config(std::path::Path::new(file))
+                .unwrap_or_else(|error| panic!("invalid enrollment benchmark {file}: {error}"));
+            assert!(
+                !job.dataset.path.is_empty(),
+                "benchmark {file} needs its seed pool"
+            );
+        }
+    }
 }

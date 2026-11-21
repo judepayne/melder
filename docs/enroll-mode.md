@@ -4,8 +4,8 @@
 
 Enroll mode runs a single-pool entity resolution server. Instead of
 matching records between two distinct datasets (A vs B), records are
-**enrolled** into one growing pool and scored against everything already
-there. The result is a list of scored edges — ready for external graph
+**enrolled** into one growing pool. Melder retrieves candidates from that
+pool and scores them; it does not compare every possible pair. The result is a list of scored edges — ready for external graph
 clustering or deduplication.
 
 ## When to use enroll mode
@@ -33,9 +33,14 @@ meld enroll --config enroll_config.yaml --port 8090
 
 ## Configuration
 
-Enroll mode uses a simplified config format — single field names
-instead of `field_a`/`field_b` pairs, a single `dataset:` instead of
-`datasets.a`/`datasets.b`, and no `cross_map` section.
+Configure one pool. A `field` in `match_fields` names the field to read from both the
+incoming record and the candidate record (for example, `legal_name` in both). Use `dataset:` to seed the pool, or omit it to start empty; the default
+ID field for an empty pool is `id`. Paired matching configs are not enrollment configs:
+use `dataset`, `field`, and `embeddings.cache_dir` rather than `datasets`,
+`field_a`/`field_b`, or separate cache directories. Omit `cross_map`. A/B labels in
+exported files identify the two records in an edge, not two configured pools.
+For persistence, set `live.match_log_path`. Other live matching options, including
+`skip_initial_match`, do not apply: loading seed records never creates enrollment edges.
 
 ```yaml
 job:
@@ -49,7 +54,7 @@ dataset:
   id_field: entity_id
 
 embeddings:
-  model: melder/arctic-embed-xs-entity-resolution
+  model: themelder/arctic-embed-xs-entity-resolution
   cache_dir: cache/embeddings
 
 blocking:
@@ -87,9 +92,9 @@ top_n: 20
 
 ## Endpoints
 
-All endpoints are under `/api/v1/`. Only enroll-specific endpoints are
-mounted — the A/B, crossmap, and review endpoints from live mode are
-not available.
+Prefix the paths below with `/api/v1`, except for `/admin/flush` and
+`/admin/shutdown`, which are mounted at the root. The A/B, crossmap, and
+review endpoints from live mode are not available.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -228,10 +233,11 @@ parallel tokenizer workers. This avoids nested tokenizer work blocking
 on encoder sessions held by unfinished encoding jobs. No tokenizer
 parallelism override is required.
 
-Edges only come from subsequent `/enroll` or `/enroll-batch` calls. If
-you need all-pairs edges within the initial dataset, use `meld run`
-with the same dataset on both sides, or call `/enroll-batch` after
-startup.
+To discover edges within a dataset, start with an empty pool and submit the
+records through `/enroll-batch` in a fixed order. Each record can return edges
+to earlier records. Retrieval, `review_floor`, and `top_n` limit the result;
+this is not an exhaustive all-pairs comparison. Running `meld run` with the
+same input twice is not equivalent: batch assignment selects 1:1 pairs.
 
 ## No crossmap
 
@@ -264,7 +270,7 @@ waiting for the asynchronous scoring-log writer. Like other WAL events,
 appends are buffered, not individually fsynced; admin flush/shutdown flush
 the log before building.
 
-**Scoring log defaults to on.** With scoring logging enabled, the enrollment
+**The scoring log is optional.** With `scoring_log.enabled: true`, the enrollment
 outcome also persists per-field detail for output explainability. With
 `scoring_log.enabled: false`, records, scores, ranks, and all returned
 qualifying edges are still persisted and exported; per-field output detail
@@ -273,6 +279,8 @@ scoring log may contain other retrieved candidates, but those do not become
 enrollment relationships merely because they were scored.
 
 ### Single-pool output semantics
+
+The running service stores records in one memory collection. The WAL records which edges were returned. An admin flush takes current records and their evidence together; offline export starts with the configured seeds (if any) and replays the history. Neither operation reconstructs links by scoring the pool again.
 
 - `relationships` contains every retained returned edge, including rank 1,
   with `relationship_type: enroll_edge`. This means only that this query
@@ -304,7 +312,9 @@ enrollment relationships merely because they were scored.
   DB via the build pipeline.
 - `POST /admin/flush` — triggers a build without shutting down.
   Returns `200 OK` after writing the files, with `enroll_edges` and `unmatched` counts.
-- `POST /admin/shutdown` — build the configured outputs, then shut down.
+- `POST /admin/shutdown` — attempt to build any configured outputs, then shut down.
+  `202 Accepted` acknowledges shutdown, not a successful export. Use `/admin/flush`
+  first if you need to verify the outputs were written.
 
 Configure any combination of `output.csv_dir_path`,
 `output.parquet_dir_path`, and `output.db_path` in the config to
@@ -317,13 +327,13 @@ The pool persists across restarts using the same match log mechanism as
 live mode. `live.db_path` is **not supported** in enroll mode and is rejected
 rather than silently ignored; use `live.match_log_path` for persistence.
 `output.db_path` is supported as an output artifact, not as the live store. On shutdown, the embedding index cache is saved to disk.
-On restart, the match log is replayed and the cache is reloaded.
+On restart, the match log is replayed. Enrollment checks the cache against the single-pool blocking settings. Caches created with the old paired settings rebuild on first use, so warm a benchmark cache with the current binary before timing it.
 
 ## Hooks
 
-Hooks work in enroll mode. Since there is no crossmap or classification,
-only `on_nomatch` fires — when an enrolled record has zero edges above
-`review_floor`. See [Hooks](hooks.md) for configuration and examples.
+An explicit pair exclusion sends a best-effort `on_exclude` event. An
+enrollment that finds no edges returns an empty `edges` list; it does not
+emit `on_nomatch`. See [Hooks](hooks.md) for configuration and examples.
 
 ## Upsert semantics
 

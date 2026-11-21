@@ -97,11 +97,11 @@ fn side_str(side: Side) -> &'static str {
     }
 }
 
-fn error_response(status: StatusCode, msg: &str) -> impl IntoResponse {
+pub(super) fn error_response(status: StatusCode, msg: &str) -> impl IntoResponse {
     (status, Json(serde_json::json!({ "error": msg })))
 }
 
-fn json_ok(value: impl serde::Serialize) -> axum::response::Response {
+pub(super) fn json_ok(value: impl serde::Serialize) -> axum::response::Response {
     (StatusCode::OK, Json(value)).into_response()
 }
 
@@ -453,79 +453,6 @@ pub async fn unexclude(
 }
 
 // ---------------------------------------------------------------------------
-// Enroll-mode handlers
-// ---------------------------------------------------------------------------
-
-/// POST /api/v1/enroll
-pub async fn enroll(
-    State(session): State<AppState>,
-    Json(body): Json<AddRequest>,
-) -> axum::response::Response {
-    let t0 = std::time::Instant::now();
-    match tokio::task::spawn_blocking(move || session.enroll(body.record)).await {
-        Ok(Ok(resp)) => {
-            info!(id = %resp.id, edges = resp.edges.len(), latency_ms = %t0.elapsed().as_millis(), "enroll");
-            json_ok(resp)
-        }
-        Ok(Err(e)) => {
-            warn!(error = %e, "enroll failed");
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
-            error_response(status, &e.to_string()).into_response()
-        }
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
-    }
-}
-
-/// POST /api/v1/enroll-batch
-pub async fn enroll_batch(
-    State(session): State<AppState>,
-    Json(body): Json<BatchRecordsRequest>,
-) -> axum::response::Response {
-    let count = body.records.len();
-    let t0 = std::time::Instant::now();
-    match tokio::task::spawn_blocking(move || session.enroll_batch(body.records)).await {
-        Ok(Ok(resp)) => {
-            info!(count, latency_ms = %t0.elapsed().as_millis(), "enroll-batch");
-            json_ok(resp)
-        }
-        Ok(Err(e)) => {
-            warn!(error = %e, "enroll-batch failed");
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::BAD_REQUEST);
-            error_response(status, &e.to_string()).into_response()
-        }
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
-    }
-}
-
-/// POST /api/v1/enroll/remove
-pub async fn enroll_remove(
-    State(session): State<AppState>,
-    Json(body): Json<RemoveRequest>,
-) -> axum::response::Response {
-    remove_handler(Side::A, session, body.id).await
-}
-
-/// GET /api/v1/enroll/query?id=X
-pub async fn enroll_query(
-    State(session): State<AppState>,
-    Query(p): Query<QueryParams>,
-) -> axum::response::Response {
-    query_handler(Side::A, session, p.id).await
-}
-
-/// GET /api/v1/enroll/count
-pub async fn enroll_count(State(session): State<AppState>) -> axum::response::Response {
-    match tokio::task::spawn_blocking(
-        move || serde_json::json!({ "count": session.state.store.len(Side::A).unwrap_or(0) }),
-    )
-    .await
-    {
-        Ok(resp) => json_ok(resp),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response(),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Utility handlers
 // ---------------------------------------------------------------------------
 
@@ -628,7 +555,9 @@ pub async fn review_list(
 // ---------------------------------------------------------------------------
 
 /// Derive the scoring log file path from config (mirrors open_scoring_log logic).
-fn scoring_log_path_from_config(config: &crate::config::Config) -> Option<std::path::PathBuf> {
+pub(super) fn scoring_log_path_from_config(
+    config: &crate::config::Config,
+) -> Option<std::path::PathBuf> {
     if !config.scoring_log.enabled {
         return None;
     }
@@ -755,7 +684,16 @@ fn build_admin_outputs(
             ),
         }
     };
-    crate::output::build::build_outputs_with_input(wal, scoring, csv, parquet, db, manifest, input)
+    crate::output::build::build_wal_outputs(
+        wal,
+        scoring,
+        csv,
+        parquet,
+        db,
+        manifest,
+        input,
+        crate::output::build::EnrollRecordAuthority::Snapshot,
+    )
 }
 
 /// POST /admin/shutdown — graceful shutdown with final build.

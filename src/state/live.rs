@@ -131,7 +131,6 @@ impl LiveMatchState {
     /// - Warm start (DB file exists): open existing DB. Records, blocking,
     ///   unmatched, common_id, and crossmap are already populated. Skip CSV
     ///   loading and WAL replay.
-    ///
     pub fn load(config: Config) -> Result<Arc<Self>, MelderError> {
         let start = Instant::now();
 
@@ -157,11 +156,6 @@ impl LiveMatchState {
             elapsed_s = format!("{:.1}", start.elapsed().as_secs_f64()),
             "encoder ready"
         );
-
-        // Determine startup mode
-        if config.is_enroll_mode() {
-            return Self::load_enroll(config, start, encoder_pool);
-        }
 
         let sqlite_pool_config = Some(crate::store::sqlite::SqlitePoolConfig {
             writer_cache_kb: config.live.sqlite_cache_mb.unwrap_or(64) * 1024,
@@ -472,106 +466,6 @@ impl LiveMatchState {
             state.review_queue.insert(key, entry);
         }
         Ok(state)
-    }
-
-    /// Enroll-mode startup: single-pool, no B-side, no crossmap.
-    fn load_enroll(
-        config: Config,
-        start: Instant,
-        encoder_pool: Arc<dyn Encoder>,
-    ) -> Result<Arc<Self>, MelderError> {
-        // Load A-side dataset if configured (optional — pool can start empty)
-        let (records_a_map, ids_a) = if !config.datasets.a.path.is_empty() {
-            let a_start = Instant::now();
-            let (map, ids) = data::load_dataset(
-                Path::new(&config.datasets.a.path),
-                &config.datasets.a.id_field,
-                &config.required_fields_a,
-                config.datasets.a.format.as_deref(),
-            )
-            .map_err(MelderError::Data)?;
-            info!(
-                records = map.len(),
-                elapsed_s = format!("{:.1}", a_start.elapsed().as_secs_f64()),
-                "loaded pool dataset"
-            );
-            (map, ids)
-        } else {
-            info!("no initial dataset, starting with empty pool");
-            (std::collections::HashMap::new(), Vec::new())
-        };
-
-        // Build A-side embedding index
-        let combined_index_a = vectordb::build_or_load_combined_index(
-            &config.vector_backend,
-            Some(&config.embeddings.a_cache_dir),
-            &records_a_map,
-            &ids_a,
-            &config,
-            true,
-            encoder_pool.as_ref(),
-            true,
-            if config.datasets.a.path.is_empty() {
-                None
-            } else {
-                Some(Path::new(&config.datasets.a.path))
-            },
-        )?;
-
-        // Build MemoryStore with A records only, B is empty
-        let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::from_records(
-            records_a_map,
-            std::collections::HashMap::new(),
-            &config.blocking,
-        ));
-
-        // Empty crossmap (not used in enroll mode)
-        let crossmap: Box<dyn CrossMapOps> = Box::new(MemoryCrossMap::new());
-
-        // Load exclusions
-        let exclusions = Self::load_exclusions(&config);
-
-        // Mark all A records as unmatched (no crossmap)
-        for id in store.ids(Side::A).unwrap_or_default() {
-            let _ = store.mark_unmatched(Side::A, &id);
-        }
-
-        // WAL replay (enroll events are stored as A-side upserts)
-        let wal_path = config
-            .live
-            .match_log_path
-            .as_deref()
-            .unwrap_or("bench/upsert.wal");
-        let wal_events = MatchLog::replay(Path::new(wal_path))
-            .map_err(|e| MelderError::Other(anyhow::anyhow!("WAL replay failed: {}", e)))?;
-
-        if !wal_events.is_empty() {
-            Self::replay_wal(
-                &wal_events,
-                &config,
-                &store,
-                crossmap.as_ref(),
-                &exclusions,
-                &encoder_pool,
-                combined_index_a.as_deref(),
-                None, // No B-side index
-            )?;
-        }
-
-        // Build common_id_index if configured
-        Self::build_common_id_index(&store, &config);
-
-        Self::finish(
-            config,
-            start,
-            encoder_pool,
-            store,
-            crossmap,
-            exclusions,
-            combined_index_a,
-            None, // No B-side index
-            "enroll ",
-        )
     }
 
     /// Replay WAL events into the store, crossmap, exclusions, and vector indices.
@@ -1080,24 +974,22 @@ impl LiveMatchState {
 
     /// Load exclusions from CSV if configured. Returns an empty set if not configured
     /// or the file is missing.
-    fn load_exclusions(config: &Config) -> crate::matching::exclusions::Exclusions {
+    pub(super) fn load_exclusions(config: &Config) -> crate::matching::exclusions::Exclusions {
+        Self::load_exclusions_resources(&config.exclusions)
+    }
+
+    pub(super) fn load_exclusions_resources(
+        config: &crate::config::schema::ExclusionsConfig,
+    ) -> crate::matching::exclusions::Exclusions {
         use crate::matching::exclusions::Exclusions;
 
-        if let Some(ref p) = config.exclusions.path
+        if let Some(ref p) = config.path
             && !p.is_empty()
         {
-            match Exclusions::load(
-                Path::new(p),
-                &config.exclusions.a_id_field,
-                &config.exclusions.b_id_field,
-            ) {
+            match Exclusions::load(Path::new(p), &config.a_id_field, &config.b_id_field) {
                 Ok(ex) => {
                     if !ex.is_empty() {
-                        ex.set_flush_path(
-                            Path::new(p),
-                            &config.exclusions.a_id_field,
-                            &config.exclusions.b_id_field,
-                        );
+                        ex.set_flush_path(Path::new(p), &config.a_id_field, &config.b_id_field);
                     }
                     return ex;
                 }
@@ -1221,16 +1113,9 @@ impl LiveMatchState {
         self.side(side.opposite())
     }
 
-    /// Get the pool-side state for scoring.
-    ///
-    /// In match mode, the pool is the opposite side. In enroll mode, the
-    /// pool is always Side::A (the single pool).
+    /// Get the opposite pool-side state for scoring.
     pub fn pool_side(&self, query_side: Side) -> &LiveSideState {
-        if self.config.is_enroll_mode() {
-            &self.a
-        } else {
-            self.opposite_side(query_side)
-        }
+        self.opposite_side(query_side)
     }
 
     /// Mark the crossmap as dirty (needs flushing to disk).

@@ -1,12 +1,10 @@
 //! Negative deferred-acceptance policy regressions using ordinary production candidates.
 
-use crate::bm25::simple::SimpleBm25;
-use crate::config::{Bm25FieldPair, MatchMethod};
 use crate::models::{Classification, MatchResult};
 
 use super::{
-    Arc, Session, Side, TestResult, assert_metadata, assert_partner, make_fixture, make_record,
-    read_deltas,
+    Arc, Session, Side, TestResult, assert_metadata, assert_partner, make_bm25_fixture,
+    make_fixture, make_record, read_deltas,
 };
 
 // Re-score stored records through the ordinary live pipeline, without injecting
@@ -49,21 +47,8 @@ fn make_scores(
 fn one_direction_auto_cannot_claim_a_reciprocally_ineligible_receiver() -> TestResult {
     for sqlite in [false, true] {
         for side in [Side::A, Side::B] {
-            let mut fixture = make_fixture(sqlite, Some(4))?;
-            let session = Arc::get_mut(&mut fixture.session).expect("unique session");
-            session.emb_specs.clear();
-            let state = Arc::get_mut(&mut session.state).expect("unique live state");
-            state.config.match_fields[0].method = MatchMethod::Bm25;
-            state.config.thresholds.auto_match = 0.9;
-            let fields = [Bm25FieldPair {
-                field_a: "name".into(),
-                field_b: "name".into(),
-            }];
-            state.a.combined_index = None;
-            state.b.combined_index = None;
-            state.a.bm25_index = Some(SimpleBm25::new(&fields, Side::A));
-            state.b.bm25_index = Some(SimpleBm25::new(&fields, Side::B));
-
+            let fixture = make_bm25_fixture(sqlite, 0.9)?;
+            let session = &fixture.session;
             session.upsert_record(
                 side.opposite(),
                 make_record(side.opposite(), "receiver", "alpha"),

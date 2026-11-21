@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::crossmap::CrossMapOps;
 use crate::models::Side;
+use crate::store::{RecordCollection, ScopedCollection};
 
 /// Run a batch matching job.
 pub fn cmd_run(config_path: &Path, dry_run: bool, verbose: bool, limit: Option<usize>) {
@@ -76,7 +77,9 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         };
         print_dry_run(
             &state.config,
-            state.store.len(Side::A).unwrap_or(0),
+            ScopedCollection::new(state.store.as_ref(), Side::A)
+                .len()
+                .unwrap_or(0),
             b_count,
             &crossmap,
             limit,
@@ -124,8 +127,9 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     };
 
     // Insert B records into the store.
+    let queries = ScopedCollection::new(state.store.as_ref(), Side::B);
     for (id, rec) in &b_records_map {
-        if let Err(e) = state.store.insert(Side::B, id, rec)
+        if let Err(e) = queries.insert(id, rec)
             && state.config.batch.assignment.graph_mode().is_some()
         {
             eprintln!("Failed to store B record {id}: {e}");

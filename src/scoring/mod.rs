@@ -1,3 +1,4 @@
+//! Shared field-bound scoring for paired and single-collection searches.
 pub mod embedding;
 pub mod exact;
 
@@ -36,12 +37,55 @@ pub fn score_pair(
     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
     pool_side: Side,
 ) -> ScoreResult {
-    let mut field_scores = Vec::with_capacity(match_fields.len());
+    score_bound_pair(
+        query_record,
+        candidate_record,
+        match_fields.iter().map(|mf| {
+            let (candidate, query) = match pool_side {
+                Side::A => (&mf.field_a, &mf.field_b),
+                Side::B => (&mf.field_b, &mf.field_a),
+            };
+            FieldBinding {
+                query,
+                candidate,
+                field_a: &mf.field_a,
+                field_b: &mf.field_b,
+                method: mf.method,
+                scorer: mf.scorer,
+                weight: mf.weight,
+            }
+        }),
+        precomputed_emb_scores,
+        precomputed_bm25_score,
+        synonym_dictionary,
+    )
+}
+
+/// Borrowed names and scoring parameters compiled independently of config shape.
+pub(crate) struct FieldBinding<'a> {
+    pub query: &'a str,
+    pub candidate: &'a str,
+    pub field_a: &'a str,
+    pub field_b: &'a str,
+    pub method: MatchMethod,
+    pub scorer: Option<FuzzyScorer>,
+    pub weight: f64,
+}
+
+pub(crate) fn score_bound_pair<'a>(
+    query_record: &Record,
+    candidate_record: &Record,
+    fields: impl ExactSizeIterator<Item = FieldBinding<'a>>,
+    precomputed_emb_scores: Option<&std::collections::HashMap<(&str, &str), f64>>,
+    precomputed_bm25_score: Option<f64>,
+    synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
+) -> ScoreResult {
+    let mut field_scores = Vec::with_capacity(fields.len());
     let mut base_weighted_sum = 0.0_f64; // non-synonym methods
     let mut synonym_bonus = 0.0_f64; // additive synonym contribution
     let mut total_weight = 0.0_f64; // denominator (excludes synonym)
 
-    for mf in match_fields {
+    for mf in fields {
         let score = if mf.method == MatchMethod::Bm25 {
             // BM25 score is precomputed by the pipeline, like embedding scores.
             // No per-field record values — BM25 operates across all text fields.
@@ -49,10 +93,7 @@ pub fn score_pair(
         } else {
             // field_a always refers to the A-side column, field_b to the B-side.
             // Pick the correct field based on which side the candidate (pool) is on.
-            let (cand_field, query_field) = match pool_side {
-                Side::A => (&mf.field_a, &mf.field_b),
-                Side::B => (&mf.field_b, &mf.field_a),
-            };
+            let (cand_field, query_field) = (mf.candidate, mf.query);
             let a_val = candidate_record
                 .get(cand_field)
                 .map(|s| s.as_str())
@@ -71,7 +112,7 @@ pub fn score_pair(
                 MatchMethod::Embedding => {
                     // Tuple key avoids a format!() allocation per candidate.
                     precomputed_emb_scores
-                        .and_then(|m| m.get(&(mf.field_a.as_str(), mf.field_b.as_str())))
+                        .and_then(|m| m.get(&(mf.field_a, mf.field_b)))
                         .copied()
                         .unwrap_or(0.0)
                 }
@@ -89,12 +130,12 @@ pub fn score_pair(
             field_a: if mf.method == MatchMethod::Bm25 {
                 "bm25".to_string()
             } else {
-                mf.field_a.clone()
+                mf.field_a.to_owned()
             },
             field_b: if mf.method == MatchMethod::Bm25 {
                 "bm25".to_string()
             } else {
-                mf.field_b.clone()
+                mf.field_b.to_owned()
             },
             method: mf.method.as_str().to_string(),
             score,

@@ -357,7 +357,7 @@ output:
 
 Per-field explainability data. When enabled, records every scored query's full top_n candidate set with per-field breakdowns. Produces `candidates.csv` (and `candidates.parquet` when Parquet output is configured) and populates the `field_scores` table in the output SQLite database. Also enables the `near_misses`, `runner_ups`, and `relationship_detail` views in the SQLite output.
 
-Works in all three modes: `meld run` (batch), `meld serve` (live), and `meld enroll`. In enroll mode it is enabled by default. See [enroll outputs](enroll-mode.md) for the difference between an edge returned by enrollment and a confirmed one-to-one match.
+Works in all three modes: `meld run` (batch), `meld serve` (live), and `meld enroll`. Enable it explicitly with `scoring_log.enabled: true`. See [enroll outputs](enroll-mode.md) for the difference between an edge returned by enrollment and a confirmed one-to-one match.
 
 > [!NOTE]
 > The SQLite batch path (`batch.db_path`) does not produce scoring log output.

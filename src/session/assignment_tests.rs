@@ -78,11 +78,32 @@ fn make_fixture(sqlite: bool, cap: Option<usize>) -> Result<Fixture, Box<dyn Err
     Ok(Fixture { session, _dir: dir })
 }
 
+fn make_bm25_fixture(sqlite: bool, threshold: f64) -> Result<Fixture, Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let session = make_session_with_method(dir.path(), sqlite, Some(4), Some(threshold))?;
+    Ok(Fixture { session, _dir: dir })
+}
+
 fn make_session(
     root: &Path,
     sqlite: bool,
     cap: Option<usize>,
 ) -> Result<Arc<Session>, Box<dyn Error>> {
+    make_session_with_method(root, sqlite, cap, None)
+}
+
+fn make_session_with_method(
+    root: &Path,
+    sqlite: bool,
+    cap: Option<usize>,
+    bm25_threshold: Option<f64>,
+) -> Result<Arc<Session>, Box<dyn Error>> {
+    let method_fields = if bm25_threshold.is_some() {
+        "method: bm25\n    fields: [{ field_a: name, field_b: name }]"
+    } else {
+        "field_a: name\n    field_b: name\n    method: embedding"
+    };
+    let threshold = bm25_threshold.unwrap_or(0.6);
     let storage = if sqlite { "  db_path: live.db\n" } else { "" };
     let assignment = cap.map_or_else(String::new, |cap| {
         format!("  assignment:\n    strategy: deferred_acceptance\n    max_displacements: {cap}\n")
@@ -113,17 +134,16 @@ embeddings:
   a_cache_dir: cache/a
   b_cache_dir: cache/b
 match_fields:
-  - field_a: name
-    field_b: name
-    method: embedding
+  - {method_fields}
     weight: 1.0
 thresholds:
-  auto_match: 0.6
+  auto_match: {threshold}
   review_floor: 0.5
 output:
   csv_dir_path: output/
 vector_backend: flat
 top_n: 20
+bm25_candidates: 20
 live:
   skip_initial_match: true
   match_log_path: matches.ndjson
@@ -132,9 +152,13 @@ live:
     )?;
     let config = load_config(&path)?;
     let specs = crate::vectordb::embedding_field_specs(&config);
-    let make_side = || LiveSideState {
-        combined_index: Some(Box::new(FlatVectorDB::new_with_emb_specs(2, specs.clone()))),
-        bm25_index: None,
+    let make_side = |side| LiveSideState {
+        combined_index: (!specs.is_empty()).then(|| {
+            Box::new(FlatVectorDB::new_with_emb_specs(2, specs.clone()))
+                as Box<dyn crate::vectordb::VectorDB>
+        }),
+        bm25_index: bm25_threshold
+            .map(|_| crate::bm25::simple::SimpleBm25::new(&config.bm25_fields, side)),
         synonym_index: None,
     };
     let (store, crossmap): (
@@ -157,8 +181,8 @@ live:
     };
     let state = LiveMatchState {
         store,
-        a: make_side(),
-        b: make_side(),
+        a: make_side(Side::A),
+        b: make_side(Side::B),
         crossmap,
         exclusions: Exclusions::new(),
         encoder_pool: Arc::new(AngleEncoder),
@@ -318,19 +342,8 @@ fn assignment_bulk_delete_stops_after_failed_orphan_claim() -> TestResult {
 fn directional_bm25_uses_receivers_current_preference_not_old_claim_score() -> TestResult {
     for sqlite in [false, true] {
         for side in [Side::A, Side::B] {
-            let mut fixture = make_fixture(sqlite, Some(4))?;
-            let session = Arc::get_mut(&mut fixture.session).expect("unique session");
-            session.emb_specs.clear();
-            let state = Arc::get_mut(&mut session.state).expect("unique live state");
-            state.config.match_fields[0].method = crate::config::MatchMethod::Bm25;
-            let fields = [crate::config::Bm25FieldPair {
-                field_a: "name".into(),
-                field_b: "name".into(),
-            }];
-            state.a.combined_index = None;
-            state.b.combined_index = None;
-            state.a.bm25_index = Some(crate::bm25::simple::SimpleBm25::new(&fields, Side::A));
-            state.b.bm25_index = Some(crate::bm25::simple::SimpleBm25::new(&fields, Side::B));
+            let fixture = make_bm25_fixture(sqlite, 0.6)?;
+            let session = &fixture.session;
             session.upsert_record(
                 side.opposite(),
                 make_record(side.opposite(), "receiver", "alpha"),

@@ -91,16 +91,28 @@ fn field_pair_for_side(fp: &BlockingFieldPair, query_side: Side) -> (&str, &str)
 ///
 /// Maintains a hash map from composite key (all field values) → set of IDs.
 pub struct BlockingIndex {
-    fields: Vec<BlockingFieldPair>,
+    fields: IndexFields,
     /// Composite key → set of record IDs.
     index: HashMap<Vec<String>, HashSet<String>>,
 }
 
+enum IndexFields {
+    Single(Vec<String>),
+    Paired(Vec<BlockingFieldPair>),
+}
+
 impl BlockingIndex {
+    pub(crate) fn single(fields: Vec<String>) -> Self {
+        Self {
+            fields: IndexFields::Single(fields),
+            index: HashMap::new(),
+        }
+    }
+
     /// Create a new blocking index.
     pub fn new(fields: Vec<BlockingFieldPair>) -> Self {
         Self {
-            fields,
+            fields: IndexFields::Paired(fields),
             index: HashMap::new(),
         }
     }
@@ -138,7 +150,7 @@ impl BlockingIndex {
     /// `passes_blocking` linear-scan behavior used in batch mode.
     /// When all components are empty, returns all IDs (no filtering possible).
     pub fn query(&self, query_record: &Record, query_side: Side) -> HashSet<String> {
-        let key = self.composite_key_for_query(query_record, query_side);
+        let key = self.composite_key(query_record, query_side);
 
         // Fast path: all key components present — direct lookup.
         if key.iter().all(|v| !v.is_empty()) {
@@ -169,35 +181,24 @@ impl BlockingIndex {
     }
 
     fn composite_key(&self, record: &Record, side: Side) -> Vec<String> {
-        self.fields
-            .iter()
-            .map(|fp| {
-                let field = match side {
-                    Side::A => &fp.field_a,
-                    Side::B => &fp.field_b,
-                };
-                record
-                    .get(field)
-                    .map(|s| s.trim().to_lowercase())
-                    .unwrap_or_default()
-            })
-            .collect()
-    }
-
-    fn composite_key_for_query(&self, record: &Record, query_side: Side) -> Vec<String> {
-        self.fields
-            .iter()
-            .map(|fp| {
-                let field = match query_side {
-                    Side::A => &fp.field_a,
-                    Side::B => &fp.field_b,
-                };
-                record
-                    .get(field)
-                    .map(|s| s.trim().to_lowercase())
-                    .unwrap_or_default()
-            })
-            .collect()
+        let value = |field: &str| {
+            record
+                .get(field)
+                .map(|s| s.trim().to_lowercase())
+                .unwrap_or_default()
+        };
+        match &self.fields {
+            IndexFields::Single(fields) => fields.iter().map(|f| value(f)).collect(),
+            IndexFields::Paired(fields) => fields
+                .iter()
+                .map(|f| {
+                    value(match side {
+                        Side::A => &f.field_a,
+                        Side::B => &f.field_b,
+                    })
+                })
+                .collect(),
+        }
     }
 
     fn all_ids(&self) -> HashSet<String> {

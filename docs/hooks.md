@@ -258,11 +258,10 @@ Hooks have **zero impact on the scoring pipeline**:
 
 ## Enroll mode
 
-Hooks work in enroll mode (`meld enroll`). Since enroll mode has no
-crossmap and no classification, only `on_nomatch` applies — fired when
-an enrolled record has zero edges above `review_floor`. The
-`on_confirm`, `on_review`, and `on_break` events are not emitted in
-enroll mode.
+In `meld enroll`, explicitly excluding a pair sends `on_exclude` with
+`match_was_broken: false`. Enrollment returns scored edges directly to the
+caller. An empty edge list does not emit `on_nomatch`, and enrollment does
+not emit `on_confirm`, `on_review`, or `on_break`.
 
 ## Limitations
 

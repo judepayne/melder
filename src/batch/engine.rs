@@ -14,14 +14,13 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use super::assignment::{self, AssignmentSummary, BatchAssignmentError, ScoredQuery};
-use crate::bm25::scorer::normalise_bm25;
 use crate::config::{Config, MatchMethod};
 use crate::crossmap::CrossMapOps;
 use crate::error::MelderError;
 use crate::matching::pipeline;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::match_log::{MatchLog, MatchLogEvent};
-use crate::store::RecordStore;
+use crate::store::{RecordCollection, RecordStore, ScopedCollection};
 use crate::vectordb::VectorDB;
 
 /// Result of a batch matching run.
@@ -80,8 +79,11 @@ pub fn run_batch(
 ) -> Result<BatchResult, MelderError> {
     let start = Instant::now();
 
+    let reference = ScopedCollection::new(store, Side::A);
+    let queries = ScopedCollection::new(store, Side::B);
+
     // Get B IDs from the store (already loaded by caller).
-    let mut b_ids = store.ids(Side::B)?;
+    let mut b_ids = queries.ids()?;
     // Tune measures scoring behavior, not the configured assignment policy.
     let graph_mode = (!skip_prematch)
         .then(|| config.batch.assignment.graph_mode())
@@ -137,7 +139,7 @@ pub fn run_batch(
             }
         }
         if let Some(log) = &match_log {
-            let mut a_ids = store.ids(Side::A)?;
+            let mut a_ids = reference.ids()?;
             a_ids.sort_unstable();
             for (side, ids) in [(Side::A, a_ids.as_slice()), (Side::B, &b_ids[..total_b])] {
                 for id in ids {
@@ -176,8 +178,8 @@ pub fn run_batch(
     // Emit UpsertRecord events for all A and B records.
     if !graph && let Some(ref ml) = match_log {
         let a_id_field = &config.datasets.a.id_field;
-        for a_id in store.ids(Side::A)? {
-            if let Ok(Some(rec)) = store.get(Side::A, &a_id) {
+        for a_id in reference.ids()? {
+            if let Ok(Some(rec)) = reference.get(&a_id) {
                 ml_append(
                     ml,
                     &MatchLogEvent::UpsertRecord {
@@ -190,7 +192,7 @@ pub fn run_batch(
         }
         let b_id_field = &config.datasets.b.id_field;
         for b_id in b_ids.iter().take(total_b) {
-            if let Ok(Some(rec)) = store.get(Side::B, b_id) {
+            if let Ok(Some(rec)) = queries.get(b_id) {
                 ml_append(
                     ml,
                     &MatchLogEvent::UpsertRecord {
@@ -215,8 +217,8 @@ pub fn run_batch(
     ) {
         let cid_start = Instant::now();
         let mut a_common_index: HashMap<String, String> = HashMap::new();
-        for a_id in store.ids(Side::A)? {
-            if let Ok(Some(a_rec)) = store.get(Side::A, &a_id)
+        for a_id in reference.ids()? {
+            if let Ok(Some(a_rec)) = reference.get(&a_id)
                 && let Some(val) = a_rec.get(a_cid_field)
             {
                 let val = val.trim();
@@ -231,7 +233,7 @@ pub fn run_batch(
             if crossmap.has_b(b_id) {
                 continue;
             }
-            if let Ok(Some(b_rec)) = store.get(Side::B, b_id)
+            if let Ok(Some(b_rec)) = queries.get(b_id)
                 && let Some(b_val) = b_rec.get(b_cid_field)
             {
                 let b_val = b_val.trim();
@@ -245,7 +247,7 @@ pub fn run_batch(
                     if !crossmap.claim(a_id, b_id) {
                         continue;
                     }
-                    let a_rec = store.get(Side::A, a_id).ok().flatten();
+                    let a_rec = reference.get(a_id).ok().flatten();
                     if let Some(ref ml) = match_log {
                         ml_append(
                             ml,
@@ -310,14 +312,14 @@ pub fn run_batch(
             .collect();
 
         // Build the A-side index (HashMap for MemoryStore, SQL index for SQLite).
-        store.build_exact_index(Side::A, &a_field_names)?;
+        reference.build_exact_index(&a_field_names)?;
 
         let mut exact_count = 0usize;
         for b_id in b_ids.iter().take(total_b) {
             if crossmap.has_b(b_id) {
                 continue;
             }
-            let b_rec = match store.get(Side::B, b_id) {
+            let b_rec = match queries.get(b_id) {
                 Ok(Some(r)) => r,
                 _ => continue,
             };
@@ -336,7 +338,7 @@ pub fn run_batch(
                 })
                 .collect();
 
-            if let Ok(Some(a_id)) = store.exact_lookup(Side::A, &kvs) {
+            if let Ok(Some(a_id)) = reference.exact_lookup(&kvs) {
                 // Use claim() to atomically enforce the bijection
                 // invariant (Constitution §3). The old has_a() check was
                 // a TOCTOU race under Rayon parallelism — claim() checks
@@ -357,7 +359,7 @@ pub fn run_batch(
                         &ml_errors,
                     );
                 }
-                let a_rec = store.get(Side::A, &a_id).ok().flatten();
+                let a_rec = reference.get(&a_id).ok().flatten();
                 matched.push(MatchResult {
                     query_id: b_id.clone(),
                     matched_id: a_id,
@@ -409,13 +411,14 @@ pub fn run_batch(
                 );
             }
             skipped += 1;
-        } else if graph || store.contains(Side::B, b_id).unwrap_or(false) {
+        } else if graph || queries.contains(b_id).unwrap_or(false) {
             work_ids.push(b_id.as_str());
         }
     }
 
     // Pre-compute top_n from config (0 = no limit in batch → best result only).
     let top_n = config.top_n.unwrap_or(5);
+    let search_plan = pipeline::SearchPlan::new(config, Side::B, Side::A);
 
     // Build A-side BM25 index if method: bm25 is configured.
     // Uses SimpleBm25 — no RwLock, no commit, no self-score pre-computation
@@ -429,12 +432,12 @@ pub fn run_batch(
             let bm25_start = Instant::now();
             use crate::bm25::simple::SimpleBm25;
             let idx = if graph {
-                SimpleBm25::try_build(store, Side::A, &config.bm25_fields)?
+                SimpleBm25::try_build_collection(&reference, Side::A, &config.bm25_fields)?
             } else {
-                SimpleBm25::build(store, Side::A, &config.bm25_fields)
+                SimpleBm25::build_collection(&reference, Side::A, &config.bm25_fields)
             };
             tracing::info!(
-                a_records = store.len(Side::A).unwrap_or(0),
+                a_records = reference.len().unwrap_or(0),
                 elapsed_ms = format!("{:.1}", bm25_start.elapsed().as_secs_f64() * 1000.0),
                 "BM25 index build complete"
             );
@@ -463,26 +466,34 @@ pub fn run_batch(
         };
 
     // Build A-side synonym index if method: synonym is configured.
-    let synonym_index_a: Option<crate::synonym::index::SynonymIndex> = if !config
-        .synonym_fields
-        .is_empty()
-    {
-        let syn_start = Instant::now();
-        use crate::synonym::index::SynonymIndex;
-        let idx = if graph {
-            SynonymIndex::try_build(store, Side::A, &config.synonym_fields, synonym_dict.clone())?
+    let synonym_index_a: Option<crate::synonym::index::SynonymIndex> =
+        if !config.synonym_fields.is_empty() {
+            let syn_start = Instant::now();
+            use crate::synonym::index::SynonymIndex;
+            let idx = if graph {
+                SynonymIndex::try_build_collection(
+                    &reference,
+                    Side::A,
+                    &config.synonym_fields,
+                    synonym_dict.clone(),
+                )?
+            } else {
+                SynonymIndex::build_collection(
+                    &reference,
+                    Side::A,
+                    &config.synonym_fields,
+                    synonym_dict.clone(),
+                )
+            };
+            tracing::info!(
+                keys = idx.len(),
+                elapsed_ms = format!("{:.1}", syn_start.elapsed().as_secs_f64() * 1000.0),
+                "synonym index build complete"
+            );
+            Some(idx)
         } else {
-            SynonymIndex::build(store, Side::A, &config.synonym_fields, synonym_dict.clone())
+            None
         };
-        tracing::info!(
-            keys = idx.len(),
-            elapsed_ms = format!("{:.1}", syn_start.elapsed().as_secs_f64() * 1000.0),
-            "synonym index build complete"
-        );
-        Some(idx)
-    } else {
-        None
-    };
 
     // Score all B records in a single parallel pass.
     let scoring_start = Instant::now();
@@ -491,7 +502,7 @@ pub fn run_batch(
     let all_a_ids = if config.blocking.enabled {
         Vec::new()
     } else {
-        store.ids(Side::A)?
+        reference.ids()?
     };
     let progress = AtomicUsize::new(0);
     let work_total = work_ids.len();
@@ -501,7 +512,7 @@ pub fn run_batch(
         .map(|b_id| -> Result<_, MelderError> {
             let b_record = if graph {
                 assignment::record(store, Side::B, b_id)?
-            } else if let Ok(Some(record)) = store.get(Side::B, b_id) {
+            } else if let Ok(Some(record)) = queries.get(b_id) {
                 record
             } else {
                 return Ok(None);
@@ -534,7 +545,7 @@ pub fn run_batch(
             // Pre-query the blocking index via the store.
             let query_blocked_ids;
             let blocked_ids: &[String] = if config.blocking.enabled {
-                let blocked = store.blocking_query(&b_record, Side::B, Side::A);
+                let blocked = reference.blocking_query_from(&b_record, Side::B);
                 query_blocked_ids = if graph {
                     blocked?
                 } else {
@@ -565,23 +576,13 @@ pub fn run_batch(
 
             // BM25 candidate generation (pre-computed, passed to pipeline).
             let (bm25_cand_ids, bm25_scores_map) = if let Some(ref bm25) = bm25_index_a {
-                let query_text = bm25.query_text_for(&b_record, Side::B);
-                let self_score = bm25.analytical_self_score(&query_text);
-                let raw_results = if config.blocking.enabled {
-                    bm25.score_blocked(&query_text, blocked_ids, bm25_candidates_n)
-                } else {
-                    bm25.score_all(&query_text, bm25_candidates_n)
-                };
-                let scored: Vec<(String, f64)> = raw_results
-                    .into_iter()
-                    .map(|(cid, raw)| {
-                        let norm = normalise_bm25(raw, self_score);
-                        (cid, norm)
-                    })
-                    .collect();
-                let ids: Vec<String> = scored.iter().map(|(cid, _)| cid.clone()).collect();
-                let map: HashMap<String, f64> = scored.into_iter().collect();
-                (ids, map)
+                pipeline::bm25_candidate_stage(
+                    bm25,
+                    &b_record,
+                    Side::B,
+                    config.blocking.enabled.then_some(blocked_ids),
+                    bm25_candidates_n,
+                )
             } else {
                 (Vec::new(), HashMap::new())
             };
@@ -602,34 +603,38 @@ pub fn run_batch(
                 Vec::new()
             };
 
-            let scoring_query = pipeline::ScoringQuery {
+            let scoring_query = pipeline::PreparedQuery {
                 id: b_id,
                 record: &b_record,
-                side: Side::B,
                 combined_vec: &query_combined_vec,
             };
-            let scoring_pool = pipeline::ScoringPool {
-                store,
-                side: Side::A,
+            let scoring_pool = pipeline::SearchPool {
+                collection: &reference,
                 combined_index: combined_index_a,
-                blocked_ids,
+                synonym_dictionary: synonym_dict.as_deref(),
+            };
+            let inputs = pipeline::SearchCandidates {
+                eligible_ids: blocked_ids,
                 bm25_candidate_ids: &bm25_cand_ids,
                 bm25_scores_map: &bm25_scores_map,
                 synonym_candidate_ids: &synonym_cand_ids,
-                synonym_dictionary: synonym_dict.as_deref(),
                 exclusions,
+                same_collection: false,
             };
-            let results = if graph {
-                pipeline::score_pool_strict(
-                    &scoring_query,
-                    &scoring_pool,
-                    config,
-                    ann_candidates,
-                    top_n,
-                )?
-            } else {
-                pipeline::score_pool(&scoring_query, &scoring_pool, config, ann_candidates, top_n)
-            };
+            let results = pipeline::search(
+                &scoring_query,
+                &scoring_pool,
+                &search_plan,
+                config,
+                &inputs,
+                ann_candidates,
+                top_n,
+                if graph {
+                    pipeline::SearchPolicy::Graph
+                } else {
+                    pipeline::SearchPolicy::Ordinary
+                },
+            )?;
 
             // Send to scoring log if enabled.
             if let Some(sl) = scoring_log {
@@ -678,7 +683,7 @@ pub fn run_batch(
                         }
                         // Attach matched record
                         if result.matched_record.is_none() {
-                            result.matched_record = store.get(Side::A, a_id).ok().flatten();
+                            result.matched_record = reference.get(a_id).ok().flatten();
                         }
                         outcome = Some(RecordOutcome::Auto(result));
                         break;

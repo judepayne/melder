@@ -3,8 +3,11 @@
 //! Two implementations: `MemoryStore` (DashMap-backed, used by batch mode)
 //! and `SqliteStore` (rusqlite-backed, used by live mode).
 
+pub mod collection;
 pub mod memory;
 pub mod sqlite;
+
+pub use collection::{RecordCollection, ScopedCollection};
 
 use crate::error::StoreError;
 use crate::models::{Record, Side};

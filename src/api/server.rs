@@ -24,14 +24,9 @@ const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 /// Build the axum Router with all API routes.
 ///
-/// In enroll mode, only the `/enroll` endpoints and health/status are mounted.
-/// In match mode, the full A/B/crossmap/review API is mounted.
+/// The full A/B/crossmap/review API is mounted.
 pub fn build_router(session: Arc<Session>) -> Router {
-    let router = if session.state.config.is_enroll_mode() {
-        build_enroll_router()
-    } else {
-        build_match_router()
-    };
+    let router = build_match_router();
 
     router
         // Health / status (always available)
@@ -87,19 +82,6 @@ fn build_match_router() -> Router<Arc<Session>> {
         .route("/api/v1/exclude", delete(handlers::unexclude))
 }
 
-/// Routes for single-pool enrollment mode.
-fn build_enroll_router() -> Router<Arc<Session>> {
-    Router::new()
-        .route("/api/v1/enroll", post(handlers::enroll))
-        .route("/api/v1/enroll-batch", post(handlers::enroll_batch))
-        .route("/api/v1/enroll/remove", post(handlers::enroll_remove))
-        .route("/api/v1/enroll/query", get(handlers::enroll_query))
-        .route("/api/v1/enroll/count", get(handlers::enroll_count))
-        // Exclusion endpoints (enroll mode)
-        .route("/api/v1/exclude", post(handlers::exclude))
-        .route("/api/v1/exclude", delete(handlers::unexclude))
-}
-
 /// Start the HTTP server on a TCP port.
 pub async fn start_server(
     session: Arc<Session>,
@@ -117,6 +99,26 @@ pub async fn start_server(
         .with_graceful_shutdown(shutdown_signal(shutdown_notify))
         .await?;
 
+    Ok(())
+}
+
+/// Start a single-pool enrollment server.
+pub async fn start_enroll_server(
+    session: Arc<crate::session::enroll::EnrollSession>,
+    port: u16,
+    bind: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = super::enroll::EnrollApi::new(session);
+    let notify = state.shutdown_notify.clone();
+    let app = super::enroll::router(state)
+        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
+        .layer(CatchPanicLayer::new())
+        .layer(TraceLayer::new_for_http());
+    let listener = tokio::net::TcpListener::bind(format!("{bind}:{port}")).await?;
+    info!(bind, port, "enroll server listening");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(notify))
+        .await?;
     Ok(())
 }
 

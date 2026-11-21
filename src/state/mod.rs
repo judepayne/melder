@@ -1,6 +1,7 @@
 //! State management: loading datasets, building/loading caches, and managing
 //! the composite `MatchState` that holds everything needed for matching.
 
+pub mod enroll;
 pub mod live;
 pub mod match_log;
 #[allow(clippy::module_inception)]

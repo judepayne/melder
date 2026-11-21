@@ -13,7 +13,7 @@ use crate::matching::assignment::{
 use crate::matching::exclusions::Exclusions;
 use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::match_log::{MatchLog, MatchLogEvent};
-use crate::store::RecordStore;
+use crate::store::{RecordCollection, RecordStore, ScopedCollection};
 
 use super::engine::RecordOutcome;
 
@@ -62,7 +62,7 @@ impl AssignmentSummary {
 }
 
 pub(super) fn record(store: &dyn RecordStore, side: Side, id: &str) -> Result<Record, MelderError> {
-    store.get(side, id)?.ok_or_else(|| {
+    ScopedCollection::new(store, side).get(id)?.ok_or_else(|| {
         BatchAssignmentError::MissingRecord {
             side,
             id: id.into(),
@@ -109,7 +109,7 @@ pub(super) fn prematch(
     if common.is_none() && !exact {
         return Ok(Vec::new());
     }
-    let mut a_ids = store.ids(Side::A)?;
+    let mut a_ids = ScopedCollection::new(store, Side::A).ids()?;
     a_ids.sort_unstable();
     let mut common_index: HashMap<String, Vec<&str>> = HashMap::new();
     let mut exact_index: HashMap<Vec<String>, Vec<&str>> = HashMap::new();

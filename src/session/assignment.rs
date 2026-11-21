@@ -48,15 +48,9 @@ impl Session {
             .inspect_err(|e| self.assignment_failed(e))
     }
 
-    /// Serialize optimizing live mutations or single-pool enrollment and snapshots.
+    /// Serialize optimizing live mutations and snapshots.
     /// Call only at operation boundaries; helpers under this guard must not relock.
     pub(crate) fn assignment_guard(&self) -> Result<Option<MutexGuard<'_, ()>>, SessionError> {
-        if let Some(gate) = &self.enroll_gate {
-            return gate
-                .lock()
-                .map(Some)
-                .map_err(|_| SessionError::AssignmentUnhealthy);
-        }
         let Some(state) = &self.assignment else {
             return Ok(None);
         };
@@ -309,34 +303,43 @@ impl Session {
         let synonyms = index.as_ref().map_or_else(Vec::new, |i| {
             pipeline::synonym_candidate_stage(i, &record, side, &config.synonym_fields)
         });
-        let pool = pipeline::ScoringPool {
-            store: store.as_ref(),
-            side: other,
+        let collection = crate::store::ScopedCollection::new(store.as_ref(), other);
+        let pool = pipeline::SearchPool {
+            collection: &collection,
             combined_index: pool.combined_index.as_deref(),
-            blocked_ids: &blocked,
-            bm25_candidate_ids: &bm25_ids,
-            bm25_scores_map: &bm25_scores,
-            synonym_candidate_ids: &synonyms,
             synonym_dictionary: self.state.synonym_dictionary.as_deref(),
-            exclusions: &self.state.exclusions,
         };
         let top_n = if verify.is_empty() {
             config.top_n.unwrap_or(5)
         } else {
             0
         };
-        let results = pipeline::score_pool_verified(
-            &pipeline::ScoringQuery {
+        let inputs = pipeline::SearchCandidates {
+            eligible_ids: &blocked,
+            bm25_candidate_ids: &bm25_ids,
+            bm25_scores_map: &bm25_scores,
+            synonym_candidate_ids: &synonyms,
+            exclusions: &self.state.exclusions,
+            same_collection: false,
+        };
+        let plan = if side == Side::A {
+            &self.search_a_to_b
+        } else {
+            &self.search_b_to_a
+        };
+        let results = pipeline::search(
+            &pipeline::PreparedQuery {
                 id,
                 record: &record,
-                side,
                 combined_vec: &vector,
             },
             &pool,
+            plan,
             config,
+            &inputs,
             config.ann_candidates.unwrap_or(50),
             top_n,
-            &keep,
+            pipeline::SearchPolicy::Verified(&keep),
         )?;
         // Do not remove a stale candidate and thereby manufacture a clear score gap.
         for candidate in &results {

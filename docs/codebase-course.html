@@ -564,7 +564,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
         </div>
         <div class="icon-row">
           <div class="icon-circle" style="background:var(--color-actor-4)">🎯</div>
-          <div><strong>Pipeline</strong><p>The ONE scoring entry point: <code>score_pool()</code>. Blocking → candidates → full scoring → classification. All modes use this.</p></div>
+          <div><strong>Pipeline</strong><p>One scoring pipeline for every mode. Blocking narrows eligibility; candidate retrieval, full scoring and classification produce the ranked list.</p></div>
         </div>
         <div class="icon-row">
           <div class="icon-circle" style="background:var(--color-actor-5)">🔗</div>
@@ -593,12 +593,12 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
     <header class="module-header animate-in">
       <span class="module-number">04</span>
       <h1 class="module-title">The Scoring Pipeline</h1>
-      <p class="module-subtitle">How score_pool() finds and ranks matches — the heart of Melder</p>
+      <p class="module-subtitle">How the shared search pipeline finds and ranks matches</p>
     </header>
 
     <section class="screen animate-in">
       <h2 class="screen-heading">One Pipeline to Rule Them All</h2>
-      <p>Every matching flow — batch, live, enroll — calls the same function: <code>score_pool()</code> in <code>src/matching/pipeline.rs</code>. This is a constitutional principle of the codebase.</p>
+      <p>Batch, live and enroll use the same search implementation in <code>src/matching/pipeline.rs</code>. A pool supplies the target indexes and one collection of records. The scorer fetches candidates from that collection without choosing A or B at each read. In SQLite, two collection handles can share the same database; accepting a pair is still one matching operation, not two collection writes. Each search borrows a prepared query, a reusable plan for that direction, and the candidate lists and constraints for this invocation. The public <code>score_pool()</code> family remains available for compatibility.</p>
 
       <div class="step-cards">
         <div class="step-card"><div class="step-num">1</div><div class="step-body"><strong>Blocking</strong><p>Hash-based filter eliminates impossible pairs. A record from France is never compared against one from Japan. Eliminates 95%+ of candidates.</p></div></div>
@@ -1270,7 +1270,7 @@ pre, code { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; f
       { highlight: 'flow-http', label: '1. HTTP POST /api/v1/b/add arrives with JSON body containing the vendor record.' },
       { highlight: 'flow-encode', label: '2. Encoder pool acquires a free ONNX slot (try_lock round-robin) and converts text to a 384-dim vector.' },
       { highlight: 'flow-store', label: '3. Record is inserted into the DashMap store. Blocking index and BM25 index are updated.' },
-      { highlight: 'flow-pipeline', label: '4. score_pool() runs: blocking narrows candidates, ANN + BM25 find top matches, full scoring computes weighted composite.' },
+      { highlight: 'flow-pipeline', label: '4. The shared pipeline scores the candidates using the configured fields and weights.' },
       { highlight: 'flow-crossmap', label: '5. Default live matching: try candidates in rank order. CrossMap.claim() atomically checks both directions before confirming.' },
       { highlight: 'flow-http', label: '6. Response returned: { status: "updated", classification: "auto", matches: [...], score: 0.91 }' },
     ]
