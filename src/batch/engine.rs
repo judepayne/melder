@@ -6,9 +6,9 @@
 //! 3. Blocking filter → candidate selection → full scoring (via shared pipeline)
 //! 4. Classify top result; if auto_match → try to claim in CrossMap
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -22,6 +22,44 @@ use crate::models::{Classification, MatchResult, Record, Side};
 use crate::state::match_log::{MatchLog, MatchLogEvent};
 use crate::store::{RecordCollection, RecordStore, ScopedCollection};
 use crate::vectordb::VectorDB;
+
+// A bounded, batch-local cache: never derive pool membership from query records.
+// Entries retain the backend's actual results, including its missing-key behavior.
+#[derive(Default)]
+struct BatchBlocks {
+    entries: HashMap<Vec<String>, Arc<BatchBlock>>,
+    bytes: usize,
+}
+
+struct BatchBlock {
+    ids: Vec<String>,
+    membership: Option<HashSet<u32>>,
+}
+
+impl BatchBlock {
+    // Estimate outside the cache lock, including spare vector/string capacity.
+    fn estimated_bytes(&self, key: &[String]) -> usize {
+        128 + std::mem::size_of_val(key)
+            + key.iter().map(String::capacity).sum::<usize>()
+            + self.ids.capacity() * std::mem::size_of::<String>()
+            + self.ids.iter().map(String::capacity).sum::<usize>()
+            + self.membership.as_ref().map_or(0, |m| m.capacity() * 8)
+    }
+}
+
+impl BatchBlocks {
+    fn insert(&mut self, key: Vec<String>, block: Arc<BatchBlock>, bytes: usize) {
+        // Empty misses must not crowd useful blocks out of the bounded cache.
+        if !block.ids.is_empty()
+            && !self.entries.contains_key(&key)
+            && self.entries.len() < 64
+            && bytes <= (64 << 20) - self.bytes
+        {
+            self.bytes += bytes;
+            self.entries.entry(key).or_insert(block);
+        }
+    }
+}
 
 /// Result of a batch matching run.
 pub struct BatchResult {
@@ -504,6 +542,7 @@ pub fn run_batch(
     } else {
         reference.ids()?
     };
+    let block_cache = Mutex::new(BatchBlocks::default());
     let progress = AtomicUsize::new(0);
     let work_total = work_ids.len();
 
@@ -543,15 +582,58 @@ pub fn run_batch(
             }
 
             // Pre-query the blocking index via the store.
-            let query_blocked_ids;
-            let blocked_ids: &[String] = if config.blocking.enabled {
-                let blocked = reference.blocking_query_from(&b_record, Side::B);
-                query_blocked_ids = if graph {
-                    blocked?
+            let mut query_block = None;
+            let uncached_ids;
+            let blocked_ids: &[String] = if config.blocking.enabled && bm25_index_a.is_some() {
+                let key: Vec<String> = config
+                    .blocking
+                    .fields
+                    .iter()
+                    .map(|fp| {
+                        b_record
+                            .get(&fp.field_b)
+                            .map(|s| s.trim().to_lowercase())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                let cached = block_cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .entries
+                    .get(&key)
+                    .cloned();
+                query_block = Some(if let Some(block) = cached {
+                    block
                 } else {
-                    blocked.unwrap_or_default()
+                    let result = reference.blocking_query_from(&b_record, Side::B);
+                    let successful = result.is_ok();
+                    let ids = if graph {
+                        result?
+                    } else {
+                        result.unwrap_or_default()
+                    };
+                    let membership = bm25_index_a
+                        .as_ref()
+                        .and_then(|index| index.prepare_block_membership(&ids));
+                    let block = Arc::new(BatchBlock { ids, membership });
+                    if successful && !block.ids.is_empty() {
+                        let bytes = block.estimated_bytes(&key);
+                        block_cache
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(key, Arc::clone(&block), bytes);
+                    }
+                    block
+                });
+                &query_block.as_ref().expect("block was assigned").ids
+            } else if config.blocking.enabled {
+                let result = reference.blocking_query_from(&b_record, Side::B);
+                uncached_ids = if graph {
+                    result?
+                } else {
+                    result.unwrap_or_default()
                 };
-                &query_blocked_ids
+                &uncached_ids
             } else {
                 &all_a_ids
             };
@@ -576,12 +658,15 @@ pub fn run_batch(
 
             // BM25 candidate generation (pre-computed, passed to pipeline).
             let (bm25_cand_ids, bm25_scores_map) = if let Some(ref bm25) = bm25_index_a {
-                pipeline::bm25_candidate_stage(
+                pipeline::bm25_candidate_stage_prepared(
                     bm25,
                     &b_record,
                     Side::B,
                     config.blocking.enabled.then_some(blocked_ids),
                     bm25_candidates_n,
+                    query_block
+                        .as_ref()
+                        .and_then(|block| block.membership.as_ref()),
                 )
             } else {
                 (Vec::new(), HashMap::new())
@@ -816,6 +901,65 @@ mod tests {
     use crate::store::memory::MemoryStore;
 
     use super::*;
+
+    #[test]
+    fn block_cache_bounds_empty_and_overlapping_keys() {
+        let mut cache = BatchBlocks::default();
+        let empty = Arc::new(BatchBlock {
+            ids: Vec::new(),
+            membership: Some(HashSet::new()),
+        });
+        for i in 0..1000 {
+            let key = vec![i.to_string()];
+            let bytes = empty.estimated_bytes(&key);
+            cache.insert(key, Arc::clone(&empty), bytes);
+        }
+        assert_eq!(
+            cache.entries.len(),
+            0,
+            "empty misses must not consume slots"
+        );
+        let mut cache = BatchBlocks::default();
+        let large = Arc::new(BatchBlock {
+            ids: vec!["x".repeat(1 << 20)],
+            membership: None,
+        });
+        for i in 0..1000 {
+            let key = vec![String::new(), i.to_string()];
+            let bytes = large.estimated_bytes(&key);
+            cache.insert(key, Arc::clone(&large), bytes);
+        }
+        assert!(
+            cache.bytes <= 64 << 20,
+            "partial-key overlap must respect the byte budget"
+        );
+        assert!(
+            cache.entries.len() < 64,
+            "overlapping lists must not grow quadratically"
+        );
+    }
+
+    #[test]
+    fn block_cache_reuses_compound_and_missing_component_keys() {
+        let mut cache = BatchBlocks::default();
+        for key in [
+            vec!["us".into(), "ny".into()],
+            vec!["us".into(), String::new()],
+        ] {
+            let block = Arc::new(BatchBlock {
+                ids: vec!["a".into(), "b".into()],
+                membership: None,
+            });
+            let bytes = block.estimated_bytes(&key);
+            cache.insert(key.clone(), Arc::clone(&block), bytes);
+            cache.insert(key.clone(), Arc::clone(&block), bytes);
+            assert!(
+                Arc::ptr_eq(&cache.entries[&key], &block),
+                "reuse backend IDs"
+            );
+        }
+        assert_eq!(cache.entries.len(), 2, "compound keys remain distinct");
+    }
 
     fn make_config(blocking: bool) -> Result<Config, Box<dyn Error>> {
         let dir = tempfile::tempdir()?;

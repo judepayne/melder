@@ -1,0 +1,326 @@
+{
+  "31/memory": {
+    "left": "baseline",
+    "right": "candidate",
+    "rel": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 6,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      },
+      "rank_changes": 0,
+      "reason_changes": 0
+    },
+    "un": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 0,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      }
+    },
+    "wal": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 6,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      },
+      "rank_changes": 0,
+      "reason_changes": 0
+    },
+    "match_symmetric_difference": 0,
+    "review_symmetric_difference": 0,
+    "unmatched_symmetric_difference": 0,
+    "query_category_changes": 0,
+    "wal_score_examples": [],
+    "wal_relationship_scores": {
+      "common": 6,
+      "changed": 0,
+      "max": 0,
+      "mean": 0,
+      "over_1e_7": 0,
+      "over_1e_6": 0
+    },
+    "decision_set_examples": {
+      "left_only": [],
+      "right_only": []
+    },
+    "unmatched_changed_cells": {},
+    "complete_evidence_equal": true,
+    "complete_sqlite_output_equal": true,
+    "sqlite_tables": {
+      "a_records": 34,
+      "b_records": 7,
+      "relationships": 6,
+      "field_scores": 0,
+      "metadata": 11
+    },
+    "wal_available": true,
+    "counts": {
+      "counts": {
+        "match": 6
+      },
+      "unmatched": 1,
+      "crossmap": 6
+    }
+  },
+  "31/sqlite": {
+    "left": "baseline",
+    "right": "candidate",
+    "rel": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 6,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      },
+      "rank_changes": 0,
+      "reason_changes": 0
+    },
+    "un": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 0,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      }
+    },
+    "wal": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 0,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      },
+      "rank_changes": 0,
+      "reason_changes": 0
+    },
+    "match_symmetric_difference": 0,
+    "review_symmetric_difference": 0,
+    "unmatched_symmetric_difference": 0,
+    "query_category_changes": 0,
+    "wal_score_examples": [],
+    "wal_relationship_scores": {
+      "common": 0,
+      "changed": 0,
+      "max": 0,
+      "mean": 0,
+      "over_1e_7": 0,
+      "over_1e_6": 0
+    },
+    "decision_set_examples": {
+      "left_only": [],
+      "right_only": []
+    },
+    "unmatched_changed_cells": {},
+    "complete_evidence_equal": true,
+    "complete_sqlite_output_equal": true,
+    "sqlite_tables": {
+      "a_records": 34,
+      "b_records": 7,
+      "relationships": 6,
+      "field_scores": 6,
+      "metadata": 11
+    },
+    "wal_available": false,
+    "counts": {
+      "counts": {},
+      "unmatched": 1,
+      "crossmap": 6
+    }
+  },
+  "5101/memory": {
+    "left": "baseline",
+    "right": "candidate",
+    "rel": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 6,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      },
+      "rank_changes": 0,
+      "reason_changes": 0
+    },
+    "un": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 0,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      }
+    },
+    "wal": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 6,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      },
+      "rank_changes": 0,
+      "reason_changes": 0
+    },
+    "match_symmetric_difference": 0,
+    "review_symmetric_difference": 0,
+    "unmatched_symmetric_difference": 0,
+    "query_category_changes": 0,
+    "wal_score_examples": [],
+    "wal_relationship_scores": {
+      "common": 6,
+      "changed": 0,
+      "max": 0,
+      "mean": 0,
+      "over_1e_7": 0,
+      "over_1e_6": 0
+    },
+    "decision_set_examples": {
+      "left_only": [],
+      "right_only": []
+    },
+    "unmatched_changed_cells": {},
+    "complete_evidence_equal": true,
+    "complete_sqlite_output_equal": true,
+    "sqlite_tables": {
+      "a_records": 5104,
+      "b_records": 7,
+      "relationships": 6,
+      "field_scores": 0,
+      "metadata": 11
+    },
+    "wal_available": true,
+    "counts": {
+      "counts": {
+        "match": 6
+      },
+      "unmatched": 1,
+      "crossmap": 6
+    }
+  },
+  "5101/sqlite": {
+    "left": "baseline",
+    "right": "candidate",
+    "rel": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 6,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      },
+      "rank_changes": 0,
+      "reason_changes": 0
+    },
+    "un": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 0,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      }
+    },
+    "wal": {
+      "left_only": 0,
+      "right_only": 0,
+      "changed": 0,
+      "scores": {
+        "common": 0,
+        "changed": 0,
+        "max": 0,
+        "mean": 0,
+        "over_1e_7": 0,
+        "over_1e_6": 0
+      },
+      "rank_changes": 0,
+      "reason_changes": 0
+    },
+    "match_symmetric_difference": 0,
+    "review_symmetric_difference": 0,
+    "unmatched_symmetric_difference": 0,
+    "query_category_changes": 0,
+    "wal_score_examples": [],
+    "wal_relationship_scores": {
+      "common": 0,
+      "changed": 0,
+      "max": 0,
+      "mean": 0,
+      "over_1e_7": 0,
+      "over_1e_6": 0
+    },
+    "decision_set_examples": {
+      "left_only": [],
+      "right_only": []
+    },
+    "unmatched_changed_cells": {},
+    "complete_evidence_equal": true,
+    "complete_sqlite_output_equal": true,
+    "sqlite_tables": {
+      "a_records": 5104,
+      "b_records": 7,
+      "relationships": 6,
+      "field_scores": 6,
+      "metadata": 11
+    },
+    "wal_available": false,
+    "counts": {
+      "counts": {},
+      "unmatched": 1,
+      "crossmap": 6
+    }
+  }
+}

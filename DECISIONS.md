@@ -61,3 +61,9 @@ Implemented: 2026-11-21 · [Collection trait and scoped store](src/store/collect
 Use the live SQLite database for current links and the enrollment log for the directed edges actually returned. Export seed and isolated records even when they have no edges. CSV, Parquet and SQLite should describe the same decisions, not invent new ones by rescoring records or interpreting matching flags.
 
 Implemented: 2026-11-18 · [Enrollment output semantics](docs/enroll-mode.md#single-pool-output-semantics)
+
+### D-010 — Reuse eligibility for repeated blocked batch queries
+
+Cache the backend's actual record IDs, not an inferred country-to-record mapping. For large blocks, reuse the corresponding numeric BM25 IDs from the same immutable index. Limit the cache to the batch run, 64 entries and an estimated 64 MiB: a miss still follows the normal retrieval path. This avoids live invalidation, a new index format and another config option.
+
+Implemented: 2026-11-22 · [Performance and correctness checks](benchmarks/batch/usearch_scaling/comparison/findings.md)

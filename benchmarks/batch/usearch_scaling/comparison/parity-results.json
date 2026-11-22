@@ -1,0 +1,5937 @@
+{
+  "root": "/tmp/melder-opt.o6KzoE/exact-e2e",
+  "sizes": {
+    "10000": {
+      "trials": [
+        {
+          "name": "1-1-baseline",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 20000,
+            "no_match_below": 9805,
+            "crossmap_confirm": 56,
+            "review_match": 139,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 56,
+            "review": 139
+          },
+          "unmatched": 9805,
+          "crossmap": 56
+        },
+        {
+          "name": "1-2-candidate",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 20000,
+            "no_match_below": 9805,
+            "crossmap_confirm": 56,
+            "review_match": 139,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 56,
+            "review": 139
+          },
+          "unmatched": 9805,
+          "crossmap": 56
+        },
+        {
+          "name": "2-1-candidate",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 20000,
+            "no_match_below": 9805,
+            "crossmap_confirm": 56,
+            "review_match": 139,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 56,
+            "review": 139
+          },
+          "unmatched": 9805,
+          "crossmap": 56
+        },
+        {
+          "name": "2-2-baseline",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 20000,
+            "no_match_below": 9805,
+            "crossmap_confirm": 56,
+            "review_match": 139,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 56,
+            "review": 139
+          },
+          "unmatched": 9805,
+          "crossmap": 56
+        },
+        {
+          "name": "3-1-baseline",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 20000,
+            "no_match_below": 9805,
+            "crossmap_confirm": 56,
+            "review_match": 139,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 56,
+            "review": 139
+          },
+          "unmatched": 9805,
+          "crossmap": 56
+        },
+        {
+          "name": "3-2-candidate",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 20000,
+            "no_match_below": 9805,
+            "crossmap_confirm": 56,
+            "review_match": 139,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 56,
+            "review": 139
+          },
+          "unmatched": 9805,
+          "crossmap": 56
+        }
+      ],
+      "comparisons": [
+        {
+          "left": "1-1-baseline",
+          "right": "1-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 98,
+            "scores": {
+              "common": 9805,
+              "changed": 98,
+              "max": 0.07800000000000001,
+              "mean": 0.01393979591836735,
+              "over_1e_7": 98,
+              "over_1e_6": 98
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 98,
+            "scores": {
+              "common": 10000,
+              "changed": 98,
+              "max": 0.07797893270164308,
+              "mean": 0.013942580305845258,
+              "over_1e_7": 98,
+              "over_1e_6": 98
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-348991",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.37190217578747264,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4498811084891157,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-269339",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.392664004489438,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.34980874682203217,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-022018",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.31420564144005086,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.27178673446178436,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 98
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-1-baseline",
+          "right": "2-1-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 89,
+            "scores": {
+              "common": 9805,
+              "changed": 89,
+              "max": 0.07800000000000001,
+              "mean": 0.015042696629213486,
+              "over_1e_7": 89,
+              "over_1e_6": 89
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 89,
+            "scores": {
+              "common": 10000,
+              "changed": 89,
+              "max": 0.07797893270164308,
+              "mean": 0.01504104835560071,
+              "over_1e_7": 89,
+              "over_1e_6": 89
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-348991",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.37190217578747264,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4498811084891157,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-188360",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4133998881350768,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3555901497602463,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-269339",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.392664004489438,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.34980874682203217,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 89
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-1-baseline",
+          "right": "2-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 88,
+            "scores": {
+              "common": 9805,
+              "changed": 88,
+              "max": 0.05779999999999996,
+              "mean": 0.01384545454545455,
+              "over_1e_7": 88,
+              "over_1e_6": 88
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 88,
+            "scores": {
+              "common": 10000,
+              "changed": 88,
+              "max": 0.0578097383748305,
+              "mean": 0.013848841845026032,
+              "over_1e_7": 88,
+              "over_1e_6": 88
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-188360",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4133998881350768,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3555901497602463,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-269339",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.392664004489438,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.34980874682203217,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-470695",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.2886171326283361,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.24591970196501017,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 88
+          },
+          "arms": "baseline/baseline"
+        },
+        {
+          "left": "1-1-baseline",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 95,
+            "scores": {
+              "common": 9805,
+              "changed": 95,
+              "max": 0.05779999999999996,
+              "mean": 0.014540000000000003,
+              "over_1e_7": 95,
+              "over_1e_6": 95
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 95,
+            "scores": {
+              "common": 10000,
+              "changed": 95,
+              "max": 0.0578097383748305,
+              "mean": 0.0145389898617492,
+              "over_1e_7": 95,
+              "over_1e_6": 95
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-188360",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4133998881350768,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3555901497602463,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-269339",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.392664004489438,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.34980874682203217,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-022018",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.31420564144005086,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.27178673446178436,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 95
+          },
+          "arms": "baseline/baseline"
+        },
+        {
+          "left": "1-1-baseline",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 94,
+            "scores": {
+              "common": 9805,
+              "changed": 94,
+              "max": 0.042800000000000005,
+              "mean": 0.014155319148936175,
+              "over_1e_7": 94,
+              "over_1e_6": 94
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 95,
+            "scores": {
+              "common": 10000,
+              "changed": 95,
+              "max": 0.04273487299032208,
+              "mean": 0.014006570557610523,
+              "over_1e_7": 95,
+              "over_1e_6": 95
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-997140",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3261187332957479,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36885360628607,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-242936",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3226964265029165,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36445873378917903,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-985937",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3674061445869884,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.40840225279496645,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 94
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "2-1-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 90,
+            "scores": {
+              "common": 9805,
+              "changed": 90,
+              "max": 0.05779999999999996,
+              "mean": 0.015212222222222222,
+              "over_1e_7": 90,
+              "over_1e_6": 90
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 90,
+            "scores": {
+              "common": 10000,
+              "changed": 90,
+              "max": 0.0578097383748305,
+              "mean": 0.015214581834440308,
+              "over_1e_7": 90,
+              "over_1e_6": 90
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-188360",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4133998881350768,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3555901497602463,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-022018",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.27178673446178436,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3185048946653774,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-470695",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.2886171326283361,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.24591970196501017,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 90
+          },
+          "arms": "candidate/candidate"
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "2-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 91,
+            "scores": {
+              "common": 9805,
+              "changed": 91,
+              "max": 0.07800000000000001,
+              "mean": 0.015480219780219783,
+              "over_1e_7": 91,
+              "over_1e_6": 91
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 91,
+            "scores": {
+              "common": 10000,
+              "changed": 91,
+              "max": 0.07797893270164308,
+              "mean": 0.015484544512903578,
+              "over_1e_7": 91,
+              "over_1e_6": 91
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-348991",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4498811084891157,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.37190217578747264,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-188360",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4133998881350768,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3555901497602463,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-992842",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.36324718292126473,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.32010511509331063,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 91
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 81,
+            "scores": {
+              "common": 9805,
+              "changed": 81,
+              "max": 0.07800000000000001,
+              "mean": 0.01672098765432099,
+              "over_1e_7": 81,
+              "over_1e_6": 81
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 81,
+            "scores": {
+              "common": 10000,
+              "changed": 81,
+              "max": 0.07797893270164308,
+              "mean": 0.016722021541897072,
+              "over_1e_7": 81,
+              "over_1e_6": 81
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-348991",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4498811084891157,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.37190217578747264,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-188360",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4133998881350768,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3555901497602463,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-902398",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3395957712533012,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.38022598117270545,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 81
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 82,
+            "scores": {
+              "common": 9805,
+              "changed": 82,
+              "max": 0.07800000000000001,
+              "mean": 0.01659146341463415,
+              "over_1e_7": 82,
+              "over_1e_6": 82
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 83,
+            "scores": {
+              "common": 10000,
+              "changed": 83,
+              "max": 0.07797893270164308,
+              "mean": 0.016387201624583524,
+              "over_1e_7": 83,
+              "over_1e_6": 83
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-348991",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4498811084891157,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.37190217578747264,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-992842",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.36324718292126473,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.32010511509331063,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-269339",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.34980874682203217,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.392664004489438,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 82
+          },
+          "arms": "candidate/candidate"
+        },
+        {
+          "left": "2-1-candidate",
+          "right": "2-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 81,
+            "scores": {
+              "common": 9805,
+              "changed": 81,
+              "max": 0.07800000000000001,
+              "mean": 0.013328395061728393,
+              "over_1e_7": 81,
+              "over_1e_6": 81
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 81,
+            "scores": {
+              "common": 10000,
+              "changed": 81,
+              "max": 0.07797893270164308,
+              "mean": 0.013328406972071884,
+              "over_1e_7": 81,
+              "over_1e_6": 81
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-348991",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4498811084891157,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.37190217578747264,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-854267",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.32449397916784745,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2781894274757847,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-992842",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.36324718292126473,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.32010511509331063,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 81
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "2-1-candidate",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 79,
+            "scores": {
+              "common": 9805,
+              "changed": 79,
+              "max": 0.07800000000000001,
+              "mean": 0.013418987341772158,
+              "over_1e_7": 79,
+              "over_1e_6": 79
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 79,
+            "scores": {
+              "common": 10000,
+              "changed": 79,
+              "max": 0.07797893270164308,
+              "mean": 0.013419987098652959,
+              "over_1e_7": 79,
+              "over_1e_6": 79
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-348991",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4498811084891157,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.37190217578747264,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-022018",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3185048946653774,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.27178673446178436,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-470695",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.24591970196501017,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2886171326283361,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 79
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "2-1-candidate",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 95,
+            "scores": {
+              "common": 9805,
+              "changed": 95,
+              "max": 0.07800000000000001,
+              "mean": 0.015797894736842108,
+              "over_1e_7": 95,
+              "over_1e_6": 95
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 96,
+            "scores": {
+              "common": 10000,
+              "changed": 96,
+              "max": 0.07797893270164308,
+              "mean": 0.015634049065263913,
+              "over_1e_7": 96,
+              "over_1e_6": 96
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-348991",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4498811084891157,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.37190217578747264,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-188360",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3555901497602463,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4133998881350768,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-992842",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.36324718292126473,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.32010511509331063,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 95
+          },
+          "arms": "candidate/candidate"
+        },
+        {
+          "left": "2-2-baseline",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 92,
+            "scores": {
+              "common": 9805,
+              "changed": 92,
+              "max": 0.042700000000000016,
+              "mean": 0.01372282608695653,
+              "over_1e_7": 92,
+              "over_1e_6": 92
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 92,
+            "scores": {
+              "common": 10000,
+              "changed": 92,
+              "max": 0.04269743066332593,
+              "mean": 0.013723906706979422,
+              "over_1e_7": 92,
+              "over_1e_6": 92
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-470695",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.24591970196501017,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2886171326283361,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-022018",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.31420564144005086,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.27178673446178436,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-666640",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.31541986593405696,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.27613999146766083,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 92
+          },
+          "arms": "baseline/baseline"
+        },
+        {
+          "left": "2-2-baseline",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 80,
+            "scores": {
+              "common": 9805,
+              "changed": 80,
+              "max": 0.05779999999999996,
+              "mean": 0.014732500000000006,
+              "over_1e_7": 80,
+              "over_1e_6": 80
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 81,
+            "scores": {
+              "common": 10000,
+              "changed": 81,
+              "max": 0.0578097383748305,
+              "mean": 0.01455269082284179,
+              "over_1e_7": 81,
+              "over_1e_6": 81
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-188360",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3555901497602463,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4133998881350768,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-269339",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.34980874682203217,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.392664004489438,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-997140",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3261187332957479,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36885360628607,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 80
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "3-1-baseline",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 195,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 82,
+            "scores": {
+              "common": 9805,
+              "changed": 82,
+              "max": 0.05779999999999996,
+              "mean": 0.015862195121951226,
+              "over_1e_7": 82,
+              "over_1e_6": 82
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 83,
+            "scores": {
+              "common": 10000,
+              "changed": 83,
+              "max": 0.0578097383748305,
+              "mean": 0.01566532016407709,
+              "over_1e_7": 83,
+              "over_1e_6": 83
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-188360",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3555901497602463,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4133998881350768,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-269339",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.34980874682203217,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.392664004489438,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-997140",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3261187332957479,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36885360628607,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 195,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 82
+          },
+          "arms": "baseline/candidate"
+        }
+      ]
+    },
+    "100000": {
+      "trials": [
+        {
+          "name": "1-1-candidate",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 110000,
+            "no_match_below": 9113,
+            "review_match": 276,
+            "crossmap_confirm": 611,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "review": 276,
+            "match": 611
+          },
+          "unmatched": 9113,
+          "crossmap": 611
+        },
+        {
+          "name": "1-2-baseline",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 110000,
+            "no_match_below": 9112,
+            "review_match": 277,
+            "crossmap_confirm": 611,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "review": 277,
+            "match": 611
+          },
+          "unmatched": 9112,
+          "crossmap": 611
+        },
+        {
+          "name": "2-1-baseline",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 110000,
+            "no_match_below": 9113,
+            "review_match": 276,
+            "crossmap_confirm": 611,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "review": 276,
+            "match": 611
+          },
+          "unmatched": 9113,
+          "crossmap": 611
+        },
+        {
+          "name": "2-2-candidate",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 110000,
+            "no_match_below": 9112,
+            "review_match": 277,
+            "crossmap_confirm": 611,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "review": 277,
+            "match": 611
+          },
+          "unmatched": 9112,
+          "crossmap": 611
+        },
+        {
+          "name": "3-1-candidate",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 110000,
+            "no_match_below": 9113,
+            "review_match": 276,
+            "crossmap_confirm": 611,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "review": 276,
+            "match": 611
+          },
+          "unmatched": 9113,
+          "crossmap": 611
+        },
+        {
+          "name": "3-2-baseline",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 110000,
+            "no_match_below": 9113,
+            "review_match": 276,
+            "crossmap_confirm": 611,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "review": 276,
+            "match": 611
+          },
+          "unmatched": 9113,
+          "crossmap": 611
+        }
+      ],
+      "comparisons": [
+        {
+          "left": "1-1-candidate",
+          "right": "1-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 195,
+            "scores": {
+              "common": 9112,
+              "changed": 195,
+              "max": 0.06290000000000001,
+              "mean": 0.012355384615384617,
+              "over_1e_7": 195,
+              "over_1e_6": 195
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 196,
+            "scores": {
+              "common": 9999,
+              "changed": 196,
+              "max": 0.06290069005945098,
+              "mean": 0.012294322314218162,
+              "over_1e_7": 196,
+              "over_1e_6": 196
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-632801",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.41808998368242156,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3551892936229706,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-912835",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3094271628057185,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36073251644722854,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 195
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-1-candidate",
+          "right": "2-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 198,
+            "scores": {
+              "common": 9113,
+              "changed": 198,
+              "max": 0.07800000000000001,
+              "mean": 0.013969191919191921,
+              "over_1e_7": 198,
+              "over_1e_6": 198
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 199,
+            "scores": {
+              "common": 10000,
+              "changed": 199,
+              "max": 0.07802609175439879,
+              "mean": 0.013900976637709216,
+              "over_1e_7": 199,
+              "over_1e_6": 199
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-371053",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.34146223746504256,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4152151399132199,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-089336",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3931523785098465,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.45442020149072726,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 198
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-1-candidate",
+          "right": "2-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 193,
+            "scores": {
+              "common": 9112,
+              "changed": 193,
+              "max": 0.07800000000000001,
+              "mean": 0.013702072538860103,
+              "over_1e_7": 193,
+              "over_1e_6": 193
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 195,
+            "scores": {
+              "common": 9999,
+              "changed": 195,
+              "max": 0.07802609175439879,
+              "mean": 0.013561551811089858,
+              "over_1e_7": 195,
+              "over_1e_6": 194
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-371053",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.34146223746504256,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4176401250835843,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 193
+          },
+          "arms": "candidate/candidate"
+        },
+        {
+          "left": "1-1-candidate",
+          "right": "3-1-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 187,
+            "scores": {
+              "common": 9113,
+              "changed": 187,
+              "max": 0.05379999999999999,
+              "mean": 0.012560962566844917,
+              "over_1e_7": 187,
+              "over_1e_6": 187
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 188,
+            "scores": {
+              "common": 10000,
+              "changed": 188,
+              "max": 0.05377013424402044,
+              "mean": 0.012493519869755438,
+              "over_1e_7": 188,
+              "over_1e_6": 188
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-912835",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3094271628057185,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36073251644722854,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-191589",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3506251158366597,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3008045244188447,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 187
+          },
+          "arms": "candidate/candidate"
+        },
+        {
+          "left": "1-1-candidate",
+          "right": "3-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 200,
+            "scores": {
+              "common": 9113,
+              "changed": 200,
+              "max": 0.07800000000000001,
+              "mean": 0.012846,
+              "over_1e_7": 200,
+              "over_1e_6": 200
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 201,
+            "scores": {
+              "common": 10000,
+              "changed": 201,
+              "max": 0.07802609175439879,
+              "mean": 0.012781478962091827,
+              "over_1e_7": 201,
+              "over_1e_6": 200
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-764900",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.521221392482546,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.46745537700961215,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 200
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-2-baseline",
+          "right": "2-1-baseline",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 202,
+            "scores": {
+              "common": 9112,
+              "changed": 202,
+              "max": 0.07800000000000001,
+              "mean": 0.014023762376237623,
+              "over_1e_7": 202,
+              "over_1e_6": 202
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 202,
+            "scores": {
+              "common": 9999,
+              "changed": 202,
+              "max": 0.07802609175439879,
+              "mean": 0.014029862869234092,
+              "over_1e_7": 202,
+              "over_1e_6": 202
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-371053",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.34146223746504256,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4152151399132199,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-632801",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3551892936229706,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4181611516282834,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 202
+          },
+          "arms": "baseline/baseline"
+        },
+        {
+          "left": "1-2-baseline",
+          "right": "2-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 888,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 206,
+            "scores": {
+              "common": 9112,
+              "changed": 206,
+              "max": 0.07800000000000001,
+              "mean": 0.013466990291262134,
+              "over_1e_7": 206,
+              "over_1e_6": 206
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 207,
+            "scores": {
+              "common": 10000,
+              "changed": 207,
+              "max": 0.07802609175439879,
+              "mean": 0.013406047976358422,
+              "over_1e_7": 207,
+              "over_1e_6": 206
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-371053",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.34146223746504256,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4176401250835843,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-632801",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3551892936229706,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.41318370930412185,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 888,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 206
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-2-baseline",
+          "right": "3-1-candidate",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 214,
+            "scores": {
+              "common": 9112,
+              "changed": 214,
+              "max": 0.05459999999999998,
+              "mean": 0.012307476635514016,
+              "over_1e_7": 214,
+              "over_1e_6": 214
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 214,
+            "scores": {
+              "common": 9999,
+              "changed": 214,
+              "max": 0.054663314611418656,
+              "mean": 0.012311038785925236,
+              "over_1e_7": 214,
+              "over_1e_6": 214
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-191589",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3506251158366597,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3008045244188447,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 214
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-2-baseline",
+          "right": "3-2-baseline",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 205,
+            "scores": {
+              "common": 9112,
+              "changed": 205,
+              "max": 0.07800000000000001,
+              "mean": 0.013132195121951218,
+              "over_1e_7": 205,
+              "over_1e_6": 205
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 207,
+            "scores": {
+              "common": 9999,
+              "changed": 207,
+              "max": 0.07802609175439879,
+              "mean": 0.013007305721266672,
+              "over_1e_7": 207,
+              "over_1e_6": 206
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-632801",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3551892936229706,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4181611516282834,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-764900",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.521221392482546,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.46745537700961215,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 205
+          },
+          "arms": "baseline/baseline"
+        },
+        {
+          "left": "2-1-baseline",
+          "right": "2-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 189,
+            "scores": {
+              "common": 9112,
+              "changed": 189,
+              "max": 0.06120000000000003,
+              "mean": 0.01351851851851852,
+              "over_1e_7": 189,
+              "over_1e_6": 189
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 190,
+            "scores": {
+              "common": 9999,
+              "changed": 190,
+              "max": 0.06126782298088074,
+              "mean": 0.013452510824013131,
+              "over_1e_7": 190,
+              "over_1e_6": 189
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-089336",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.45442020149072726,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3931523785098465,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-539523",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3938217830817779,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3392788690488418,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-191589",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3506251158366597,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3008045244188447,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 189
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "2-1-baseline",
+          "right": "3-1-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 201,
+            "scores": {
+              "common": 9113,
+              "changed": 201,
+              "max": 0.07800000000000001,
+              "mean": 0.012809950248756216,
+              "over_1e_7": 201,
+              "over_1e_6": 201
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 201,
+            "scores": {
+              "common": 10000,
+              "changed": 201,
+              "max": 0.07802609175439879,
+              "mean": 0.012811306003777053,
+              "over_1e_7": 201,
+              "over_1e_6": 201
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-153333",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4234214569933723,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36686667758301006,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-191589",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3506251158366597,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3008045244188447,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 201
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "2-1-baseline",
+          "right": "3-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 193,
+            "scores": {
+              "common": 9113,
+              "changed": 193,
+              "max": 0.062,
+              "mean": 0.012925906735751294,
+              "over_1e_7": 193,
+              "over_1e_6": 193
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 195,
+            "scores": {
+              "common": 10000,
+              "changed": 195,
+              "max": 0.06204310389156603,
+              "mean": 0.012796961461584742,
+              "over_1e_7": 195,
+              "over_1e_6": 194
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-089336",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.45442020149072726,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39237709759916123,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-153333",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4234214569933723,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36749228048399196,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 193
+          },
+          "arms": "baseline/baseline"
+        },
+        {
+          "left": "2-2-candidate",
+          "right": "3-1-candidate",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 199,
+            "scores": {
+              "common": 9112,
+              "changed": 199,
+              "max": 0.07800000000000001,
+              "mean": 0.014028140703517588,
+              "over_1e_7": 199,
+              "over_1e_6": 199
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 200,
+            "scores": {
+              "common": 9999,
+              "changed": 200,
+              "max": 0.07802609175439879,
+              "mean": 0.013956538397923353,
+              "over_1e_7": 200,
+              "over_1e_6": 199
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-153333",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4234214569933723,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36686667758301006,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-539523",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3392788690488418,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3938217830817779,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 199
+          },
+          "arms": "candidate/candidate"
+        },
+        {
+          "left": "2-2-candidate",
+          "right": "3-2-baseline",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 210,
+            "scores": {
+              "common": 9112,
+              "changed": 210,
+              "max": 0.055900000000000005,
+              "mean": 0.012756666666666666,
+              "over_1e_7": 210,
+              "over_1e_6": 210
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 211,
+            "scores": {
+              "common": 9999,
+              "changed": 211,
+              "max": 0.05592917650938034,
+              "mean": 0.012701977380143408,
+              "over_1e_7": 211,
+              "over_1e_6": 211
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-153333",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4234214569933723,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36749228048399196,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 210
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "3-1-candidate",
+          "right": "3-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 200,
+            "scores": {
+              "common": 9113,
+              "changed": 200,
+              "max": 0.07800000000000001,
+              "mean": 0.013907499999999996,
+              "over_1e_7": 200,
+              "over_1e_6": 200
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 203,
+            "scores": {
+              "common": 10000,
+              "changed": 203,
+              "max": 0.07802609175439879,
+              "mean": 0.013699444741029226,
+              "over_1e_7": 203,
+              "over_1e_6": 202
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 200
+          },
+          "arms": "baseline/candidate"
+        }
+      ]
+    },
+    "1000000": {
+      "trials": [
+        {
+          "name": "1-1-baseline",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 1010000,
+            "crossmap_confirm": 6082,
+            "review_match": 2523,
+            "no_match_below": 1395,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 6082,
+            "review": 2523
+          },
+          "unmatched": 1395,
+          "crossmap": 6082
+        },
+        {
+          "name": "1-2-candidate",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 1010000,
+            "crossmap_confirm": 6082,
+            "review_match": 2523,
+            "no_match_below": 1395,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 6082,
+            "review": 2523
+          },
+          "unmatched": 1395,
+          "crossmap": 6082
+        },
+        {
+          "name": "2-1-candidate",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 1010000,
+            "crossmap_confirm": 6082,
+            "review_match": 2523,
+            "no_match_below": 1395,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 6082,
+            "review": 2523
+          },
+          "unmatched": 1395,
+          "crossmap": 6082
+        },
+        {
+          "name": "2-2-baseline",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 1010000,
+            "crossmap_confirm": 6082,
+            "review_match": 2523,
+            "no_match_below": 1395,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 6082,
+            "review": 2523
+          },
+          "unmatched": 1395,
+          "crossmap": 6082
+        },
+        {
+          "name": "3-1-baseline",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 1010000,
+            "crossmap_confirm": 6082,
+            "review_match": 2523,
+            "no_match_below": 1395,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 6082,
+            "review": 2523
+          },
+          "unmatched": 1395,
+          "crossmap": 6082
+        },
+        {
+          "name": "3-2-candidate",
+          "events": {
+            "batch_assignment_started": 1,
+            "upsert_record": 1010000,
+            "crossmap_confirm": 6082,
+            "review_match": 2523,
+            "no_match_below": 1395,
+            "batch_assignment_completed": 1
+          },
+          "counts": {
+            "match": 6082,
+            "review": 2523
+          },
+          "unmatched": 1395,
+          "crossmap": 6082
+        }
+      ],
+      "comparisons": [
+        {
+          "left": "1-1-baseline",
+          "right": "1-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 8,
+            "scores": {
+              "common": 1395,
+              "changed": 8,
+              "max": 0.030899999999999983,
+              "mean": 0.014700000000000005,
+              "over_1e_7": 8,
+              "over_1e_6": 8
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 8,
+            "scores": {
+              "common": 10000,
+              "changed": 8,
+              "max": 0.03094188566881173,
+              "mean": 0.014694300494620852,
+              "over_1e_7": 8,
+              "over_1e_6": 8
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998699",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4225205743122041,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39157868864339235,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-973087",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.42249583096888327,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.45202626621091596,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-965880",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.48649924837817715,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5064449478433445,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 8
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-1-baseline",
+          "right": "2-1-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 7,
+            "scores": {
+              "common": 1395,
+              "changed": 7,
+              "max": 0.028400000000000036,
+              "mean": 0.012671428571428571,
+              "over_1e_7": 7,
+              "over_1e_6": 7
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 7,
+            "scores": {
+              "common": 10000,
+              "changed": 7,
+              "max": 0.028437785292651285,
+              "mean": 0.012650993963643156,
+              "over_1e_7": 7,
+              "over_1e_6": 7
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998621",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4905987706139746,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5190365559066259,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-938518",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.40609754206675036,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.38186141133048734,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-457594",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3554124446809471,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3448029373998872,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 7
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-1-baseline",
+          "right": "2-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 7,
+            "scores": {
+              "common": 1395,
+              "changed": 7,
+              "max": 0.010599999999999998,
+              "mean": 0.005442857142857146,
+              "over_1e_7": 7,
+              "over_1e_6": 7
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 7,
+            "scores": {
+              "common": 10000,
+              "changed": 7,
+              "max": 0.010609507281059916,
+              "mean": 0.005410090231853285,
+              "over_1e_7": 7,
+              "over_1e_6": 7
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-457594",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3554124446809471,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3448029373998872,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-932072",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4777415054950484,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.48826550094925136,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-967406",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4053743898653257,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39993776825897576,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 7
+          },
+          "arms": "baseline/baseline"
+        },
+        {
+          "left": "1-1-baseline",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 10,
+            "scores": {
+              "common": 1395,
+              "changed": 10,
+              "max": 0.014499999999999957,
+              "mean": 0.006989999999999991,
+              "over_1e_7": 10,
+              "over_1e_6": 10
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 10,
+            "scores": {
+              "common": 10000,
+              "changed": 10,
+              "max": 0.014551113644196922,
+              "mean": 0.006967278626102902,
+              "over_1e_7": 10,
+              "over_1e_6": 10
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-996415",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4949540386839659,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5095051523281628,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-963984",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.48978491610355296,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5013038166956499,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-457594",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3554124446809471,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3448029373998872,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 10
+          },
+          "arms": "baseline/baseline"
+        },
+        {
+          "left": "1-1-baseline",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 8,
+            "scores": {
+              "common": 1395,
+              "changed": 8,
+              "max": 0.030899999999999983,
+              "mean": 0.013325000000000004,
+              "over_1e_7": 8,
+              "over_1e_6": 8
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 9,
+            "scores": {
+              "common": 10000,
+              "changed": 9,
+              "max": 0.03094188566881173,
+              "mean": 0.011844459034206426,
+              "over_1e_7": 9,
+              "over_1e_6": 9
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998699",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4225205743122041,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39157868864339235,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-938518",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.40609754206675036,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.38186141133048734,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-965880",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.48649924837817715,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5039494950816944,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 8
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "2-1-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 11,
+            "scores": {
+              "common": 1395,
+              "changed": 11,
+              "max": 0.030899999999999983,
+              "mean": 0.014900000000000004,
+              "over_1e_7": 11,
+              "over_1e_6": 11
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 11,
+            "scores": {
+              "common": 10000,
+              "changed": 11,
+              "max": 0.03094188566881173,
+              "mean": 0.014894941475631196,
+              "over_1e_7": 11,
+              "over_1e_6": 11
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998699",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.39157868864339235,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4225205743122041,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-973087",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.45202626621091596,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.42249583096888327,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-998621",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4905987706139746,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5190365559066259,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 11
+          },
+          "arms": "candidate/candidate"
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "2-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 7,
+            "scores": {
+              "common": 1395,
+              "changed": 7,
+              "max": 0.030899999999999983,
+              "mean": 0.01378571428571429,
+              "over_1e_7": 7,
+              "over_1e_6": 7
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 7,
+            "scores": {
+              "common": 10000,
+              "changed": 7,
+              "max": 0.03094188566881173,
+              "mean": 0.013774096772734699,
+              "over_1e_7": 7,
+              "over_1e_6": 7
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998699",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.39157868864339235,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4225205743122041,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-973087",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.45202626621091596,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.42249583096888327,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-965880",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.5064449478433445,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.48649924837817715,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 7
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 12,
+            "scores": {
+              "common": 1395,
+              "changed": 12,
+              "max": 0.030899999999999983,
+              "mean": 0.011558333333333332,
+              "over_1e_7": 12,
+              "over_1e_6": 12
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 12,
+            "scores": {
+              "common": 10000,
+              "changed": 12,
+              "max": 0.03094188566881173,
+              "mean": 0.01154657990191485,
+              "over_1e_7": 12,
+              "over_1e_6": 12
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998699",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.39157868864339235,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4225205743122041,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-973087",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.45202626621091596,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.42249583096888327,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-965880",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.5064449478433445,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.48649924837817715,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 12
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 7,
+            "scores": {
+              "common": 1395,
+              "changed": 7,
+              "max": 0.029500000000000026,
+              "mean": 0.010685714285714283,
+              "over_1e_7": 7,
+              "over_1e_6": 7
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 8,
+            "scores": {
+              "common": 10000,
+              "changed": 8,
+              "max": 0.029530435242032693,
+              "mean": 0.009345642284232708,
+              "over_1e_7": 8,
+              "over_1e_6": 8
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-973087",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.45202626621091596,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.42249583096888327,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-938518",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.40609754206675036,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.38186141133048734,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-974549",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4109280734161156,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4185612779116722,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 7
+          },
+          "arms": "candidate/candidate"
+        },
+        {
+          "left": "2-1-candidate",
+          "right": "2-2-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 6,
+            "scores": {
+              "common": 1395,
+              "changed": 6,
+              "max": 0.028400000000000036,
+              "mean": 0.01150000000000001,
+              "over_1e_7": 6,
+              "over_1e_6": 6
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 6,
+            "scores": {
+              "common": 10000,
+              "changed": 6,
+              "max": 0.028437785292651285,
+              "mean": 0.011486504997556232,
+              "over_1e_7": 6,
+              "over_1e_6": 6
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998621",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.5190365559066259,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4905987706139746,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-938518",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.38186141133048734,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.40609754206675036,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-583341",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.30965653697220347,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3025277749471845,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 6
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "2-1-candidate",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 8,
+            "scores": {
+              "common": 1395,
+              "changed": 8,
+              "max": 0.0242,
+              "mean": 0.009874999999999988,
+              "over_1e_7": 8,
+              "over_1e_6": 8
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 8,
+            "scores": {
+              "common": 10000,
+              "changed": 8,
+              "max": 0.024236130736263017,
+              "mean": 0.00987065113279624,
+              "over_1e_7": 8,
+              "over_1e_6": 8
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-938518",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.38186141133048734,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.40609754206675036,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-998621",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.5190365559066259,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.49653215171942344,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-996415",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4949540386839659,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5095051523281628,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 8
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "2-1-candidate",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 5,
+            "scores": {
+              "common": 1395,
+              "changed": 5,
+              "max": 0.030899999999999983,
+              "mean": 0.017820000000000013,
+              "over_1e_7": 5,
+              "over_1e_6": 5
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 5,
+            "scores": {
+              "common": 10000,
+              "changed": 5,
+              "max": 0.03094188566881173,
+              "mean": 0.0178158435916163,
+              "over_1e_7": 5,
+              "over_1e_6": 5
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998699",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4225205743122041,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39157868864339235,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-998621",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.5190365559066259,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.49064729573378196,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-965880",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.48649924837817715,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5039494950816944,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 5
+          },
+          "arms": "candidate/candidate"
+        },
+        {
+          "left": "2-2-baseline",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 7,
+            "scores": {
+              "common": 1395,
+              "changed": 7,
+              "max": 0.014499999999999957,
+              "mean": 0.006657142857142846,
+              "over_1e_7": 7,
+              "over_1e_6": 7
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 7,
+            "scores": {
+              "common": 10000,
+              "changed": 7,
+              "max": 0.014551113644196922,
+              "mean": 0.006644084587678194,
+              "over_1e_7": 7,
+              "over_1e_6": 7
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-996415",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4949540386839659,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5095051523281628,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-963984",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.48978491610355296,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5013038166956499,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-583341",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3025277749471845,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.30965653697220347,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 7
+          },
+          "arms": "baseline/baseline"
+        },
+        {
+          "left": "2-2-baseline",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 5,
+            "scores": {
+              "common": 1395,
+              "changed": 5,
+              "max": 0.030899999999999983,
+              "mean": 0.015300000000000003,
+              "over_1e_7": 5,
+              "over_1e_6": 5
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 6,
+            "scores": {
+              "common": 10000,
+              "changed": 6,
+              "max": 0.03094188566881173,
+              "mean": 0.012770679461985643,
+              "over_1e_7": 6,
+              "over_1e_6": 6
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998699",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4225205743122041,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39157868864339235,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-938518",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.40609754206675036,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.38186141133048734,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-965880",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.48649924837817715,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5039494950816944,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 5
+          },
+          "arms": "baseline/candidate"
+        },
+        {
+          "left": "3-1-baseline",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 8605,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 12,
+            "scores": {
+              "common": 1395,
+              "changed": 12,
+              "max": 0.030899999999999983,
+              "mean": 0.010258333333333328,
+              "over_1e_7": 12,
+              "over_1e_6": 12
+            }
+          },
+          "wal": {
+            "left_only": 0,
+            "right_only": 0,
+            "changed": 12,
+            "scores": {
+              "common": 10000,
+              "changed": 12,
+              "max": 0.03094188566881173,
+              "mean": 0.010252968220503875,
+              "over_1e_7": 12,
+              "over_1e_6": 12
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 0,
+          "unmatched_symmetric_difference": 0,
+          "query_category_changes": 0,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-998699",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4225205743122041,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39157868864339235,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-938518",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.40609754206675036,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.38186141133048734,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-965880",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.48649924837817715,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5039494950816944,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 8605,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [],
+            "right_only": []
+          },
+          "unmatched_changed_cells": {
+            "best_score": 12
+          },
+          "arms": "baseline/candidate"
+        }
+      ]
+    }
+  }
+}

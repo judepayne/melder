@@ -1,0 +1,7 @@
+size,variant,repeat,position,binary,score_records_s,process_wall_s,max_rss_bytes,elapsed_s,cache_hits,cache_copy,returncode,error,artifacts
+100000,exact-shortlist,1,1,baseline,5165.0,4.02,2349154304,4.030005041997356,2,apfs-cow,0,,100000/exact-shortlist/1-1-baseline
+100000,exact-shortlist,1,2,candidate,5155.0,4.14,2332114944,4.143252457994095,2,apfs-cow,0,,100000/exact-shortlist/1-2-candidate
+100000,exact-shortlist,2,1,candidate,6170.0,3.93,2336784384,3.9374729589981143,2,apfs-cow,0,,100000/exact-shortlist/2-1-candidate
+100000,exact-shortlist,2,2,baseline,6313.0,3.66,2322169856,3.6687596659976407,2,apfs-cow,0,,100000/exact-shortlist/2-2-baseline
+100000,exact-shortlist,3,1,baseline,6226.0,3.73,2306228224,3.7334792080000625,2,apfs-cow,0,,100000/exact-shortlist/3-1-baseline
+100000,exact-shortlist,3,2,candidate,5239.0,4.11,2330460160,4.118218250005157,2,apfs-cow,0,,100000/exact-shortlist/3-2-candidate

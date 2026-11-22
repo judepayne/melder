@@ -1,0 +1,213 @@
+--- a/src/batch/engine.rs
++++ b/src/batch/engine.rs
+@@ -418,7 +418,8 @@
+ 
+     // Pre-compute top_n from config (0 = no limit in batch → best result only).
+     let top_n = config.top_n.unwrap_or(5);
+-    let search_plan = pipeline::SearchPlan::new(config, Side::B, Side::A);
++    let mut search_plan = pipeline::SearchPlan::new(config, Side::B, Side::A);
++    search_plan.prepare_exact(&reference)?;
+ 
+     // Build A-side BM25 index if method: bm25 is configured.
+     // Uses SimpleBm25 — no RwLock, no commit, no self-score pre-computation
+--- a/src/matching/pipeline.rs
++++ b/src/matching/pipeline.rs
+@@ -97,6 +97,7 @@
+     query_side: Side,
+     scoring_fields: Vec<String>,
+     bindings: Vec<BoundField>,
++    prepared_exact: HashMap<String, Vec<Option<String>>>,
+ }
+ 
+ enum BindingNames {
+@@ -138,6 +139,22 @@
+     }
+ }
+ impl SearchPlan {
++    /// Benchmark-only immutable B-to-A pool preparation; Unicode uses original scorer.
++    pub(crate) fn prepare_exact(&mut self, pool: &dyn RecordCollection) -> Result<(), StoreError> {
++        if self.query_side != Side::B || !self.bindings.iter().any(|f| f.method == MatchMethod::Exact) { return Ok(()); }
++        for id in pool.ids()? {
++            if let Some(record) = pool.get(&id)? {
++                let keys = self.bindings.iter().map(|f| {
++                    if f.method != MatchMethod::Exact { return None; }
++                    let BindingNames::Paired { a, .. } = &f.names else { return None; };
++                    scoring::exact::prepare(record.get(a).map(String::as_str).unwrap_or(""))
++                }).collect();
++                self.prepared_exact.insert(id, keys);
++            }
++        }
++        Ok(())
++    }
++
+     /// Borrow the query-side embedding layout without mirroring native names.
+     pub(crate) fn embedding_fields(&self) -> impl Iterator<Item = (&str, f64)> + Clone {
+         self.embedding_bindings().map(|(a, b, weight)| {
+@@ -177,6 +194,7 @@
+         Self {
+             query_side,
+             scoring_fields,
++            prepared_exact: HashMap::new(),
+             bindings: config
+                 .match_fields
+                 .iter()
+@@ -196,6 +214,7 @@
+     pub fn enroll(config: &crate::config::enroll_schema::EnrollJobConfig) -> Self {
+         Self {
+             query_side: Side::A,
++            prepared_exact: HashMap::new(),
+             scoring_fields: config
+                 .match_fields
+                 .iter()
+@@ -453,6 +472,13 @@
+ 
+     let mut results: Vec<MatchResult> = Vec::with_capacity(ann_cands.len() + extra_cands.len());
+ 
++    let exact_query: Vec<Option<String>> = if plan.prepared_exact.is_empty() { Vec::new() } else {
++        plan.bindings.iter().map(|f| {
++            if f.method != MatchMethod::Exact { return None; }
++            let BindingNames::Paired { b, .. } = &f.names else { return None; };
++            scoring::exact::prepare(query.record.get(b).map(String::as_str).unwrap_or(""))
++        }).collect()
++    };
+     // Score all candidates through the same path.
+     for cand in ann_cands.iter().chain(extra_cands.iter()) {
+         // Skip self-match in enroll mode
+@@ -476,6 +502,7 @@
+             has_emb_specs,
+             pool.synonym_dictionary,
+             strict_vectors,
++            Some(&exact_query),
+         )?);
+     }
+ 
+@@ -541,6 +568,7 @@
+     has_emb_specs: bool,
+     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
+     strict_vectors: bool,
++    exact_query: Option<&[Option<String>]>,
+ ) -> Result<MatchResult, StoreError> {
+     // Decompose combined vecs → per-field cosine similarities.
+     let emb_scores: Option<HashMap<(&str, &str), f64>> = if has_emb_specs {
+@@ -558,7 +586,7 @@
+ 
+     let precomputed_bm25 = bm25_scores.get(&cand.id).copied();
+ 
+-    let score_result = scoring::score_bound_pair(
++    let score_result = scoring::score_bound_pair_prepared(
+         query_record,
+         &cand.record,
+         plan.bindings.iter().map(|f| {
+@@ -583,6 +611,7 @@
+         emb_scores.as_ref(),
+         precomputed_bm25,
+         synonym_dictionary,
++        exact_query.zip(plan.prepared_exact.get(&cand.id).map(Vec::as_slice)),
+     );
+ 
+     Ok(scoring::build_match_result(
+@@ -1078,6 +1107,7 @@
+             false,
+             None,
+             false,
++            None,
+         )
+         .expect("native exact scoring succeeds");
+         assert_eq!(
+@@ -1314,6 +1344,32 @@
+                 format!("{ordinary:?}"),
+                 "strict must preserve normal scoring including absent vectors"
+             );
++        }
++    }
++
++    #[test]
++    fn prepared_exact_real_loop_parity() {
++        let store = make_store();
++        let config = make_config_exact("left_name", "right_name");
++        let values = ["", " ", " ABC ", "abc", "def", "Café", "CAFÉ", "İ", "i\u{307}", "Σ", "ς", "\u{2003}ABC\u{2003}"];
++        let ids: Vec<String> = (0..values.len()).map(|i| i.to_string()).collect();
++        for (id, value) in ids.iter().zip(values) {
++            store.insert(Side::A, id, &make_record(&[("left_name", value)])).expect("insert");
++        }
++        let collection = ScopedCollection::new(&store, Side::A);
++        let pool = SearchPool { collection: &collection, combined_index: None, synonym_dictionary: None };
++        let scores = HashMap::new();
++        let exclusions = crate::matching::exclusions::Exclusions::new();
++        let inputs = SearchCandidates { eligible_ids: &ids, bm25_candidate_ids: &ids, bm25_scores_map: &scores, synonym_candidate_ids: &[], exclusions: &exclusions, same_collection: false };
++        let baseline = SearchPlan::new(&config, Side::B, Side::A);
++        let mut prepared = SearchPlan::new(&config, Side::B, Side::A);
++        prepared.prepare_exact(&collection).expect("prepare");
++        for value in values {
++            let record = make_record(&[("right_name", value)]);
++            let query = PreparedQuery { id: "query", record: &record, combined_vec: &[] };
++            let a = search(&query, &pool, &baseline, &config, &inputs, 0, 0, SearchPolicy::Graph).expect("original");
++            let b = search(&query, &pool, &prepared, &config, &inputs, 0, 0, SearchPolicy::Graph).expect("prepared");
++            assert_eq!(format!("{a:?}"), format!("{b:?}"), "query {value:?}");
+         }
+     }
+ 
+--- a/src/scoring/mod.rs
++++ b/src/scoring/mod.rs
+@@ -80,13 +80,29 @@
+     precomputed_bm25_score: Option<f64>,
+     synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
+ ) -> ScoreResult {
++    score_bound_pair_prepared(query_record, candidate_record, fields, precomputed_emb_scores, precomputed_bm25_score, synonym_dictionary, None)
++}
++
++pub(crate) fn score_bound_pair_prepared<'a>(
++    query_record: &Record,
++    candidate_record: &Record,
++    fields: impl ExactSizeIterator<Item = FieldBinding<'a>>,
++    precomputed_emb_scores: Option<&std::collections::HashMap<(&str, &str), f64>>,
++    precomputed_bm25_score: Option<f64>,
++    synonym_dictionary: Option<&crate::synonym::dictionary::SynonymDictionary>,
++    prepared: Option<(&[Option<String>], &[Option<String>])>,
++) -> ScoreResult {
+     let mut field_scores = Vec::with_capacity(fields.len());
+     let mut base_weighted_sum = 0.0_f64; // non-synonym methods
+     let mut synonym_bonus = 0.0_f64; // additive synonym contribution
+     let mut total_weight = 0.0_f64; // denominator (excludes synonym)
+ 
+-    for mf in fields {
+-        let score = if mf.method == MatchMethod::Bm25 {
++    for (field_index, mf) in fields.enumerate() {
++        let cached = prepared.and_then(|(q, p)| Some((q.get(field_index)?.as_ref()?, p.get(field_index)?.as_ref()?)));
++        let score = if mf.method == MatchMethod::Exact && cached.is_some() {
++            let (q, p) = cached.expect("checked above");
++            if !q.is_empty() && q == p { 1.0 } else { 0.0 }
++        } else if mf.method == MatchMethod::Bm25 {
+             // BM25 score is precomputed by the pipeline, like embedding scores.
+             // No per-field record values — BM25 operates across all text fields.
+             precomputed_bm25_score.unwrap_or(0.0)
+--- a/src/scoring/exact.rs
++++ b/src/scoring/exact.rs
+@@ -23,9 +23,27 @@
+     }
+ }
+ 
++/// Benchmark key; non-ASCII deliberately falls back to the original scorer.
++pub(crate) fn prepare(value: &str) -> Option<String> {
++    let value = value.trim();
++    value.is_ascii().then(|| value.to_ascii_lowercase())
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    #[test]
++    fn prepared_parity() {
++        let values = ["", " ", " ABC ", "abc", "def", "Café", "CAFÉ", "İ", "i\u{307}", "Σ", "ς", "\u{2003}ABC\u{2003}", "a\0B"];
++        for a in values { for b in values {
++            let prepared = match (prepare(a), prepare(b)) {
++                (Some(a), Some(b)) => if !a.is_empty() && a == b { 1.0 } else { 0.0 },
++                _ => score(a, b),
++            };
++            assert_eq!(prepared, score(a, b), "{a:?} / {b:?}");
++        }}
++    }
+ 
+     #[test]
+     fn table_driven() {

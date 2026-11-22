@@ -1,0 +1,13 @@
+size,variant,repeat,position,binary,score_records_s,process_wall_s,max_rss_bytes,elapsed_s,cache_hits,cache_copy,returncode,error,artifacts
+100000,exact-mixed,1,1,baseline,4350.0,5.23,2468413440,5.2385304999988875,2,apfs-cow,0,,100000/exact-mixed/1-1-baseline
+100000,exact-mixed,1,2,candidate,4325.0,6.06,2484830208,6.066708915997879,2,apfs-cow,0,,100000/exact-mixed/1-2-candidate
+100000,exact-mixed,2,1,candidate,4334.0,5.76,2506768384,5.7702318330048,2,apfs-cow,0,,100000/exact-mixed/2-1-candidate
+100000,exact-mixed,2,2,baseline,4304.0,5.26,2456616960,5.2687050419990555,2,apfs-cow,0,,100000/exact-mixed/2-2-baseline
+100000,exact-mixed,3,1,baseline,4312.0,5.26,2499903488,5.266876041001524,2,apfs-cow,0,,100000/exact-mixed/3-1-baseline
+100000,exact-mixed,3,2,candidate,4414.0,5.38,2476326912,5.39195279100386,2,apfs-cow,0,,100000/exact-mixed/3-2-candidate
+1000000,exact-mixed,1,1,candidate,523.0,45.24,12135989248,45.25015616600285,2,apfs-cow,0,,1000000/exact-mixed/1-1-candidate
+1000000,exact-mixed,1,2,baseline,591.0,40.7,11943116800,40.712411459004215,2,apfs-cow,0,,1000000/exact-mixed/1-2-baseline
+1000000,exact-mixed,2,1,baseline,589.0,40.41,11900600320,40.423169124995184,2,apfs-cow,0,,1000000/exact-mixed/2-1-baseline
+1000000,exact-mixed,2,2,candidate,582.0,43.55,12150243328,43.557313249999424,2,apfs-cow,0,,1000000/exact-mixed/2-2-candidate
+1000000,exact-mixed,3,1,candidate,591.0,42.15,12021743616,42.16274029199849,2,apfs-cow,0,,1000000/exact-mixed/3-1-candidate
+1000000,exact-mixed,3,2,baseline,581.0,40.41,11899502592,40.414619041999686,2,apfs-cow,0,,1000000/exact-mixed/3-2-baseline

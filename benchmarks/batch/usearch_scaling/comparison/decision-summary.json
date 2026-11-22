@@ -1,0 +1,3727 @@
+{
+  "10000/baseline": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          68,
+          92
+        ],
+        "unmatched_best_score_max_delta": [
+          0.04760000000000003,
+          0.07789999999999997
+        ],
+        "wal_score_changes": [
+          68,
+          92
+        ],
+        "wal_score_max_delta": [
+          0.047609813667554624,
+          0.07786434705952333
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          81,
+          94
+        ],
+        "unmatched_best_score_max_delta": [
+          0.041800000000000004,
+          0.07789999999999997
+        ],
+        "wal_score_changes": [
+          81,
+          94
+        ],
+        "wal_score_max_delta": [
+          0.04176230728626251,
+          0.07786434705952333
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          66,
+          86
+        ],
+        "unmatched_best_score_max_delta": [
+          0.06469999999999998,
+          0.07789999999999997
+        ],
+        "wal_score_changes": [
+          66,
+          86
+        ],
+        "wal_score_max_delta": [
+          0.06467518161522151,
+          0.07786434705952333
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    }
+  },
+  "10000/exact-mixed": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          69,
+          101
+        ],
+        "unmatched_best_score_max_delta": [
+          0.042800000000000005,
+          0.07800000000000001
+        ],
+        "wal_score_changes": [
+          70,
+          101
+        ],
+        "wal_score_max_delta": [
+          0.04273487299032208,
+          0.07797893270164308
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          85,
+          97
+        ],
+        "unmatched_best_score_max_delta": [
+          0.04310000000000003,
+          0.07800000000000001
+        ],
+        "wal_score_changes": [
+          85,
+          98
+        ],
+        "wal_score_max_delta": [
+          0.0431420678279541,
+          0.07797893270164308
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          78,
+          92
+        ],
+        "unmatched_best_score_max_delta": [
+          0.042800000000000005,
+          0.04310000000000003
+        ],
+        "wal_score_changes": [
+          78,
+          92
+        ],
+        "wal_score_max_delta": [
+          0.04273487299032208,
+          0.0431420678279541
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    }
+  },
+  "100000/baseline": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          1
+        ],
+        "classification_changes": [
+          0,
+          1
+        ],
+        "unmatched_membership_diff": [
+          0,
+          1
+        ],
+        "unmatched_best_score_changes": [
+          172,
+          197
+        ],
+        "unmatched_best_score_max_delta": [
+          0.051600000000000035,
+          0.0867
+        ],
+        "wal_score_changes": [
+          172,
+          198
+        ],
+        "wal_score_max_delta": [
+          0.05165274634527961,
+          0.08669565750488756
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": [
+        {
+          "left": "1-1-baseline",
+          "right": "1-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 900,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 184,
+            "scores": {
+              "common": 9099,
+              "changed": 184,
+              "max": 0.0867,
+              "mean": 0.01376630434782609,
+              "over_1e_7": 184,
+              "over_1e_6": 184
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 184,
+            "scores": {
+              "common": 9999,
+              "changed": 184,
+              "max": 0.08669565750488756,
+              "mean": 0.01376420936816603,
+              "over_1e_7": 184,
+              "over_1e_6": 184
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.45676371587643144,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3499429233738832,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4041624813156198,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-764900",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.5339602520399921,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4807289941742484,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 900,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6452850675300901,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 184
+          }
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "2-2-baseline",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 900,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 194,
+            "scores": {
+              "common": 9099,
+              "changed": 194,
+              "max": 0.06679999999999997,
+              "mean": 0.014856185567010311,
+              "over_1e_7": 194,
+              "over_1e_6": 194
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 194,
+            "scores": {
+              "common": 9999,
+              "changed": 194,
+              "max": 0.06684533663504477,
+              "mean": 0.014849852785799788,
+              "over_1e_7": 194,
+              "over_1e_6": 194
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-018092",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4426174539614355,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3757721173263907,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-153333",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3787544861775317,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.43530926558789396,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4041624813156198,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3499429233738832,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 900,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6452850675300901,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 194
+          }
+        },
+        {
+          "left": "2-1-candidate",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 900,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 174,
+            "scores": {
+              "common": 9099,
+              "changed": 174,
+              "max": 0.06109999999999999,
+              "mean": 0.013945402298850577,
+              "over_1e_7": 174,
+              "over_1e_6": 174
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 174,
+            "scores": {
+              "common": 9999,
+              "changed": 174,
+              "max": 0.06104623395861808,
+              "mean": 0.013942994405578888,
+              "over_1e_7": 174,
+              "over_1e_6": 174
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-089336",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.46559510960668016,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4045488756480621,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-153333",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.43530926558789396,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3793800890785136,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-850687",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.34177349507808685,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39342624142336646,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 900,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6452850675300901,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 174
+          }
+        },
+        {
+          "left": "3-1-baseline",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 900,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 192,
+            "scores": {
+              "common": 9099,
+              "changed": 192,
+              "max": 0.054300000000000015,
+              "mean": 0.014466145833333338,
+              "over_1e_7": 192,
+              "over_1e_6": 192
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 194,
+            "scores": {
+              "common": 9999,
+              "changed": 194,
+              "max": 0.05421955794173661,
+              "mean": 0.014313124946110294,
+              "over_1e_7": 194,
+              "over_1e_6": 193
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3499429233738832,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4041624813156198,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.27445308895624876,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.22176560499248588,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-912835",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3158778107271397,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36718316436864973,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 900,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6452850675300901,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 192
+          }
+        }
+      ]
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          1
+        ],
+        "classification_changes": [
+          0,
+          1
+        ],
+        "unmatched_membership_diff": [
+          0,
+          1
+        ],
+        "unmatched_best_score_changes": [
+          182,
+          200
+        ],
+        "unmatched_best_score_max_delta": [
+          0.06679999999999997,
+          0.0867
+        ],
+        "wal_score_changes": [
+          183,
+          201
+        ],
+        "wal_score_max_delta": [
+          0.06684533663504477,
+          0.08669565750488756
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": [
+        {
+          "left": "1-1-baseline",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 900,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 200,
+            "scores": {
+              "common": 9099,
+              "changed": 200,
+              "max": 0.0867,
+              "mean": 0.014459000000000001,
+              "over_1e_7": 200,
+              "over_1e_6": 200
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 201,
+            "scores": {
+              "common": 9999,
+              "changed": 201,
+              "max": 0.08669565750488756,
+              "mean": 0.014386341276934273,
+              "over_1e_7": 201,
+              "over_1e_6": 201
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.45676371587643144,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-089336",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.46559510960668016,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4045488756480621,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.22176560499248588,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.27445308895624876,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 900,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6452850675300901,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 200
+          }
+        },
+        {
+          "left": "2-2-baseline",
+          "right": "3-1-baseline",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 900,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 182,
+            "scores": {
+              "common": 9099,
+              "changed": 182,
+              "max": 0.06679999999999997,
+              "mean": 0.014492857142857146,
+              "over_1e_7": 182,
+              "over_1e_6": 182
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 183,
+            "scores": {
+              "common": 9999,
+              "changed": 183,
+              "max": 0.06684533663504477,
+              "mean": 0.01441047987374392,
+              "over_1e_7": 183,
+              "over_1e_6": 183
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-018092",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3757721173263907,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.4426174539614355,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-153333",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.43530926558789396,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3793800890785136,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-912835",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.36718316436864973,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3158778107271397,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 900,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6452850675300901,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 182
+          }
+        }
+      ]
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          1
+        ],
+        "classification_changes": [
+          0,
+          1
+        ],
+        "unmatched_membership_diff": [
+          0,
+          1
+        ],
+        "unmatched_best_score_changes": [
+          189,
+          200
+        ],
+        "unmatched_best_score_max_delta": [
+          0.053300000000000014,
+          0.06740000000000002
+        ],
+        "wal_score_changes": [
+          191,
+          201
+        ],
+        "wal_score_max_delta": [
+          0.053231257865743675,
+          0.06742892414331436
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": [
+        {
+          "left": "1-2-candidate",
+          "right": "2-1-candidate",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 900,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 194,
+            "scores": {
+              "common": 9099,
+              "changed": 194,
+              "max": 0.06740000000000002,
+              "mean": 0.014528350515463919,
+              "over_1e_7": 194,
+              "over_1e_6": 194
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 194,
+            "scores": {
+              "common": 9999,
+              "changed": 194,
+              "max": 0.06742892414331436,
+              "mean": 0.014524405596230262,
+              "over_1e_7": 194,
+              "over_1e_6": 194
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-264922",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3514948691269426,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.41892379327025697,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-153333",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3787544861775317,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.43530926558789396,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4041624813156198,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3499429233738832,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 900,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6452850675300901,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 194
+          }
+        },
+        {
+          "left": "1-2-candidate",
+          "right": "3-2-candidate",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 900,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 200,
+            "scores": {
+              "common": 9099,
+              "changed": 200,
+              "max": 0.053300000000000014,
+              "mean": 0.014534500000000004,
+              "over_1e_7": 200,
+              "over_1e_6": 200
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 201,
+            "scores": {
+              "common": 9999,
+              "changed": 201,
+              "max": 0.053231257865743675,
+              "mean": 0.014456374024401334,
+              "over_1e_7": 201,
+              "over_1e_6": 200
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-764900",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4807289941742484,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.5339602520399921,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-850687",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.34177349507808685,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39342624142336646,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-254123",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3432964748855978,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2920853038548272,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 900,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6452850675300901,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 200
+          }
+        }
+      ]
+    }
+  },
+  "100000/exact-mixed": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          1
+        ],
+        "classification_changes": [
+          0,
+          1
+        ],
+        "unmatched_membership_diff": [
+          0,
+          1
+        ],
+        "unmatched_best_score_changes": [
+          182,
+          208
+        ],
+        "unmatched_best_score_max_delta": [
+          0.05379999999999999,
+          0.07800000000000001
+        ],
+        "wal_score_changes": [
+          184,
+          209
+        ],
+        "wal_score_max_delta": [
+          0.05377013424402044,
+          0.07802609175439879
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": [
+        {
+          "left": "1-2-baseline",
+          "right": "2-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 204,
+            "scores": {
+              "common": 9112,
+              "changed": 204,
+              "max": 0.07800000000000001,
+              "mean": 0.01325,
+              "over_1e_7": 204,
+              "over_1e_6": 204
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 206,
+            "scores": {
+              "common": 9999,
+              "changed": 206,
+              "max": 0.07802609175439879,
+              "mean": 0.013126072928449197,
+              "over_1e_7": 206,
+              "over_1e_6": 206
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 204
+          }
+        },
+        {
+          "left": "1-2-baseline",
+          "right": "3-1-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 205,
+            "scores": {
+              "common": 9112,
+              "changed": 205,
+              "max": 0.05459999999999998,
+              "mean": 0.012971707317073172,
+              "over_1e_7": 205,
+              "over_1e_6": 205
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 207,
+            "scores": {
+              "common": 9999,
+              "changed": 207,
+              "max": 0.054663314611418656,
+              "mean": 0.012849202173608942,
+              "over_1e_7": 207,
+              "over_1e_6": 207
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-912835",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.36073251644722854,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3094271628057185,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 205
+          }
+        },
+        {
+          "left": "2-1-baseline",
+          "right": "2-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 194,
+            "scores": {
+              "common": 9112,
+              "changed": 194,
+              "max": 0.07800000000000001,
+              "mean": 0.013698453608247422,
+              "over_1e_7": 194,
+              "over_1e_6": 194
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 197,
+            "scores": {
+              "common": 9999,
+              "changed": 197,
+              "max": 0.07802609175439879,
+              "mean": 0.013488551904795306,
+              "over_1e_7": 197,
+              "over_1e_6": 197
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 194
+          }
+        },
+        {
+          "left": "2-1-baseline",
+          "right": "3-1-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 182,
+            "scores": {
+              "common": 9112,
+              "changed": 182,
+              "max": 0.062,
+              "mean": 0.013980769230769229,
+              "over_1e_7": 182,
+              "over_1e_6": 182
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 184,
+            "scores": {
+              "common": 9999,
+              "changed": 184,
+              "max": 0.06202298402786255,
+              "mean": 0.013834286399417995,
+              "over_1e_7": 184,
+              "over_1e_6": 184
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-264922",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4087236580557229,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.34670067402786037,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-588519",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3419813081207025,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39664462273212114,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 182
+          }
+        },
+        {
+          "left": "2-2-candidate",
+          "right": "3-2-baseline",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 204,
+            "scores": {
+              "common": 9112,
+              "changed": 204,
+              "max": 0.05379999999999999,
+              "mean": 0.01317892156862745,
+              "over_1e_7": 204,
+              "over_1e_6": 204
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 207,
+            "scores": {
+              "common": 9999,
+              "changed": 207,
+              "max": 0.05377013424402044,
+              "mean": 0.01299062967238847,
+              "over_1e_7": 207,
+              "over_1e_6": 207
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-912835",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.36073251644722854,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3094271628057185,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-183772",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.4145979834731653,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.36408547591529633,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 204
+          }
+        },
+        {
+          "left": "3-1-candidate",
+          "right": "3-2-baseline",
+          "rel": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 208,
+            "scores": {
+              "common": 9112,
+              "changed": 208,
+              "max": 0.07800000000000001,
+              "mean": 0.013021634615384615,
+              "over_1e_7": 208,
+              "over_1e_6": 208
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 209,
+            "scores": {
+              "common": 9999,
+              "changed": 209,
+              "max": 0.07802609175439879,
+              "mean": 0.012960268291497948,
+              "over_1e_7": 209,
+              "over_1e_6": 209
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-764900",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.46745537700961215,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.521221392482546,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 208
+          }
+        }
+      ]
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          1
+        ],
+        "classification_changes": [
+          0,
+          1
+        ],
+        "unmatched_membership_diff": [
+          0,
+          1
+        ],
+        "unmatched_best_score_changes": [
+          207,
+          213
+        ],
+        "unmatched_best_score_max_delta": [
+          0.062,
+          0.07800000000000001
+        ],
+        "wal_score_changes": [
+          208,
+          213
+        ],
+        "wal_score_max_delta": [
+          0.06204310389156603,
+          0.07802609175439879
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": [
+        {
+          "left": "1-1-candidate",
+          "right": "2-2-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 211,
+            "scores": {
+              "common": 9112,
+              "changed": 211,
+              "max": 0.07800000000000001,
+              "mean": 0.013216113744075829,
+              "over_1e_7": 211,
+              "over_1e_6": 211
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 213,
+            "scores": {
+              "common": 9999,
+              "changed": 213,
+              "max": 0.07802609175439879,
+              "mean": 0.01308844803808964,
+              "over_1e_7": 213,
+              "over_1e_6": 213
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-306827",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.44809415012594267,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3700680583715439,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-191589",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.3008045244188447,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.3506251158366597,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 211
+          }
+        },
+        {
+          "left": "1-1-candidate",
+          "right": "3-1-candidate",
+          "rel": {
+            "left_only": 0,
+            "right_only": 1,
+            "changed": 0,
+            "scores": {
+              "common": 887,
+              "changed": 0,
+              "max": 0,
+              "mean": 0,
+              "over_1e_7": 0,
+              "over_1e_6": 0
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "un": {
+            "left_only": 1,
+            "right_only": 0,
+            "changed": 207,
+            "scores": {
+              "common": 9112,
+              "changed": 207,
+              "max": 0.062,
+              "mean": 0.013333333333333332,
+              "over_1e_7": 207,
+              "over_1e_6": 207
+            }
+          },
+          "wal": {
+            "left_only": 1,
+            "right_only": 1,
+            "changed": 208,
+            "scores": {
+              "common": 9999,
+              "changed": 208,
+              "max": 0.06204310389156603,
+              "mean": 0.01327378982358086,
+              "over_1e_7": 208,
+              "over_1e_6": 208
+            },
+            "rank_changes": 0,
+            "reason_changes": 0
+          },
+          "match_symmetric_difference": 0,
+          "review_symmetric_difference": 1,
+          "unmatched_symmetric_difference": 1,
+          "query_category_changes": 1,
+          "wal_score_examples": [
+            {
+              "key": [
+                "CP-089336",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.45442020149072726,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.39237709759916123,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-701280",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.21304117653945998,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.2668113107834804,
+                "rank": null,
+                "reason": null
+              }
+            },
+            {
+              "key": [
+                "CP-764900",
+                "",
+                "unmatched"
+              ],
+              "left": {
+                "score": 0.521221392482546,
+                "rank": null,
+                "reason": null
+              },
+              "right": {
+                "score": 0.46745537700961215,
+                "rank": null,
+                "reason": null
+              }
+            }
+          ],
+          "wal_relationship_scores": {
+            "common": 887,
+            "changed": 0,
+            "max": 0,
+            "mean": 0,
+            "over_1e_7": 0,
+            "over_1e_6": 0
+          },
+          "decision_set_examples": {
+            "left_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "",
+                  "unmatched"
+                ],
+                "value": {
+                  "score": 0.48580118715763093,
+                  "rank": null,
+                  "reason": null
+                }
+              }
+            ],
+            "right_only": [
+              {
+                "key": [
+                  "CP-205102",
+                  "ENT-467748",
+                  "review"
+                ],
+                "value": {
+                  "score": 0.6283212458237539,
+                  "rank": 1,
+                  "reason": "top_scoring"
+                }
+              }
+            ]
+          },
+          "unmatched_changed_cells": {
+            "best_score": 207
+          }
+        }
+      ]
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          182,
+          210
+        ],
+        "unmatched_best_score_max_delta": [
+          0.05349999999999999,
+          0.07800000000000001
+        ],
+        "wal_score_changes": [
+          183,
+          211
+        ],
+        "wal_score_max_delta": [
+          0.053502120077610016,
+          0.07802609175439879
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    }
+  },
+  "250000/baseline": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          183,
+          199
+        ],
+        "unmatched_best_score_max_delta": [
+          0.06070000000000003,
+          0.07770000000000005
+        ],
+        "wal_score_changes": [
+          183,
+          201
+        ],
+        "wal_score_max_delta": [
+          0.06077686859304404,
+          0.07769109256116086
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          179,
+          198
+        ],
+        "unmatched_best_score_max_delta": [
+          0.07620000000000005,
+          0.07770000000000005
+        ],
+        "wal_score_changes": [
+          179,
+          198
+        ],
+        "wal_score_max_delta": [
+          0.07614386241476773,
+          0.07769109256116086
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          190,
+          205
+        ],
+        "unmatched_best_score_max_delta": [
+          0.06330000000000002,
+          0.07620000000000005
+        ],
+        "wal_score_changes": [
+          192,
+          205
+        ],
+        "wal_score_max_delta": [
+          0.06331990420531897,
+          0.07614386241476773
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    }
+  },
+  "250000/exact-mixed": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          188,
+          211
+        ],
+        "unmatched_best_score_max_delta": [
+          0.06109999999999999,
+          0.10909999999999997
+        ],
+        "wal_score_changes": [
+          188,
+          211
+        ],
+        "wal_score_max_delta": [
+          0.061104552416217595,
+          0.10906725860622174
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          192,
+          206
+        ],
+        "unmatched_best_score_max_delta": [
+          0.07350000000000001,
+          0.10909999999999997
+        ],
+        "wal_score_changes": [
+          192,
+          206
+        ],
+        "wal_score_max_delta": [
+          0.07344809855957363,
+          0.10906725860622174
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          186,
+          202
+        ],
+        "unmatched_best_score_max_delta": [
+          0.0685,
+          0.07350000000000001
+        ],
+        "wal_score_changes": [
+          186,
+          202
+        ],
+        "wal_score_max_delta": [
+          0.06852947617329097,
+          0.07344809855957363
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    }
+  },
+  "500000/baseline": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          104,
+          119
+        ],
+        "unmatched_best_score_max_delta": [
+          0.0514,
+          0.07900000000000001
+        ],
+        "wal_score_changes": [
+          104,
+          119
+        ],
+        "wal_score_max_delta": [
+          0.051405337356147385,
+          0.07907733812798534
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          110,
+          123
+        ],
+        "unmatched_best_score_max_delta": [
+          0.056599999999999984,
+          0.06090000000000001
+        ],
+        "wal_score_changes": [
+          110,
+          123
+        ],
+        "wal_score_max_delta": [
+          0.056647442281246185,
+          0.060902294147972935
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          113,
+          120
+        ],
+        "unmatched_best_score_max_delta": [
+          0.054400000000000004,
+          0.06090000000000001
+        ],
+        "wal_score_changes": [
+          113,
+          120
+        ],
+        "wal_score_max_delta": [
+          0.0544401786858103,
+          0.060902294147972935
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    }
+  },
+  "500000/exact-mixed": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          99,
+          132
+        ],
+        "unmatched_best_score_max_delta": [
+          0.054800000000000015,
+          0.056599999999999984
+        ],
+        "wal_score_changes": [
+          99,
+          132
+        ],
+        "wal_score_max_delta": [
+          0.05481206473317568,
+          0.056647442281246185
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          117,
+          123
+        ],
+        "unmatched_best_score_max_delta": [
+          0.05180000000000001,
+          0.056599999999999984
+        ],
+        "wal_score_changes": [
+          117,
+          124
+        ],
+        "wal_score_max_delta": [
+          0.05174079302049717,
+          0.056647442281246185
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          107,
+          124
+        ],
+        "unmatched_best_score_max_delta": [
+          0.055800000000000016,
+          0.056599999999999984
+        ],
+        "wal_score_changes": [
+          107,
+          124
+        ],
+        "wal_score_max_delta": [
+          0.05586562145956708,
+          0.056647442281246185
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    }
+  },
+  "1000000/baseline": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          4,
+          11
+        ],
+        "unmatched_best_score_max_delta": [
+          0.01200000000000001,
+          0.03269999999999995
+        ],
+        "wal_score_changes": [
+          5,
+          12
+        ],
+        "wal_score_max_delta": [
+          0.011976444601893288,
+          0.03271949068814073
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          8,
+          9
+        ],
+        "unmatched_best_score_max_delta": [
+          0.02310000000000001,
+          0.029500000000000026
+        ],
+        "wal_score_changes": [
+          8,
+          9
+        ],
+        "wal_score_max_delta": [
+          0.023126362950704082,
+          0.029532565793259857
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          8,
+          13
+        ],
+        "unmatched_best_score_max_delta": [
+          0.025400000000000034,
+          0.03269999999999995
+        ],
+        "wal_score_changes": [
+          8,
+          13
+        ],
+        "wal_score_max_delta": [
+          0.02534506987396845,
+          0.03271949068814073
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    }
+  },
+  "1000000/exact-mixed": {
+    "baseline/candidate": {
+      "pairs": 9,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          6,
+          11
+        ],
+        "unmatched_best_score_max_delta": [
+          0.011499999999999955,
+          0.030899999999999983
+        ],
+        "wal_score_changes": [
+          6,
+          11
+        ],
+        "wal_score_max_delta": [
+          0.011518900592096981,
+          0.03094188566881173
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "candidate/candidate": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          10,
+          10
+        ],
+        "unmatched_best_score_max_delta": [
+          0.02729999999999999,
+          0.030899999999999983
+        ],
+        "wal_score_changes": [
+          10,
+          10
+        ],
+        "wal_score_max_delta": [
+          0.027322962321614908,
+          0.03094188566881173
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    },
+    "baseline/baseline": {
+      "pairs": 3,
+      "ranges": {
+        "accepted_edge_diff": [
+          0,
+          0
+        ],
+        "review_edge_diff": [
+          0,
+          0
+        ],
+        "classification_changes": [
+          0,
+          0
+        ],
+        "unmatched_membership_diff": [
+          0,
+          0
+        ],
+        "unmatched_best_score_changes": [
+          8,
+          12
+        ],
+        "unmatched_best_score_max_delta": [
+          0.02729999999999999,
+          0.030899999999999983
+        ],
+        "wal_score_changes": [
+          8,
+          12
+        ],
+        "wal_score_max_delta": [
+          0.027322962321614908,
+          0.03094188566881173
+        ],
+        "wal_rank_changes": [
+          0,
+          0
+        ],
+        "wal_reason_changes": [
+          0,
+          0
+        ]
+      },
+      "anomalous_pairs": []
+    }
+  }
+}

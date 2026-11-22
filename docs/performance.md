@@ -158,6 +158,12 @@ shared scoring pipeline and flat-vector search behavior. This is selected
 automatically from `blocking.enabled`; there is no new configuration.
 Blocked searches and live/enroll behavior are unchanged.
 
+With blocking enabled, batch can reuse a block's record IDs and, for large
+blocks, its BM25 membership set across queries. At 1M reference records on the
+M1 Ultra this raised warm scoring from 570 to 1,571 queries/s; at 10k there
+was no measured gain. These are scoring rates, not end-to-end rates.
+[Before/after runs, memory and parity checks](../benchmarks/batch/usearch_scaling/comparison/findings.md).
+
 ### Unblocked batch BM25 comparison
 
 For each record in B, Melder uses BM25 to find possible matches in A.

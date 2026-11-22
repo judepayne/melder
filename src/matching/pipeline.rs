@@ -609,10 +609,25 @@ pub(crate) fn bm25_candidate_stage(
     eligible_ids: Option<&[String]>,
     limit: usize,
 ) -> (Vec<String>, HashMap<String, f64>) {
+    bm25_candidate_stage_prepared(index, record, side, eligible_ids, limit, None)
+}
+
+/// Batch-only entry point for an immutable index's reusable eligibility.
+pub(crate) fn bm25_candidate_stage_prepared(
+    index: &crate::bm25::simple::SimpleBm25,
+    record: &Record,
+    side: Side,
+    eligible_ids: Option<&[String]>,
+    limit: usize,
+    membership: Option<&std::collections::HashSet<u32>>,
+) -> (Vec<String>, HashMap<String, f64>) {
     let query_text = index.query_text_for(record, side);
     let self_score = index.analytical_self_score(&query_text);
     let raw = match eligible_ids {
-        Some(ids) => index.score_blocked(&query_text, ids, limit),
+        Some(ids) => match membership {
+            Some(prepared) => index.score_prepared(&query_text, ids, prepared, limit),
+            None => index.score_blocked(&query_text, ids, limit),
+        },
         None => index.score_all(&query_text, limit),
     };
     let scored: Vec<_> = raw

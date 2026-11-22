@@ -494,7 +494,7 @@ impl SimpleBm25 {
     ///
     /// Returns top-K as `(id, raw_bm25_score)`. An empty index returns no results.
     pub fn score_all(&self, query_text: &str, top_k: usize) -> Vec<(String, f32)> {
-        self.score(query_text, None, top_k)
+        self.score(query_text, None, top_k, None)
     }
 
     /// Score blocked candidates, returning top-K as `(id, raw_bm25_score)`.
@@ -507,7 +507,31 @@ impl SimpleBm25 {
         blocked_ids: &[String],
         top_k: usize,
     ) -> Vec<(String, f32)> {
-        self.score(query_text, Some(blocked_ids), top_k)
+        self.score(query_text, Some(blocked_ids), top_k, None)
+    }
+
+    /// Prepare eligibility for reuse while this index remains immutable.
+    pub(crate) fn prepare_membership(&self, ids: &[String]) -> std::collections::HashSet<u32> {
+        ids.iter().filter_map(|id| self.id_map.to_u32(id)).collect()
+    }
+
+    /// Prepare reusable WAND eligibility only when exhaustive scoring is bypassed.
+    pub(crate) fn prepare_block_membership(
+        &self,
+        ids: &[String],
+    ) -> Option<std::collections::HashSet<u32>> {
+        (ids.len() > self.exhaustive_threshold).then(|| self.prepare_membership(ids))
+    }
+
+    /// Score with membership prepared against this unchanged index.
+    pub(crate) fn score_prepared(
+        &self,
+        text: &str,
+        ids: &[String],
+        membership: &std::collections::HashSet<u32>,
+        top_k: usize,
+    ) -> Vec<(String, f32)> {
+        self.score(text, Some(ids), top_k, Some(membership))
     }
 
     fn score(
@@ -515,6 +539,7 @@ impl SimpleBm25 {
         query_text: &str,
         blocked_ids: Option<&[String]>,
         top_k: usize,
+        membership: Option<&std::collections::HashSet<u32>>,
     ) -> Vec<(String, f32)> {
         if query_text.is_empty() || blocked_ids.is_some_and(|ids| ids.is_empty()) || top_k == 0 {
             return Vec::new();
@@ -554,7 +579,7 @@ impl SimpleBm25 {
         if pool_size <= self.exhaustive_threshold {
             self.score_exhaustive(&term_idfs, blocked_ids, avg_dl, top_k)
         } else {
-            self.score_wand(&term_idfs, blocked_ids, avg_dl, top_k)
+            self.score_wand(&term_idfs, blocked_ids, avg_dl, top_k, membership)
         }
     }
 
@@ -611,10 +636,15 @@ impl SimpleBm25 {
         blocked_ids: Option<&[String]>,
         avg_dl: f64,
         top_k: usize,
+        membership: Option<&std::collections::HashSet<u32>>,
     ) -> Vec<(String, f32)> {
         // Unrestricted searches need neither ID enumeration nor a membership set.
-        let allowed: Option<std::collections::HashSet<u32>> =
-            blocked_ids.map(|ids| ids.iter().filter_map(|id| self.id_map.to_u32(id)).collect());
+        let owned = if membership.is_none() {
+            blocked_ids.map(|ids| self.prepare_membership(ids))
+        } else {
+            None
+        };
+        let allowed = membership.or(owned.as_ref());
 
         if allowed.as_ref().is_some_and(|ids| ids.is_empty()) {
             return Vec::new();
@@ -1639,6 +1669,46 @@ mod tests {
         assert_eq!(idx.score_all("pear", 10).len(), 1, "updated terms found");
         idx.remove("one");
         assert!(idx.score_all("pear", 10).is_empty(), "removed document");
+    }
+
+    #[test]
+    fn prepared_membership_preserves_restricted_results() {
+        for threshold in [0, 100] {
+            let idx = SimpleBm25 {
+                exhaustive_threshold: threshold,
+                ..SimpleBm25::new(&test_fields(), Side::A)
+            };
+            for id in ["a", "b", "c", "d"] {
+                idx.upsert(id, &make_record(&[("name_a", "shared apple")]));
+            }
+            for ids in [
+                vec![],
+                vec!["missing".to_string()],
+                vec!["c".to_string(), "a".to_string(), "missing".to_string()],
+            ] {
+                let membership = idx.prepare_membership(&ids);
+                let cached = idx.prepare_block_membership(&ids);
+                assert_eq!(
+                    cached.is_some(),
+                    ids.len() > threshold,
+                    "only WAND blocks retain membership"
+                );
+                for query in ["", "apple", "absent", "shared apple"] {
+                    for limit in [0, 1, 10] {
+                        assert_eq!(
+                            idx.score(query, Some(&ids), limit, cached.as_ref()),
+                            idx.score_blocked(query, &ids, limit),
+                            "optional membership must preserve candidate IDs and scores"
+                        );
+                        assert_eq!(
+                            idx.score_prepared(query, &ids, &membership, limit),
+                            idx.score_blocked(query, &ids, limit),
+                            "threshold={threshold}, query={query}, limit={limit}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

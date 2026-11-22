@@ -1,0 +1,58 @@
+{
+  "args": {
+    "baseline": "/tmp/melder-opt.o6KzoE/baseline",
+    "candidate": "/tmp/melder-opt.o6KzoE/integration-normalized",
+    "out": "/tmp/melder-opt.o6KzoE/integration-mixed",
+    "seed": "/tmp/melder-scale.2E9P5m/experiment",
+    "sizes": [
+      100000,
+      1000000
+    ],
+    "repeats": 3,
+    "variants": [
+      "exact-mixed"
+    ]
+  },
+  "platform": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
+  "binary_sha256": {
+    "baseline": "c1dd9dd739e0a34d39f90db22d76ea94cde57b5bab413433c46a0ad7c6c8c0d7",
+    "candidate": "d7c9f81e39e6bf6294e5135a90a62ac0cf816a61fa283b0b4afe2c6ae50556a0"
+  },
+  "input_sha256": {
+    "b": "6d463bb809611107d9febe04a52991e4bc855b6ab95325f849a7ebfe7073c248",
+    "100000": "f737b7b10dddfb2bf0b29ed763ac2431d553bb64b061c57e6d43316a4b91b263",
+    "1000000": "5e3c7d6048bf1acfd997e6f66658ece8636d033ff89e7efc6d2f1c28bad51c86"
+  },
+  "seed_metadata": {
+    "revision": "446d45e47b7a3545bed84197708e8faf1f5d7771",
+    "args": {
+      "reference": "/Users/jude/Library/CloudStorage/Dropbox/Projects/work/melder/benchmarks/batch/usearch_scaling/reference.yaml",
+      "binary": "/tmp/melder-scale.2E9P5m/target/release/meld",
+      "out": "/tmp/melder-scale.2E9P5m/experiment",
+      "a": "/Users/jude/Library/CloudStorage/Dropbox/Projects/work/melder/benchmarks/data/dataset_a_1000k.csv",
+      "b": "/Users/jude/Library/CloudStorage/Dropbox/Projects/work/melder/benchmarks/data/dataset_b_1000k.csv",
+      "sizes": [
+        10000,
+        100000,
+        250000,
+        500000,
+        1000000
+      ],
+      "queries": 10000,
+      "repeats": 3,
+      "seed": 42,
+      "encoder_device": "cpu"
+    },
+    "binary_sha256": "c1dd9dd739e0a34d39f90db22d76ea94cde57b5bab413433c46a0ad7c6c8c0d7",
+    "a_sha256": "5e3c7d6048bf1acfd997e6f66658ece8636d033ff89e7efc6d2f1c28bad51c86",
+    "b_sha256": "6e619fb000bb1e9ff083cc471ea6fafa4a68429c2c1b47849370aa4a06c28eba",
+    "rayon_threads": "20",
+    "ort_threads": "2"
+  },
+  "cache_policy": "fresh private COW clone or full copy per invocation; no hard links",
+  "hash_policy": "all CSV cells as strings; sorted columns/rows, duplicates preserved",
+  "environment": {
+    "RAYON_NUM_THREADS": "20",
+    "ORT_NUM_THREADS": "2"
+  }
+}

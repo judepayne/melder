@@ -4,6 +4,7 @@
 
 - Made graph assignment the default for batch matching. Greedy remains available. [Batch docs](docs/batch-mode.md#choosing-pairs-with-the-graph-optimizer)
 - Sped up greedy batch CSV output replay by about 9× on the 100k benchmark. Same matches, less work.
+- Reused BM25 block filters across batch queries. Warm scoring was 2.76× faster on the 1M reference benchmark. [Results](benchmarks/batch/usearch_scaling/comparison/findings.md)
 - Sped up unblocked batch BM25 searches by dropping a full-pool scan per query. [Benchmarks](docs/performance.md#unblocked-batch-bm25-comparison)
 - Made graph assignment the default at live startup. Incoming requests still default to greedy matching.
 - Added optional deferred acceptance to live mode: a stronger match can replace an earlier one, at the cost of extra work per request. [Live docs](docs/live-mode.md)

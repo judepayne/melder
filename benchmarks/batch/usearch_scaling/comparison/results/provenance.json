@@ -1,0 +1,61 @@
+{
+  "machine": "M1 Ultra, 20 cores, 64 GiB; macOS 26.7.3",
+  "experiments": {
+    "final-paired": {
+      "binary_sha256": {
+        "baseline": "c1dd9dd739e0a34d39f90db22d76ea94cde57b5bab413433c46a0ad7c6c8c0d7",
+        "candidate": "41b47c1beb40e518e3acdb526ba234c549f6b300de7da5c89477843aa62e246d"
+      },
+      "input_sha256": {
+        "b": "6d463bb809611107d9febe04a52991e4bc855b6ab95325f849a7ebfe7073c248",
+        "10000": "75fc491dc6a97499159f03376cd491b3b57e0f49267d6093330da7e5058a3d15",
+        "100000": "f737b7b10dddfb2bf0b29ed763ac2431d553bb64b061c57e6d43316a4b91b263",
+        "250000": "b8b9133e81e57ee5ad51efd0e09f77433d831ad4eeebc188483b11ee37132d58",
+        "500000": "79720e103bd2786a8f0e75daf6986826d3adaa27d2c9ebccf8ebb640e37dcb43",
+        "1000000": "5e3c7d6048bf1acfd997e6f66658ece8636d033ff89e7efc6d2f1c28bad51c86"
+      },
+      "platform": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
+      "environment": {
+        "RAYON_NUM_THREADS": "20",
+        "ORT_DYLIB_PATH": "/opt/homebrew/opt/onnxruntime/lib/libonnxruntime.dylib",
+        "ORT_NUM_THREADS": "2"
+      }
+    },
+    "exact-e2e": {
+      "binary_sha256": {
+        "baseline": "c1dd9dd739e0a34d39f90db22d76ea94cde57b5bab413433c46a0ad7c6c8c0d7",
+        "candidate": "1de3a9cd0cb8935b9f80b87276545c1bfc504cfed94445f9d246cb11bd695603"
+      },
+      "input_sha256": {
+        "b": "6d463bb809611107d9febe04a52991e4bc855b6ab95325f849a7ebfe7073c248",
+        "10000": "75fc491dc6a97499159f03376cd491b3b57e0f49267d6093330da7e5058a3d15",
+        "100000": "f737b7b10dddfb2bf0b29ed763ac2431d553bb64b061c57e6d43316a4b91b263",
+        "1000000": "5e3c7d6048bf1acfd997e6f66658ece8636d033ff89e7efc6d2f1c28bad51c86"
+      },
+      "platform": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
+      "environment": {
+        "RAYON_NUM_THREADS": "20",
+        "ORT_DYLIB_PATH": "/opt/homebrew/opt/onnxruntime/lib/libonnxruntime.dylib",
+        "ORT_NUM_THREADS": "2"
+      }
+    },
+    "shortlist": {
+      "binary_sha256": {
+        "baseline": "c1dd9dd739e0a34d39f90db22d76ea94cde57b5bab413433c46a0ad7c6c8c0d7",
+        "candidate": "1de3a9cd0cb8935b9f80b87276545c1bfc504cfed94445f9d246cb11bd695603"
+      },
+      "input_sha256": {
+        "b": "6d463bb809611107d9febe04a52991e4bc855b6ab95325f849a7ebfe7073c248",
+        "10000": "75fc491dc6a97499159f03376cd491b3b57e0f49267d6093330da7e5058a3d15",
+        "100000": "f737b7b10dddfb2bf0b29ed763ac2431d553bb64b061c57e6d43316a4b91b263"
+      },
+      "platform": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
+      "environment": {
+        "RAYON_NUM_THREADS": "20",
+        "ORT_DYLIB_PATH": "/opt/homebrew/opt/onnxruntime/lib/libonnxruntime.dylib",
+        "ORT_NUM_THREADS": "2"
+      }
+    }
+  },
+  "base_revision": "446d45e47b7a3545bed84197708e8faf1f5d7771"
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "a_size": 10000,
+    "queries": 10000,
+    "blocks": 20,
+    "estimated_retained_bytes": 343080
+  },
+  {
+    "a_size": 100000,
+    "queries": 10000,
+    "blocks": 20,
+    "estimated_retained_bytes": 3976520
+  },
+  {
+    "a_size": 250000,
+    "queries": 10000,
+    "blocks": 20,
+    "estimated_retained_bytes": 10796840
+  },
+  {
+    "a_size": 500000,
+    "queries": 10000,
+    "blocks": 20,
+    "estimated_retained_bytes": 21590600
+  },
+  {
+    "a_size": 1000000,
+    "queries": 10000,
+    "blocks": 20,
+    "estimated_retained_bytes": 43178120
+  }
+]
