@@ -1,0 +1,66 @@
+{
+  "machine": "M1 Ultra 20 cores, 64 GiB",
+  "baseline_commit": "446d45e",
+  "branch_commit": "4ca17c2",
+  "recipe": "usearch_scaling/reference.yaml; CPU preparation, 20 Rayon threads, ORT_NUM_THREADS=2, 1M reference sample in original order, all 1M original B rows, fresh crossmap/output and independent warm cache clone per run",
+  "sha256": {
+    "a-1000000.csv": "5e3c7d6048bf1acfd997e6f66658ece8636d033ff89e7efc6d2f1c28bad51c86",
+    "dataset_b_1000k.csv": "6e619fb000bb1e9ff083cc471ea6fafa4a68429c2c1b47849370aa4a06c28eba",
+    "reference.yaml": "75aad0f1fb181dc6704254756d3c76496cf08317e334fbf5e7361e8c4120ae1d",
+    "baseline": "c1dd9dd739e0a34d39f90db22d76ea94cde57b5bab413433c46a0ad7c6c8c0d7",
+    "branch-meld": "1f6a124a4534defd9a3dc39142a5056aaff43d72448f4b40e2b56f42b53997c7"
+  },
+  "run_order": [
+    "branch",
+    "baseline",
+    "baseline",
+    "branch"
+  ],
+  "query_index_preparation_wall_s": 1105.47,
+  "results": [
+    {
+      "run": 1,
+      "arm": "branch",
+      "rate": 1559.0,
+      "score_s": 641.3,
+      "wall_s": 691.52,
+      "rss": 32113033216,
+      "pairs": 616872,
+      "crossmap_sha": "2ecf8eabfeec3e59ef1556e3a8b6d8feb0b2fe9ff698f57b0c7d75131b95b8f9",
+      "review": 248314
+    },
+    {
+      "run": 2,
+      "arm": "baseline",
+      "rate": 592.0,
+      "score_s": 1688.4,
+      "wall_s": 1738.8,
+      "rss": 34515746816,
+      "pairs": 616872,
+      "crossmap_sha": "2ecf8eabfeec3e59ef1556e3a8b6d8feb0b2fe9ff698f57b0c7d75131b95b8f9",
+      "review": 248316
+    },
+    {
+      "run": 3,
+      "arm": "baseline",
+      "rate": 588.0,
+      "score_s": 1701.2,
+      "wall_s": 1753.84,
+      "rss": 32682508288,
+      "pairs": 616872,
+      "crossmap_sha": "2ecf8eabfeec3e59ef1556e3a8b6d8feb0b2fe9ff698f57b0c7d75131b95b8f9",
+      "review": 248315
+    },
+    {
+      "run": 4,
+      "arm": "branch",
+      "rate": 1549.0,
+      "score_s": 645.5,
+      "wall_s": 695.39,
+      "rss": 31717507072,
+      "pairs": 616872,
+      "crossmap_sha": "2ecf8eabfeec3e59ef1556e3a8b6d8feb0b2fe9ff698f57b0c7d75131b95b8f9",
+      "review": 248317
+    }
+  ]
+}
