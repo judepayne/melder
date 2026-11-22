@@ -67,3 +67,9 @@ Implemented: 2026-11-18 · [Enrollment output semantics](docs/enroll-mode.md#sin
 Cache the backend's actual record IDs, not an inferred country-to-record mapping. For large blocks, reuse the corresponding numeric BM25 IDs from the same immutable index. Limit the cache to the batch run, 64 entries and an estimated 64 MiB: a miss still follows the normal retrieval path. This avoids live invalidation, a new index format and another config option.
 
 Implemented: 2026-11-22 · [Performance and correctness checks](benchmarks/batch/usearch_scaling/comparison/findings.md)
+
+### D-011 — Build the initial BM25 index with one writer
+
+Share repeated term strings and build postings in ordinary maps before publishing the mutable index. This keeps locks out of initial construction without introducing a second scoring path or a read-only index format. The trade-off is maintaining a separate construction path that must agree with incremental updates.
+
+Implemented: 2026-11-22 · [Construction benchmarks](benchmarks/batch/bm25_construction/README.md)

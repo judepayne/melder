@@ -12,8 +12,8 @@
 //! `max_tf` per block for WAND upper-bound pruning.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
 
@@ -156,6 +156,21 @@ impl BlockedPostingList {
             return;
         }
 
+        // Monotonic build IDs append without searching; preserve split boundaries.
+        let last = self.blocks.len() - 1;
+        if self.blocks[last]
+            .entries
+            .last()
+            .is_some_and(|e| e.doc_id < entry.doc_id)
+        {
+            let block = &mut self.blocks[last];
+            block.entries.push(entry);
+            block.max_tf = block.max_tf.max(entry.tf);
+            if block.entries.len() > POSTING_BLOCK_SIZE * 2 {
+                self.split_block(last);
+            }
+            return;
+        }
         // Find the block where this doc_id belongs.
         let block_idx = self.find_block(entry.doc_id);
         let block = &mut self.blocks[block_idx];
@@ -239,7 +254,7 @@ impl BlockedPostingList {
 #[derive(Clone, Debug)]
 struct DocMeta {
     /// Term → frequency map for this document.
-    terms: HashMap<String, u32>,
+    terms: HashMap<Arc<str>, u32>,
     /// Total number of tokens (document length for BM25).
     length: u32,
     /// Compact doc ID.
@@ -273,10 +288,10 @@ pub struct SimpleBm25 {
     docs: DashMap<String, DocMeta>,
 
     /// term → number of documents containing this term (for IDF).
-    doc_freq: DashMap<String, usize>,
+    doc_freq: DashMap<Arc<str>, usize>,
 
     /// term → blocked posting list sorted by compact doc_id.
-    postings: DashMap<String, BlockedPostingList>,
+    postings: DashMap<Arc<str>, BlockedPostingList>,
 
     /// Compact ID ↔ String ID bidirectional mapping.
     id_map: CompactIdMap,
@@ -339,11 +354,7 @@ impl SimpleBm25 {
         side: Side,
         fields: &[Bm25FieldPair],
     ) -> Self {
-        let idx = Self::new(fields, side);
-        let _ = collection.for_each_record(&mut |id, record| {
-            idx.upsert(id, record);
-        });
-        idx
+        Self::build_serial(collection, Self::new(fields, side)).0
     }
 
     /// Bulk-build from a `RecordStore`, returning any scan error instead of a partial index.
@@ -361,10 +372,8 @@ impl SimpleBm25 {
         side: Side,
         fields: &[Bm25FieldPair],
     ) -> Result<Self, StoreError> {
-        let idx = Self::new(fields, side);
-        collection.for_each_record(&mut |id, record| {
-            idx.upsert(id, record);
-        })?;
+        let (idx, result) = Self::build_serial(collection, Self::new(fields, side));
+        result?;
         Ok(idx)
     }
 
@@ -377,9 +386,90 @@ impl SimpleBm25 {
         fields: &[EnrollBm25Field],
     ) -> Result<Self, StoreError> {
         let names = fields.iter().map(|field| field.field.clone()).collect();
-        let idx = Self::with_fields(FieldNames::Enroll(names), Side::A);
-        collection.for_each_record(&mut |id, record| idx.upsert(id, record))?;
+        let (idx, result) = Self::build_serial(
+            collection,
+            Self::with_fields(FieldNames::Enroll(names), Side::A),
+        );
+        result?;
         Ok(idx)
+    }
+
+    // Build privately with ordinary maps. Posting keys own the vocabulary;
+    // documents share those allocations, so deleting the last occurrence frees it.
+    fn build_serial(
+        collection: &dyn RecordCollection,
+        mut idx: Self,
+    ) -> (Self, Result<(), StoreError>) {
+        let mut docs: HashMap<String, DocMeta> = HashMap::new();
+        let mut postings: HashMap<Arc<str>, BlockedPostingList> = HashMap::new();
+        let mut frequencies: HashMap<Arc<str>, usize> = HashMap::new();
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names = Vec::new();
+        let mut total_tokens = 0u64;
+        let result = collection.for_each_record(&mut |id, record| {
+            if let Some(old) = docs.remove(id) {
+                total_tokens -= old.length as u64;
+                for term in old.terms.keys() {
+                    if let Some(df) = frequencies.get_mut(term) {
+                        *df -= 1;
+                        if *df == 0 {
+                            frequencies.remove(term);
+                        }
+                    }
+                    if let Some(list) = postings.get_mut(term) {
+                        list.remove(old.compact_id);
+                        if list.is_empty() {
+                            postings.remove(term);
+                        }
+                    }
+                }
+            }
+            let text = idx.fields.text(record, idx.side);
+            let tokens = tokenise(&text);
+            if tokens.is_empty() {
+                return;
+            }
+            let compact_id = *ids.entry(id.to_owned()).or_insert_with(|| {
+                let compact = names.len() as u32;
+                names.push(id.to_owned());
+                compact
+            });
+            let mut terms = HashMap::new();
+            for (term, tf) in term_frequencies(&tokens) {
+                let term = postings
+                    .get_key_value(term.as_str())
+                    .map(|(key, _)| Arc::clone(key))
+                    .unwrap_or_else(|| Arc::from(term));
+                postings
+                    .entry(Arc::clone(&term))
+                    .or_insert_with(BlockedPostingList::new)
+                    .insert(PostingEntry {
+                        doc_id: compact_id,
+                        tf,
+                    });
+                *frequencies.entry(Arc::clone(&term)).or_insert(0) += 1;
+                terms.insert(term, tf);
+            }
+            let length = tokens.len() as u32;
+            total_tokens += length as u64;
+            docs.insert(
+                id.to_owned(),
+                DocMeta {
+                    terms,
+                    length,
+                    compact_id,
+                },
+            );
+        });
+        idx.total_docs = AtomicUsize::new(docs.len());
+        idx.total_tokens = AtomicU64::new(total_tokens);
+        idx.docs = docs.into_iter().collect();
+        idx.postings = postings.into_iter().collect();
+        idx.doc_freq = frequencies.into_iter().collect();
+        idx.id_map.next_id = AtomicU32::new(names.len() as u32);
+        idx.id_map.str_to_u32 = ids.into_iter().collect();
+        idx.id_map.u32_to_str = RwLock::new(names);
+        (idx, result)
     }
 
     // ---------------------------------------------------------------
@@ -400,7 +490,10 @@ impl SimpleBm25 {
             return;
         }
 
-        let tf_map = term_frequencies(&tokens);
+        let tf_map: HashMap<Arc<str>, u32> = term_frequencies(&tokens)
+            .into_iter()
+            .map(|(term, tf)| (Arc::from(term), tf))
+            .collect();
         let length = tokens.len() as u32;
         let compact_id = self.id_map.get_or_insert(id);
 
@@ -562,7 +655,11 @@ impl SimpleBm25 {
         let term_idfs: Vec<(&str, u32, f64)> = query_tfs
             .iter()
             .filter_map(|(term, &tf)| {
-                let df = self.doc_freq.get(term).map(|v| *v as f64).unwrap_or(0.0);
+                let df = self
+                    .doc_freq
+                    .get(term.as_str())
+                    .map(|v| *v as f64)
+                    .unwrap_or(0.0);
                 if df == 0.0 {
                     return None;
                 }
@@ -802,7 +899,11 @@ impl SimpleBm25 {
 
         let mut score = 0.0f64;
         for (term, &tf) in &tf_map {
-            let df = self.doc_freq.get(term).map(|v| *v as f64).unwrap_or(0.0);
+            let df = self
+                .doc_freq
+                .get(term.as_str())
+                .map(|v| *v as f64)
+                .unwrap_or(0.0);
             if df == 0.0 {
                 continue;
             }
@@ -1165,6 +1266,91 @@ mod tests {
         );
         let empty = SimpleBm25::try_build_enroll(&collection, &[])?;
         assert_eq!(empty.num_docs(), 0, "empty fields index no documents");
+        Ok(())
+    }
+
+    #[test]
+    fn serial_build_matches_incremental_after_mutations() -> Result<(), StoreError> {
+        let store = MemoryStore::new(&BlockingConfig::default());
+        for i in 0..700 {
+            let text = format!("common term{} common unique{}", i % 11, i);
+            store.insert(Side::A, &i.to_string(), &make_record(&[("name_a", &text)]))?;
+        }
+        store.insert(Side::A, "empty", &Record::new())?;
+        let fields = test_fields();
+        let mut built = SimpleBm25::try_build(&store, Side::A, &fields)?;
+        let mut incremental = SimpleBm25::new(&fields, Side::A);
+        store.for_each_record(Side::A, &mut |id, record| incremental.upsert(id, record))?;
+        for phase in 0..2 {
+            assert_eq!(
+                built.num_docs(),
+                incremental.num_docs(),
+                "counts phase {phase}"
+            );
+            for item in incremental.id_map.str_to_u32.iter() {
+                assert_eq!(
+                    built.id_map.to_u32(item.key()),
+                    Some(*item.value()),
+                    "scan order IDs"
+                );
+            }
+            for term in incremental.postings.iter() {
+                let actual = built.postings.get(term.key()).expect("built posting");
+                let entries = |list: &BlockedPostingList| {
+                    list.blocks
+                        .iter()
+                        .map(|b| {
+                            (
+                                b.max_tf,
+                                b.entries
+                                    .iter()
+                                    .map(|e| (e.doc_id, e.tf))
+                                    .collect::<Vec<_>>(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    entries(&actual),
+                    entries(term.value()),
+                    "posting blocks phase {phase}"
+                );
+            }
+            for threshold in [0, usize::MAX] {
+                built.exhaustive_threshold = threshold;
+                incremental.exhaustive_threshold = threshold;
+                for query in ["common", "term1 common", "unique9", "replacement"] {
+                    let ids: Vec<_> = (0..700)
+                        .map(|i| i.to_string())
+                        .chain(["new".to_owned()])
+                        .collect();
+                    assert_eq!(
+                        built.score_blocked(query, &ids, 35),
+                        incremental.score_blocked(query, &ids, 35),
+                        "query {query}, phase {phase}, threshold {threshold}"
+                    );
+                }
+            }
+            for idx in [&built, &incremental] {
+                for i in 0..90 {
+                    idx.remove(&i.to_string());
+                }
+                idx.upsert("99", &Record::new());
+                idx.upsert("100", &make_record(&[("name_a", "replacement common")]));
+                idx.upsert("new", &make_record(&[("name_a", "replacement")]));
+            }
+        }
+        for idx in [&built, &incremental] {
+            let ids: Vec<_> = idx.docs.iter().map(|d| d.key().clone()).collect();
+            for id in ids {
+                idx.remove(&id);
+            }
+            assert!(idx.postings.is_empty(), "last deletion releases vocabulary");
+            assert!(
+                idx.doc_freq.is_empty(),
+                "last deletion releases frequencies"
+            );
+        }
         Ok(())
     }
 
