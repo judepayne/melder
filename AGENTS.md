@@ -176,6 +176,8 @@ When a task mentions these features, start with the listed docs/code:
 
 ## 12. Docs / Session Hygiene
 
+- Before submitting a PR or merging, check whether the branch made or superseded a durable technical decision. If so, update [DECISIONS.md](DECISIONS.md) in the same branch: explain the choice, rationale, and trade-off. Routine changes do not need an entry.
+
 - If a change affects user-visible behaviour, update the relevant file in `docs/` and any worked examples that would otherwise become stale.
 - Keep `AGENTS.md` current when architecture, invariants, build/test expectations, or feature entry points change.
 - Use `.pi/todos/` for active/backlog work tracking; close or update todos as work completes.
