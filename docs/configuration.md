@@ -339,7 +339,7 @@ Controls where results are written. At least one of `csv_dir_path`, `parquet_dir
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `csv_dir_path` | no | `None` | Directory for `relationships.csv`, `unmatched.csv`, and `candidates.csv`. Created if it does not exist. |
+| `csv_dir_path` | no | `None` | Directory for relationship and unmatched CSV outputs, and optional candidate and batch field-score files. Created if it does not exist. |
 | `parquet_dir_path` | no | `None` | Directory for `relationships.parquet`, `unmatched.parquet`, and `candidates.parquet`. Requires `--features parquet-format`. Created if it does not exist. |
 | `db_path` | no | `None` | Path for the output SQLite database with tables and analytical views. |
 | `cleanup_match_log` | no | `false` | Reserved; currently has no effect. Batch match logs are retained. |
@@ -380,7 +380,8 @@ scoring_log:
 |--------|-------------|
 | Raw scoring log | One event per scored query, with its ranked shortlist. In-memory graph batches write `scores.<timestamped-match-log-stem>.scoring_log.ndjson.zst` beside the match log; greedy batches use `{job_name}.scoring_log.ndjson.zst`. With `compression: none`, omit `.zst`. |
 | `candidates.csv` | In match mode, scored candidates ranked second or lower. A graph run can select one as the final match; use `relationship_type: match` in `relationships.csv` to find accepted pairs. Enroll instead exports its returned edges, including rank one, without declaring them confirmed pairs. |
-| `field_scores` DB table | Per-field score breakdowns for all candidates (SQLite output only) |
+| `field_scores.csv` / `field_scores.parquet` | Optional batch companions in the configured output directories. Same columns as the SQLite table. See [batch outputs and a lookup example](batch-mode.md#csv-outputs). |
+| `field_scores` DB table | Per-field breakdowns for logged candidates, or available selected/review rows in direct SQLite batch builds. |
 
 ### Explainability views (SQLite output)
 

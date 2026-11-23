@@ -165,6 +165,32 @@ pub fn build_batch_outputs(
     db_path: Option<&Path>,
     manifest: &OutputManifest,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    build_batch_outputs_with_scoring_evidence(
+        store,
+        crossmap,
+        result,
+        csv_dir,
+        parquet_dir,
+        db_path,
+        manifest,
+        false,
+    )
+}
+
+/// Build direct batch outputs with explicit run-associated scoring evidence.
+/// When requested, export this run's retained field scores. Greedy CSV keeps its
+/// legacy relationship writer; only its companion file is produced here.
+#[allow(clippy::too_many_arguments)]
+pub fn build_batch_outputs_with_scoring_evidence(
+    store: &dyn RecordStore,
+    crossmap: &dyn CrossMapOps,
+    result: &BatchResult,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+    scoring_evidence: bool,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
     let start = Instant::now();
     let greedy_processed;
     let processed = if let Some(processed) = &result.processed_graph_b {
@@ -181,7 +207,10 @@ pub fn build_batch_outputs(
         &greedy_processed
     };
     let processed: std::collections::HashSet<_> = processed.iter().map(String::as_str).collect();
-    let mut builder = OutputBuilder::default();
+    let mut builder = OutputBuilder {
+        export_field_scores: scoring_evidence,
+        ..OutputBuilder::default()
+    };
     store.for_each_record(Side::A, &mut |id, record| {
         builder.a_records.insert(id.to_owned(), record.clone());
     })?;
@@ -278,6 +307,19 @@ pub fn build_batch_outputs(
     builder
         .rel_vec
         .sort_by(|a, b| a.b_id.cmp(&b.b_id).then(a.a_id.cmp(&b.a_id)));
+    // Greedy callers already wrote their legacy relationship CSVs.
+    let csv_dir = if scoring_evidence && result.processed_graph_b.is_none() {
+        if let Some(dir) = csv_dir {
+            std::fs::create_dir_all(dir)?;
+            super::csv::write_field_scores_csv(
+                &dir.join("field_scores.csv"),
+                &builder.field_scores,
+            )?;
+        }
+        None
+    } else {
+        csv_dir
+    };
     builder.write(csv_dir, parquet_dir, db_path, manifest, start)
 }
 
@@ -357,8 +399,34 @@ pub(crate) fn build_wal_outputs(
     input: BuildInput,
     authority: EnrollRecordAuthority,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    build_wal_outputs_with_scoring_evidence(
+        match_log_path,
+        scoring_log_path,
+        csv_dir,
+        parquet_dir,
+        db_path,
+        manifest,
+        input,
+        authority,
+        false,
+    )
+}
+
+/// Build a WAL export with explicit batch-only, run-associated scoring evidence.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_wal_outputs_with_scoring_evidence(
+    match_log_path: &Path,
+    scoring_log_path: Option<&Path>,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+    input: BuildInput,
+    authority: EnrollRecordAuthority,
+    batch_scoring_evidence: bool,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
     let (events, _) = MatchLog::replay_for_output(match_log_path)?;
-    build_outputs_from_events_with_authority(
+    build_events_with_scoring_evidence(
         &events,
         scoring_log_path,
         csv_dir,
@@ -367,6 +435,7 @@ pub(crate) fn build_wal_outputs(
         manifest,
         input,
         authority,
+        batch_scoring_evidence,
     )
 }
 
@@ -404,6 +473,31 @@ pub(crate) fn build_outputs_from_events_with_authority(
     manifest: &OutputManifest,
     input: BuildInput,
     authority: EnrollRecordAuthority,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    build_events_with_scoring_evidence(
+        events,
+        scoring_log_path,
+        csv_dir,
+        parquet_dir,
+        db_path,
+        manifest,
+        input,
+        authority,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_events_with_scoring_evidence(
+    events: &[MatchLogEvent],
+    scoring_log_path: Option<&Path>,
+    csv_dir: Option<&Path>,
+    parquet_dir: Option<&Path>,
+    db_path: Option<&Path>,
+    manifest: &OutputManifest,
+    input: BuildInput,
+    authority: EnrollRecordAuthority,
+    batch_scoring_evidence: bool,
 ) -> Result<BuildReport, Box<dyn std::error::Error>> {
     let start = Instant::now();
 
@@ -902,6 +996,7 @@ pub(crate) fn build_outputs_from_events_with_authority(
         field_scores,
         candidate_rows,
         warnings,
+        export_field_scores: batch_scoring_evidence && scoring_log_path.is_some_and(Path::exists),
     }
     .write(csv_dir, parquet_dir, db_path, manifest, start)
 }
@@ -1035,6 +1130,8 @@ struct OutputBuilder {
     rel_vec: Vec<Relationship>,
     unmatched: Vec<(String, Record, Option<f64>, Option<String>)>,
     field_scores: Vec<FieldScoreRow>,
+    // Explicit provenance: enabled empty runs must still write a schema-only file.
+    export_field_scores: bool,
     candidate_rows: Vec<CandidateRow>,
     warnings: Vec<String>,
 }
@@ -1054,6 +1151,7 @@ impl OutputBuilder {
             rel_vec,
             unmatched,
             field_scores,
+            export_field_scores,
             candidate_rows,
             warnings,
         } = self;
@@ -1091,6 +1189,13 @@ impl OutputBuilder {
                 &manifest.b_id_field,
             )
             .map_err(|e| format!("unmatched.csv: {}", e))?;
+
+            // Leave existing files untouched when disabled: a reused directory may
+            // contain unrelated artifacts, which are not evidence for this run.
+            if export_field_scores && manifest.mode != crate::config::Mode::Enroll {
+                super::csv::write_field_scores_csv(&dir.join("field_scores.csv"), &field_scores)
+                    .map_err(|e| format!("field_scores.csv: {e}"))?;
+            }
 
             // Write candidates.csv if scoring log provided data.
             if !candidate_rows.is_empty() || manifest.mode == crate::config::Mode::Enroll {
@@ -1134,6 +1239,14 @@ impl OutputBuilder {
                 &manifest.b_id_field,
             )
             .map_err(|e| format!("unmatched.parquet: {}", e))?;
+
+            if export_field_scores && manifest.mode != crate::config::Mode::Enroll {
+                super::parquet::write_field_scores_parquet(
+                    &dir.join("field_scores.parquet"),
+                    &field_scores,
+                )
+                .map_err(|e| format!("field_scores.parquet: {e}"))?;
+            }
 
             if !candidate_rows.is_empty() || manifest.mode == crate::config::Mode::Enroll {
                 super::parquet::write_candidates_parquet(
@@ -1682,6 +1795,207 @@ mod tests {
         }
     }
 
+    #[test]
+    fn batch_field_score_files_require_evidence_and_preserve_unowned_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let csv_dir = dir.path().join("csv");
+        let db = dir.path().join("output.sqlite");
+        let manifest = make_graph_manifest();
+        let make_builder = |enabled, empty| OutputBuilder {
+            export_field_scores: enabled,
+            field_scores: if empty {
+                vec![]
+            } else {
+                vec![FieldScoreRow {
+                    a_id: "a,quoted".into(),
+                    b_id: "b".into(),
+                    field_a: "name".into(),
+                    field_b: "label".into(),
+                    method: "exact".into(),
+                    score: 0.987654321,
+                    weight: 2.5,
+                }]
+            },
+            ..OutputBuilder::default()
+        };
+        make_builder(false, false).write(
+            Some(&csv_dir),
+            None,
+            Some(&db),
+            &manifest,
+            Instant::now(),
+        )?;
+        let path = csv_dir.join("field_scores.csv");
+        assert!(
+            !path.exists(),
+            "nonempty SQLite detail is not opt-in evidence"
+        );
+        make_builder(true, false).write(
+            Some(&csv_dir),
+            None,
+            Some(&db),
+            &manifest,
+            Instant::now(),
+        )?;
+        let rows = csv::Reader::from_path(&path)?
+            .records()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(rows.len(), 1, "one field score exported");
+        let conn = rusqlite::Connection::open(&db)?;
+        let expected: (String, String, String, String, String, f64, f64) = conn.query_row(
+            "SELECT a_id,b_id,field_a,field_b,method,score,weight FROM field_scores",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            (
+                &rows[0][0],
+                &rows[0][1],
+                &rows[0][2],
+                &rows[0][3],
+                &rows[0][4]
+            ),
+            (
+                expected.0.as_str(),
+                expected.1.as_str(),
+                expected.2.as_str(),
+                expected.3.as_str(),
+                expected.4.as_str()
+            ),
+            "CSV identity matches SQLite"
+        );
+        assert_eq!(
+            rows[0][5].parse::<f64>()?,
+            expected.5,
+            "score precision matches SQLite"
+        );
+        assert_eq!(
+            rows[0][6].parse::<f64>()?,
+            expected.6,
+            "weight matches SQLite"
+        );
+        std::fs::write(&path, "unrelated artifact")?;
+        make_builder(false, true).write(Some(&csv_dir), None, None, &manifest, Instant::now())?;
+        assert_eq!(
+            std::fs::read_to_string(&path)?,
+            "unrelated artifact",
+            "disabled runs do not delete or rewrite unrelated files"
+        );
+        make_builder(true, true).write(Some(&csv_dir), None, None, &manifest, Instant::now())?;
+        assert_eq!(
+            csv::Reader::from_path(&path)?.records().count(),
+            0,
+            "enabled empty run replaces stale rows with schema-only output"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "parquet-format")]
+    #[test]
+    fn empty_batch_parquet_uses_evidence_not_rows() -> Result<(), Box<dyn std::error::Error>> {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        let dir = tempfile::tempdir()?;
+        let manifest = make_graph_manifest();
+        let path = dir.path().join("field_scores.parquet");
+        OutputBuilder::default().write(None, Some(dir.path()), None, &manifest, Instant::now())?;
+        assert!(!path.exists(), "disabled empty run creates no field file");
+        OutputBuilder {
+            export_field_scores: true,
+            ..OutputBuilder::default()
+        }
+        .write(None, Some(dir.path()), None, &manifest, Instant::now())?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path)?)?;
+        assert_eq!(
+            reader.schema().fields().len(),
+            7,
+            "empty file retains field score schema"
+        );
+        assert_eq!(
+            reader.metadata().file_metadata().num_rows(),
+            0,
+            "empty evidence has no rows"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn direct_greedy_field_scores_leave_legacy_csvs_untouched()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let store =
+            crate::store::memory::MemoryStore::new(&crate::config::BlockingConfig::default());
+        let crossmap = crate::crossmap::memory::MemoryCrossMap::new();
+        let mut result = make_graph_result();
+        result.processed_graph_b = None;
+        let legacy = dir.path().join("relationships.csv");
+        std::fs::write(&legacy, "legacy output")?;
+        build_batch_outputs_with_scoring_evidence(
+            &store,
+            &crossmap,
+            &result,
+            Some(dir.path()),
+            None,
+            None,
+            &make_graph_manifest(),
+            true,
+        )?;
+        assert!(
+            dir.path().join("field_scores.csv").exists(),
+            "greedy evidence creates field file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(legacy)?,
+            "legacy output",
+            "legacy relationships retained"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wal_field_score_export_needs_run_evidence_even_with_scoring_rows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let scoring = dir.path().join("scoring.ndjson");
+        std::fs::write(&scoring, "{\"type\":\"header\"}\n")?;
+        let manifest = make_graph_manifest();
+        for (evidence, scoring_path, expected) in [
+            (false, Some(scoring.as_path()), false),
+            (true, None, false),
+            (true, Some(scoring.as_path()), true),
+        ] {
+            let out = tempfile::tempdir()?;
+            build_events_with_scoring_evidence(
+                &[],
+                scoring_path,
+                Some(out.path()),
+                None,
+                None,
+                &manifest,
+                BuildInput::default(),
+                EnrollRecordAuthority::SeedAndReplay,
+                evidence,
+            )?;
+            assert_eq!(
+                out.path().join("field_scores.csv").exists(),
+                expected,
+                "file presence follows associated evidence, not scoring rows"
+            );
+        }
+        Ok(())
+    }
+
     fn make_graph_manifest() -> OutputManifest {
         OutputManifest {
             mode: crate::config::Mode::Match,
@@ -1758,7 +2072,7 @@ mod tests {
             let csv_dir = dir.path().join("csv");
             let db = dir.path().join("output.sqlite");
             let parquet_dir = cfg!(feature = "parquet-format").then(|| dir.path().join("parquet"));
-            let report = build_batch_graph_outputs(
+            let report = build_batch_outputs_with_scoring_evidence(
                 store.as_ref(),
                 crossmap.as_ref(),
                 &make_graph_result(),
@@ -1766,6 +2080,7 @@ mod tests {
                 parquet_dir.as_deref(),
                 Some(&db),
                 &make_graph_manifest(),
+                true,
             )
             .expect("direct output without logs");
             assert_eq!(
@@ -1834,6 +2149,83 @@ mod tests {
                 ],
                 "available scores for final selected and review pairs only"
             );
+            let exported = csv::Reader::from_path(csv_dir.join("field_scores.csv"))
+                .expect("field scores CSV")
+                .records()
+                .collect::<Result<Vec<_>, _>>()
+                .expect("field rows");
+            let mut csv_fields = exported
+                .iter()
+                .map(|r| {
+                    (
+                        r[0].to_owned(),
+                        r[1].to_owned(),
+                        r[2].to_owned(),
+                        r[3].to_owned(),
+                        r[4].to_owned(),
+                        r[5].parse::<f64>().expect("score"),
+                        r[6].parse::<f64>().expect("weight"),
+                    )
+                })
+                .collect::<Vec<_>>();
+            csv_fields.sort_by(|a, b| a.1.cmp(&b.1));
+            assert_eq!(
+                csv_fields, fields,
+                "CSV contains exactly SQLite field detail"
+            );
+            #[cfg(feature = "parquet-format")]
+            {
+                use arrow::array::{Float64Array, StringArray};
+                use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+                let file = std::fs::File::open(
+                    parquet_dir
+                        .as_ref()
+                        .expect("parquet dir")
+                        .join("field_scores.parquet"),
+                )
+                .expect("field parquet");
+                let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+                    .expect("reader")
+                    .build()
+                    .expect("batches");
+                let mut parquet_fields = Vec::new();
+                for batch in reader {
+                    let batch = batch.expect("batch");
+                    for row in 0..batch.num_rows() {
+                        let text = |col| {
+                            batch
+                                .column(col)
+                                .as_any()
+                                .downcast_ref::<StringArray>()
+                                .expect("text")
+                                .value(row)
+                                .to_owned()
+                        };
+                        let number = |col| {
+                            batch
+                                .column(col)
+                                .as_any()
+                                .downcast_ref::<Float64Array>()
+                                .expect("number")
+                                .value(row)
+                        };
+                        parquet_fields.push((
+                            text(0),
+                            text(1),
+                            text(2),
+                            text(3),
+                            text(4),
+                            number(5),
+                            number(6),
+                        ));
+                    }
+                }
+                parquet_fields.sort_by(|a, b| a.1.cmp(&b.1));
+                assert_eq!(
+                    parquet_fields, fields,
+                    "Parquet matches SQLite field detail"
+                );
+            }
             let b_ids: Vec<String> = conn
                 .prepare("SELECT id FROM b_records ORDER BY id")
                 .expect("prepare")

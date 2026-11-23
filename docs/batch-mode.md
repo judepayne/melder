@@ -112,6 +112,20 @@ The shared output builder writes:
 | `unmatched.csv` | B records with neither an accepted match nor a review outcome. Columns: configured B ID, B-side fields, `best_score`, `best_a_id` (when available). Direct SQLite batch output does not retain the best candidate ID. |
 | `candidates.csv` | Only with a scoring log: ranks 2..N for scored queries, with configured B/A ID names, `rank`, `score`. These are ranking evidence, not final assignments. |
 
+With `scoring_log.enabled: true`, `field_scores.csv` explains scored pairs without changing `relationships.csv`. Its columns are `a_id,b_id,field_a,field_b,method,score,weight`, matching the SQLite `field_scores` table. These are literal column names even when the input ID columns have different names. The score is the raw field score, not a weighted contribution. See [scoring](scoring.md) for how weights and synonym bonuses combine.
+
+For example, to inspect the evidence for A123 and B456 in DuckDB:
+
+```sql
+SELECT field_a, field_b, method, score, weight
+FROM read_csv('field_scores.csv', types = {'a_id': 'VARCHAR', 'b_id': 'VARCHAR'})
+WHERE a_id = 'A123' AND b_id = 'B456';
+```
+
+Log-based batches include field scores for every logged shortlist candidate, including rank one. Direct SQLite batch has no scoring log: enabling the option exports the selected/review field scores it retains, just as in its output database. An enabled run with no detail writes a schema-only file. Use a fresh output directory: disabling the option does not delete files from earlier runs.
+
+A scored candidate need not be a confirmed match. Check `relationships.csv` for the final decision. An asserted pair that bypassed scoring has no per-field evidence.
+
 SQLite input with explicit greedy preserves its legacy CSV schema and result rows
 (`a_id`, `b_id`, `classification` and field-score columns for relationships).
 Its Parquet/SQLite sinks use the shared schema above and final CrossMap membership,
@@ -120,7 +134,9 @@ including protected pairs; they are not a literal conversion of the legacy CSV.
 ### Parquet outputs
 
 `output.parquet_dir_path` enables `relationships.parquet`, `unmatched.parquet`
-and, with a scoring log, `candidates.parquet`. Contents match the shared CSV
+and, with batch scoring evidence enabled, `field_scores.parquet`. Log-based builds can also include `candidates.parquet`. The field-score file uses strings for identifiers, field names and method, and `Float64` for score and weight. For an Apache Iceberg workflow, ingest it into a compatible table using your catalog and table engine; `meld run` writes a Parquet file, not an Iceberg table or snapshot.
+
+Contents match the shared CSV
 outputs row-for-row. Record fields are `Utf8`; engine columns include `Float64`
 scores and `UInt8` ranks. Writes use a temporary file followed by rename.
 

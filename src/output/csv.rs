@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::models::Record;
 
-use super::build::Relationship;
+use super::build::{FieldScoreRow, Relationship};
 
 /// Write relationships.csv: all confirmed matches and review-band pairs.
 ///
@@ -125,9 +125,81 @@ pub fn write_candidates_csv(
     Ok(())
 }
 
+/// Write field_scores.csv with the same columns as the SQLite field_scores table.
+/// Numeric values use round-trip precision; rows are streamed without collecting them.
+pub fn write_field_scores_csv(path: &Path, rows: &[FieldScoreRow]) -> Result<(), csv::Error> {
+    let tmp = path.with_extension("csv.tmp");
+    {
+        let mut wtr = csv::Writer::from_path(&tmp)?;
+        wtr.write_record([
+            "a_id", "b_id", "field_a", "field_b", "method", "score", "weight",
+        ])?;
+        for row in rows {
+            wtr.write_record([
+                row.a_id.as_str(),
+                row.b_id.as_str(),
+                row.field_a.as_str(),
+                row.field_b.as_str(),
+                row.method.as_str(),
+                &row.score.to_string(),
+                &row.weight.to_string(),
+            ])?;
+        }
+        wtr.flush()?;
+    }
+    crate::util::rename_replacing(&tmp, path)
+        .map_err(|e| csv::Error::from(std::io::Error::other(e.to_string())))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_scores_roundtrip_and_empty_header() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("field_scores.csv");
+        let rows = [FieldScoreRow {
+            a_id: "A,\"quoted\"".into(),
+            b_id: "B\nnext".into(),
+            field_a: "name".into(),
+            field_b: "title".into(),
+            method: "exact".into(),
+            score: 0.12345678901234567,
+            weight: 1.2345678901234567,
+        }];
+        for data in [&rows[..], &[][..]] {
+            write_field_scores_csv(&path, data).expect("write field scores");
+            let mut reader = csv::Reader::from_path(&path).expect("read CSV");
+            assert_eq!(
+                reader.headers().expect("header"),
+                &[
+                    "a_id", "b_id", "field_a", "field_b", "method", "score", "weight"
+                ][..],
+                "SQLite column order"
+            );
+            let records = reader
+                .records()
+                .collect::<Result<Vec<_>, _>>()
+                .expect("records");
+            assert_eq!(records.len(), data.len(), "all rows preserved");
+            if let Some(record) = records.first() {
+                assert_eq!(&record[0], rows[0].a_id, "escaped ID preserved");
+                assert_eq!(&record[1], rows[0].b_id, "newline preserved");
+                assert_eq!(
+                    record[5].parse::<f64>().expect("score"),
+                    rows[0].score,
+                    "full score precision"
+                );
+                assert_eq!(
+                    record[6].parse::<f64>().expect("weight"),
+                    rows[0].weight,
+                    "full weight precision"
+                );
+            }
+        }
+    }
 
     #[test]
     fn candidate_headers_preserve_values_with_shared_or_reserved_ids() {

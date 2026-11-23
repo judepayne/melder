@@ -10,7 +10,7 @@ use parquet::arrow::ArrowWriter;
 
 use crate::models::Record;
 
-use super::build::{CandidateRow, Relationship};
+use super::build::{CandidateRow, FieldScoreRow, Relationship};
 
 /// Write relationships.parquet: all confirmed matches and review-band pairs.
 pub fn write_relationships_parquet(
@@ -220,11 +220,146 @@ pub fn write_candidates_parquet(
     Ok(())
 }
 
+/// Write field_scores.parquet with SQLite column order and Float64 numeric columns.
+/// Each bounded batch is flushed as a row group to limit additional write memory.
+pub fn write_field_scores_parquet(
+    path: &Path,
+    rows: &[FieldScoreRow],
+) -> Result<(), Box<dyn std::error::Error>> {
+    const BATCH_SIZE: usize = 4096;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Utf8, false),
+        Field::new("b_id", DataType::Utf8, false),
+        Field::new("field_a", DataType::Utf8, false),
+        Field::new("field_b", DataType::Utf8, false),
+        Field::new("method", DataType::Utf8, false),
+        Field::new("score", DataType::Float64, false),
+        Field::new("weight", DataType::Float64, false),
+    ]));
+    let tmp = path.with_extension("parquet.tmp");
+    let file = std::fs::File::create(&tmp)?;
+    let mut writer = ArrowWriter::try_new(file, schema.clone(), None)?;
+    for chunk in rows.chunks(BATCH_SIZE) {
+        let mut strings: [StringBuilder; 5] = std::array::from_fn(|_| StringBuilder::new());
+        let mut scores = Float64Builder::new();
+        let mut weights = Float64Builder::new();
+        for row in chunk {
+            for (builder, value) in strings.iter_mut().zip([
+                &row.a_id,
+                &row.b_id,
+                &row.field_a,
+                &row.field_b,
+                &row.method,
+            ]) {
+                builder.append_value(value);
+            }
+            scores.append_value(row.score);
+            weights.append_value(row.weight);
+        }
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = strings
+            .iter_mut()
+            .map(|builder| Arc::new(builder.finish()) as Arc<dyn arrow::array::Array>)
+            .collect();
+        columns.push(Arc::new(scores.finish()));
+        columns.push(Arc::new(weights.finish()));
+        writer.write(&RecordBatch::try_new(schema.clone(), columns)?)?;
+        writer.flush()?;
+    }
+    writer.close()?;
+    crate::util::rename_replacing(&tmp, path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     use super::*;
+
+    #[test]
+    fn field_scores_roundtrip_batched_and_empty() {
+        use arrow::array::{Float64Array, StringArray};
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("field_scores.parquet");
+        let rows: Vec<_> = (0..8200)
+            .map(|i| FieldScoreRow {
+                a_id: format!("A{i}"),
+                b_id: "B".into(),
+                field_a: "name".into(),
+                field_b: "title".into(),
+                method: "exact".into(),
+                score: 0.12345678901234567,
+                weight: 1.2345678901234567,
+            })
+            .collect();
+        for data in [&rows[..], &[][..]] {
+            write_field_scores_parquet(&path, data).expect("write field scores");
+            let builder = ParquetRecordBatchReaderBuilder::try_new(
+                std::fs::File::open(&path).expect("open parquet"),
+            )
+            .expect("reader builder");
+            let schema = builder.schema();
+            assert_eq!(
+                schema
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "a_id", "b_id", "field_a", "field_b", "method", "score", "weight"
+                ],
+                "SQLite column order"
+            );
+            for (index, field) in schema.fields().iter().enumerate() {
+                assert_eq!(
+                    field.data_type(),
+                    if index < 5 {
+                        &DataType::Utf8
+                    } else {
+                        &DataType::Float64
+                    },
+                    "typed column"
+                );
+                assert!(!field.is_nullable(), "required column");
+            }
+            assert_eq!(
+                builder.metadata().num_row_groups(),
+                data.len().div_ceil(4096),
+                "bounded row groups"
+            );
+            let mut count = 0;
+            for batch in builder.build().expect("reader") {
+                let batch = batch.expect("batch");
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("IDs");
+                let scores = batch
+                    .column(5)
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .expect("scores");
+                let weights = batch
+                    .column(6)
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .expect("weights");
+                for i in 0..batch.num_rows() {
+                    assert_eq!(ids.value(i), data[count].a_id, "row order");
+                    assert_eq!(scores.value(i), data[count].score, "full score precision");
+                    assert_eq!(
+                        weights.value(i),
+                        data[count].weight,
+                        "full weight precision"
+                    );
+                    count += 1;
+                }
+            }
+            assert_eq!(count, data.len(), "all rows preserved");
+        }
+    }
 
     #[test]
     fn collision_free_outputs_roundtrip() {
