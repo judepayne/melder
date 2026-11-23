@@ -121,7 +121,7 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         } else {
             None
         };
-        match crate::output::build::build_outputs_with_input(
+        match crate::output::build::build_wal_outputs_with_scoring_evidence(
             graph_segment.as_deref().unwrap_or(ml),
             sl_path.as_deref(),
             Some(out_dir),
@@ -129,6 +129,8 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
             db_path,
             &manifest,
             input,
+            crate::output::build::EnrollRecordAuthority::SeedAndReplay,
+            graph_segment.is_some() && sl_path.is_some(),
         ) {
             Ok(report) => {
                 println!("Export complete (build pipeline):");

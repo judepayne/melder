@@ -664,6 +664,43 @@ fn graph_coordinates_optimum_and_is_repeatable_across_input_order_and_workers() 
 }
 
 #[test]
+fn field_score_companions_follow_batch_opt_in() -> TestResult {
+    for sqlite in [false, true] {
+        for strategy in ["greedy", "graph"] {
+            for enabled in [false, true] {
+                let mut fixture = Fixture::new(sqlite, json!({"strategy": strategy}))?;
+                fixture.config["scoring_log"]["enabled"] = json!(enabled);
+                fixture.run(1)?;
+                let csv = fixture.path("out/field_scores.csv");
+                assert_eq!(
+                    csv.exists(),
+                    enabled,
+                    "CSV detail for {strategy}, sqlite={sqlite}"
+                );
+                #[cfg(feature = "parquet-format")]
+                assert_eq!(
+                    fixture.path("parquet/field_scores.parquet").exists(),
+                    enabled,
+                    "Parquet detail for {strategy}, sqlite={sqlite}"
+                );
+                if enabled {
+                    let count = csv::Reader::from_path(csv)?
+                        .records()
+                        .collect::<Result<Vec<_>, _>>()?
+                        .len();
+                    let db = rusqlite::Connection::open(fixture.path("output.db"))?;
+                    let expected: usize =
+                        db.query_row("SELECT count(*) FROM field_scores", [], |r| r.get(0))?;
+                    assert!(expected > 0, "fixture has scored pairs");
+                    assert_eq!(count, expected, "companion agrees with SQLite evidence");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn default_graph_agrees_with_explicit_approximate_on_both_backends() -> TestResult {
     let selected = expected(&[("a2", "b1"), ("a1", "b2")]);
     for sqlite in [false, true] {

@@ -86,6 +86,7 @@ pub(crate) fn validate_live_outputs(
                 "relationships",
                 "unmatched",
                 "candidates",
+                "field_scores",
                 "results",
                 "review",
                 "unmatched_a",
@@ -183,7 +184,7 @@ pub(crate) fn validate_scratch(
         (cfg.output.parquet_dir_path.as_deref(), "parquet"),
     ] {
         if let Some(dir) = dir {
-            for name in ["relationships", "unmatched", "candidates"] {
+            for name in ["relationships", "unmatched", "candidates", "field_scores"] {
                 let path = Path::new(dir).join(format!("{name}.{extension}"));
                 protected.push(path.with_extension(format!("{extension}.tmp")));
                 protected.push(path);
@@ -267,6 +268,8 @@ batch: {{ db_path: '{}' }}
             "live.db",
             "live.db-shm",
             "out/unmatched.csv.tmp",
+            "out/field_scores.csv",
+            "out/field_scores.csv.tmp",
             "cm.tmp",
         ] {
             let mut cfg = make_config(dir.path());

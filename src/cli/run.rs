@@ -270,13 +270,16 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
 
     // Build outputs from the match log (+ scoring log if present).
     let manifest = crate::output::OutputManifest::from_config(&state.config);
-    let report = match crate::output::build_outputs(
+    let report = match crate::output::build::build_wal_outputs_with_scoring_evidence(
         graph_log_path.as_deref().unwrap_or(&ml_base),
         sl_path.as_deref(),
         csv_dir.as_deref(),
         parquet_dir,
         db_path,
         &manifest,
+        Default::default(),
+        crate::output::build::EnrollRecordAuthority::SeedAndReplay,
+        sl_path.is_some(),
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -452,21 +455,23 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     let out_db_path = cfg.output.db_path.as_deref().map(Path::new);
 
     let graph = result.stats.assignment.is_some();
-    let direct_report = if graph || parquet_dir_sqlite.is_some() || out_db_path.is_some() {
+    let detail = cfg.scoring_log.enabled && (csv_dir.is_some() || parquet_dir_sqlite.is_some());
+    let direct_report = if graph || detail || parquet_dir_sqlite.is_some() || out_db_path.is_some()
+    {
         let manifest = crate::output::OutputManifest::from_config(&cfg);
-        let build = if graph {
-            crate::output::build::build_batch_graph_outputs
-        } else {
-            crate::output::build::build_batch_outputs
-        };
-        match build(
+        if graph && result.processed_graph_b.is_none() {
+            eprintln!("Missing processed B records from completed graph batch");
+            process::exit(1);
+        }
+        match crate::output::build::build_batch_outputs_with_scoring_evidence(
             store.as_ref(),
             &sqlite_crossmap,
             &result,
-            if graph { csv_dir } else { None },
+            if graph || detail { csv_dir } else { None },
             parquet_dir_sqlite,
             out_db_path,
             &manifest,
+            detail,
         ) {
             Ok(report) => report,
             Err(e) => {
