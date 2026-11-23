@@ -8,6 +8,7 @@ pub mod manifest;
 #[cfg(feature = "parquet-format")]
 pub mod parquet;
 pub mod scoring_log;
+pub mod shortlist;
 
 pub use build::build_outputs;
 pub use manifest::{BuildReport, OutputManifest};

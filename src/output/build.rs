@@ -968,7 +968,7 @@ fn build_events_with_scoring_evidence(
     // Read scoring log if present — enriches output with field_scores and candidates.
     let (field_scores, candidate_rows) =
         if let Some(sl_path) = scoring_log_path.filter(|p| p.exists()) {
-            read_scoring_log(sl_path)?
+            read_scoring_log_with_fields(sl_path, !(batch_scoring_evidence || graph_snapshot))?
         } else {
             (Vec::new(), Vec::new())
         };
@@ -996,9 +996,18 @@ fn build_events_with_scoring_evidence(
         field_scores,
         candidate_rows,
         warnings,
-        export_field_scores: batch_scoring_evidence && scoring_log_path.is_some_and(Path::exists),
+        // Batch evidence files are written together by the streaming exporter below.
+        export_field_scores: false,
     }
     .write(csv_dir, parquet_dir, db_path, manifest, start)
+    .and_then(|report| {
+        if (batch_scoring_evidence || graph_snapshot)
+            && let Some(path) = scoring_log_path
+        {
+            super::shortlist::export(path, csv_dir, parquet_dir, db_path)?;
+        }
+        Ok(report)
+    })
 }
 
 // Enrollment has one ID namespace and directed historical evidence, not a
@@ -1322,8 +1331,9 @@ impl OutputBuilder {
 /// Read the scoring log and extract field_scores + candidate rows.
 ///
 /// Handles both plain ndjson and zstd-compressed (.ndjson.zst) files.
-fn read_scoring_log(
+fn read_scoring_log_with_fields(
     path: &Path,
+    include_fields: bool,
 ) -> Result<(Vec<FieldScoreRow>, Vec<CandidateRow>), Box<dyn std::error::Error>> {
     let mut field_scores = Vec::new();
     let mut candidates = Vec::new();
@@ -1367,7 +1377,11 @@ fn read_scoring_log(
 
         if let Some(cands) = val.get("candidates").and_then(|v| v.as_array()) {
             for cand in cands {
-                let rank = cand.get("rank").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+                let rank = cand
+                    .get("rank")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+                    .min(255) as u8;
                 let matched_id = cand
                     .get("matched_id")
                     .and_then(|v| v.as_str())
@@ -1391,7 +1405,11 @@ fn read_scoring_log(
                 }
 
                 // All candidates get field_scores
-                if let Some(fscores) = cand.get("field_scores").and_then(|v| v.as_array()) {
+                if let Some(fscores) = cand
+                    .get("field_scores")
+                    .and_then(|v| v.as_array())
+                    .filter(|_| include_fields)
+                {
                     for fs in fscores {
                         field_scores.push(FieldScoreRow {
                             a_id: a_id.clone(),

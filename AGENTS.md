@@ -149,6 +149,7 @@ When a task mentions these features, start with the listed docs/code:
 - Memory backend: in-RAM + WAL for live durability.
 - SQLite backend: durable source of truth; no fake in-memory shadow invariants.
 - `batch.db_path` is disposable scratch storage: never overwrite inputs or persistent outputs, even during `--dry-run`. SQLite batch does not build vector indexes; reject embedding match fields instead of scoring them as zero. Retained graph candidates/components and graph output assembly remain in memory.
+- Batch scoring evidence is the full returned pre-assignment shortlist on either storage backend. Preserve losing rank-one edges and per-field scores; keep candidate evidence distinct from final CrossMap membership. Only persist shortlist evidence when requested.
 - Assignment chains commit per-step prefixes, not request-wide transactions. WAL append is buffered, not per-step fsync; memory recovery uses WAL/snapshots, while SQLite retains authoritative membership without blind WAL replay. Restart reconciles metadata and protects restored links; it does not resume interrupted queues.
 - Assignment append failure attempts inverse-delta rollback. Ambiguous append, rollback or postcommit metadata failure must fail assignment health and reject further optimizing mutations until recovery/restart. CrossMap remains authoritative; hooks are not an audit log.
 - Older binaries cannot safely replay/export `assignment_delta` logs; disabling the strategy does not remove downgrade restrictions. Preserve legacy log readers and historical reports.

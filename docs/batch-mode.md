@@ -97,7 +97,7 @@ required for accepted links.
 **SQLite input storage is different from SQLite output.** With `batch.db_path`,
 both graph and explicit greedy honor all configured sinks, including Parquet-only
 and SQLite-output-only runs, without writing extra CSV files in the working directory.
-They have no match log or scoring log. Graph uses the shared builder for every
+SQLite-backed batches do not produce a match log. With scoring logging enabled they capture the same pre-assignment shortlist as memory-backed batches. Graph uses the shared builder for every
 sink; greedy preserves its legacy CSV writer while using the shared builder for
 Parquet and SQLite outputs. See [SQLite batch mode](#sqlite-batch-mode-large-datasets)
 for memory and scoring restrictions.
@@ -111,6 +111,7 @@ The shared output builder writes:
 | `relationships.csv` | Confirmed matches and reviews, including assignment conflicts. Columns: configured B/A ID names, `score`, `relationship_type` (`match` or `review`), `reason`, `rank`, plus configured A-side fields. |
 | `unmatched.csv` | B records with neither an accepted match nor a review outcome. Columns: configured B ID, B-side fields, `best_score`, `best_a_id` (when available). Direct SQLite batch output does not retain the best candidate ID. |
 | `candidates.csv` | Only with a scoring log: ranks 2..N for scored queries, with configured B/A ID names, `rank`, `score`. These are ranking evidence, not final assignments. |
+| `candidate_edges.csv` | With batch scoring logging enabled: one row per shortlisted candidate, including rank one and losing alternatives. Fixed columns: `a_id,b_id,rank,score`. |
 
 With `scoring_log.enabled: true`, `field_scores.csv` explains scored pairs without changing `relationships.csv`. Its columns are `a_id,b_id,field_a,field_b,method,score,weight`, matching the SQLite `field_scores` table. These are literal column names even when the input ID columns have different names. The score is the raw field score, not a weighted contribution. See [scoring](scoring.md) for how weights and synonym bonuses combine.
 
@@ -122,7 +123,7 @@ FROM read_csv('field_scores.csv', types = {'a_id': 'VARCHAR', 'b_id': 'VARCHAR'}
 WHERE a_id = 'A123' AND b_id = 'B456';
 ```
 
-Log-based batches include field scores for every logged shortlist candidate, including rank one. Direct SQLite batch has no scoring log: enabling the option exports the selected/review field scores it retains, just as in its output database. An enabled run with no detail writes a schema-only file. Use a fresh output directory: disabling the option does not delete files from earlier runs.
+Both batch backends use the same scoring evidence for every returned shortlist candidate, including rank one. A shortlist is limited by retrieval, exclusions and `top_n`; it is neither every possible pair nor necessarily the set eligible for automatic assignment. An enabled run with no detail writes a schema-only file. Use a fresh output directory: disabling the option does not delete files from earlier runs.
 
 A scored candidate need not be a confirmed match. Check `relationships.csv` for the final decision. An asserted pair that bypassed scoring has no per-field evidence.
 
@@ -134,11 +135,11 @@ including protected pairs; they are not a literal conversion of the legacy CSV.
 ### Parquet outputs
 
 `output.parquet_dir_path` enables `relationships.parquet`, `unmatched.parquet`
-and, with batch scoring evidence enabled, `field_scores.parquet`. Log-based builds can also include `candidates.parquet`. The field-score file uses strings for identifiers, field names and method, and `Float64` for score and weight. For an Apache Iceberg workflow, ingest it into a compatible table using your catalog and table engine; `meld run` writes a Parquet file, not an Iceberg table or snapshot.
+and, with batch scoring evidence enabled, `candidate_edges.parquet` and `field_scores.parquet`. Log-based builds can also include `candidates.parquet`. The field-score file uses strings for identifiers, field names and method, and `Float64` for score and weight. For an Apache Iceberg workflow, ingest it into a compatible table using your catalog and table engine; `meld run` writes a Parquet file, not an Iceberg table or snapshot.
 
 Contents match the shared CSV
 outputs row-for-row. Record fields are `Utf8`; engine columns include `Float64`
-scores and `UInt8` ranks. Writes use a temporary file followed by rename.
+scores and `UInt8` legacy ranks. The all-ranks `candidate_edges.parquet` uses `Int64` rank so lists longer than 255 retain their ordering. Writes use a temporary file followed by rename.
 
 Requires the `parquet-format` build feature; otherwise the configuration is
 rejected. See [Building](building.md).
@@ -148,7 +149,16 @@ rejected. See [Building](building.md).
 `output.db_path` enables tables `a_records`, `b_records`, `relationships`,
 `field_scores`, and `metadata`. In log-based builds, field-score evidence
 requires the scoring log; direct SQLite batch builds retain selected/review
-field scores without a scoring log.
+field scores without a scoring log. Enabling scoring logging gives both batch backends the full `candidate_edges` and `field_scores` evidence in the **output** database. For example, to inspect all alternatives for one query in rank order:
+
+```sql
+SELECT e.rank, e.a_id, e.score AS overall_score, f.field_a, f.field_b,
+       f.method, f.score AS field_score, f.weight
+FROM candidate_edges AS e
+LEFT JOIN field_scores AS f ON f.a_id = e.a_id AND f.b_id = e.b_id
+WHERE e.b_id = 'B456'
+ORDER BY e.rank, f.field_a, f.field_b, f.method;
+```
 
 Eleven analytical views are included: `confirmed_matches`, `scored_matches`,
 `asserted_matches`, `review_queue`, `near_misses`, `runner_ups`, `unmatched_a`,
@@ -161,8 +171,7 @@ See the authoritative [schema](../src/output/db.rs) and
 The in-memory path writes events to a match log, then builds outputs from that
 log and the optional scoring log. A crashed greedy run leaves a log that can
 be rebuilt with `meld export` without re-scoring; it is not necessarily a
-completed batch. SQLite input storage produces neither log, so this recovery
-path does not apply.
+completed batch. SQLite input storage can produce a scoring log but does not produce a match log, so this recovery path does not apply.
 
 Graph logs use `batch_assignment_started` and `batch_assignment_completed`
 markers around publication. **No partial export:** output building and

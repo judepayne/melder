@@ -143,7 +143,7 @@ If `output.parquet_dir_path` is set, also produces
 also produces the SQLite database. When a scoring log file exists
 (from running with `scoring_log.enabled: true`), also produces
 `candidates.csv` / `candidates.parquet` (rank 2+ candidates) and
-populates the `field_scores` table in the SQLite database.
+populates the `field_scores` table in the SQLite database. For a completed graph batch with its run-associated scoring log, export also reproduces the all-ranks `candidate_edges` and per-field evidence in the configured formats. The final assignment remains in `relationships`.
 
 For live matching, the store and its seed data supply the records; a score or rank is not a substitute for confirmed CrossMap membership. With SQLite live storage, configured Parquet output is built from the authoritative database. For enroll, the export lists the returned candidate edges (including rank one), not one-to-one confirmations. Use the original pool seed file if one was configured. Batch mode writes its requested outputs at end-of-run.
 

@@ -154,8 +154,11 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     let ml_base = output_dir.join(format!("{}.{log_kind}.ndjson", state.config.job.name));
     let match_log = match crate::state::match_log::MatchLog::open(&ml_base) {
         Ok(ml) => Some(std::sync::Arc::new(ml)),
-        Err(e) if state.config.batch.assignment.graph_mode().is_some() => {
-            eprintln!("Failed to open graph assignment log: {e}");
+        Err(e)
+            if state.config.scoring_log.enabled
+                || state.config.batch.assignment.graph_mode().is_some() =>
+        {
+            eprintln!("Failed to open batch run log: {e}");
             process::exit(1);
         }
         Err(e) => {
@@ -170,7 +173,9 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     // Graph evidence is bound to the actual timestamped run, not the job name.
     let graph_log_path = match_log
         .as_ref()
-        .filter(|_| state.config.batch.assignment.graph_mode().is_some())
+        .filter(|_| {
+            state.config.scoring_log.enabled || state.config.batch.assignment.graph_mode().is_some()
+        })
         .map(|log| log.path().to_path_buf());
     if let Some(path) = &graph_log_path {
         match crate::output::scoring_log::graph_scoring_path(path) {
@@ -197,7 +202,7 @@ fn cmd_run_memory(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         };
         match opened {
             Ok((sender, writer)) => (Some(sender), Some(writer)),
-            Err(e) if graph_log_path.is_some() => {
+            Err(e) if state.config.scoring_log.enabled => {
                 eprintln!("Failed to open graph scoring evidence: {e}");
                 process::exit(1);
             }
@@ -429,7 +434,49 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
     let combined_index_a: Option<&dyn crate::vectordb::VectorDB> = None;
     let combined_index_b: Option<&dyn crate::vectordb::VectorDB> = None;
 
-    // Run batch engine (no match log for SQLite path yet)
+    // Use a unique run identity even without a match WAL.
+    let (sl_sender, sl_writer) = if cfg.scoring_log.enabled {
+        let evidence_dir = cfg
+            .output
+            .csv_dir_path
+            .as_deref()
+            .or(cfg.output.parquet_dir_path.as_deref())
+            .map(Path::new)
+            .or_else(|| {
+                cfg.output
+                    .db_path
+                    .as_deref()
+                    .and_then(|p| Path::new(p).parent())
+                    .filter(|dir| !dir.as_os_str().is_empty())
+            })
+            .unwrap_or_else(|| Path::new("."));
+        if let Err(e) = std::fs::create_dir_all(evidence_dir) {
+            eprintln!("Failed to create scoring evidence directory: {e}");
+            process::exit(1);
+        }
+        let identity = evidence_dir.join(format!(
+            "{}.sqlite.{}.{}.ndjson",
+            cfg.job.name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        match crate::output::scoring_log::open_graph_scoring_log(
+            &identity,
+            cfg.scoring_log.compression != "none",
+            &crate::output::OutputManifest::from_config(&cfg),
+        ) {
+            Ok((s, w)) => (Some(s), Some(w)),
+            Err(e) => {
+                eprintln!("Failed to open scoring evidence: {e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        (None, None)
+    };
     let result = match crate::batch::run_batch(
         &cfg,
         store.as_ref(),
@@ -440,7 +487,7 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         limit,
         false,
         None,
-        None,
+        sl_sender.as_ref(),
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -449,15 +496,21 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
         }
     };
 
+    let sl_path = sl_writer.as_ref().map(|w| w.path().to_path_buf());
+    drop(sl_sender);
+    if let Some(writer) = sl_writer
+        && let Err(e) = writer.shutdown_checked()
+    {
+        eprintln!("Failed to publish scoring evidence: {e}");
+        process::exit(1);
+    }
     // Honor only configured sinks; no implicit CSV output in the working directory.
     let csv_dir = cfg.output.csv_dir_path.as_deref().map(Path::new);
     let parquet_dir_sqlite = cfg.output.parquet_dir_path.as_deref().map(Path::new);
     let out_db_path = cfg.output.db_path.as_deref().map(Path::new);
 
     let graph = result.stats.assignment.is_some();
-    let detail = cfg.scoring_log.enabled && (csv_dir.is_some() || parquet_dir_sqlite.is_some());
-    let direct_report = if graph || detail || parquet_dir_sqlite.is_some() || out_db_path.is_some()
-    {
+    let direct_report = if graph || parquet_dir_sqlite.is_some() || out_db_path.is_some() {
         let manifest = crate::output::OutputManifest::from_config(&cfg);
         if graph && result.processed_graph_b.is_none() {
             eprintln!("Missing processed B records from completed graph batch");
@@ -467,11 +520,11 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
             store.as_ref(),
             &sqlite_crossmap,
             &result,
-            if graph || detail { csv_dir } else { None },
+            if graph { csv_dir } else { None },
             parquet_dir_sqlite,
             out_db_path,
             &manifest,
-            detail,
+            false,
         ) {
             Ok(report) => report,
             Err(e) => {
@@ -515,6 +568,13 @@ fn cmd_run_sqlite(cfg: crate::config::Config, dry_run: bool, verbose: bool, limi
             eprintln!("Failed to write unmatched: {}", e);
             process::exit(1);
         }
+    }
+    if let Some(path) = &sl_path
+        && let Err(e) =
+            crate::output::shortlist::export(path, csv_dir, parquet_dir_sqlite, out_db_path)
+    {
+        eprintln!("Failed to export shortlist evidence: {e}");
+        process::exit(1);
     }
     let save_cm = crate::crossmap::MemoryCrossMap::new();
     for (a_id, b_id) in sqlite_crossmap.pairs() {

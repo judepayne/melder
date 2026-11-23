@@ -73,3 +73,7 @@ Implemented: 2026-11-22 · [Performance and correctness checks](benchmarks/batch
 Share repeated term strings and build postings in ordinary maps before publishing the mutable index. This keeps locks out of initial construction without introducing a second scoring path or a read-only index format. The trade-off is maintaining a separate construction path that must agree with incremental updates.
 
 Implemented: 2026-11-22 · [Construction benchmarks](benchmarks/batch/bm25_construction/README.md)
+
+### D-012 — Export shortlist evidence separately from assignment
+
+When batch scoring logging is enabled, preserve the ranked candidates returned before assignment, with overall and per-field scores, regardless of input storage backend. Do not infer alternatives by rescoring records or treating final relationships as the shortlist. This makes losing candidates inspectable at the cost of extra writes proportional to the shortlist, without changing matching policy. The persistent evidence belongs in configured outputs, not in the disposable batch scratch database. See [batch outputs](docs/batch-mode.md#sinks-and-scoring-evidence).

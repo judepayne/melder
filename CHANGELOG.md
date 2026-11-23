@@ -2,6 +2,8 @@
 
 ## v0.1.6 (unreleased)
 
+- With batch scoring logging enabled, export every shortlisted pair’s rank, score and field breakdown to CSV, Parquet or SQLite on either storage backend. [Batch outputs](docs/batch-mode.md#sinks-and-scoring-evidence)
+
 - Made graph assignment the default for batch matching. Greedy remains available. [Batch docs](docs/batch-mode.md#choosing-pairs-with-the-graph-optimizer)
 - Sped up greedy batch CSV output replay by about 9× on the 100k benchmark. Same matches, less work.
 - Reused BM25 block filters across batch queries. Warm scoring was 2.76× faster on the 1M reference benchmark. [Results](benchmarks/batch/usearch_scaling/comparison/findings.md)

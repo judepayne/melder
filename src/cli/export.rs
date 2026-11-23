@@ -103,7 +103,12 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
         let manifest = crate::output::OutputManifest::from_config(&cfg);
         let parquet_dir = cfg.output.parquet_dir_path.as_deref().map(Path::new);
         let db_path = cfg.output.db_path.as_deref().map(Path::new);
-        let sl_path = if let Some(segment) = graph_segment.as_deref() {
+        // New scored greedy runs also bind evidence to their exact segment. Never
+        // fall back to a job-wide scoring log for historical batch exports.
+        let evidence_segment = graph_segment
+            .as_deref()
+            .or_else(|| (greedy_path_selected && ml.is_file()).then_some(ml));
+        let sl_path = if let Some(segment) = evidence_segment {
             crate::output::scoring_log::graph_scoring_path(segment).unwrap_or_else(|e| {
                 eprintln!("Failed to select graph scoring log: {e}");
                 process::exit(1);
@@ -130,7 +135,7 @@ pub fn cmd_export(config_path: &Path, out_dir: &Path) {
             &manifest,
             input,
             crate::output::build::EnrollRecordAuthority::SeedAndReplay,
-            graph_segment.is_some() && sl_path.is_some(),
+            evidence_segment.is_some() && sl_path.is_some(),
         ) {
             Ok(report) => {
                 println!("Export complete (build pipeline):");

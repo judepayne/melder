@@ -378,10 +378,11 @@ scoring_log:
 
 | Output | Description |
 |--------|-------------|
-| Raw scoring log | One event per scored query, with its ranked shortlist. In-memory graph batches write `scores.<timestamped-match-log-stem>.scoring_log.ndjson.zst` beside the match log; greedy batches use `{job_name}.scoring_log.ndjson.zst`. With `compression: none`, omit `.zst`. |
+| Raw scoring log | One event per scored query, with its ranked shortlist. In-memory batch runs write `scores.<timestamped-match-log-stem>.scoring_log.ndjson.zst` beside their match log; SQLite-backed batch runs use a unique run identifier without creating a match log. With `compression: none`, omit `.zst`. |
 | `candidates.csv` | In match mode, scored candidates ranked second or lower. A graph run can select one as the final match; use `relationship_type: match` in `relationships.csv` to find accepted pairs. Enroll instead exports its returned edges, including rank one, without declaring them confirmed pairs. |
 | `field_scores.csv` / `field_scores.parquet` | Optional batch companions in the configured output directories. Same columns as the SQLite table. See [batch outputs and a lookup example](batch-mode.md#csv-outputs). |
-| `field_scores` DB table | Per-field breakdowns for logged candidates, or available selected/review rows in direct SQLite batch builds. |
+| `candidate_edges.csv` / `candidate_edges.parquet` / `candidate_edges` DB table | With batch scoring logging enabled: IDs, rank and overall score for the full returned shortlist. Includes rank one even when another candidate wins. Same semantics for memory and SQLite scratch storage. |
+| `field_scores` DB table | Individual field scores and weights for all logged candidates. Without logging, direct SQLite batch retains its existing selected/review field scores. |
 
 ### Explainability views (SQLite output)
 

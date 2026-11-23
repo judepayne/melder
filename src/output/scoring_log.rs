@@ -54,7 +54,7 @@ struct ScoredRecord {
 
 #[derive(Serialize)]
 struct CandidateEntry {
-    rank: u8,
+    rank: usize,
     matched_id: String,
     score: f64,
     field_scores: Vec<FieldScoreEntry>,
@@ -107,7 +107,7 @@ impl ScoringLogSender {
             .iter()
             .enumerate()
             .map(|(i, mr)| CandidateEntry {
-                rank: (i + 1).min(255) as u8,
+                rank: i + 1,
                 matched_id: mr.matched_id.clone(),
                 score: mr.score,
                 field_scores: mr.field_scores.iter().map(FieldScoreEntry::from).collect(),
@@ -291,6 +291,9 @@ fn open_writer(
     header: &crate::output::manifest::OutputManifest,
     publication: Option<PathBuf>,
 ) -> std::io::Result<(ScoringLogSender, ScoringLogWriter)> {
+    if let Some(parent) = actual_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
     let file = if let Some(pending) = &publication {
         std::fs::OpenOptions::new()
             .create_new(true)

@@ -1,0 +1,524 @@
+{
+  "baseline_commit": "bfd16b4f75dca4510b1a79cc7988b4317bd2c2f5",
+  "work": "/tmp/melder-shortlist-77ibeypk",
+  "binary_sha256": {
+    "baseline": "f2b91fcb498603047dca52ddde4f9f74faaa0b93cd47df6909481e037786c2cd",
+    "candidate": "5b53f1d1761cffb947cc89f27eb27600b72357bfb271638fbc39646489d2854f"
+  },
+  "fixture_sha256": {
+    "a": "aa181b8f7a83767c47216621fdd5dd3cb1e14e00655d3da20245a348397ef650",
+    "b": "32746d52a7754a17354c077ce2f812fa5a681d603e27a9eec3be15d12fe1b9eb"
+  },
+  "runs": [
+    {
+      "repeat": 1,
+      "storage": "memory",
+      "arm": "baseline",
+      "logging": "off",
+      "wall_seconds": 9.114457499992568,
+      "rss_bytes": 620249088,
+      "scoring_records_per_sec": 58967,
+      "persistent_bytes": 14121659,
+      "sqlite_counts": {
+        "relationships": 9236,
+        "field_scores": 0
+      },
+      "evidence_edges": 0,
+      "csv_rows": {
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 8.1
+    },
+    {
+      "repeat": 1,
+      "storage": "memory",
+      "arm": "baseline",
+      "logging": "on",
+      "wall_seconds": 11.08185533300275,
+      "rss_bytes": 842465280,
+      "scoring_records_per_sec": 48692,
+      "persistent_bytes": 141407295,
+      "sqlite_counts": {
+        "relationships": 150896,
+        "field_scores": 606752
+      },
+      "evidence_edges": 151688,
+      "csv_rows": {
+        "candidates.csv": 141704,
+        "field_scores.csv": 606752,
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 8.5
+    },
+    {
+      "repeat": 1,
+      "storage": "memory",
+      "arm": "candidate",
+      "logging": "off",
+      "wall_seconds": 11.49626958402223,
+      "rss_bytes": 663306240,
+      "scoring_records_per_sec": 48738,
+      "persistent_bytes": 14125752,
+      "sqlite_counts": {
+        "relationships": 9236,
+        "field_scores": 0
+      },
+      "evidence_edges": 0,
+      "csv_rows": {
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 10.5
+    },
+    {
+      "repeat": 1,
+      "storage": "memory",
+      "arm": "candidate",
+      "logging": "on",
+      "wall_seconds": 14.170352541987086,
+      "rss_bytes": 674643968,
+      "scoring_records_per_sec": 48928,
+      "persistent_bytes": 162598983,
+      "sqlite_counts": {
+        "relationships": 150896,
+        "field_scores": 606752,
+        "candidate_edges": 151688
+      },
+      "evidence_edges": 151688,
+      "csv_rows": {
+        "candidate_edges.csv": 151688,
+        "candidates.csv": 141704,
+        "field_scores.csv": 606752,
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 10.7
+    },
+    {
+      "repeat": 1,
+      "storage": "sqlite",
+      "arm": "baseline",
+      "logging": "off",
+      "wall_seconds": 0.7274131669837516,
+      "rss_bytes": 118177792,
+      "scoring_records_per_sec": 26802,
+      "persistent_bytes": 7650838,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 36940
+      },
+      "evidence_edges": 9235,
+      "csv_rows": {
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 1,
+      "storage": "sqlite",
+      "arm": "baseline",
+      "logging": "on",
+      "wall_seconds": 0.7388215829851106,
+      "rss_bytes": 119078912,
+      "scoring_records_per_sec": 26570,
+      "persistent_bytes": 9695168,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 36940
+      },
+      "evidence_edges": 9235,
+      "csv_rows": {
+        "field_scores.csv": 36940,
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 1,
+      "storage": "sqlite",
+      "arm": "candidate",
+      "logging": "off",
+      "wall_seconds": 0.7191970420244616,
+      "rss_bytes": 120832000,
+      "scoring_records_per_sec": 26576,
+      "persistent_bytes": 7650838,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 36940
+      },
+      "evidence_edges": 9235,
+      "csv_rows": {
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 1,
+      "storage": "sqlite",
+      "arm": "candidate",
+      "logging": "on",
+      "wall_seconds": 2.5934066249756142,
+      "rss_bytes": 123633664,
+      "scoring_records_per_sec": 25287,
+      "persistent_bytes": 124811210,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 606752,
+        "candidate_edges": 151688
+      },
+      "evidence_edges": 151688,
+      "csv_rows": {
+        "candidate_edges.csv": 151688,
+        "field_scores.csv": 606752,
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 2,
+      "storage": "memory",
+      "arm": "candidate",
+      "logging": "off",
+      "wall_seconds": 12.20289404198411,
+      "rss_bytes": 662913024,
+      "scoring_records_per_sec": 58730,
+      "persistent_bytes": 14113477,
+      "sqlite_counts": {
+        "relationships": 9236,
+        "field_scores": 0
+      },
+      "evidence_edges": 0,
+      "csv_rows": {
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 11.7
+    },
+    {
+      "repeat": 2,
+      "storage": "memory",
+      "arm": "baseline",
+      "logging": "on",
+      "wall_seconds": 11.344456582999555,
+      "rss_bytes": 842629120,
+      "scoring_records_per_sec": 47475,
+      "persistent_bytes": 141432801,
+      "sqlite_counts": {
+        "relationships": 150895,
+        "field_scores": 606752
+      },
+      "evidence_edges": 151688,
+      "csv_rows": {
+        "candidates.csv": 141704,
+        "field_scores.csv": 606752,
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 8.7
+    },
+    {
+      "repeat": 2,
+      "storage": "memory",
+      "arm": "baseline",
+      "logging": "off",
+      "wall_seconds": 10.785364500014111,
+      "rss_bytes": 620756992,
+      "scoring_records_per_sec": 49317,
+      "persistent_bytes": 14125768,
+      "sqlite_counts": {
+        "relationships": 9236,
+        "field_scores": 0
+      },
+      "evidence_edges": 0,
+      "csv_rows": {
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 10.2
+    },
+    {
+      "repeat": 2,
+      "storage": "sqlite",
+      "arm": "candidate",
+      "logging": "on",
+      "wall_seconds": 2.5882798750244547,
+      "rss_bytes": 120651776,
+      "scoring_records_per_sec": 25239,
+      "persistent_bytes": 124774912,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 606752,
+        "candidate_edges": 151688
+      },
+      "evidence_edges": 151688,
+      "csv_rows": {
+        "candidate_edges.csv": 151688,
+        "field_scores.csv": 606752,
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 2,
+      "storage": "sqlite",
+      "arm": "candidate",
+      "logging": "off",
+      "wall_seconds": 0.7366175829956774,
+      "rss_bytes": 119078912,
+      "scoring_records_per_sec": 25904,
+      "persistent_bytes": 7646742,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 36940
+      },
+      "evidence_edges": 9235,
+      "csv_rows": {
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 2,
+      "storage": "sqlite",
+      "arm": "baseline",
+      "logging": "on",
+      "wall_seconds": 0.7402905420167372,
+      "rss_bytes": 119177216,
+      "scoring_records_per_sec": 26407,
+      "persistent_bytes": 9674688,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 36940
+      },
+      "evidence_edges": 9235,
+      "csv_rows": {
+        "field_scores.csv": 36940,
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 2,
+      "storage": "sqlite",
+      "arm": "baseline",
+      "logging": "off",
+      "wall_seconds": 0.7483770840044599,
+      "rss_bytes": 117817344,
+      "scoring_records_per_sec": 25683,
+      "persistent_bytes": 7650838,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 36940
+      },
+      "evidence_edges": 9235,
+      "csv_rows": {
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 2,
+      "storage": "memory",
+      "arm": "candidate",
+      "logging": "on",
+      "wall_seconds": 13.523983249993762,
+      "rss_bytes": 680230912,
+      "scoring_records_per_sec": 49351,
+      "persistent_bytes": 162696519,
+      "sqlite_counts": {
+        "relationships": 150896,
+        "field_scores": 606752,
+        "candidate_edges": 151688
+      },
+      "evidence_edges": 151688,
+      "csv_rows": {
+        "candidate_edges.csv": 151688,
+        "candidates.csv": 141704,
+        "field_scores.csv": 606752,
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 10.0
+    },
+    {
+      "repeat": 3,
+      "storage": "sqlite",
+      "arm": "candidate",
+      "logging": "off",
+      "wall_seconds": 0.7344133330043405,
+      "rss_bytes": 119078912,
+      "scoring_records_per_sec": 26237,
+      "persistent_bytes": 7642646,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 36940
+      },
+      "evidence_edges": 9235,
+      "csv_rows": {
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 3,
+      "storage": "sqlite",
+      "arm": "candidate",
+      "logging": "on",
+      "wall_seconds": 2.5885785419959575,
+      "rss_bytes": 121126912,
+      "scoring_records_per_sec": 24678,
+      "persistent_bytes": 124716323,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 606752,
+        "candidate_edges": 151688
+      },
+      "evidence_edges": 151688,
+      "csv_rows": {
+        "candidate_edges.csv": 151688,
+        "field_scores.csv": 606752,
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 3,
+      "storage": "memory",
+      "arm": "baseline",
+      "logging": "off",
+      "wall_seconds": 10.218996334006079,
+      "rss_bytes": 620740608,
+      "scoring_records_per_sec": 58898,
+      "persistent_bytes": 14125757,
+      "sqlite_counts": {
+        "relationships": 9236,
+        "field_scores": 0
+      },
+      "evidence_edges": 0,
+      "csv_rows": {
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 9.8
+    },
+    {
+      "repeat": 3,
+      "storage": "memory",
+      "arm": "baseline",
+      "logging": "on",
+      "wall_seconds": 11.80890287499642,
+      "rss_bytes": 844742656,
+      "scoring_records_per_sec": 48401,
+      "persistent_bytes": 141329233,
+      "sqlite_counts": {
+        "relationships": 150896,
+        "field_scores": 606752
+      },
+      "evidence_edges": 151688,
+      "csv_rows": {
+        "candidates.csv": 141704,
+        "field_scores.csv": 606752,
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 9.3
+    },
+    {
+      "repeat": 3,
+      "storage": "memory",
+      "arm": "candidate",
+      "logging": "off",
+      "wall_seconds": 12.760287832992617,
+      "rss_bytes": 610746368,
+      "scoring_records_per_sec": 58710,
+      "persistent_bytes": 14121667,
+      "sqlite_counts": {
+        "relationships": 9236,
+        "field_scores": 0
+      },
+      "evidence_edges": 0,
+      "csv_rows": {
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 12.3
+    },
+    {
+      "repeat": 3,
+      "storage": "memory",
+      "arm": "candidate",
+      "logging": "on",
+      "wall_seconds": 16.475390250008786,
+      "rss_bytes": 676347904,
+      "scoring_records_per_sec": 48560,
+      "persistent_bytes": 162553020,
+      "sqlite_counts": {
+        "relationships": 150896,
+        "field_scores": 606752,
+        "candidate_edges": 151688
+      },
+      "evidence_edges": 151688,
+      "csv_rows": {
+        "candidate_edges.csv": 151688,
+        "candidates.csv": 141704,
+        "field_scores.csv": 606752,
+        "relationships.csv": 9236,
+        "unmatched.csv": 764
+      },
+      "encoder_init_s": 13.1
+    },
+    {
+      "repeat": 3,
+      "storage": "sqlite",
+      "arm": "baseline",
+      "logging": "off",
+      "wall_seconds": 0.7336215419927612,
+      "rss_bytes": 119046144,
+      "scoring_records_per_sec": 26392,
+      "persistent_bytes": 7663126,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 36940
+      },
+      "evidence_edges": 9235,
+      "csv_rows": {
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    },
+    {
+      "repeat": 3,
+      "storage": "sqlite",
+      "arm": "baseline",
+      "logging": "on",
+      "wall_seconds": 0.74926687500556,
+      "rss_bytes": 118308864,
+      "scoring_records_per_sec": 26216,
+      "persistent_bytes": 9678784,
+      "sqlite_counts": {
+        "relationships": 9235,
+        "field_scores": 36940
+      },
+      "evidence_edges": 9235,
+      "csv_rows": {
+        "field_scores.csv": 36940,
+        "relationships.csv": 9235,
+        "unmatched.csv": 765
+      },
+      "encoder_init_s": 0
+    }
+  ]
+}

@@ -663,6 +663,260 @@ fn graph_coordinates_optimum_and_is_repeatable_across_input_order_and_workers() 
     Ok(())
 }
 
+const EDGE_COLUMNS: &[&str] = &["a_id", "b_id", "rank", "score"];
+const FIELD_COLUMNS: &[&str] = &[
+    "a_id", "b_id", "field_a", "field_b", "method", "score", "weight",
+];
+
+type EvidenceRows = Vec<Vec<String>>;
+
+fn assert_evidence_rows(mut actual: EvidenceRows, mut expected: EvidenceRows) {
+    // Compare the complete multiset, not just counts or the selected links.
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual.len(), expected.len(), "all raw evidence survives");
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(actual.len(), expected.len(), "fixed evidence schema");
+        for (actual, expected) in actual.iter().zip(expected) {
+            match (actual.parse::<f64>(), expected.parse::<f64>()) {
+                (Ok(a), Ok(b)) => assert!((a - b).abs() < 0.000001, "{a} != {b}"),
+                _ => assert_eq!(actual, expected, "evidence value"),
+            }
+        }
+    }
+}
+
+fn raw_evidence(root: &Path) -> Result<(EvidenceRows, EvidenceRows), Box<dyn Error>> {
+    let mut paths = vec![root.to_path_buf()];
+    let mut logs = Vec::new();
+    while let Some(path) = paths.pop() {
+        for entry in fs::read_dir(path)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                paths.push(path);
+            } else if path.to_string_lossy().ends_with("scoring_log.ndjson") {
+                logs.push(path);
+            }
+        }
+    }
+    assert_eq!(logs.len(), 1, "one full raw scoring log");
+    let mut edges = Vec::new();
+    let mut fields = Vec::new();
+    for line in fs::read_to_string(&logs[0])?.lines() {
+        let record: Value = serde_json::from_str(line)?;
+        let Some(candidates) = record["candidates"].as_array() else {
+            continue;
+        };
+        for (index, candidate) in candidates.iter().enumerate() {
+            assert_eq!(
+                candidate["rank"],
+                json!(index + 1),
+                "raw ranks are one-based"
+            );
+            let query = record["query_id"].as_str().expect("query ID");
+            let matched = candidate["matched_id"].as_str().expect("matched ID");
+            let (a, b) = if record["query_side"] == "A" {
+                (query, matched)
+            } else {
+                (matched, query)
+            };
+            edges.push(vec![
+                a.into(),
+                b.into(),
+                (index + 1).to_string(),
+                candidate["score"].to_string(),
+            ]);
+            for field in candidate["field_scores"].as_array().expect("field scores") {
+                fields.push(vec![
+                    a.into(),
+                    b.into(),
+                    field["field_a"].as_str().expect("field A").into(),
+                    field["field_b"].as_str().expect("field B").into(),
+                    field["method"].as_str().expect("method").into(),
+                    field["score"].to_string(),
+                    field["weight"].to_string(),
+                ]);
+            }
+        }
+    }
+    Ok((edges, fields))
+}
+
+fn assert_evidence(fixture: &Fixture, files: bool) -> TestResult {
+    let (edges, fields) = raw_evidence(fixture.dir.path())?;
+    for (table, columns, expected) in [
+        ("candidate_edges", EDGE_COLUMNS, edges),
+        ("field_scores", FIELD_COLUMNS, fields),
+    ] {
+        let db = rusqlite::Connection::open(fixture.path("output.db"))?;
+        let mut schema = db.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names = schema
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(names, columns, "fixed SQL schema for {table}");
+        let mut stmt = db.prepare(&format!("SELECT {} FROM {table}", columns.join(",")))?;
+        let rows = stmt
+            .query_map([], |row| {
+                (0..columns.len())
+                    .map(|i| {
+                        Ok(match row.get_ref(i)? {
+                            rusqlite::types::ValueRef::Text(v) => {
+                                String::from_utf8_lossy(v).into_owned()
+                            }
+                            rusqlite::types::ValueRef::Integer(v) => v.to_string(),
+                            rusqlite::types::ValueRef::Real(v) => v.to_string(),
+                            other => panic!("unexpected evidence value {other:?}"),
+                        })
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_evidence_rows(rows, expected.clone());
+        if files {
+            let mut csv = csv::Reader::from_path(fixture.path(&format!("out/{table}.csv")))?;
+            assert_eq!(
+                csv.headers()?.iter().collect::<Vec<_>>(),
+                columns,
+                "fixed CSV schema"
+            );
+            let rows = csv
+                .records()
+                .map(|row| row.map(|r| r.iter().map(str::to_owned).collect()))
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_evidence_rows(rows, expected.clone());
+            #[cfg(feature = "parquet-format")]
+            {
+                use parquet::file::reader::{FileReader, SerializedFileReader};
+                let reader = SerializedFileReader::new(fs::File::open(
+                    fixture.path(&format!("parquet/{table}.parquet")),
+                )?)?;
+                let names = reader
+                    .metadata()
+                    .file_metadata()
+                    .schema_descr()
+                    .columns()
+                    .iter()
+                    .map(|c| c.name())
+                    .collect::<Vec<_>>();
+                assert_eq!(names, columns, "fixed Parquet schema");
+                let mut rows = Vec::new();
+                for row in reader.get_row_iter(None)? {
+                    rows.push(
+                        row?.get_column_iter()
+                            .map(|(_, value)| match value {
+                                parquet::record::Field::Str(s) => s.clone(),
+                                value => value.to_string(),
+                            })
+                            .collect(),
+                    );
+                }
+                assert_evidence_rows(rows, expected.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn candidate_evidence_matches_full_raw_log_for_every_strategy_and_backend() -> TestResult {
+    for sqlite in [false, true] {
+        for strategy in ["graph", "greedy"] {
+            for db_only in [false, true] {
+                let mut fixture = Fixture::new(sqlite, json!({"strategy": strategy}))?;
+                if db_only {
+                    fixture.config["output"] = json!({"db_path": fixture.path("output.db")});
+                }
+                fixture.run(1)?;
+                assert_evidence(&fixture, !db_only)?;
+                let (edges, _) = raw_evidence(fixture.dir.path())?;
+                assert!(edges.iter().any(|r| r[2] == "1"), "include rank one");
+                if strategy == "graph" {
+                    assert_eq!(fixture.pairs()?, expected(&[("a2", "b1"), ("a1", "b2")]));
+                    assert!(
+                        edges
+                            .iter()
+                            .any(|r| r[0] == "a2" && r[1] == "b1" && r[2] == "2"),
+                        "selected rank-two winner survives"
+                    );
+                    assert!(
+                        edges
+                            .iter()
+                            .any(|r| r[0] == "a1" && r[1] == "b1" && r[2] == "1"),
+                        "losing rank-one edge survives"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn candidate_evidence_replaces_stale_rows_on_rerun() -> TestResult {
+    for sqlite in [false, true] {
+        for strategy in ["graph", "greedy"] {
+            let mut fixture = Fixture::new(sqlite, json!({"strategy": strategy}))?;
+            fixture.run(1)?;
+            fs::remove_file(fixture.path("crossmap.csv"))?;
+            fs::write(fixture.path("b.csv"), "bid,name,text\nnew-b,aaaa,shared\n")?;
+            fixture.run(1)?;
+            let db = rusqlite::Connection::open(fixture.path("output.db"))?;
+            for table in ["candidate_edges", "field_scores"] {
+                let count: usize = db.query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE b_id != 'new-b'"),
+                    [],
+                    |r| r.get(0),
+                )?;
+                assert_eq!(count, 0, "no stale SQL evidence in {table}");
+                let rows = csv_rows(&fixture.path(&format!("out/{table}.csv")))?;
+                assert!(!rows.is_empty(), "new evidence replaces old evidence");
+                assert!(
+                    rows.iter().all(|r| r["bid"] == "new-b"),
+                    "no stale CSV evidence"
+                );
+            }
+            let previous = fs::read(fixture.path("out/candidate_edges.csv"))?;
+            fixture.config["scoring_log"]["enabled"] = json!(false);
+            fs::remove_file(fixture.path("crossmap.csv"))?;
+            fixture.run(1)?;
+            assert_eq!(
+                previous,
+                fs::read(fixture.path("out/candidate_edges.csv"))?,
+                "disabled runs must not overwrite existing companion files"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn empty_and_isolated_queries_publish_empty_evidence() -> TestResult {
+    for sqlite in [false, true] {
+        for strategy in ["graph", "greedy"] {
+            for empty in [false, true] {
+                let mut fixture = Fixture::new(sqlite, json!({"strategy": strategy}))?;
+                if empty {
+                    fs::write(fixture.path("b.csv"), "bid,name,text\n")?;
+                } else {
+                    fixture.config["blocking"] = json!({"enabled": true, "fields": [{"field_a": "text", "field_b": "text"}]});
+                    fs::write(
+                        fixture.path("b.csv"),
+                        "bid,name,text\nb-isolated,zzzz,unrelated\n",
+                    )?;
+                }
+                fixture.run(1)?;
+                let (edges, fields) = raw_evidence(fixture.dir.path())?;
+                assert!(
+                    edges.is_empty() && fields.is_empty(),
+                    "no invented evidence"
+                );
+                assert_evidence(&fixture, true)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn field_score_companions_follow_batch_opt_in() -> TestResult {
     for sqlite in [false, true] {
@@ -683,6 +937,20 @@ fn field_score_companions_follow_batch_opt_in() -> TestResult {
                     enabled,
                     "Parquet detail for {strategy}, sqlite={sqlite}"
                 );
+                if !enabled {
+                    assert!(
+                        !fixture.path("out/candidate_edges.csv").exists(),
+                        "disabled evidence stays absent"
+                    );
+                    #[cfg(feature = "parquet-format")]
+                    assert!(
+                        !fixture.path("parquet/candidate_edges.parquet").exists(),
+                        "disabled Parquet evidence stays absent"
+                    );
+                    let db = rusqlite::Connection::open(fixture.path("output.db"))?;
+                    let count: usize = db.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='candidate_edges'", [], |r| r.get(0))?;
+                    assert_eq!(count, 0, "disabled scoring does not add evidence tables");
+                }
                 if enabled {
                     let count = csv::Reader::from_path(csv)?
                         .records()
